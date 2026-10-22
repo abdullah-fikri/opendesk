@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">OpenDesk</string>
+    <string name="accessibility_desc">Layanan Aksesibilitas OpenDesk memungkinkan perangkat PC/laptop yang Anda izinkan untuk mengontrol sentuhan layar dan tombol navigasi HP ini secara jarak jauh.</string>
+</resources>

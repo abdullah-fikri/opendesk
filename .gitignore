@@ -1,0 +1,69 @@
+
+# Build Output Directories
+/builds/
+
+# Rust (core-engine & client-desktop)
+target/
+**/target/
+**/*.rs.bk
+*.pdb
+
+# Go (server-relay)
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+server-relay/server-relay
+server-relay/server-relay.exe
+
+# Android & Gradle (client-android)
+.gradle/
+**/.gradle/
+build/
+**/build/
+.kotlin/
+**/.kotlin/
+*.apk
+*.aab
+local.properties
+**/local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# IDEs & Editors
+.idea/
+**/.idea/
+*.iml
+**/*.iml
+.vscode/
+**/.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Environment & Secret Files
+.env
+.env.*
+!.env.example
+
+# System & Temporary Files
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+*.log
+*.tmp
+*.bak
+*.swp
+*~
+
+# Graphify & Knowledge Graph
+graphify-out/

@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package opendesk.protocol;
+
+option go_package = "opendesk/server-relay/protocol";
+
+// Root envelope message for OpenDesk Wire Protocol
+message Envelope {
+  string type = 1;
+  int64 timestamp = 2;
+  
+  oneof payload {
+    RegisterPayload register = 3;
+    ConnectPayload connect = 4;
+    ApprovalPayload approval = 5;
+    VideoFramePayload frame = 6;
+    InputCommandPayload input = 7;
+    FileTransferPayload file = 8;
+    ClipboardPayload clipboard = 9;
+  }
+}
+
+message RegisterPayload {
+  string desk_id = 1;
+  string platform = 2;
+  string device_name = 3;
+}
+
+message ConnectPayload {
+  string target_id = 1;
+  string caller_name = 2;
+}
+
+message ApprovalPayload {
+  string caller_id = 1;
+  bool accepted = 2;
+}
+
+message Rect {
+  int32 x = 1;
+  int32 y = 2;
+  int32 width = 3;
+  int32 height = 4;
+}
+
+message VideoFramePayload {
+  uint32 sequence = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  string codec = 4; // "jpeg", "h264", "h265", "raw"
+  bool is_keyframe = 5;
+  repeated Rect dirty_rects = 6;
+  bytes data = 7;
+}
+
+message InputCommandPayload {
+  string action = 1; // "mousemove", "mousedown", "mouseup", "keydown", "keyup", "wheel"
+  int32 x = 2;
+  int32 y = 3;
+  int32 button = 4;
+  int32 key_code = 5;
+  int32 delta_y = 6;
+  bool ctrl = 7;
+  bool shift = 8;
+  bool alt = 9;
+}
+
+message FileTransferPayload {
+  string transfer_id = 1;
+  string file_name = 2;
+  int64 file_size = 3;
+  int32 chunk_index = 4;
+  int32 total_chunks = 5;
+  bytes chunk_data = 6;
+  bool completed = 7;
+}
+
+message ClipboardPayload {
+  string format = 1; // "text/plain", "image/png", "file-list"
+  bytes content = 2;
+}

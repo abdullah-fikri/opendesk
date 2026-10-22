@@ -1,0 +1,736 @@
+export component ServerSettingsModal inherits Rectangle {
+    background: #000000bb;
+    width: 100%;
+    height: 100%;
+
+    in-out property <string> gateway_url: "";
+    in-out property <bool> show_settings: false;
+    callback save_gateway_url(string);
+
+    Rectangle {
+        width: 420px;
+        height: 190px;
+        background: #111114;
+        border-radius: 2px;
+        border-width: 1px;
+        border-color: #27272a;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        clip: true;
+
+        VerticalLayout {
+            padding: 0px;
+            spacing: 0px;
+
+            Rectangle {
+                height: 2px;
+                background: #dc2626;
+            }
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 14px;
+                alignment: space-between;
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: "Server Relay";
+                        color: #f4f4f5;
+                        font-size: 13px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 22px;
+                        height: 22px;
+                        border-radius: 2px;
+                        background: #18181c;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { show_settings = false; }
+                        }
+                        Text {
+                            text: "✕";
+                            color: #a1a1aa;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+
+                Rectangle {
+                    height: 38px;
+                    border-radius: 2px;
+                    background: #0a0a0c;
+                    border-width: 1px;
+                    border-color: input-gw.has-focus ? #dc2626 : #27272a;
+
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        input-gw := TextInput {
+                            text <=> gateway_url;
+                            color: #f4f4f5;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            single-line: true;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+
+                    Rectangle {
+                        width: 72px;
+                        height: 32px;
+                        border-radius: 2px;
+                        background: #18181c;
+                        border-width: 1px;
+                        border-color: #27272a;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { show_settings = false; }
+                        }
+                        Text {
+                            text: "Batal";
+                            color: #d4d4d8;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    Rectangle {
+                        width: 96px;
+                        height: 32px;
+                        border-radius: 2px;
+                        background: #dc2626;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                save_gateway_url(input-gw.text);
+                                show_settings = false;
+                            }
+                        }
+                        Text {
+                            text: "Simpan";
+                            color: #ffffff;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component RenameDeviceModal inherits Rectangle {
+    background: #000000bb;
+    width: 100%;
+    height: 100%;
+
+    in property <string> rename_target_id: "";
+    in-out property <string> rename_input_val: "";
+    in-out property <bool> show_rename_modal: false;
+    callback save_rename(string, string);
+
+    Rectangle {
+        width: 360px;
+        height: 176px;
+        background: #111114;
+        border-radius: 2px;
+        border-width: 1px;
+        border-color: #27272a;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        clip: true;
+
+        VerticalLayout {
+            padding: 0px;
+            spacing: 0px;
+
+            Rectangle {
+                height: 2px;
+                background: #dc2626;
+            }
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                alignment: space-between;
+
+                Text {
+                    text: "Nama Perangkat (" + rename_target_id + ")";
+                    color: #f4f4f5;
+                    font-size: 13px;
+                    font-weight: 700;
+                }
+
+                Rectangle {
+                    height: 38px;
+                    border-radius: 2px;
+                    background: #0a0a0c;
+                    border-width: 1px;
+                    border-color: input-alias.has-focus ? #dc2626 : #27272a;
+
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        input-alias := TextInput {
+                            text <=> rename_input_val;
+                            color: #f4f4f5;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            single-line: true;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+
+                    Rectangle {
+                        width: 72px;
+                        height: 32px;
+                        border-radius: 2px;
+                        background: #18181c;
+                        border-width: 1px;
+                        border-color: #27272a;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { show_rename_modal = false; }
+                        }
+                        Text {
+                            text: "Batal";
+                            color: #d4d4d8;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    Rectangle {
+                        width: 88px;
+                        height: 32px;
+                        border-radius: 2px;
+                        background: #dc2626;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                save_rename(rename_target_id, input-alias.text);
+                                show_rename_modal = false;
+                            }
+                        }
+                        Text {
+                            text: "Simpan";
+                            color: #ffffff;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component DeleteConfirmModal inherits Rectangle {
+    background: #000000bb;
+    width: 100%;
+    height: 100%;
+
+    in property <string> delete_target_id: "";
+    in property <string> delete_target_label: "";
+    in-out property <bool> show_delete_modal: false;
+    callback confirm_delete(string);
+
+    Rectangle {
+        width: 360px;
+        height: 162px;
+        background: #111114;
+        border-radius: 2px;
+        border-width: 1px;
+        border-color: #27272a;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        clip: true;
+
+        VerticalLayout {
+            padding: 0px;
+            spacing: 0px;
+
+            Rectangle {
+                height: 2px;
+                background: #dc2626;
+            }
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                alignment: space-between;
+
+                Text {
+                    text: "Hapus Riwayat Sesi?";
+                    color: #f4f4f5;
+                    font-size: 13px;
+                    font-weight: 700;
+                }
+
+                Text {
+                    text: "Hapus perangkat " + delete_target_label + " dari daftar riwayat?";
+                    color: #a1a1aa;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+
+                    Rectangle {
+                        width: 72px;
+                        height: 32px;
+                        border-radius: 2px;
+                        background: #18181c;
+                        border-width: 1px;
+                        border-color: #27272a;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { show_delete_modal = false; }
+                        }
+                        Text {
+                            text: "Batal";
+                            color: #d4d4d8;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    Rectangle {
+                        width: 88px;
+                        height: 32px;
+                        border-radius: 2px;
+                        background: #dc2626;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                confirm_delete(delete_target_id);
+                                show_delete_modal = false;
+                            }
+                        }
+                        Text {
+                            text: "Hapus";
+                            color: #ffffff;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component IncomingCallModal inherits Rectangle {
+    background: #000000cc;
+    width: 100%;
+    height: 100%;
+
+    in property <string> incoming_caller: "";
+    callback reject_incoming();
+    callback accept_incoming();
+
+    Rectangle {
+        width: 380px;
+        height: 170px;
+        background: #111114;
+        border-radius: 2px;
+        border-width: 1px;
+        border-color: #27272a;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        clip: true;
+
+        VerticalLayout {
+            padding: 0px;
+            Rectangle {
+                height: 2px;
+                background: #dc2626;
+            }
+            VerticalLayout {
+                padding: 20px;
+                spacing: 14px;
+                alignment: space-between;
+
+                Text {
+                    text: "Koneksi Masuk";
+                    color: #f4f4f5;
+                    font-size: 13px;
+                    font-weight: 700;
+                }
+
+                Text {
+                    text: incoming_caller;
+                    color: #a1a1aa;
+                    font-size: 13px;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    Rectangle {
+                        width: 80px;
+                        height: 32px;
+                        border-radius: 2px;
+                        background: #18181c;
+                        border-width: 1px;
+                        border-color: #27272a;
+                        TouchArea {
+                            clicked => { reject_incoming(); }
+                        }
+                        Text {
+                            text: "Tolak";
+                            color: #d4d4d8;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        width: 88px;
+                        height: 32px;
+                        border-radius: 2px;
+                        background: #dc2626;
+                        TouchArea {
+                            clicked => { accept_incoming(); }
+                        }
+                        Text {
+                            text: "Terima";
+                            color: #ffffff;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component SessionOptionsModal inherits Rectangle {
+    background: #000000bb;
+    width: 100%;
+    height: 100%;
+
+    in-out property <bool> show_session_options: false;
+    in property <int> privacy_mode: 0;
+    in property <bool> block_remote_input: false;
+
+    callback set_privacy_mode(int);
+    callback toggle_block_input();
+    callback send_system_shortcut(string);
+
+    Rectangle {
+        width: 440px;
+        height: 320px;
+        background: #111114;
+        border-radius: 2px;
+        border-width: 1px;
+        border-color: #27272a;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        clip: true;
+
+        VerticalLayout {
+            padding: 0px;
+            spacing: 0px;
+
+            Rectangle {
+                height: 2px;
+                background: #dc2626;
+            }
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 16px;
+                alignment: space-between;
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: "Opsi Sesi Remote";
+                        color: #f4f4f5;
+                        font-size: 13px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 22px;
+                        height: 22px;
+                        border-radius: 2px;
+                        background: #18181c;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { show_session_options = false; }
+                        }
+                        Text {
+                            text: "✕";
+                            color: #a1a1aa;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+
+                // 1. Privacy Screen Mode on Target Host
+                VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "Tampilan Layar Fisik di Perangkat Target";
+                        color: #a1a1aa;
+                        font-size: 11px;
+                        font-weight: 600;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        height: 32px;
+
+                        Rectangle {
+                            border-radius: 2px;
+                            background: privacy_mode == 0 ? #dc2626 : #18181c;
+                            border-width: 1px;
+                            border-color: privacy_mode == 0 ? #dc2626 : #27272a;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { set_privacy_mode(0); }
+                            }
+                            Text {
+                                text: "Normal";
+                                color: privacy_mode == 0 ? #ffffff : #d4d4d8;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            border-radius: 2px;
+                            background: privacy_mode == 1 ? #dc2626 : #18181c;
+                            border-width: 1px;
+                            border-color: privacy_mode == 1 ? #dc2626 : #27272a;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { set_privacy_mode(1); }
+                            }
+                            Text {
+                                text: "Freeze Layar";
+                                color: privacy_mode == 1 ? #ffffff : #d4d4d8;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            border-radius: 2px;
+                            background: privacy_mode == 2 ? #dc2626 : #18181c;
+                            border-width: 1px;
+                            border-color: privacy_mode == 2 ? #dc2626 : #27272a;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { set_privacy_mode(2); }
+                            }
+                            Text {
+                                text: "Maintenance";
+                                color: privacy_mode == 2 ? #ffffff : #d4d4d8;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            border-radius: 2px;
+                            background: privacy_mode == 3 ? #dc2626 : #18181c;
+                            border-width: 1px;
+                            border-color: privacy_mode == 3 ? #dc2626 : #27272a;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { set_privacy_mode(3); }
+                            }
+                            Text {
+                                text: "Layar Hitam";
+                                color: privacy_mode == 3 ? #ffffff : #d4d4d8;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // 2. Block Physical Input on Target Host
+                VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "Kontrol Input Fisik Perangkat Target";
+                        color: #a1a1aa;
+                        font-size: 11px;
+                        font-weight: 600;
+                    }
+
+                    Rectangle {
+                        height: 36px;
+                        border-radius: 2px;
+                        background: block_remote_input ? #dc262628 : #0d0d10;
+                        border-width: 1px;
+                        border-color: block_remote_input ? #dc2626 : #27272a;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { toggle_block_input(); }
+                        }
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            alignment: space-between;
+                            Text {
+                                text: "Kunci Mouse & Keyboard Fisik Target";
+                                color: #f4f4f5;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: block_remote_input ? "AKTIF" : "MATI";
+                                color: block_remote_input ? #f87171 : #71717a;
+                                font-size: 11px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // 3. System Shortcuts
+                VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "Kirim Pintasan Sistem ke Target";
+                        color: #a1a1aa;
+                        font-size: 11px;
+                        font-weight: 600;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        height: 32px;
+
+                        Rectangle {
+                            border-radius: 2px;
+                            background: ta-sc1.has-hover ? #27272a : #18181c;
+                            border-width: 1px;
+                            border-color: #27272a;
+                            ta-sc1 := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    send_system_shortcut("taskmgr");
+                                    show_session_options = false;
+                                }
+                            }
+                            Text {
+                                text: "Task Manager";
+                                color: #e4e4e7;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            border-radius: 2px;
+                            background: ta-sc2.has-hover ? #27272a : #18181c;
+                            border-width: 1px;
+                            border-color: #27272a;
+                            ta-sc2 := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    send_system_shortcut("win");
+                                    show_session_options = false;
+                                }
+                            }
+                            Text {
+                                text: "Start Menu";
+                                color: #e4e4e7;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            border-radius: 2px;
+                            background: ta-sc3.has-hover ? #27272a : #18181c;
+                            border-width: 1px;
+                            border-color: #27272a;
+                            ta-sc3 := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    send_system_shortcut("explorer");
+                                    show_session_options = false;
+                                }
+                            }
+                            Text {
+                                text: "Explorer";
+                                color: #e4e4e7;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            border-radius: 2px;
+                            background: ta-sc4.has-hover ? #27272a : #18181c;
+                            border-width: 1px;
+                            border-color: #27272a;
+                            ta-sc4 := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    send_system_shortcut("desktop");
+                                    show_session_options = false;
+                                }
+                            }
+                            Text {
+                                text: "Desktop";
+                                color: #e4e4e7;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

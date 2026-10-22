@@ -1,0 +1,313 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root_remote_container"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#050507">
+
+    <ImageView
+        android:id="@+id/iv_remote_screen"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="fitCenter" />
+
+    <!-- Local 0ms Precision Pointer -->
+    <FrameLayout
+        android:id="@+id/view_virtual_cursor"
+        android:layout_width="14dp"
+        android:layout_height="14dp"
+        android:clickable="false"
+        android:focusable="false"
+        android:visibility="gone">
+
+        <View
+            android:layout_width="10dp"
+            android:layout_height="10dp"
+            android:layout_gravity="center"
+            android:background="#DC2626" />
+
+        <View
+            android:layout_width="4dp"
+            android:layout_height="4dp"
+            android:layout_gravity="center"
+            android:background="#FFFFFF" />
+    </FrameLayout>
+
+    <!-- Minimalist Connecting Box (2dp radius, no shadow) -->
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/layout_connecting_overlay"
+        android:layout_width="240dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        app:cardBackgroundColor="#111114"
+        app:cardCornerRadius="2dp"
+        app:cardElevation="0dp"
+        app:strokeColor="#27272A"
+        app:strokeWidth="1dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="2dp"
+                android:background="#DC2626" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:padding="18dp">
+
+                <ProgressBar
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:indeterminateTint="#DC2626" />
+
+                <TextView
+                    android:id="@+id/tv_connecting_sub"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="Menghubungkan..."
+                    android:textColor="#E4E4E7"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+
+    <!-- Top-Left Minimal Telemetry Badge -->
+    <com.google.android.material.card.MaterialCardView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_margin="10dp"
+        app:cardBackgroundColor="#D9101013"
+        app:cardCornerRadius="2dp"
+        app:cardElevation="0dp"
+        app:strokeColor="#27272A"
+        app:strokeWidth="1dp">
+
+        <TextView
+            android:id="@+id/tv_remote_fps"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:paddingHorizontal="8dp"
+            android:paddingVertical="4dp"
+            android:text="Trackpad"
+            android:textColor="#D4D4D8"
+            android:textSize="11sp" />
+    </com.google.android.material.card.MaterialCardView>
+
+    <!-- Top-Right Disconnect Button -->
+    <Button
+        android:id="@+id/btn_exit_remote"
+        android:layout_width="wrap_content"
+        android:layout_height="32dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="10dp"
+        android:backgroundTint="#DC2626"
+        android:insetTop="0dp"
+        android:insetBottom="0dp"
+        android:minWidth="0dp"
+        android:paddingHorizontal="12dp"
+        android:text="Putuskan"
+        android:textAllCaps="false"
+        android:textColor="#FFFFFF"
+        android:textSize="11sp"
+        app:cornerRadius="2dp" />
+
+    <!-- Bottom Minimalist Classic Control Bar (2dp radius, no shadow) -->
+    <com.google.android.material.card.MaterialCardView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="10dp"
+        app:cardBackgroundColor="#E6101013"
+        app:cardCornerRadius="2dp"
+        app:cardElevation="0dp"
+        app:strokeColor="#27272A"
+        app:strokeWidth="1dp">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="2dp"
+                android:background="#DC2626" />
+
+            <HorizontalScrollView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="6dp"
+                    android:paddingVertical="5dp">
+
+                    <Button
+                        android:id="@+id/btn_toggle_mic"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="30dp"
+                        android:layout_marginEnd="4dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:paddingHorizontal="10dp"
+                        android:text="Mic: Mati"
+                        android:textAllCaps="false"
+                        android:textColor="#E4E4E7"
+                        android:textSize="11sp"
+                        app:cornerRadius="2dp"
+                        app:strokeColor="#27272A" />
+
+                    <Button
+                        android:id="@+id/btn_switch_monitor"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="30dp"
+                        android:layout_marginEnd="4dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:paddingHorizontal="10dp"
+                        android:text="Layar"
+                        android:textAllCaps="false"
+                        android:textColor="#E4E4E7"
+                        android:textSize="11sp"
+                        app:cornerRadius="2dp"
+                        app:strokeColor="#27272A" />
+
+                    <Button
+                        android:id="@+id/btn_toggle_mode"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="30dp"
+                        android:layout_marginEnd="4dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:paddingHorizontal="10dp"
+                        android:text="Trackpad"
+                        android:textAllCaps="false"
+                        android:textColor="#DC2626"
+                        android:textSize="11sp"
+                        app:cornerRadius="2dp"
+                        app:strokeColor="#27272A" />
+
+                    <Button
+                        android:id="@+id/btn_left_click"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="30dp"
+                        android:layout_marginEnd="4dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:paddingHorizontal="10dp"
+                        android:text="Kiri"
+                        android:textAllCaps="false"
+                        android:textColor="#E4E4E7"
+                        android:textSize="11sp"
+                        app:cornerRadius="2dp"
+                        app:strokeColor="#27272A" />
+
+                    <Button
+                        android:id="@+id/btn_double_click"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="30dp"
+                        android:layout_marginEnd="4dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:paddingHorizontal="10dp"
+                        android:text="2x Klik"
+                        android:textAllCaps="false"
+                        android:textColor="#E4E4E7"
+                        android:textSize="11sp"
+                        app:cornerRadius="2dp"
+                        app:strokeColor="#27272A" />
+
+                    <Button
+                        android:id="@+id/btn_right_click"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="30dp"
+                        android:layout_marginEnd="4dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:paddingHorizontal="10dp"
+                        android:text="Kanan"
+                        android:textAllCaps="false"
+                        android:textColor="#E4E4E7"
+                        android:textSize="11sp"
+                        app:cornerRadius="2dp"
+                        app:strokeColor="#27272A" />
+
+                    <Button
+                        android:id="@+id/btn_hold_drag"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="30dp"
+                        android:layout_marginEnd="4dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:paddingHorizontal="10dp"
+                        android:text="Tahan"
+                        android:textAllCaps="false"
+                        android:textColor="#E4E4E7"
+                        android:textSize="11sp"
+                        app:cornerRadius="2dp"
+                        app:strokeColor="#27272A" />
+
+                    <Button
+                        android:id="@+id/btn_scroll_up"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="30dp"
+                        android:layout_marginEnd="4dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:paddingHorizontal="8dp"
+                        android:text="▲"
+                        android:textColor="#E4E4E7"
+                        android:textSize="10sp"
+                        app:cornerRadius="2dp"
+                        app:strokeColor="#27272A" />
+
+                    <Button
+                        android:id="@+id/btn_scroll_down"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="30dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:paddingHorizontal="8dp"
+                        android:text="▼"
+                        android:textColor="#E4E4E7"
+                        android:textSize="10sp"
+                        app:cornerRadius="2dp"
+                        app:strokeColor="#27272A" />
+                </LinearLayout>
+            </HorizontalScrollView>
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+</FrameLayout>

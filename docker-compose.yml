@@ -1,0 +1,30 @@
+services:
+  relay:
+    build:
+      context: ./server-relay
+      dockerfile: Dockerfile
+    container_name: opendesk-relay
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./server-relay/config.json:/app/config.json:ro
+    environment:
+      - TZ=Asia/Jakarta
+      - DB_HOST=host.docker.internal
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=opendesk
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2048M
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    mem_limit: 2048m
+    cpus: 1.0

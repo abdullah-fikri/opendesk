@@ -1,0 +1,577 @@
+import { HistoryItem, HostItem } from "types.slint";
+
+export component DashboardView inherits VerticalLayout {
+    width: 100%;
+    height: 100%;
+    padding: 20px;
+    spacing: 16px;
+
+    in property <string> local_desk_id: "";
+    in property <bool> is_relay_online: false;
+    in property <bool> is_admin: false;
+    in-out property <int> active_tab: 0; // 0 = Riwayat Sesi, 1 = Daftar Host Server (Admin)
+    in-out property <string> target_desk_id: "";
+    in property <[HistoryItem]> history_items: [];
+    in property <[HostItem]> server_hosts: [];
+
+    callback copy_local_id();
+    callback request_connect(string);
+    callback open_rename(string, string);
+    callback prompt_delete_history(string, string);
+    callback refresh_hosts();
+
+    // Top Split Panels
+    HorizontalLayout {
+        spacing: 16px;
+        height: 168px;
+
+        // Left Panel: ID Anda
+        Rectangle {
+            border-radius: 2px;
+            background: #111114;
+            border-width: 1px;
+            border-color: #222227;
+            clip: true;
+
+            VerticalLayout {
+                padding: 0px;
+                spacing: 0px;
+
+                Rectangle {
+                    height: 2px;
+                    background: #dc2626;
+                }
+
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+                    alignment: space-between;
+
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text {
+                            text: "ID Perangkat Ini";
+                            color: #a1a1aa;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+
+                        Rectangle {
+                            height: 24px;
+                            border-radius: 2px;
+                            background: ta-copy.has-hover ? #27272a : #18181c;
+                            border-width: 1px;
+                            border-color: #2e2e36;
+                            ta-copy := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { copy_local_id(); }
+                            }
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                Text {
+                                    text: "Salin ID";
+                                    color: #e4e4e7;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        height: 64px;
+                        border-radius: 2px;
+                        background: #0a0a0c;
+                        border-width: 1px;
+                        border-color: #1f1f24;
+
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            spacing: 12px;
+                            alignment: start;
+
+                            Rectangle {
+                                width: 3px;
+                                height: 28px;
+                                background: #dc2626;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            Text {
+                                text: local_desk_id;
+                                color: #fafafa;
+                                font-size: 28px;
+                                font-weight: 800;
+                                letter-spacing: 2px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: is_relay_online ? "Siap menerima koneksi" : "Menunggu koneksi server";
+                        color: #71717a;
+                        font-size: 11px;
+                    }
+                }
+            }
+        }
+
+        // Right Panel: Remote Perangkat
+        Rectangle {
+            border-radius: 2px;
+            background: #111114;
+            border-width: 1px;
+            border-color: #222227;
+            clip: true;
+
+            VerticalLayout {
+                padding: 0px;
+                spacing: 0px;
+
+                Rectangle {
+                    height: 2px;
+                    background: #dc2626;
+                }
+
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+                    alignment: space-between;
+
+                    Text {
+                        text: "Remote Perangkat Lain";
+                        color: #a1a1aa;
+                        font-size: 12px;
+                        font-weight: 600;
+                    }
+
+                    Rectangle {
+                        height: 42px;
+                        border-radius: 2px;
+                        background: #0a0a0c;
+                        border-width: 1px;
+                        border-color: input-target.has-focus ? #dc2626 : #27272a;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+
+                            Rectangle {
+                                if input-target.text == "": Text {
+                                    text: "Masukkan ID tujuan";
+                                    color: #52525b;
+                                    font-size: 15px;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: left;
+                                }
+
+                                input-target := TextInput {
+                                    text <=> target_desk_id;
+                                    color: #fafafa;
+                                    font-size: 16px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                    accepted => {
+                                        request_connect(self.text);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        height: 38px;
+                        border-radius: 2px;
+                        background: ta-conn.has-hover ? #e11d48 : #dc2626;
+                        ta-conn := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                request_connect(input-target.text);
+                            }
+                        }
+                        Text {
+                            text: "Hubungkan";
+                            color: #ffffff;
+                            font-size: 13px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Bottom Section: Riwayat Sesi & Daftar Host Server (Admin)
+    Rectangle {
+        vertical-stretch: 1;
+        border-radius: 2px;
+        background: #111114;
+        border-width: 1px;
+        border-color: #222227;
+        clip: true;
+
+        VerticalLayout {
+            width: 100%;
+            height: 100%;
+            padding: 0px;
+            spacing: 0px;
+
+            // Header / Tab Bar
+            Rectangle {
+                height: 38px;
+                background: #141418;
+
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    alignment: space-between;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        if !is_admin: HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle {
+                                width: 2px;
+                                height: 12px;
+                                background: #dc2626;
+                                y: (parent.height - self.height) / 2;
+                            }
+                            Text {
+                                text: "Riwayat Sesi";
+                                color: #d4d4d8;
+                                font-size: 12px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        if is_admin: HorizontalLayout {
+                            spacing: 6px;
+                            y: (parent.height - 26px) / 2;
+
+                            // Tab 1: Daftar Host Server
+                            Rectangle {
+                                height: 26px;
+                                border-radius: 2px;
+                                background: active_tab == 1 ? #dc2626 : #1c1c21;
+                                border-width: 1px;
+                                border-color: active_tab == 1 ? #dc2626 : #27272a;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        active_tab = 1;
+                                        refresh_hosts();
+                                    }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+                                    Text {
+                                        text: "Daftar Host Server (" + server_hosts.length + ")";
+                                        color: active_tab == 1 ? #ffffff : #a1a1aa;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Tab 0: Riwayat Sesi
+                            Rectangle {
+                                height: 26px;
+                                border-radius: 2px;
+                                background: active_tab == 0 ? #dc2626 : #1c1c21;
+                                border-width: 1px;
+                                border-color: active_tab == 0 ? #dc2626 : #27272a;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { active_tab = 0; }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+                                    Text {
+                                        text: "Riwayat Sesi (" + history_items.length + ")";
+                                        color: active_tab == 0 ? #ffffff : #a1a1aa;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if is_admin && active_tab == 1: Rectangle {
+                        height: 24px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 2px;
+                        background: ta-ref.has-hover ? #27272a : #18181c;
+                        border-width: 1px;
+                        border-color: #2e2e36;
+                        ta-ref := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { refresh_hosts(); }
+                        }
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            Text {
+                                text: "Muat Ulang";
+                                color: #d4d4d8;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: #1f1f23;
+            }
+
+            // Content Area
+            VerticalLayout {
+                vertical-stretch: 1;
+                padding: 12px;
+                spacing: 6px;
+                alignment: start;
+
+                // VIEW A: RIWAYAT SESI (Normal User OR Admin on Tab 0)
+                if !is_admin || active_tab == 0: VerticalLayout {
+                    spacing: 6px;
+                    alignment: start;
+
+                    if history_items.length == 0: Rectangle {
+                        height: 80px;
+                        Text {
+                            text: "Belum ada riwayat sesi.";
+                            color: #52525b;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    for item in history_items: Rectangle {
+                        height: 44px;
+                        border-radius: 2px;
+                        background: #0d0d10;
+                        border-width: 1px;
+                        border-color: #1f1f24;
+
+                        HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 12px;
+                            spacing: 12px;
+                            alignment: space-between;
+
+                            HorizontalLayout {
+                                spacing: 10px;
+                                alignment: start;
+
+                                Rectangle {
+                                    width: 2px;
+                                    height: 18px;
+                                    background: #dc2626;
+                                    y: (parent.height - self.height) / 2;
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: item.alias != "" ? item.alias : item.desk_id;
+                                        color: #f4f4f5;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                    }
+                                    if item.alias != "": Text {
+                                        text: item.desk_id;
+                                        color: #71717a;
+                                        font-size: 11px;
+                                    }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 6px;
+                                y: (parent.height - 26px) / 2;
+
+                                Rectangle {
+                                    height: 26px;
+                                    border-radius: 2px;
+                                    background: ta-ren.has-hover ? #27272a : #18181c;
+                                    border-width: 1px;
+                                    border-color: #27272a;
+                                    ta-ren := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { open_rename(item.desk_id, item.alias); }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        Text {
+                                            text: "Nama";
+                                            color: #a1a1aa;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    height: 26px;
+                                    border-radius: 2px;
+                                    background: ta-hconn.has-hover ? #e11d48 : #dc2626;
+                                    ta-hconn := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { request_connect(item.desk_id); }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        Text {
+                                            text: "Hubungkan";
+                                            color: #ffffff;
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: 26px;
+                                    height: 26px;
+                                    border-radius: 2px;
+                                    background: ta-del.has-hover ? #27272a : #18181c;
+                                    border-width: 1px;
+                                    border-color: #27272a;
+                                    ta-del := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            prompt_delete_history(
+                                                item.desk_id,
+                                                item.alias != "" ? item.alias + " (" + item.desk_id + ")" : item.desk_id
+                                            );
+                                        }
+                                    }
+                                    Text {
+                                        text: "✕";
+                                        color: #71717a;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                        horizontal-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // VIEW B: DAFTAR HOST SERVER (Admin Only on Tab 1)
+                if is_admin && active_tab == 1: VerticalLayout {
+                    spacing: 6px;
+                    alignment: start;
+
+                    if server_hosts.length == 0: Rectangle {
+                        height: 80px;
+                        Text {
+                            text: "Belum ada perangkat Host yang terdaftar di Server Relay.";
+                            color: #52525b;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    for host in server_hosts: Rectangle {
+                        height: 44px;
+                        border-radius: 2px;
+                        background: #0d0d10;
+                        border-width: 1px;
+                        border-color: host.online ? #27272a : #18181c;
+
+                        HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 12px;
+                            spacing: 12px;
+                            alignment: space-between;
+
+                            HorizontalLayout {
+                                spacing: 10px;
+                                alignment: start;
+
+                                Rectangle {
+                                    width: 7px;
+                                    height: 7px;
+                                    border-radius: 2px;
+                                    background: host.online ? #22c55e : #52525b;
+                                    y: (parent.height - self.height) / 2;
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: host.device_name + "  •  " + host.desk_id;
+                                        color: host.online ? #f4f4f5 : #a1a1aa;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                    }
+                                    Text {
+                                        text: host.online ? ("Online • " + host.platform) : ("Offline (" + host.last_seen + ") • " + host.platform);
+                                        color: host.online ? #22c55e : #71717a;
+                                        font-size: 11px;
+                                    }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 6px;
+                                y: (parent.height - 26px) / 2;
+
+                                Rectangle {
+                                    height: 26px;
+                                    border-radius: 2px;
+                                    background: host.online ? (ta-srvconn.has-hover ? #e11d48 : #dc2626) : #18181c;
+                                    border-width: 1px;
+                                    border-color: host.online ? #dc2626 : #27272a;
+                                    ta-srvconn := TouchArea {
+                                        mouse-cursor: host.online ? pointer : default;
+                                        clicked => {
+                                            if (host.online) {
+                                                request_connect(host.desk_id);
+                                            }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        Text {
+                                            text: host.online ? "Hubungkan" : "Offline";
+                                            color: host.online ? #ffffff : #52525b;
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

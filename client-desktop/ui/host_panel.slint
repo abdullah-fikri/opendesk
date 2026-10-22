@@ -1,0 +1,138 @@
+export component HostActiveView inherits VerticalLayout {
+    width: 100%;
+    height: 100%;
+    padding: 24px;
+    alignment: center;
+
+    in property <string> active_partner_id: "";
+    in property <bool> is_mic_muted: false;
+
+    callback toggle_mic();
+    callback disconnect_session();
+
+    HorizontalLayout {
+        alignment: center;
+
+        Rectangle {
+            width: 460px;
+            border-radius: 2px;
+            background: #111114;
+            border-width: 1px;
+            border-color: #27272a;
+            clip: true;
+
+            VerticalLayout {
+                padding: 0px;
+                spacing: 0px;
+
+                Rectangle {
+                    height: 2px;
+                    background: #dc2626;
+                }
+
+                VerticalLayout {
+                    padding: 28px;
+                    spacing: 20px;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        Rectangle {
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 2px;
+                            background: #dc2626;
+                            y: (parent.height - self.height) / 2;
+                        }
+
+                        Text {
+                            text: "Sesi Remote Aktif";
+                            color: #e4e4e7;
+                            font-size: 13px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Rectangle {
+                        height: 68px;
+                        border-radius: 2px;
+                        background: #0a0a0c;
+                        border-width: 1px;
+                        border-color: #1f1f24;
+
+                        VerticalLayout {
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            alignment: center;
+                            spacing: 2px;
+
+                            Text {
+                                text: "Terhubung dengan";
+                                color: #71717a;
+                                font-size: 11px;
+                            }
+
+                            Text {
+                                text: active_partner_id != "" ? active_partner_id : "-";
+                                color: #fafafa;
+                                font-size: 24px;
+                                font-weight: 800;
+                                letter-spacing: 1.5px;
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "Tarik & lepas file ke jendela ini untuk mengirim ke perangkat rekan.";
+                        color: #71717a;
+                        font-size: 12px;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 10px;
+
+                        Rectangle {
+                            height: 36px;
+                            border-radius: 2px;
+                            background: !is_mic_muted ? #dc262628 : (ta-host-mic.has-hover ? #1c1c21 : #141418);
+                            border-width: 1px;
+                            border-color: !is_mic_muted ? #dc2626 : #27272a;
+                            ta-host-mic := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { toggle_mic(); }
+                            }
+                            Text {
+                                text: is_mic_muted ? "Mic: Mati" : "Mic: Aktif";
+                                color: !is_mic_muted ? #f87171 : #e4e4e7;
+                                font-size: 12px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            height: 36px;
+                            border-radius: 2px;
+                            background: ta-stop.has-hover ? #b91c1c : #dc2626;
+                            ta-stop := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { disconnect_session(); }
+                            }
+                            Text {
+                                text: "Akhiri Sesi";
+                                color: #ffffff;
+                                font-size: 12px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
