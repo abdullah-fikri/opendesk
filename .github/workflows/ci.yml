@@ -1,0 +1,97 @@
+# Continuous integration: every push and pull request is formatted, linted, tested and built.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  version:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every manifest matches VERSION
+        run: scripts/check-version.sh
+
+  relay:
+    name: Relay (Go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server-relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server-relay/go.mod
+          cache-dependency-path: server-relay/go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go build ./cmd/relay
+      - name: Docker image builds
+        working-directory: .
+        run: docker build --build-arg VERSION="$(cat VERSION)" -t opendesk-relay:ci server-relay
+
+  desktop:
+    name: Desktop + core engine (Rust)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core-engine
+            client-desktop
+      - name: rustfmt
+        run: |
+          cargo fmt --manifest-path core-engine/Cargo.toml --check
+          cargo fmt --manifest-path client-desktop/Cargo.toml --check
+      - name: clippy
+        run: |
+          cargo clippy --manifest-path core-engine/Cargo.toml --release --all-targets --locked -- -D warnings
+          cargo clippy --manifest-path client-desktop/Cargo.toml --release --all-targets --locked -- -D warnings
+      - name: test
+        run: |
+          cargo test --manifest-path core-engine/Cargo.toml --release --locked
+          cargo test --manifest-path client-desktop/Cargo.toml --release --locked
+      - name: build editions
+        run: |
+          cargo build --manifest-path client-desktop/Cargo.toml --release --locked
+          cargo build --manifest-path client-desktop/Cargo.toml --release --locked --features admin
+          cargo build --manifest-path client-desktop/Cargo.toml --release --locked --features headless
+
+  android:
+    name: Android (Kotlin)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-lint-report
+          path: client-android/app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore

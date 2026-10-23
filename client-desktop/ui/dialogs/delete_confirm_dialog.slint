@@ -1,0 +1,98 @@
+// Confirm removing a history entry.
+
+export component DeleteConfirmModal inherits Rectangle {
+    background: #000000bb;
+    width: 100%;
+    height: 100%;
+
+    in property <string> delete_target_id: "";
+    in property <string> delete_target_label: "";
+    in-out property <bool> show_delete_modal: false;
+    callback confirm_delete(string);
+
+    Rectangle {
+        width: 360px;
+        height: 162px;
+        background: #111114;
+        border-width: 1px;
+        border-color: #27272a;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        clip: true;
+
+        VerticalLayout {
+            padding: 0px;
+            spacing: 0px;
+
+            Rectangle {
+                height: 2px;
+                background: #dc2626;
+            }
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                alignment: space-between;
+
+                Text {
+                    text: "Remove from History?";
+                    color: #f4f4f5;
+                    font-size: 13px;
+                    font-weight: 700;
+                }
+
+                Text {
+                    text: "Remove device " + delete_target_label + " from the history?";
+                    color: #a1a1aa;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+
+                    Rectangle {
+                        width: 72px;
+                        height: 32px;
+                        background: #18181c;
+                        border-width: 1px;
+                        border-color: #27272a;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { show_delete_modal = false; }
+                        }
+                        Text {
+                            text: "Cancel";
+                            color: #d4d4d8;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    Rectangle {
+                        width: 88px;
+                        height: 32px;
+                        background: #dc2626;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                confirm_delete(delete_target_id);
+                                show_delete_modal = false;
+                            }
+                        }
+                        Text {
+                            text: "Remove";
+                            color: #ffffff;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

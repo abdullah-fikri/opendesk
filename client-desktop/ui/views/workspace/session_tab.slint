@@ -1,0 +1,87 @@
+// One tab of the session strip.
+
+import { SessionView } from "../../types.slint";
+import { Theme, Icons } from "../../theme.slint";
+import { Icon } from "../../components/icon.slint";
+
+export component SessionTab inherits Rectangle {
+    in property <SessionView> session;
+    in property <bool> selected: false;
+    callback select();
+    callback close();
+
+    height: 34px;
+    min-width: 116px;
+    max-width: 220px;
+    horizontal-stretch: 1;
+    background: selected ? Theme.surface : ta.has-hover ? #141418 : transparent;
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(event) => {
+            // Middle click closes the tab, like a browser.
+            if (event.kind == PointerEventKind.up && event.button == PointerEventButton.middle) {
+                root.close();
+            }
+        }
+        clicked => { root.select(); }
+    }
+
+    // Accent line on the selected tab, separator on the right edge.
+    if selected: Rectangle {
+        y: 0;
+        height: 2px;
+        background: Theme.accent;
+    }
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: Theme.divider;
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 5px;
+        spacing: 8px;
+
+        Rectangle {
+            width: 7px;
+            height: 7px;
+            y: (parent.height - self.height) / 2;
+            background: Theme.session-dot(root.session.connecting, root.session.path);
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.session.title;
+            color: root.selected ? Theme.text : Theme.text-2;
+            font-size: 12px;
+            font-weight: root.selected ? 600 : 400;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Rectangle {
+            width: 22px;
+            height: 22px;
+            y: (parent.height - self.height) / 2;
+            background: close-ta.has-hover ? Theme.border : transparent;
+            close-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.close(); }
+            }
+            Icon {
+                size: 10px;
+                commands: Icons.close;
+                tint: close-ta.has-hover ? Theme.text : Theme.text-3;
+            }
+            Tooltip {
+                text: @markdown("Close session (or middle-click the tab)");
+            }
+        }
+    }
+
+    Tooltip {
+        text: @markdown("\{root.session.subtitle != "" ? root.session.title + " — " + root.session.subtitle : root.session.title}");
+    }
+}
+
+// ---------------------------------------------------------------- Monitor picker

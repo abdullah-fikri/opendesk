@@ -1,0 +1,23 @@
+# Relay benchmarks
+
+Microbenchmarks of the hot paths, single process. They are not end-to-end latency or bandwidth figures.
+
+```bash
+go test -run '^$' -bench . -benchtime=300ms ./internal/handler ./internal/usecase
+```
+
+Intel Core Ultra 5 125U, Windows/amd64, Go 1.26:
+
+| Benchmark | What it measures | ns/op | B/op | allocs/op |
+| --- | --- | ---: | ---: | ---: |
+| `BenchmarkActivePartner` | Authorizing one message (session lookup, both sides) | 21.8 | 0 | 0 |
+| `BenchmarkDecodeRelayInput` | Decoding a mouse-move `relay-input` | 1 856 | 608 | 15 |
+| `BenchmarkDecodeRelayFileChunk` | Decoding a `relay-file` chunk and its payload header | 2 549 | 888 | 22 |
+
+Compared with the 0.x relay, which decoded every message into a generic map: session lookup 31.7 ns before;
+input decode 1 816 ns with 26 allocations before (now the same speed with 42 % fewer allocations); file-chunk
+decode 1 964 ns before (now about 30 % slower because the payload header is decoded separately, which is
+negligible next to sending 32 KiB over the network).
+
+Still missing: measurements under concurrent load (many peers, video and files at once), RSS and CPU per
+active session, and host-list query latency on a large registry.

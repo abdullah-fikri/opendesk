@@ -1,21 +1,53 @@
-# OpenDesk Desktop Client (Native Rust)
+# OpenDesk for Windows
 
-Aplikasi desktop native OpenDesk berbasis Rust dan Slint UI dengan integrasi langsung ke `core-engine` (DXGI Desktop Duplication, dirty-rect detector, SendInput hardware injector).
+Native Windows client: control up to four remote machines in tabs or a split view, or let one remote viewer
+control this machine. Rust with a [Slint](https://slint.dev) UI; screen capture and codecs come from
+[`core-engine`](../core-engine).
 
-## Fitur Utama
-- **Zero Browser / Zero Electron**: Memory footprint sangat hemat (~30MB RAM vs 300MB+ Electron) dan 60+ FPS hardware capture.
-- **Native Hardware Desk ID**: Terikat langsung dengan hash hardware mesin Windows.
-- **Dua Arah (Host & Viewer)**: Mendukung remote dan di-remote secara simultan.
-- **Buku Alamat / Riwayat**: Simpan ID rekan dengan nama alias di `%APPDATA%\OpenDesk\history.json`.
-- **System Tray**: Berjalan di background notification area Windows.
-- **Konsensus Persetujuan (Consent)**: Modal konfirmasi *Terima / Tolak* aman saat ada permintaan koneksi masuk.
+## Editions
 
-## Cara Menjalankan
-Gunakan launcher di folder `tools/`:
-```text
-tools\run-windows.bat
+One code base, three binaries selected with Cargo features:
+
+| Edition | Build | Description |
+| --- | --- | --- |
+| Standard | `cargo build --release` | Window, tray, viewer and host |
+| Admin | `cargo build --release --features admin` | Standard plus the relay's device list |
+| Headless host | `cargo build --release --features headless` | No window or tray: an unattended host for servers and kiosks |
+
+From the repository root, `make windows`, `make windows-admin`, `make windows-host` build into `builds\windows`
+and `make setup` builds the installer.
+
+## Develop
+
+Requirements: Windows 10/11, Rust (stable, edition 2024). Optional: `windres` (MinGW) to embed the icon.
+
+```bash
+cargo run --release          # runs the standard edition
+cargo test --release         # unit tests (some ignored tests need a desktop session; see their comments)
+cargo clippy --release --all-targets -- -D warnings
+cargo fmt
 ```
-Atau jalankan binary langsung:
-```text
-builds\windows\OpenDesk.exe
-```
+
+A local relay for development: `make run-relay` (needs PostgreSQL), then set the relay to
+`ws://127.0.0.1:8088` in the app.
+
+## Layout
+
+| Path | Layer | Contents |
+| --- | --- | --- |
+| `src/main.rs`, `src/cli.rs`, `src/app.rs` | Entrypoints | CLI commands, composition root |
+| `src/ui/`, `ui/*.slint` | Presentation | Slint window, callbacks, presenter, tray, drag-and-drop |
+| `src/service/` | Use cases | Relay connection, viewer sessions, hosting, file transfer, clipboard, history |
+| `src/protocol/` | Wire DTOs | Typed relay messages, input events, file payloads, binary framing |
+| `src/infra/` | Adapters | Storage, audio, P2P transport, privacy overlay, tray, autostart, virtual clipboard |
+| `src/domain/` | Domain | Desk IDs, settings, history, capabilities, resolution policy, key mapping, transfer rules |
+
+See [docs/architecture.md](docs/architecture.md) for the dependency rules and threads.
+
+## Documentation
+
+- [Architecture](docs/architecture.md) · [Configuration](docs/configuration.md) · [UI contract](docs/ui.md)
+- Features: [relay connection](docs/features/relay-connection.md), [viewer sessions](docs/features/viewer-sessions.md),
+  [hosting](docs/features/hosting.md), [file transfer](docs/features/file-transfer.md),
+  [clipboard](docs/features/clipboard.md), [direct P2P path](docs/features/p2p.md), [voice](docs/features/voice.md),
+  [autostart and CLI](docs/features/autostart-and-cli.md)

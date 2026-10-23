@@ -4,25 +4,31 @@
 use std::ffi::c_void;
 use std::ptr;
 
-use windows::core::Interface;
 use windows::Win32::Foundation::{HMODULE, RECT};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-    D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+    ID3D11Texture2D,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_UNSPECIFIED, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_UNSPECIFIED, DXGI_SAMPLE_DESC,
+};
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource, DXGI_ERROR_ACCESS_LOST,
-    DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, DXGI_OUTDUPL_MOVE_RECT,
+    CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO,
+    DXGI_OUTDUPL_MOVE_RECT, IDXGIAdapter, IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
 };
+use windows::core::Interface;
 
 use super::MonitorBounds;
 use crate::codec::frame::MoveRect;
 use crate::diff::Rect;
 
 // Shared GDI declarations live in the parent module; only the cursor-specific calls are declared here.
-use super::{CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetCursorInfo, SelectObject, BITMAPINFO, BITMAPINFOHEADER, CURSORINFO, HBITMAP, HDC, HGDIOBJ, HICON, POINT};
+use super::win32::{
+    BITMAPINFO, BITMAPINFOHEADER, CURSORINFO, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject,
+    GetCursorInfo, HBITMAP, HDC, HGDIOBJ, HICON, POINT, SelectObject,
+};
 
 type BOOL = i32;
 
@@ -43,7 +49,17 @@ struct ICONINFO {
 #[link(name = "user32")]
 unsafe extern "system" {
     fn GetIconInfo(h_icon: HICON, piconinfo: *mut ICONINFO) -> BOOL;
-    fn DrawIconEx(hdc: HDC, x: i32, y: i32, h_icon: HICON, cx: i32, cy: i32, step: u32, hbr: *mut c_void, flags: u32) -> BOOL;
+    fn DrawIconEx(
+        hdc: HDC,
+        x: i32,
+        y: i32,
+        h_icon: HICON,
+        cx: i32,
+        cy: i32,
+        step: u32,
+        hbr: *mut c_void,
+        flags: u32,
+    ) -> BOOL;
 }
 
 #[link(name = "gdi32")]
@@ -83,12 +99,19 @@ struct CursorOverlay {
     under: Vec<u32>,
 }
 
+/// DXGI Desktop Duplication of one monitor: GPU copy, dirty and move rectangles, optional scaling.
 pub struct DxgiCapturer {
+    /// Left edge of the captured monitor in virtual-desktop coordinates.
     pub offset_x: i32,
+    /// Top edge of the captured monitor in virtual-desktop coordinates.
     pub offset_y: i32,
+    /// Native monitor width.
     pub screen_width: i32,
+    /// Native monitor height.
     pub screen_height: i32,
+    /// Output width.
     pub width: i32,
+    /// Output height.
     pub height: i32,
     /// Viewer renders its own cursor, so skip painting it while the viewer drives it (same rule as GDI).
     pub hide_viewer_cursor: bool,
@@ -118,6 +141,7 @@ pub struct DxgiCapturer {
 
 unsafe impl Send for DxgiCapturer {}
 
+/// Result of one `grab`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Grab {
     /// Nothing changed within the timeout.
@@ -254,6 +278,7 @@ impl DxgiCapturer {
         }
     }
 
+    /// The last captured image as BGRX pixels, `width` per row.
     pub fn pixels(&self) -> &[u32] {
         &self.frame
     }
@@ -336,15 +361,25 @@ impl DxgiCapturer {
         Ok(Grab::Changed)
     }
 
-    fn copy_image(&mut self, dup: &IDXGIOutputDuplication, res: &IDXGIResource, dirty: &mut Vec<Rect>) -> windows::core::Result<()> {
-        let (src_rects, src_moves) = if self.fresh { (vec![RECT { left: 0, top: 0, right: self.screen_width, bottom: self.screen_height }], Vec::new()) } else { self.frame_metadata(dup)? };
+    fn copy_image(
+        &mut self,
+        dup: &IDXGIOutputDuplication,
+        res: &IDXGIResource,
+        dirty: &mut Vec<Rect>,
+    ) -> windows::core::Result<()> {
+        let (src_rects, src_moves) = if self.fresh {
+            (vec![RECT { left: 0, top: 0, right: self.screen_width, bottom: self.screen_height }], Vec::new())
+        } else {
+            self.frame_metadata(dup)?
+        };
         if src_rects.is_empty() && src_moves.is_empty() {
             return Ok(());
         }
         let scaled = self.width != self.screen_width || self.height != self.screen_height;
         let mut regions: Vec<RECT> = src_rects;
         for m in &src_moves {
-            let (w, h) = (m.DestinationRect.right - m.DestinationRect.left, m.DestinationRect.bottom - m.DestinationRect.top);
+            let (w, h) =
+                (m.DestinationRect.right - m.DestinationRect.left, m.DestinationRect.bottom - m.DestinationRect.top);
             if !scaled {
                 self.moves.push(MoveRect {
                     src_x: m.SourcePoint.x as u16,
@@ -378,7 +413,10 @@ impl DxgiCapturer {
         Ok(())
     }
 
-    fn frame_metadata(&mut self, dup: &IDXGIOutputDuplication) -> windows::core::Result<(Vec<RECT>, Vec<DXGI_OUTDUPL_MOVE_RECT>)> {
+    fn frame_metadata(
+        &mut self,
+        dup: &IDXGIOutputDuplication,
+    ) -> windows::core::Result<(Vec<RECT>, Vec<DXGI_OUTDUPL_MOVE_RECT>)> {
         unsafe {
             let mut need = 0u32;
             let mut moves = Vec::new();
@@ -387,7 +425,10 @@ impl DxgiCapturer {
                 match dup.GetFrameMoveRects(cap, self.rect_buf.as_mut_ptr() as *mut DXGI_OUTDUPL_MOVE_RECT, &mut need) {
                     Ok(()) => {
                         let n = need as usize / std::mem::size_of::<DXGI_OUTDUPL_MOVE_RECT>();
-                        moves.extend_from_slice(std::slice::from_raw_parts(self.rect_buf.as_ptr() as *const DXGI_OUTDUPL_MOVE_RECT, n));
+                        moves.extend_from_slice(std::slice::from_raw_parts(
+                            self.rect_buf.as_ptr() as *const DXGI_OUTDUPL_MOVE_RECT,
+                            n,
+                        ));
                         break;
                     }
                     Err(_) if need as usize > self.rect_buf.len() => self.rect_buf.resize(need as usize + 64, 0),
@@ -422,7 +463,8 @@ impl DxgiCapturer {
         let fw = w as usize;
         if w == sw && h == sh {
             for y in t as usize..b as usize {
-                self.frame[y * fw + l as usize..y * fw + rr as usize].copy_from_slice(&src[y * pitch + l as usize..y * pitch + rr as usize]);
+                self.frame[y * fw + l as usize..y * fw + rr as usize]
+                    .copy_from_slice(&src[y * pitch + l as usize..y * pitch + rr as usize]);
             }
             return Rect { x: l, y: t, width: rr - l, height: b - t };
         }
@@ -480,7 +522,8 @@ impl DxgiCapturer {
         if let Some(&(_, x, y)) = self.hotspots.iter().find(|(h, _, _)| *h == cursor as usize) {
             return (x, y);
         }
-        let mut ii = ICONINFO { f_icon: 0, x_hotspot: 0, y_hotspot: 0, hbm_mask: ptr::null_mut(), hbm_color: ptr::null_mut() };
+        let mut ii =
+            ICONINFO { f_icon: 0, x_hotspot: 0, y_hotspot: 0, hbm_mask: ptr::null_mut(), hbm_color: ptr::null_mut() };
         let hs = unsafe {
             if GetIconInfo(cursor, &mut ii) != 0 {
                 for bmp in [ii.hbm_mask, ii.hbm_color] {
@@ -503,14 +546,24 @@ impl DxgiCapturer {
     /// DXGI images exclude the hardware cursor; paint it like the GDI path does (DrawIconEx handles
     /// monochrome/inverting cursors against the real background). Returns the painted rect.
     fn draw_cursor(&mut self) -> Option<Rect> {
-        let mut ci = CURSORINFO { cb_size: std::mem::size_of::<CURSORINFO>() as u32, flags: 0, h_cursor: ptr::null_mut(), pt_screen_pos: POINT { x: 0, y: 0 } };
+        let mut ci = CURSORINFO {
+            cb_size: std::mem::size_of::<CURSORINFO>() as u32,
+            flags: 0,
+            h_cursor: ptr::null_mut(),
+            pt_screen_pos: POINT { x: 0, y: 0 },
+        };
         unsafe {
-            if GetCursorInfo(&mut ci) == 0 || (ci.flags & CURSOR_SHOWING) == 0 || ci.h_cursor.is_null() || self.tile_bits.is_null() {
+            if GetCursorInfo(&mut ci) == 0
+                || (ci.flags & CURSOR_SHOWING) == 0
+                || ci.h_cursor.is_null()
+                || self.tile_bits.is_null()
+            {
                 return None;
             }
         }
         if self.hide_viewer_cursor
-            && crate::input::LAST_INJECTED_POS.load(std::sync::atomic::Ordering::Relaxed) == crate::input::pack_pos(ci.pt_screen_pos.x, ci.pt_screen_pos.y)
+            && crate::input::LAST_INJECTED_POS.load(std::sync::atomic::Ordering::Relaxed)
+                == crate::input::pack_pos(ci.pt_screen_pos.x, ci.pt_screen_pos.y)
         {
             return None;
         }
@@ -586,7 +639,6 @@ mod tests {
 #[cfg(test)]
 mod bench {
     use super::*;
-    use crate::capture::ScreenCapturer;
 
     /// `cargo test --release --lib bench_dxgi_capture -- --ignored --nocapture` (needs a real desktop).
     #[test]
@@ -611,7 +663,13 @@ mod bench {
             }
             eprintln!(
                 "dxgi {}x{} -> {}x{}: first grab {:?}, full-frame copy/scale {:?}, idle grab {:?}",
-                mon.width, mon.height, d.width, d.height, first, per_full, t.elapsed() / 100
+                mon.width,
+                mon.height,
+                d.width,
+                d.height,
+                first,
+                per_full,
+                t.elapsed() / 100
             );
             drop(d);
             let mut g = crate::capture::GdiScreenCapturer::new_for_monitor(mon, max_w);
@@ -638,7 +696,13 @@ mod bench {
         let frac = same as f64 / d.pixels().len() as f64;
         eprintln!("dxgi vs gdi identical pixels: {:.3}%", frac * 100.0);
         let nz = d.pixels().iter().filter(|&&p| p & 0xFFFFFF != 0).count();
-        eprintln!("dxgi nonzero {} of {}; samples dxgi {:08x?} gdi {:08x?}", nz, d.pixels().len(), &d.pixels()[500_000..500_004], &g.pixels()[500_000..500_004]);
+        eprintln!(
+            "dxgi nonzero {} of {}; samples dxgi {:08x?} gdi {:08x?}",
+            nz,
+            d.pixels().len(),
+            &d.pixels()[500_000..500_004],
+            &g.pixels()[500_000..500_004]
+        );
         assert!(frac > 0.95);
     }
 }

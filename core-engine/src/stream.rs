@@ -4,11 +4,11 @@
 use std::sync::mpsc::{self, Receiver};
 use std::time::Instant;
 
-use crate::codec::delta::{build_atlas, key_header, pack_atlas};
-use crate::codec::frame::{FrameHeader, MoveRect, FLAG_IDR, KIND_DELTA, KIND_H264};
-use crate::codec::h264::H264Encoder;
 use crate::codec::JpegEncoder;
-use crate::diff::{merge_blocks, BlockDiff, Rect};
+use crate::codec::delta::{build_atlas, key_header, pack_atlas};
+use crate::codec::frame::{FLAG_IDR, FrameHeader, KIND_DELTA, KIND_H264, MoveRect};
+use crate::codec::h264::H264Encoder;
+use crate::diff::{BlockDiff, Rect, merge_blocks};
 
 /// 32px blocks: small enough that a caret or glyph costs ~1 KB, large enough to keep the rect list short.
 pub const BLOCK: i32 = 32;
@@ -26,6 +26,7 @@ const H264_EXIT_LIGHT: u32 = 20;
 /// When H.264 is used (viewer advertised `video-h264`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum H264Mode {
+    /// Never use H.264.
     Off,
     /// Only during sustained heavy motion; text-like updates stay on sharp JPEG regions.
     Auto,
@@ -33,27 +34,40 @@ pub enum H264Mode {
     Always,
 }
 
+/// What the encoder sent for one frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SentKind {
+    /// Nothing (the frame did not change).
     #[default]
     None,
+    /// Full JPEG (viewer without `video-delta`).
     Legacy,
+    /// Framed key frame.
     Key,
+    /// Framed delta.
     Delta,
+    /// H.264 access unit.
     H264,
 }
 
+/// Figures about the last encoded frame, for logs and benchmarks.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FrameStats {
+    /// What was sent.
     pub kind: SentKind,
+    /// Message size in bytes.
     pub bytes: usize,
+    /// Encoding time in microseconds.
     pub encode_us: u64,
+    /// Changed 32 px blocks.
     pub dirty_blocks: usize,
+    /// JPEG quality used.
     pub quality: u32,
 }
 
 /// One captured frame: top-down BGRX pixels plus optional OS-provided change information.
 pub struct FrameInput<'a> {
+    /// BGRX pixels of the captured frame.
     pub pixels: &'a [u32],
     /// Row stride in pixels.
     pub stride: usize,
@@ -63,8 +77,11 @@ pub struct FrameInput<'a> {
     pub moves: &'a [MoveRect],
 }
 
+/// Chooses and encodes what to send for each captured frame (see the module docs).
 pub struct StreamEncoder {
+    /// Frame width.
     pub width: i32,
+    /// Frame height.
     pub height: i32,
     /// Viewer understands framed key/delta messages (`video-delta`).
     pub delta: bool,
@@ -78,6 +95,7 @@ pub struct StreamEncoder {
     needs_key: bool,
     seq: u32,
     idle_ticks: u32,
+    /// Statistics of the last encoded frame.
     pub last: FrameStats,
     h264_mode: H264Mode,
     h264: Option<H264Encoder>,
@@ -94,6 +112,7 @@ pub struct StreamEncoder {
 }
 
 impl StreamEncoder {
+    /// An encoder for `width` x `height` frames at `base_quality`; `delta` enables framed key/delta output.
     pub fn new(width: i32, height: i32, base_quality: u32, delta: bool) -> Self {
         let diff = BlockDiff::new(width, height, BLOCK);
         let blocks = diff.grid_w * diff.grid_h;
@@ -215,7 +234,14 @@ impl StreamEncoder {
         self.last = FrameStats::default();
         if self.delta {
             for m in f.moves {
-                self.diff.apply_move(m.src_x as i32, m.src_y as i32, m.dst_x as i32, m.dst_y as i32, m.w as i32, m.h as i32);
+                self.diff.apply_move(
+                    m.src_x as i32,
+                    m.src_y as i32,
+                    m.dst_x as i32,
+                    m.dst_y as i32,
+                    m.w as i32,
+                    m.h as i32,
+                );
             }
         }
         let force_key = self.needs_key;
@@ -270,12 +296,24 @@ impl StreamEncoder {
         self.last.encode_us = t0.elapsed().as_micros() as u64;
         self.last.bytes = out.as_ref().map_or(0, |b| b.len());
         let motion = heavy || (self.last.kind == SentKind::Delta && self.last.bytes > H264_MOTION_BYTES);
-        self.motion_streak = if motion { self.motion_streak + 1 } else if changed { self.motion_streak } else { 0 };
+        self.motion_streak = if motion {
+            self.motion_streak + 1
+        } else if changed {
+            self.motion_streak
+        } else {
+            0
+        };
         out
     }
 
     /// H.264 state machine. Returns None when the JPEG paths should handle this tick.
-    fn encode_h264_path(&mut self, f: &FrameInput, changed: bool, heavy: bool, force_key: bool) -> Option<Option<Vec<u8>>> {
+    fn encode_h264_path(
+        &mut self,
+        f: &FrameInput,
+        changed: bool,
+        heavy: bool,
+        force_key: bool,
+    ) -> Option<Option<Vec<u8>>> {
         if self.h264_mode == H264Mode::Off || self.h264_failed {
             return None;
         }
@@ -287,9 +325,7 @@ impl StreamEncoder {
                     _ => self.motion_streak >= H264_ENTER_STREAK,
                 };
             // Until the encoder is ready, motion keeps going out as JPEG deltas.
-            let Some(enc) = self.h264.as_mut().filter(|_| enter) else {
-                return None;
-            };
+            let enc = self.h264.as_mut().filter(|_| enter)?;
             enc.discard_pending();
             enc.force_keyframe();
             self.in_h264 = true;

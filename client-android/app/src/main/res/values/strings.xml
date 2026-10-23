@@ -1,4 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Default (English) strings. Indonesian translations live in values-in/strings.xml. -->
 <resources>
-    <string name="app_name">OpenDesk</string>
-    <string name="accessibility_desc">Layanan Aksesibilitas OpenDesk memungkinkan perangkat PC/laptop yang Anda izinkan untuk mengontrol sentuhan layar dan tombol navigasi HP ini secara jarak jauh.</string>
+    <string name="app_name" translatable="false">OpenDesk</string>
+    <string name="accessibility_desc">The OpenDesk accessibility service lets the PCs you allow control taps and the navigation buttons of this phone remotely.</string>
+    <string name="status_connecting">Connecting...</string>
+    <string name="status_connected">Connected</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="relay_button">Relay</string>
+    <string name="relay_label">Relay: %1$s</string>
+    <string name="relay_not_configured">not configured</string>
+    <string name="remote_session_active">Remote Session Active</string>
+    <string name="end_session">End Session</string>
+    <string name="this_device_id">This Device\'s ID</string>
+    <string name="copy">Copy</string>
+    <string name="control_another_device">Control Another Device</string>
+    <string name="enter_target_id">Enter a device ID</string>
+    <string name="connect_to_pc">Connect</string>
+    <string name="connecting">Connecting...</string>
+    <string name="system_permissions">System Permissions</string>
+    <string name="accessibility_control">Accessibility control</string>
+    <string name="display_over_apps">Display over other apps</string>
+    <string name="permission_enable">Enable</string>
+    <string name="permission_active">✓ Active</string>
+    <string name="mic_on">Mic: On</string>
+    <string name="mic_off">Mic: Off</string>
+    <string name="screen">Screen</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="mode_trackpad">Trackpad</string>
+    <string name="mode_touch">Touch</string>
+    <string name="left">Left</string>
+    <string name="double_click">Double</string>
+    <string name="right">Right</string>
+    <string name="hold">Hold</string>
+    <string name="hold_active">Hold (on)</string>
+    <string name="right_click">Right click</string>
+    <string name="switching_monitor">Switching monitor...</string>
+    <string name="viewer_status" translatable="false">%1$s%2$d FPS • %3$s</string>
+    <string name="clip_label_id" translatable="false">OpenDesk ID</string>
+    <string name="id_copied">ID copied to the clipboard</string>
+    <string name="remote_session_stopped">Remote session stopped</string>
+    <string name="connected_to">Connected: %1$s</string>
+    <string name="session_closed">Session closed</string>
+    <string name="error_generic">Error</string>
+    <string name="relay_settings_title">Relay Settings</string>
+    <string name="relay_settings_message">Enter the relay address and, if the relay requires one, this device\'s token:</string>
+    <string name="relay_url_hint" translatable="false">wss://relay.example.com</string>
+    <string name="device_token_hint">Device token (optional, at least 32 characters)</string>
+    <string name="save_and_connect">Save &amp; Connect</string>
+    <string name="cancel">Cancel</string>
+    <string name="relay_settings_invalid">Enter the relay address; a token must be at least 32 characters</string>
+    <string name="relay_updated">Relay updated</string>
+    <string name="welcome_title">Welcome to OpenDesk</string>
+    <string name="welcome_message">To let a PC control this phone remotely, enable the \"OpenDesk\" accessibility service.\n\nAfter tapping Open Settings, choose Installed or Downloaded apps and enable OpenDesk.</string>
+    <string name="open_settings">Open Settings</string>
+    <string name="later">Later</string>
+    <string name="accessibility_hint">Find \"OpenDesk\" in the list of services and enable it</string>
+    <string name="accessibility_manual">Open Settings &gt; Accessibility manually</string>
+    <string name="file_receiving">Receiving %1$s...</string>
+    <string name="file_saved">File saved: %1$s</string>
+    <string name="file_failed">Could not receive the file</string>
+    <string name="capture_channel_name">OpenDesk screen sharing</string>
+    <string name="capture_notification_title">OpenDesk is active</string>
+    <string name="capture_notification_text">This phone\'s screen is being shared with a remote PC.</string>
 </resources>

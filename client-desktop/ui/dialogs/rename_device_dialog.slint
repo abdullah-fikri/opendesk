@@ -1,0 +1,110 @@
+// Rename a history entry.
+
+export component RenameDeviceModal inherits Rectangle {
+    background: #000000bb;
+    width: 100%;
+    height: 100%;
+
+    in property <string> rename_target_id: "";
+    in-out property <string> rename_input_val: "";
+    in-out property <bool> show_rename_modal: false;
+    callback save_rename(string, string);
+
+    Rectangle {
+        width: 360px;
+        height: 176px;
+        background: #111114;
+        border-width: 1px;
+        border-color: #27272a;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        clip: true;
+
+        VerticalLayout {
+            padding: 0px;
+            spacing: 0px;
+
+            Rectangle {
+                height: 2px;
+                background: #dc2626;
+            }
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                alignment: space-between;
+
+                Text {
+                    text: "Device Name (" + rename_target_id + ")";
+                    color: #f4f4f5;
+                    font-size: 13px;
+                    font-weight: 700;
+                }
+
+                Rectangle {
+                    height: 38px;
+                    background: #0a0a0c;
+                    border-width: 1px;
+                    border-color: input-alias.has-focus ? #dc2626 : #27272a;
+
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        input-alias := TextInput {
+                            text <=> rename_input_val;
+                            color: #f4f4f5;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            single-line: true;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+
+                    Rectangle {
+                        width: 72px;
+                        height: 32px;
+                        background: #18181c;
+                        border-width: 1px;
+                        border-color: #27272a;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { show_rename_modal = false; }
+                        }
+                        Text {
+                            text: "Cancel";
+                            color: #d4d4d8;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    Rectangle {
+                        width: 88px;
+                        height: 32px;
+                        background: #dc2626;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                save_rename(rename_target_id, input-alias.text);
+                                show_rename_modal = false;
+                            }
+                        }
+                        Text {
+                            text: "Save";
+                            color: #ffffff;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

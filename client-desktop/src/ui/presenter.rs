@@ -1,0 +1,200 @@
+//! [`UiPort`] for the Slint window. Every call may come from any thread; it is forwarded to the UI thread
+//! with `upgrade_in_event_loop` and applied there.
+
+use std::sync::atomic::Ordering;
+
+use slint::{ComponentHandle, Image, Weak};
+
+use super::{MainWindow, session_model, view_model};
+use crate::domain::history::HistoryRecord;
+use crate::service::file_transfer::{self, IN_FLIGHT_CHUNKS, LAST_RECEIVED_MS};
+use crate::service::ui_port::{Frame, RelayStatus, RemoteHost, SessionChange, UiPort};
+
+/// The frame-rate line in the status bar yields to file-transfer progress for this long after a transfer.
+const TRANSFER_STATUS_HOLD_MS: u64 = 2000;
+
+/// Presents service events on the main window.
+pub struct SlintUi {
+    window: Weak<MainWindow>,
+}
+
+impl SlintUi {
+    /// Must be created on the UI thread, before the window runs.
+    pub fn new(window: &MainWindow) -> Self {
+        session_model::install(window);
+        Self { window: window.as_weak() }
+    }
+
+    fn apply(&self, f: impl FnOnce(&MainWindow) + Send + 'static) {
+        let _ = self.window.upgrade_in_event_loop(move |w| f(&w));
+    }
+}
+
+fn transfer_busy() -> bool {
+    IN_FLIGHT_CHUNKS.load(Ordering::Relaxed) > 0
+        || file_transfer::now_ms().saturating_sub(LAST_RECEIVED_MS.load(Ordering::Relaxed)) < TRANSFER_STATUS_HOLD_MS
+}
+
+impl UiPort for SlintUi {
+    fn status(&self, text: String) {
+        self.apply(move |w| w.set_status_text(text.into()));
+    }
+
+    fn relay_status(&self, status: RelayStatus) {
+        self.apply(move |w| match status {
+            RelayStatus::Connecting => {
+                w.set_status_text("Connecting...".into());
+                w.set_is_relay_online(false);
+            }
+            RelayStatus::Registering => {
+                w.set_status_text("Registering device...".into());
+                w.set_is_relay_online(false);
+            }
+            RelayStatus::Online => {
+                w.set_status_text("Online".into());
+                w.set_is_relay_online(true);
+            }
+            RelayStatus::Offline { reason } => {
+                w.set_is_relay_online(false);
+                w.set_hosting(false);
+                w.set_hosting_mic_muted(true);
+                w.set_status_text(reason.unwrap_or_else(|| "Disconnected".into()).into());
+            }
+        });
+    }
+
+    fn gateway_changed(&self, url: String) {
+        self.apply(move |w| w.set_gateway_url(url.into()));
+    }
+
+    fn host_list(&self, hosts: Vec<RemoteHost>) {
+        self.apply(move |w| w.set_server_hosts(view_model::host_items(hosts)));
+    }
+
+    fn history(&self, records: Vec<HistoryRecord>) {
+        self.apply(move |w| w.set_history_items(view_model::history_items(&records)));
+    }
+
+    fn hosting_started(&self, partner: String) {
+        self.apply(move |w| {
+            w.set_hosting_partner(partner.into());
+            w.set_hosting_mic_muted(false);
+            w.set_hosting(true);
+            w.set_status_text("Session active".into());
+        });
+    }
+
+    fn hosting_ended(&self) {
+        self.apply(|w| {
+            let was_hosting = w.get_hosting();
+            w.set_hosting(false);
+            w.set_hosting_mic_muted(true);
+            if was_hosting && session_model::is_empty() {
+                w.set_status_text("Online".into());
+            }
+        });
+    }
+
+    fn hosting_mic(&self, muted: bool) {
+        self.apply(move |w| w.set_hosting_mic_muted(muted));
+    }
+
+    fn session_opened(&self, id: String, title: String, subtitle: String, resolution: i32, audio_quality: i32) {
+        self.apply(move |w| {
+            session_model::ensure(&id, title, subtitle, resolution, audio_quality);
+            w.set_show_new_session(false);
+        });
+    }
+
+    fn session_connected(&self, id: String, title: String) {
+        self.apply(move |w| {
+            session_model::ensure(&id, title, String::new(), 1, 2);
+            session_model::update(&id, |r| {
+                r.connecting = true;
+                r.mic_muted = false;
+                r.privacy_mode = 0;
+                r.block_input = false;
+                r.status = session_model::CONNECTING.into();
+            });
+            w.set_show_new_session(false);
+            if w.get_focused_session() == id.as_str() {
+                w.set_status_text(session_model::CONNECTING.into());
+            }
+        });
+    }
+
+    fn session_frame(&self, id: String, frame: Frame) {
+        self.apply(move |w| {
+            let image = Image::from_rgba8(frame.pixels);
+            let path = if frame.p2p { "P2P" } else { "Relay" };
+            let (width, height) = (frame.width as i32, frame.height as i32);
+            let found = session_model::update(&id, |r| {
+                r.frame = image;
+                r.has_frame = true;
+                r.connecting = false;
+                r.fps = frame.fps as i32;
+                r.stream_width = width;
+                r.stream_height = height;
+                if r.path.as_str() != path {
+                    r.path = path.into();
+                }
+                if r.status.as_str() == session_model::CONNECTING {
+                    r.status = Default::default();
+                }
+            });
+            if found && w.get_focused_session() == id.as_str() && !w.get_hosting() && !transfer_busy() {
+                w.set_status_text(format!("{width}x{height} • {} FPS • {path}", frame.fps).into());
+            }
+        });
+    }
+
+    fn session_changed(&self, id: String, change: SessionChange) {
+        self.apply(move |_| {
+            session_model::update(&id, |r| match change {
+                SessionChange::Cursor(shape) => r.cursor = shape,
+                SessionChange::Monitors(monitors, active) => {
+                    r.monitors = view_model::monitor_items(monitors);
+                    r.active_monitor = active;
+                }
+                SessionChange::ActiveMonitor(index) => r.active_monitor = index,
+                SessionChange::MicMuted(muted) => r.mic_muted = muted,
+                SessionChange::AudioQuality(q) => r.audio_quality = q,
+                SessionChange::Privacy(mode) => r.privacy_mode = mode,
+                SessionChange::BlockInput(blocked) => r.block_input = blocked,
+                SessionChange::Resolution(mode) => r.resolution_mode = mode,
+            });
+        });
+    }
+
+    fn session_closed(&self, id: String, status: Option<String>) {
+        self.apply(move |w| {
+            session_model::remove(&id);
+            if session_model::is_empty() {
+                w.set_show_new_session(false);
+                if !w.get_hosting() {
+                    w.set_status_text(status.unwrap_or_else(|| "Online".into()).into());
+                    return;
+                }
+            }
+            if let Some(status) = status {
+                w.set_status_text(status.into());
+            }
+        });
+    }
+
+    fn all_sessions_closed(&self) {
+        self.apply(|w| {
+            session_model::clear();
+            w.set_focused_session("".into());
+            w.set_show_new_session(false);
+        });
+    }
+
+    fn focus_changed(&self, id: String) {
+        self.apply(move |w| w.set_focused_session(id.into()));
+    }
+
+    fn layout_changed(&self, layout: i32) {
+        self.apply(move |w| w.set_view_layout(layout));
+    }
+}

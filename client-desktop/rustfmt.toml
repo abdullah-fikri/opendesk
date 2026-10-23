@@ -1,0 +1,3 @@
+# Shared formatting for core-engine and client-desktop (`cargo fmt`). CI checks it.
+max_width = 120
+use_small_heuristics = "Max"

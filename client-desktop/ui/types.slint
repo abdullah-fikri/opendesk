@@ -1,3 +1,5 @@
+// Data shapes shared by Rust and the UI.
+
 export struct HistoryItem {
     desk_id: string,
     alias: string,
@@ -12,7 +14,7 @@ export struct HostItem {
     last_seen: string,
 }
 
-// ---- Multi-session viewer contract (see docs/ui-contract.md). Rust fills these; UI only renders them. ----
+// ---- Viewer sessions (see docs/features/viewer-sessions.md). Rust fills these; the UI only renders them. ----
 
 export struct MonitorItem {
     index: int,        // host monitor index, sent back in select_monitor
@@ -38,7 +40,7 @@ export struct SessionView {
     mic_muted: bool,
     privacy_mode: int,
     block_input: bool,
-    resolution_mode: int,   // 1 = Otomatis, 0 = native, 1080/720/480 presets
+    resolution_mode: int,   // 1 = automatic, 0 = native, 1080/720/480 presets
     audio_quality: int,
     monitors: [MonitorItem],
     active_monitor: int,    // index into the host's monitor list

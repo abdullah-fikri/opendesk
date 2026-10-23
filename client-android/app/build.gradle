@@ -3,6 +3,14 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Single source of truth for the version: VERSION at the repository root ("MAJOR.MINOR.PATCH").
+def appVersion = rootProject.file('../VERSION').text.trim()
+def (major, minor, patch) = appVersion.tokenize('.').collect { it.toInteger() }
+
+// Release signing is optional: CI provides a keystore through these variables (see docs/ci-cd.md at the repository root);
+// without them the release APK is built unsigned.
+def keystoreFile = System.getenv('ANDROID_KEYSTORE_FILE')
+
 android {
     namespace 'com.opendesk.app'
     compileSdk 34
@@ -11,24 +19,35 @@ android {
         applicationId "com.opendesk.app"
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName "1.0.0"
+        versionCode major * 10000 + minor * 100 + patch
+        versionName appVersion
+    }
 
-        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    signingConfigs {
+        if (keystoreFile) {
+            release {
+                storeFile file(keystoreFile)
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+            }
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (keystoreFile) {
+                signingConfig signingConfigs.release
+            }
         }
     }
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
     kotlinOptions {
-        jvmTarget = '1.8'
+        jvmTarget = '17'
     }
 }
 
@@ -37,10 +56,10 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
-
-    // OkHttp for WebSocket Connection
+    // WebSocket transport to the relay.
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
-
-    // Gson for JSON parsing
+    // JSON DTOs.
     implementation 'com.google.code.gson:gson:2.10.1'
+
+    testImplementation 'junit:junit:4.13.2'
 }

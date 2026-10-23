@@ -1,0 +1,73 @@
+// Text or glyph button for toolbars and the tab strip.
+
+import { Theme, Icons } from "../theme.slint";
+import { Icon } from "icon.slint";
+
+// Text/glyph button used in the toolbar and tab strip. `active` = a setting is on, `open` = its popover is open.
+// Children (typically a PopupWindow) are placed inside the button so popovers anchor to it.
+export component ToolButton inherits Rectangle {
+    in property <string> label;
+    in property <string> tip;
+    in property <bool> active: false;
+    in property <bool> open: false;
+    in property <bool> caret: false;
+    in property <bool> enabled: true;
+    in property <bool> danger: false;
+    in property <length> pad: 10px;
+    // Optional stroke icon (Icons.*) shown instead of / before the label.
+    in property <string> icon;
+    callback clicked();
+
+    height: Theme.control-h;
+    horizontal-stretch: 0;
+    min-width: Theme.control-h;
+    background: danger ? (ta.has-hover ? Theme.accent-hover : Theme.accent)
+        : active ? Theme.accent-soft
+        : (open || (ta.has-hover && enabled)) ? Theme.hover
+        : transparent;
+    border-width: 1px;
+    border-color: danger ? Theme.accent : active ? Theme.accent : open ? Theme.border : transparent;
+
+    ta := TouchArea {
+        mouse-cursor: enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: root.pad;
+        padding-right: root.pad;
+        spacing: 6px;
+        alignment: center;
+        if root.icon != "": Icon {
+            y: (parent.height - self.height) / 2;
+            commands: root.icon;
+            tint: !root.enabled ? Theme.text-3 : root.active ? #fca5a5 : #d4d4d8;
+        }
+        if root.label != "": Text {
+            text: root.label;
+            color: !root.enabled ? Theme.text-3 : root.danger ? #ffffff : root.active ? #fca5a5 : #d4d4d8;
+            font-size: Theme.font-ui;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+        if root.caret: Icon {
+            y: (parent.height - self.height) / 2;
+            size: 10px;
+            commands: Icons.caret;
+            tint: Theme.text-3;
+        }
+    }
+
+    if root.tip != "": Rectangle {
+        Tooltip {
+            text: @markdown("\{root.tip}");
+        }
+    }
+
+    @children
+}

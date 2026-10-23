@@ -1,7 +1,7 @@
 //! Dirty-region delta frames: the host packs changed rectangles into one atlas image (one JPEG header
 //! and one encode call per frame), the viewer keeps a persistent framebuffer and blits the patches back.
 
-use super::frame::{FrameHeader, MoveRect, Patch, KIND_DELTA, KIND_KEY};
+use super::frame::{FrameHeader, KIND_DELTA, KIND_KEY, MoveRect, Patch};
 use crate::diff::Rect;
 
 /// JPEG works on 16x16 MCUs with 4:2:0 chroma; aligning atlas cells keeps one patch from bleeding into the next.
@@ -36,7 +36,14 @@ pub fn pack_atlas(rects: &[Rect], max_w: i32) -> (i32, i32, Vec<Patch>) {
             x = 0;
             shelf_h = 0;
         }
-        patches[i] = Patch { dst_x: r.x as u16, dst_y: r.y as u16, w: r.width as u16, h: r.height as u16, atlas_x: x as u16, atlas_y: y as u16 };
+        patches[i] = Patch {
+            dst_x: r.x as u16,
+            dst_y: r.y as u16,
+            w: r.width as u16,
+            h: r.height as u16,
+            atlas_x: x as u16,
+            atlas_y: y as u16,
+        };
         x += cw;
         shelf_h = shelf_h.max(ch);
     }
@@ -67,6 +74,7 @@ pub fn build_atlas(src: &[u32], src_stride: usize, patches: &[Patch], atlas_w: i
     atlas
 }
 
+/// What applying one message did to the framebuffer.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Applied {
     /// The framebuffer changed and should be shown.
@@ -80,13 +88,17 @@ pub enum Applied {
 /// Viewer-side persistent RGBA framebuffer that delta frames are composited into.
 #[derive(Default)]
 pub struct Compositor {
+    /// Framebuffer width.
     pub width: u32,
+    /// Framebuffer height.
     pub height: u32,
+    /// Framebuffer, RGBA.
     pub fb: Vec<u8>,
     last_seq: Option<u32>,
 }
 
 impl Compositor {
+    /// An empty compositor; the first message must be a full frame.
     pub fn new() -> Self {
         Self::default()
     }
@@ -134,8 +146,11 @@ impl Compositor {
         let fw = self.width as usize;
         for p in &h.patches {
             // Clip against both images so a malformed rect can never index out of bounds.
-            let w = (p.w as u32).min(self.width.saturating_sub(p.dst_x as u32)).min(aw.saturating_sub(p.atlas_x as u32)) as usize;
-            let rows = (p.h as u32).min(self.height.saturating_sub(p.dst_y as u32)).min(ah.saturating_sub(p.atlas_y as u32)) as usize;
+            let w = (p.w as u32).min(self.width.saturating_sub(p.dst_x as u32)).min(aw.saturating_sub(p.atlas_x as u32))
+                as usize;
+            let rows = (p.h as u32)
+                .min(self.height.saturating_sub(p.dst_y as u32))
+                .min(ah.saturating_sub(p.atlas_y as u32)) as usize;
             for row in 0..rows {
                 let s = ((p.atlas_y as usize + row) * aw as usize + p.atlas_x as usize) * 4;
                 let d = ((p.dst_y as usize + row) * fw + p.dst_x as usize) * 4;
@@ -172,7 +187,15 @@ impl Compositor {
 
 /// Header for a key frame carrying one full-frame JPEG.
 pub fn key_header(seq: u32, width: i32, height: i32) -> FrameHeader {
-    FrameHeader { kind: KIND_KEY, flags: 0, seq, width: width as u16, height: height as u16, moves: Vec::new(), patches: Vec::new() }
+    FrameHeader {
+        kind: KIND_KEY,
+        flags: 0,
+        seq,
+        width: width as u16,
+        height: height as u16,
+        moves: Vec::new(),
+        patches: Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -189,7 +212,10 @@ mod tests {
         let (aw, ah, patches) = pack_atlas(&rects, 1920);
         assert!(aw <= 1920 && aw % 16 == 0 && ah % 16 == 0);
         for (i, a) in patches.iter().enumerate() {
-            assert_eq!((a.dst_x, a.dst_y, a.w, a.h), (rects[i].x as u16, rects[i].y as u16, rects[i].width as u16, rects[i].height as u16));
+            assert_eq!(
+                (a.dst_x, a.dst_y, a.w, a.h),
+                (rects[i].x as u16, rects[i].y as u16, rects[i].width as u16, rects[i].height as u16)
+            );
             assert!(a.atlas_x % 16 == 0 && a.atlas_y % 16 == 0);
             assert!(a.atlas_x as i32 + align_up(a.w as i32) <= aw && a.atlas_y as i32 + align_up(a.h as i32) <= ah);
             for b in &patches[i + 1..] {
@@ -218,8 +244,8 @@ mod tests {
                 new[y * w + x] = old[(y + 10) * w + x];
             }
         }
-        for i in (h - 10) * w..h * w {
-            new[i] = 0x00FF_00FF ^ i as u32;
+        for (i, px) in new.iter_mut().enumerate().skip((h - 10) * w) {
+            *px = 0x00FF_00FF ^ i as u32;
         }
         for y in 5..20 {
             for x in 90..100 {

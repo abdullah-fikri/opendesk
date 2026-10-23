@@ -36,7 +36,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginStart="10dp"
                 android:layout_weight="1"
-                android:text="OpenDesk"
+                android:text="@string/app_name"
                 android:textColor="@color/text_main"
                 android:textSize="15sp"
                 android:textStyle="bold" />
@@ -46,7 +46,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginEnd="12dp"
-                android:text="Menghubungkan..."
+                android:text="@string/status_connecting"
                 android:textColor="@color/text_muted"
                 android:textSize="12sp" />
 
@@ -59,7 +59,7 @@
                 android:insetBottom="0dp"
                 android:minWidth="0dp"
                 android:paddingHorizontal="10dp"
-                android:text="Server"
+                android:text="@string/relay_button"
                 android:textAllCaps="false"
                 android:textColor="@color/text_main"
                 android:textSize="11sp"
@@ -84,7 +84,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="12dp"
                 android:fontFamily="monospace"
-                android:text="Server: -"
+                android:text="@string/relay_not_configured"
                 android:textColor="@color/text_muted"
                 android:textSize="11sp" />
 
@@ -120,7 +120,7 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="Sesi Remote Aktif"
+                            android:text="@string/remote_session_active"
                             android:textColor="@color/accent_red"
                             android:textSize="12sp"
                             android:textStyle="bold" />
@@ -150,7 +150,7 @@
                                 android:layout_weight="1"
                                 android:insetTop="0dp"
                                 android:insetBottom="0dp"
-                                android:text="Mic: Mati"
+                                android:text="@string/mic_off"
                                 android:textAllCaps="false"
                                 android:textColor="@color/text_main"
                                 android:textSize="12sp"
@@ -165,7 +165,7 @@
                                 android:backgroundTint="@color/accent_red"
                                 android:insetTop="0dp"
                                 android:insetBottom="0dp"
-                                android:text="Akhiri Sesi"
+                                android:text="@string/end_session"
                                 android:textAllCaps="false"
                                 android:textColor="@color/text_main"
                                 android:textSize="12sp"
@@ -205,7 +205,7 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="ID Perangkat Ini"
+                            android:text="@string/this_device_id"
                             android:textColor="@color/text_muted"
                             android:textSize="12sp"
                             android:textStyle="bold" />
@@ -245,7 +245,7 @@
                                 android:insetBottom="0dp"
                                 android:minWidth="0dp"
                                 android:paddingHorizontal="10dp"
-                                android:text="Salin"
+                                android:text="@string/copy"
                                 android:textAllCaps="false"
                                 android:textColor="@color/accent_red"
                                 android:textSize="12sp" />
@@ -285,7 +285,7 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginBottom="10dp"
-                            android:text="Remote Perangkat Lain"
+                            android:text="@string/control_another_device"
                             android:textColor="@color/text_muted"
                             android:textSize="12sp"
                             android:textStyle="bold" />
@@ -295,7 +295,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="44dp"
                             android:background="@color/bg_input"
-                            android:hint="Masukkan ID tujuan"
+                            android:hint="@string/enter_target_id"
                             android:inputType="number"
                             android:paddingHorizontal="12dp"
                             android:textColor="@color/text_main"
@@ -310,7 +310,7 @@
                             android:backgroundTint="@color/accent_red"
                             android:insetTop="0dp"
                             android:insetBottom="0dp"
-                            android:text="Hubungkan"
+                            android:text="@string/connect_to_pc"
                             android:textAllCaps="false"
                             android:textColor="@color/text_main"
                             android:textSize="13sp"
@@ -339,7 +339,7 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Izin Sistem"
+                        android:text="@string/system_permissions"
                         android:textColor="@color/text_muted"
                         android:textSize="12sp"
                         android:textStyle="bold" />
@@ -354,7 +354,7 @@
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
-                            android:text="Aksesibilitas Kontrol"
+                            android:text="@string/accessibility_control"
                             android:textColor="@color/text_main"
                             android:textSize="13sp" />
 
@@ -367,7 +367,7 @@
                             android:insetBottom="0dp"
                             android:minWidth="0dp"
                             android:paddingHorizontal="12dp"
-                            android:text="Aktifkan"
+                            android:text="@string/permission_enable"
                             android:textAllCaps="false"
                             android:textColor="@color/text_main"
                             android:textSize="11sp"
@@ -384,7 +384,7 @@
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
-                            android:text="Tampil di Atas Aplikasi"
+                            android:text="@string/display_over_apps"
                             android:textColor="@color/text_main"
                             android:textSize="13sp" />
 
@@ -397,7 +397,7 @@
                             android:insetBottom="0dp"
                             android:minWidth="0dp"
                             android:paddingHorizontal="12dp"
-                            android:text="Aktifkan"
+                            android:text="@string/permission_enable"
                             android:textAllCaps="false"
                             android:textColor="@color/text_main"
                             android:textSize="11sp"

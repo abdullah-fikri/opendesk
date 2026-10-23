@@ -1,3 +1,5 @@
+//! Attaching capture threads to the current input desktop (Default, Winlogon, Screen-saver).
+
 //! Input-desktop following for a SYSTEM agent: the UAC prompt and the lock screen live on the
 //! "Winlogon" desktop, so capture and input threads must attach to whichever desktop receives input.
 //! Without SYSTEM rights OpenInputDesktop fails there and these calls are harmless no-ops.
@@ -18,7 +20,13 @@ unsafe extern "system" {
     fn GetThreadDesktop(dw_thread_id: u32) -> HDESK;
     fn SetThreadDesktop(h_desktop: HDESK) -> BOOL;
     fn CloseDesktop(h_desktop: HDESK) -> BOOL;
-    fn GetUserObjectInformationW(h_obj: *mut c_void, n_index: i32, pv_info: *mut c_void, n_length: u32, lpn_length_needed: *mut u32) -> BOOL;
+    fn GetUserObjectInformationW(
+        h_obj: *mut c_void,
+        n_index: i32,
+        pv_info: *mut c_void,
+        n_length: u32,
+        lpn_length_needed: *mut u32,
+    ) -> BOOL;
 }
 
 #[link(name = "kernel32")]
@@ -34,25 +42,14 @@ thread_local! {
 fn desktop_name(h: HDESK) -> Option<String> {
     let mut buf = [0u16; 256];
     let mut needed = 0u32;
-    let ok = unsafe { GetUserObjectInformationW(h, UOI_NAME, buf.as_mut_ptr() as *mut c_void, (buf.len() * 2) as u32, &mut needed) };
+    let ok = unsafe {
+        GetUserObjectInformationW(h, UOI_NAME, buf.as_mut_ptr() as *mut c_void, (buf.len() * 2) as u32, &mut needed)
+    };
     if ok == 0 {
         return None;
     }
     let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     Some(String::from_utf16_lossy(&buf[..len]))
-}
-
-/// Name of the desktop currently receiving input ("Default", "Winlogon", "Screen-saver"), if it can be opened.
-pub fn input_desktop_name() -> Option<String> {
-    unsafe {
-        let h = OpenInputDesktop(0, 0, MAXIMUM_ALLOWED);
-        if h.is_null() {
-            return None;
-        }
-        let name = desktop_name(h);
-        CloseDesktop(h);
-        name
-    }
 }
 
 /// Attaches the calling thread to the input desktop if it changed. Returns true when the thread switched,

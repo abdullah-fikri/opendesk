@@ -1,0 +1,85 @@
+// Popover menu frame, rows and captions.
+
+import { Theme } from "../theme.slint";
+
+// One option inside a popover: a square radio mark + label (+ optional hint on the right).
+export component MenuRow inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    in property <bool> selected: false;
+    in property <bool> radio: true;
+    callback clicked();
+
+    height: 30px;
+    background: ta.has-hover ? Theme.hover : transparent;
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        if root.radio: Rectangle {
+            width: 10px;
+            height: 10px;
+            y: (parent.height - self.height) / 2;
+            border-width: 1px;
+            border-color: root.selected ? Theme.accent : #52525b;
+            background: transparent;
+            Rectangle {
+                width: 4px;
+                height: 4px;
+                background: root.selected ? Theme.accent : transparent;
+            }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.label;
+            color: root.selected ? Theme.text : #d4d4d8;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.hint != "": Text {
+            text: root.hint;
+            color: Theme.text-3;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Section caption inside a popover.
+export component MenuCaption inherits Text {
+    color: Theme.text-3;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+}
+
+// Popover frame: dark surface, 1px border, 2px accent line on top.
+export component PopoverFrame inherits Rectangle {
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: 12px;
+    drop-shadow-color: #00000080;
+    drop-shadow-offset-y: 4px;
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+        Rectangle {
+            height: 2px;
+            background: Theme.accent;
+        }
+        VerticalLayout {
+            padding: 8px;
+            spacing: 6px;
+            @children
+        }
+    }
+}

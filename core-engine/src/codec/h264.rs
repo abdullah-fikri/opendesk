@@ -5,11 +5,13 @@
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use windows::core::{Interface, GUID};
 use windows::Win32::Foundation::VARIANT_BOOL;
 use windows::Win32::Media::MediaFoundation::*;
-use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
+};
 use windows::Win32::System::Variant::{VARIANT, VT_BOOL, VT_UI4};
+use windows::core::{GUID, Interface};
 
 type Result<T> = windows::core::Result<T>;
 
@@ -95,7 +97,9 @@ fn sample_bytes(s: &IMFSample) -> Result<Vec<u8>> {
 fn process_output(mft: &IMFTransform) -> Result<IMFSample> {
     unsafe {
         let info = mft.GetOutputStreamInfo(0)?;
-        let provides = (info.dwFlags & (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES.0) as u32) != 0;
+        let provides = (info.dwFlags
+            & (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES.0) as u32)
+            != 0;
         let own = if provides {
             None
         } else {
@@ -103,7 +107,12 @@ fn process_output(mft: &IMFTransform) -> Result<IMFSample> {
             s.AddBuffer(&MFCreateMemoryBuffer(info.cbSize.max(1 << 20))?)?;
             Some(s)
         };
-        let mut out = [MFT_OUTPUT_DATA_BUFFER { dwStreamID: 0, pSample: std::mem::ManuallyDrop::new(own), dwStatus: 0, pEvents: std::mem::ManuallyDrop::new(None) }];
+        let mut out = [MFT_OUTPUT_DATA_BUFFER {
+            dwStreamID: 0,
+            pSample: std::mem::ManuallyDrop::new(own),
+            dwStatus: 0,
+            pEvents: std::mem::ManuallyDrop::new(None),
+        }];
         let mut status = 0u32;
         let r = mft.ProcessOutput(0, &mut out, &mut status);
         let sample = std::mem::ManuallyDrop::take(&mut out[0].pSample);
@@ -171,10 +180,15 @@ pub fn nv12_to_rgba(yp: &[u8], uv: &[u8], pitch: usize, w: usize, h: usize, out:
     }
 }
 
+/// H.264 encoder (Media Foundation transform), hardware when available.
 pub struct H264Encoder {
+    /// Encoded width.
     pub width: u32,
+    /// Encoded height.
     pub height: u32,
+    /// Name of the transform, for logs.
     pub name: String,
+    /// True for a hardware encoder.
     pub hardware: bool,
     mft: IMFTransform,
     events: Option<IMFMediaEventGenerator>,
@@ -194,15 +208,13 @@ impl H264Encoder {
     /// Hardware MFT first (unless `allow_hw` is false), then the Microsoft software encoder.
     pub fn new(width: u32, height: u32, fps: u32, bitrate: u32, allow_hw: bool) -> Result<Self> {
         ensure_mf()?;
-        if width % 2 != 0 || height % 2 != 0 {
+        if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             return Err(fail());
         }
-        if allow_hw {
-            if let Ok(list) = Self::hardware_mfts() {
-                for (mft, name) in list {
-                    if let Ok(e) = Self::configure(mft, name, true, width, height, fps, bitrate) {
-                        return Ok(e);
-                    }
+        if allow_hw && let Ok(list) = Self::hardware_mfts() {
+            for (mft, name) in list {
+                if let Ok(e) = Self::configure(mft, name, true, width, height, fps, bitrate) {
+                    return Ok(e);
                 }
             }
         }
@@ -216,7 +228,14 @@ impl H264Encoder {
             let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_H264 };
             let mut arr: *mut Option<IMFActivate> = std::ptr::null_mut();
             let mut n = 0u32;
-            MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER, Some(&input), Some(&output), &mut arr, &mut n)?;
+            MFTEnumEx(
+                MFT_CATEGORY_VIDEO_ENCODER,
+                MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER,
+                Some(&input),
+                Some(&output),
+                &mut arr,
+                &mut n,
+            )?;
             let mut out = Vec::new();
             for i in 0..n as usize {
                 if let Some(act) = std::ptr::read(arr.add(i)) {
@@ -237,7 +256,15 @@ impl H264Encoder {
         }
     }
 
-    fn configure(mft: IMFTransform, name: String, hardware: bool, w: u32, h: u32, fps: u32, bitrate: u32) -> Result<Self> {
+    fn configure(
+        mft: IMFTransform,
+        name: String,
+        hardware: bool,
+        w: u32,
+        h: u32,
+        fps: u32,
+        bitrate: u32,
+    ) -> Result<Self> {
         unsafe {
             let mut events = None;
             if let Ok(attrs) = mft.GetAttributes() {
@@ -251,7 +278,8 @@ impl H264Encoder {
             if let Some(c) = &codec {
                 // Settings an encoder does not support are skipped; low latency + CBR matter most.
                 let _ = c.SetValue(&CODECAPI_AVLowLatencyMode, &var_bool(true));
-                let _ = c.SetValue(&CODECAPI_AVEncCommonRateControlMode, &var_u32(eAVEncCommonRateControlMode_CBR.0 as u32));
+                let _ = c
+                    .SetValue(&CODECAPI_AVEncCommonRateControlMode, &var_u32(eAVEncCommonRateControlMode_CBR.0 as u32));
                 let _ = c.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var_u32(bitrate));
                 let _ = c.SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount, &var_u32(0));
                 // Long GOP: key frames only on demand (start, viewer request), P-frames otherwise.
@@ -264,30 +292,45 @@ impl H264Encoder {
             let in_t = video_type(&MFVideoFormat_NV12, w, h, fps)?;
             mft.SetInputType(0, &in_t, 0)?;
             let mut sequence_header = Vec::new();
-            if let Ok(cur) = mft.GetOutputCurrentType(0) {
-                if let Ok(n) = cur.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER) {
-                    sequence_header.resize(n as usize, 0);
-                    if cur.GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &mut sequence_header, None).is_err() {
-                        sequence_header.clear();
-                    }
+            if let Ok(cur) = mft.GetOutputCurrentType(0)
+                && let Ok(n) = cur.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER)
+            {
+                sequence_header.resize(n as usize, 0);
+                if cur.GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &mut sequence_header, None).is_err() {
+                    sequence_header.clear();
                 }
             }
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
-            Ok(Self { width: w, height: h, name, hardware, mft, events, codec, credits: 0, fps, frame_index: 0, bitrate, sequence_header, nv12: Vec::new() })
+            Ok(Self {
+                width: w,
+                height: h,
+                name,
+                hardware,
+                mft,
+                events,
+                codec,
+                credits: 0,
+                fps,
+                frame_index: 0,
+                bitrate,
+                sequence_header,
+                nv12: Vec::new(),
+            })
         }
     }
 
+    /// Current target bitrate in bits per second.
     pub fn bitrate(&self) -> u32 {
         self.bitrate
     }
 
     /// Changes the CBR target on the fly (adaptive quality); ignored by encoders that cannot.
     pub fn set_bitrate(&mut self, bps: u32) {
-        if let Some(c) = &self.codec {
-            if unsafe { c.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var_u32(bps)) }.is_ok() {
-                self.bitrate = bps;
-            }
+        if let Some(c) = &self.codec
+            && unsafe { c.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var_u32(bps)) }.is_ok()
+        {
+            self.bitrate = bps;
         }
     }
 
@@ -398,6 +441,7 @@ impl H264Encoder {
     }
 }
 
+/// H.264 decoder (Media Foundation transform) producing RGBA.
 pub struct H264Decoder {
     mft: IMFTransform,
     out_w: u32,
@@ -410,6 +454,7 @@ pub struct H264Decoder {
 unsafe impl Send for H264Decoder {}
 
 impl H264Decoder {
+    /// Creates a decoder for `width` x `height` streams.
     pub fn new(width: u32, height: u32) -> Result<Self> {
         ensure_mf()?;
         unsafe {
@@ -420,7 +465,8 @@ impl H264Decoder {
             }
             let in_t = video_type(&MFVideoFormat_H264, width, height, 60)?;
             mft.SetInputType(0, &in_t, 0)?;
-            let mut d = Self { mft, out_w: width, out_h: height, pitch: width as usize, rgba: Vec::new(), frame_index: 0 };
+            let mut d =
+                Self { mft, out_w: width, out_h: height, pitch: width as usize, rgba: Vec::new(), frame_index: 0 };
             d.pick_output()?;
             d.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
             d.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
@@ -439,7 +485,11 @@ impl H264Decoder {
                     let size = t.GetUINT64(&MF_MT_FRAME_SIZE)?;
                     self.out_w = (size >> 32) as u32;
                     self.out_h = size as u32;
-                    self.pitch = t.GetUINT32(&MF_MT_DEFAULT_STRIDE).map(|s| s as i32 as usize).unwrap_or(self.out_w as usize).max(self.out_w as usize);
+                    self.pitch = t
+                        .GetUINT32(&MF_MT_DEFAULT_STRIDE)
+                        .map(|s| s as i32 as usize)
+                        .unwrap_or(self.out_w as usize)
+                        .max(self.out_w as usize);
                     return Ok(());
                 }
             }
@@ -554,4 +604,3 @@ mod tests {
         assert!(shown >= 8, "low-latency decode should not buffer ({shown} of 10 shown)");
     }
 }
-

@@ -1,0 +1,390 @@
+//! The relay connection: connects and registers, pumps the outbound queue (choosing the P2P path when one is
+//! up), reads incoming messages and reconnects after a failure.
+//!
+//! One thread runs this loop for the life of the process. Every tick drains the outbound queue, flushes the
+//! socket (which opens the video backpressure gate), drains all readable messages and sleeps 1 ms.
+
+use std::collections::VecDeque;
+use std::io::ErrorKind;
+use std::net::{SocketAddr, TcpStream};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::{Message, WebSocket};
+
+use crate::domain::capability;
+use crate::domain::settings::normalize_gateway_url;
+use crate::infra::p2p::{self, P2p};
+use crate::infra::{device, logger, storage, virtual_clipboard};
+use crate::protocol::{ClientMessage, InputEvent, Outgoing, ServerMessage, binary};
+use crate::service::context::Ctx;
+use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS};
+use crate::service::ui_port::RelayStatus;
+use crate::service::viewer::decoder;
+
+pub(super) type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
+
+/// Pause before reconnecting after a failed connect.
+const RETRY_DELAY: Duration = Duration::from_millis(2000);
+/// Pause after losing an established connection.
+const RECONNECT_DELAY: Duration = Duration::from_millis(1500);
+/// File messages sent per tick while a screen session runs (keeps video and voice latency low)...
+const FILE_BURST_IN_SESSION: usize = 8;
+/// ...and without one (full-speed background transfer).
+const FILE_BURST_IDLE: usize = 64;
+/// Local relay probed when the configured relay is remote (avoids tunnel hairpinning on the relay machine).
+const LOCAL_RELAY: &str = "127.0.0.1:8088";
+
+/// Starts the connection thread. `outbox` is the receiving end of `ctx.outbox`.
+pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
+    thread::spawn(move || {
+        let (input_tx, input_rx) = mpsc::channel();
+        let mut conn = Connection {
+            ctx,
+            outbox,
+            files: VecDeque::new(),
+            receiver: FileReceiver::new(),
+            p2p_input_tx: input_tx,
+            p2p_input: input_rx,
+            links: Vec::new(),
+        };
+        loop {
+            conn.run_once();
+        }
+    });
+}
+
+/// State of the relay connection thread.
+pub(super) struct Connection {
+    pub(super) ctx: Ctx,
+    outbox: Receiver<Outgoing>,
+    /// File messages waiting their turn behind video and voice.
+    files: VecDeque<(ClientMessage, Option<String>)>,
+    pub(super) receiver: FileReceiver,
+    /// Input that arrived over a P2P path (host side).
+    pub(super) p2p_input_tx: Sender<InputEvent>,
+    p2p_input: Receiver<InputEvent>,
+    /// One direct path per session: the hosted viewer, or each viewed host.
+    pub(super) links: Vec<Arc<P2p>>,
+}
+
+impl Connection {
+    /// One connection lifetime: connect, register, pump until it drops or a reconnect is requested.
+    fn run_once(&mut self) {
+        let ctx = Arc::clone(&self.ctx);
+        ctx.relay.reconnect.store(false, Ordering::SeqCst);
+        let url = resolve_url(&ctx.relay.gateway_url.lock().unwrap());
+        logger::info("relay", &format!("Connecting to relay {url}"));
+        ctx.ui.relay_status(RelayStatus::Connecting);
+
+        let mut socket = match tungstenite::connect(&url) {
+            Ok((s, _)) => s,
+            Err(e) => {
+                logger::warn("relay", &format!("Connection failed: {e}"));
+                ctx.ui.relay_status(RelayStatus::Offline { reason: None });
+                thread::sleep(RETRY_DELAY);
+                return;
+            }
+        };
+        let _ = socket.send(Message::Text(self.register_message().to_json().into()));
+        let _ = socket.flush();
+        set_low_latency(&mut socket);
+        logger::info("relay", "Connection established.");
+        ctx.ui.relay_status(RelayStatus::Registering);
+
+        ctx.host.can_send_frame.store(true, Ordering::SeqCst);
+        ctx.viewers.set_multi(false);
+        let mut lost = false;
+        let mut video_in_flight = false;
+        let mut last_expire = Instant::now();
+        let mut last_path_update = Instant::now();
+
+        while !ctx.relay.reconnect.load(Ordering::SeqCst) && !lost {
+            let partner = ctx.partner();
+            self.prune_links(&partner);
+            if last_path_update.elapsed() >= Duration::from_millis(250) {
+                last_path_update = Instant::now();
+                for p in self.links.iter().filter(|p| !p.is_host()) {
+                    if let Some(s) = ctx.viewers.get(&p.partner) {
+                        s.p2p_active.store(p.is_active(), Ordering::Relaxed);
+                    }
+                }
+            }
+
+            video_in_flight |= self.pump_outbox(&mut socket, &partner);
+            let mut status = self.pump_files(&mut socket, partner.is_empty());
+            if last_expire.elapsed() >= Duration::from_secs(1) {
+                last_expire = Instant::now();
+                status = self.receiver.expire_stale(last_expire).or(status);
+            }
+            if let Some(status) = status {
+                ctx.ui.status(status);
+            }
+
+            // Release the video gate only once the previous frame has fully left the socket.
+            match socket.flush() {
+                Ok(()) => {
+                    if std::mem::take(&mut video_in_flight) {
+                        ctx.host.can_send_frame.store(true, Ordering::Release);
+                    }
+                }
+                Err(tungstenite::Error::Io(ref e))
+                    if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                Err(_) => ctx.host.can_send_frame.store(true, Ordering::Release),
+            }
+
+            lost = !self.read_all(&mut socket);
+            if lost {
+                self.on_connection_lost();
+                thread::sleep(RECONNECT_DELAY);
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        self.on_connection_ended();
+    }
+
+    fn register_message(&self) -> ClientMessage {
+        let edition = self.ctx.edition;
+        let mut caps =
+            vec![capability::FILE_ACK, capability::FILE_OFFER, capability::FILE_FOLDER, capability::CURSOR_SHAPE];
+        caps.extend(decoder::supported_video_caps());
+        if p2p::enabled() {
+            caps.push(capability::P2P);
+        }
+        // Sent before the relay's caps are known; multi-session is used only once `registered-ack` lists it too.
+        if edition.can_view() {
+            caps.push(capability::MULTI_SESSION);
+        }
+        let device_token =
+            std::env::var("OPENDESK_DEVICE_TOKEN").unwrap_or_else(|_| storage::load_settings().device_token);
+        ClientMessage::Register {
+            desk_id: self.ctx.local_id.clone(),
+            platform: edition.platform_tag().into(),
+            device_name: device::display_name(),
+            device_token,
+            is_admin: edition.is_admin(),
+            caps: caps.into_iter().map(String::from).collect(),
+        }
+    }
+
+    /// A P2P path lives exactly as long as the session it was opened for.
+    fn prune_links(&mut self, partner: &str) {
+        let ctx = &self.ctx;
+        let mut host_link_closed = false;
+        self.links.retain(|p| {
+            let keep =
+                if p.is_host() { p.partner == partner && ctx.is_hosting() } else { ctx.viewers.is_live(&p.partner) };
+            if !keep {
+                p.close();
+                host_link_closed |= p.is_host();
+            }
+            keep
+        });
+        if host_link_closed {
+            while self.p2p_input.try_recv().is_ok() {}
+        }
+    }
+
+    fn direct(&self, id: &str) -> Option<&Arc<P2p>> {
+        self.links.iter().find(|p| p.partner == id && p.is_active())
+    }
+
+    /// Sends everything queued: control messages and voice at once, mouse moves coalesced per host, only the
+    /// newest video frame. File messages are parked for `pump_files`. Returns true if video went to the socket.
+    fn pump_outbox(&mut self, socket: &mut Socket, partner: &str) -> bool {
+        let mut video: Option<Vec<u8>> = None;
+        let mut mouse: Vec<(String, f64, f64)> = Vec::new();
+        while let Ok(item) = self.outbox.try_recv() {
+            match item {
+                Outgoing::Message(msg) => {
+                    let direct = match &msg {
+                        ClientMessage::RelayInput { target_clean, event } => {
+                            self.direct(target_clean).is_some_and(|p| p.send_input(event))
+                        }
+                        _ => false,
+                    };
+                    if !direct {
+                        let _ = socket.send(Message::Text(msg.to_json().into()));
+                    }
+                }
+                Outgoing::MouseMove(target, x, y) => match mouse.iter_mut().find(|m| m.0 == target) {
+                    Some(m) => (m.1, m.2) = (x, y),
+                    None => mouse.push((target, x, y)),
+                },
+                Outgoing::VideoFrame(frame) => video = Some(frame),
+                Outgoing::Audio(packet) => self.send_audio(socket, partner, packet),
+                Outgoing::File { message, status } => self.files.push_back((message, status)),
+            }
+        }
+        for (target, norm_x, norm_y) in mouse.into_iter().filter(|m| !m.0.is_empty()) {
+            let event = InputEvent::MouseMove { norm_x, norm_y };
+            if !self.direct(&target).is_some_and(|p| p.send_input(&event)) {
+                let _ = socket.send(Message::Text(ClientMessage::input(&target, event).to_json().into()));
+            }
+        }
+        let Some(frame) = video else { return false };
+        // Over P2P the viewer's frame acknowledgement opens the gate instead of the socket flush.
+        if self.direct(partner).is_some_and(|p| p.send_video(&frame)) {
+            return false;
+        }
+        let _ = socket.send(Message::Binary(frame.into()));
+        true
+    }
+
+    /// Voice goes to the partner; a viewer of several hosts talks to the focused one only (tagged).
+    fn send_audio(&self, socket: &mut Socket, partner: &str, packet: Vec<u8>) {
+        if partner.is_empty() || self.direct(partner).is_some_and(|p| p.send_audio(&packet)) {
+            return;
+        }
+        let out = if self.ctx.viewers.multi() && self.ctx.viewers.get(partner).is_some() {
+            binary::tag(partner, &packet)
+        } else {
+            Some(packet)
+        };
+        if let Some(out) = out {
+            let _ = socket.send(Message::Binary(out.into()));
+        }
+    }
+
+    /// Sends a burst of queued file messages and returns the newest status line among them.
+    fn pump_files(&mut self, socket: &mut Socket, idle: bool) -> Option<String> {
+        let burst = if idle { FILE_BURST_IDLE } else { FILE_BURST_IN_SESSION };
+        let mut latest = None;
+        for _ in 0..burst {
+            let Some((msg, status)) = self.files.pop_front() else { break };
+            // WouldBlock means tungstenite buffered the frame; any other error leaves it queued until the read
+            // loop notices the dead socket and fails the transfer.
+            match socket.send(Message::Text(msg.to_json().into())) {
+                Ok(()) => {}
+                Err(tungstenite::Error::Io(ref e)) if e.kind() == ErrorKind::WouldBlock => {}
+                Err(_) => {
+                    self.files.push_front((msg, status));
+                    break;
+                }
+            }
+            IN_FLIGHT_CHUNKS.fetch_sub(1, Ordering::Relaxed);
+            latest = status.or(latest);
+        }
+        latest
+    }
+
+    /// Drains P2P input and every readable socket message. Returns false when the connection is gone.
+    fn read_all(&mut self, socket: &mut Socket) -> bool {
+        while let Ok(event) = self.p2p_input.try_recv() {
+            crate::service::host::input::apply(&self.ctx, event);
+        }
+        loop {
+            match socket.read() {
+                Ok(Message::Ping(payload)) => {
+                    let _ = socket.send(Message::Pong(payload));
+                    let _ = socket.flush();
+                }
+                Ok(Message::Binary(bin)) => self.on_binary(&bin),
+                Ok(Message::Text(text)) => {
+                    if let Some(msg) = ServerMessage::parse(&text) {
+                        self.on_message(msg);
+                    }
+                }
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(ref e))
+                    if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    return true;
+                }
+                Err(e) => {
+                    logger::warn("relay", &format!("Socket disconnected: {e}"));
+                    return false;
+                }
+            }
+        }
+    }
+
+    /// Voice and video from the relay: tagged per host for a multi-session viewer, else the single session.
+    fn on_binary(&self, bin: &[u8]) {
+        let ctx = &self.ctx;
+        match binary::untag(bin) {
+            // Frames for a closed tab are dropped.
+            Some((host, payload)) => {
+                if let Some(s) = ctx.viewers.get(host) {
+                    if binary::is_audio(payload) {
+                        if s.audio_on.load(Ordering::Relaxed) {
+                            ctx.voice.play_binary_packet(payload);
+                        }
+                    } else {
+                        s.inbox.push(payload.to_vec());
+                    }
+                }
+            }
+            None if binary::is_audio(bin) => ctx.voice.play_binary_packet(bin),
+            None => {
+                if let Some(s) = ctx.viewers.single() {
+                    s.inbox.push(bin.to_vec());
+                }
+            }
+        }
+    }
+
+    /// The socket failed: relay grants died with it, so every transfer and session on it has ended.
+    fn on_connection_lost(&mut self) {
+        let ctx = &self.ctx;
+        file_transfer::abort_pending_sends();
+        virtual_clipboard::abort_pulls();
+        virtual_clipboard::clear_offer("");
+        for _ in self.files.drain(..) {
+            IN_FLIGHT_CHUNKS.fetch_sub(1, Ordering::Relaxed);
+        }
+        let reason = self.receiver.abort_all();
+        crate::service::sessions::end_all(ctx);
+        ctx.ui.relay_status(RelayStatus::Offline { reason });
+    }
+
+    /// The connection ended for any reason: the relay owns session authorization, so direct paths and viewer
+    /// sessions end with it (a reconnect starts without them).
+    fn on_connection_ended(&mut self) {
+        for p in self.links.drain(..) {
+            p.close();
+        }
+        let ctx = &self.ctx;
+        if !ctx.viewers.is_empty() {
+            crate::service::viewer::controller::end_all(ctx);
+            if !ctx.is_hosting() {
+                ctx.set_partner("");
+            }
+            ctx.voice.is_session_active.store(ctx.is_hosting(), Ordering::SeqCst);
+        }
+    }
+}
+
+/// Uses the loopback relay when one runs on this machine and the configured URL is a remote `wss://` one
+/// (the relay machine itself would otherwise hairpin through its own tunnel).
+fn resolve_url(configured: &str) -> String {
+    let url = normalize_gateway_url(configured);
+    if url.starts_with("wss://")
+        && let Ok(addr) = LOCAL_RELAY.parse::<SocketAddr>()
+        && TcpStream::connect_timeout(&addr, Duration::from_millis(50)).is_ok()
+    {
+        logger::info("relay", "Local relay detected on 127.0.0.1:8088; using loopback.");
+        return format!("ws://{LOCAL_RELAY}");
+    }
+    url
+}
+
+/// Disables Nagle and switches the socket to non-blocking polling.
+fn set_low_latency(socket: &mut Socket) {
+    match socket.get_mut() {
+        MaybeTlsStream::Plain(s) => {
+            let _ = s.set_nodelay(true);
+            let _ = s.set_nonblocking(true);
+        }
+        MaybeTlsStream::NativeTls(tls) => {
+            let _ = tls.get_mut().set_nodelay(true);
+            let _ = tls.get_mut().set_nonblocking(true);
+        }
+        _ => {}
+    }
+}

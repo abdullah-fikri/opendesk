@@ -1,7 +1,11 @@
 [package]
 name = "core-engine"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
+description = "Screen capture, video codecs, input and clipboard for the OpenDesk Windows client"
+license-file = "../LICENSE"
+repository = "https://github.com/abdullah-fikri/opendesk"
+publish = false
 
 [dependencies]
 # DXGI Desktop Duplication / D3D11 (capture) and Media Foundation (H.264): COM vtables by hand would be unreasonable.

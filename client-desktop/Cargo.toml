@@ -1,7 +1,11 @@
 [package]
 name = "opendesk-client"
-version = "2.0.0"
+version = "1.0.0"
 edition = "2024"
+description = "OpenDesk remote desktop client for Windows"
+license-file = "../LICENSE"
+repository = "https://github.com/abdullah-fikri/opendesk"
+publish = false
 
 [features]
 default = []

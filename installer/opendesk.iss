@@ -1,10 +1,14 @@
-; Script generated for OpenDesk 2.0 Official Windows Installer
+; Inno Setup script for the OpenDesk Windows installer.
+; Build: ISCC installer\opendesk.iss  (or `make setup`; CI passes /DMyAppVersion=<version>).
+; Expects builds\windows\OpenDesk.exe, produced by `make windows`.
 #define MyAppName "OpenDesk"
-#define MyAppVersion "2.2.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0.0"
+#endif
 #define MyAppPublisher "OpenDesk Team"
-#define MyAppURL "https://github.com/opendesk"
+#define MyAppURL "https://github.com/abdullah-fikri/opendesk"
 #define MyAppExeName "OpenDesk.exe"
-; Must match ELEVATED_TASK_NAME in client-desktop/src/daemon.rs
+; Must match ELEVATED_TASK_NAME in client-desktop/src/infra/autostart.rs
 #define ElevatedTaskName "OpenDesk Autostart"
 
 [Setup]
@@ -19,9 +23,9 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 LicenseFile=
-OutputDir=D:\opendesk\builds\windows
+OutputDir={#SourcePath}..\builds\windows
 OutputBaseFilename=OpenDesk-Setup
-SetupIconFile=D:\opendesk\installer\icon.ico
+SetupIconFile={#SourcePath}icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -36,11 +40,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "startmenuicon"; Description: "Buat pintasan di Menu Mulai (Start Menu)"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-Source: "D:\opendesk\builds\windows\OpenDesk.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "D:\opendesk\installer\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourcePath}..\builds\windows\OpenDesk.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourcePath}icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; IconFilename: "{app}\icon.ico"
@@ -133,7 +136,7 @@ begin
     '<Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">' + #13#10 +
     '  <RegistrationInfo>' + #13#10 +
     '    <Author>OpenDesk Setup</Author>' + #13#10 +
-    '    <Description>Menjalankan OpenDesk di latar belakang saat login, dengan hak administrator.</Description>' + #13#10 +
+    '    <Description>Starts OpenDesk in the background at logon with administrator rights.</Description>' + #13#10 +
     '  </RegistrationInfo>' + #13#10 +
     '  <Triggers>' + #13#10 +
     '    <LogonTrigger>' + #13#10 +
@@ -265,9 +268,9 @@ begin
     Exe := ExpandConstant('{app}\{#MyAppExeName}');
     RegWriteStringValue(HKEY_CURRENT_USER, RunKey, 'OpenDesk', '"' + Exe + '" --background');
     if not WizardSilent then
-      MsgBox('Tugas autostart dengan hak administrator gagal dibuat.' + #13#10 +
-        'OpenDesk tetap berjalan otomatis saat login, tetapi tanpa hak administrator ' +
-        '(Task Manager dan aplikasi "Run as administrator" tidak bisa dikendalikan dari jarak jauh).',
+      MsgBox('The elevated autostart task could not be created.' + #13#10 +
+        'OpenDesk still starts automatically at logon, but without administrator rights ' +
+        '(Task Manager and "Run as administrator" applications cannot be controlled remotely).',
         mbInformation, MB_OK);
   end;
 end;

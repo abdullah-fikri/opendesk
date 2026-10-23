@@ -19,7 +19,7 @@
         android:theme="@style/Theme.OpenDesk">
 
         <activity
-            android:name=".MainActivity"
+            android:name=".ui.main.MainActivity"
             android:exported="true"
             android:screenOrientation="portrait">
             <intent-filter>
@@ -29,20 +29,20 @@
         </activity>
 
         <activity
-            android:name=".RemoteViewerActivity"
+            android:name=".ui.viewer.RemoteViewerActivity"
             android:exported="false"
             android:screenOrientation="sensor"
             android:theme="@style/Theme.OpenDesk.Fullscreen" />
 
         <!-- MediaProjection Screen Capture Service -->
         <service
-            android:name=".ScreenCaptureService"
+            android:name=".platform.capture.ScreenCaptureService"
             android:foregroundServiceType="mediaProjection"
             android:exported="false" />
 
         <!-- Accessibility Service for Remote Input Injection -->
         <service
-            android:name=".OpenDeskAccessibilityService"
+            android:name=".platform.input.OpenDeskAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="true">
             <intent-filter>
