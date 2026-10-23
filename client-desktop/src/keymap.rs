@@ -212,11 +212,6 @@ impl KeyForwarder {
         keys.sort_by_key(|&k| matches!(k, VK_SHIFT | VK_CONTROL | VK_MENU));
         keys.into_iter().map(KeyOut::Up).collect()
     }
-
-    /// Forgets held keys without sending anything (the session they belonged to is gone).
-    pub fn reset(&mut self) {
-        self.held.clear();
-    }
 }
 
 /// Keys the canvas sees but deliberately does not forward (AltGr, CapsLock, Meta, ScrollLock).

@@ -1,0 +1,249 @@
+// Small shared building blocks for the session workspace. Square corners everywhere (no border-radius).
+
+export global Theme {
+    out property <color> bg: #09090b;
+    out property <color> canvas: #050507;
+    out property <color> surface: #111114;
+    out property <color> surface-2: #18181b;
+    out property <color> raised: #141418;
+    out property <color> hover: #1f1f23;
+    out property <color> divider: #1f1f23;
+    out property <color> border: #27272a;
+    out property <color> text: #f4f4f5;
+    out property <color> text-2: #a1a1aa;
+    out property <color> text-3: #71717a;
+    out property <color> accent: #dc2626;
+    out property <color> accent-hover: #b91c1c;
+    out property <color> accent-soft: #dc262628;
+    out property <color> ok: #22c55e;
+    out property <color> relay: #38bdf8;
+    out property <color> wait: #f59e0b;
+    // Shared sizes
+    out property <length> control-h: 28px;
+    out property <length> font-ui: 11px;
+
+    // Status colour for a session: amber while connecting, green on P2P, blue through the relay.
+    public pure function session-dot(connecting: bool, path: string) -> color {
+        if (connecting) {
+            return self.wait;
+        }
+        return path == "P2P" ? self.ok : self.relay;
+    }
+}
+
+// Stroke icons (12x12 viewbox) drawn with Path so they never depend on font glyph coverage.
+export global Icons {
+    out property <string> close: "M2.5 2.5 L9.5 9.5 M9.5 2.5 L2.5 9.5";
+    out property <string> caret: "M3 4.5 L6 7.5 L9 4.5";
+    out property <string> chevron-up: "M2 8 L6 4 L10 8";
+    out property <string> chevron-down: "M2 4 L6 8 L10 4";
+    out property <string> plus: "M6 1 L6 11 M1 6 L11 6";
+    out property <string> fullscreen: "M1 4.5 L1 1 L4.5 1 M7.5 1 L11 1 L11 4.5 M11 7.5 L11 11 L7.5 11 M4.5 11 L1 11 L1 7.5";
+    out property <string> fullscreen-exit: "M4.5 1 L4.5 4.5 L1 4.5 M7.5 1 L7.5 4.5 L11 4.5 M11 7.5 L7.5 7.5 L7.5 11 M1 7.5 L4.5 7.5 L4.5 11";
+}
+
+export component Icon inherits Path {
+    in property <color> tint: #a1a1aa;
+    in property <length> size: 12px;
+    width: size;
+    height: size;
+    viewbox-x: 0;
+    viewbox-y: 0;
+    viewbox-width: 12;
+    viewbox-height: 12;
+    stroke: tint;
+    stroke-width: 1.5px;
+    fill: transparent;
+}
+
+// Text/glyph button used in the toolbar and tab strip. `active` = a setting is on, `open` = its popover is open.
+// Children (typically a PopupWindow) are placed inside the button so popovers anchor to it.
+export component ToolButton inherits Rectangle {
+    in property <string> label;
+    in property <string> tip;
+    in property <bool> active: false;
+    in property <bool> open: false;
+    in property <bool> caret: false;
+    in property <bool> enabled: true;
+    in property <bool> danger: false;
+    in property <length> pad: 10px;
+    // Optional stroke icon (Icons.*) shown instead of / before the label.
+    in property <string> icon;
+    callback clicked();
+
+    height: Theme.control-h;
+    horizontal-stretch: 0;
+    min-width: Theme.control-h;
+    background: danger ? (ta.has-hover ? Theme.accent-hover : Theme.accent)
+        : active ? Theme.accent-soft
+        : (open || (ta.has-hover && enabled)) ? Theme.hover
+        : transparent;
+    border-width: 1px;
+    border-color: danger ? Theme.accent : active ? Theme.accent : open ? Theme.border : transparent;
+
+    ta := TouchArea {
+        mouse-cursor: enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: root.pad;
+        padding-right: root.pad;
+        spacing: 6px;
+        alignment: center;
+        if root.icon != "": Icon {
+            y: (parent.height - self.height) / 2;
+            commands: root.icon;
+            tint: !root.enabled ? Theme.text-3 : root.active ? #fca5a5 : #d4d4d8;
+        }
+        if root.label != "": Text {
+            text: root.label;
+            color: !root.enabled ? Theme.text-3 : root.danger ? #ffffff : root.active ? #fca5a5 : #d4d4d8;
+            font-size: Theme.font-ui;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+        if root.caret: Icon {
+            y: (parent.height - self.height) / 2;
+            size: 10px;
+            commands: Icons.caret;
+            tint: Theme.text-3;
+        }
+    }
+
+    if root.tip != "": Rectangle {
+        Tooltip {
+            text: @markdown("\{root.tip}");
+        }
+    }
+
+    @children
+}
+
+// One option inside a popover: a square radio mark + label (+ optional hint on the right).
+export component MenuRow inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    in property <bool> selected: false;
+    in property <bool> radio: true;
+    callback clicked();
+
+    height: 30px;
+    background: ta.has-hover ? Theme.hover : transparent;
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        if root.radio: Rectangle {
+            width: 10px;
+            height: 10px;
+            y: (parent.height - self.height) / 2;
+            border-width: 1px;
+            border-color: root.selected ? Theme.accent : #52525b;
+            background: transparent;
+            Rectangle {
+                width: 4px;
+                height: 4px;
+                background: root.selected ? Theme.accent : transparent;
+            }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.label;
+            color: root.selected ? Theme.text : #d4d4d8;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.hint != "": Text {
+            text: root.hint;
+            color: Theme.text-3;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Section caption inside a popover.
+export component MenuCaption inherits Text {
+    color: Theme.text-3;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+}
+
+// Segment of a segmented control (resolution, audio, layout, monitors).
+export component Segment inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 26px;
+    min-width: 26px;
+    horizontal-stretch: 1;
+    background: selected ? Theme.accent : (ta.has-hover && enabled) ? Theme.hover : Theme.surface-2;
+    border-width: 1px;
+    border-color: selected ? Theme.accent : Theme.border;
+
+    ta := TouchArea {
+        mouse-cursor: enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+
+    Text {
+        text: root.label;
+        color: root.selected ? #ffffff : root.enabled ? #d4d4d8 : Theme.text-3;
+        font-size: 11px;
+        font-weight: 600;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+
+    @children
+}
+
+// Popover frame: dark surface, 1px border, 2px accent line on top.
+export component PopoverFrame inherits Rectangle {
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: 12px;
+    drop-shadow-color: #00000080;
+    drop-shadow-offset-y: 4px;
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+        Rectangle {
+            height: 2px;
+            background: Theme.accent;
+        }
+        VerticalLayout {
+            padding: 8px;
+            spacing: 6px;
+            @children
+        }
+    }
+}
+
+export component VDivider inherits Rectangle {
+    width: 1px;
+    height: 16px;
+    background: Theme.border;
+}

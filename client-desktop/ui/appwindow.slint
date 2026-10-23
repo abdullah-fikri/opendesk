@@ -1,8 +1,9 @@
-import { HistoryItem, HostItem } from "types.slint";
+import { HistoryItem, HostItem, SessionView, MonitorItem } from "types.slint";
 import { HeaderBar } from "header.slint";
 import { DashboardView } from "dashboard.slint";
 import { HostActiveView } from "host_panel.slint";
 import { RemoteViewerCanvas } from "remote_canvas.slint";
+import { SessionWorkspace } from "workspace.slint";
 import {
     ServerSettingsModal,
     RenameDeviceModal,
@@ -11,7 +12,7 @@ import {
     SessionOptionsModal
 } from "modals.slint";
 
-export { HistoryItem, HostItem }
+export { HistoryItem, HostItem, SessionView, MonitorItem }
 
 export component MainWindow inherits Window {
     title: "OpenDesk - " + local_desk_id;
@@ -82,6 +83,32 @@ export component MainWindow inherits Window {
     callback set_resolution_mode(int);
     callback set_audio_quality(int);
 
+    // ---- Multi-session viewer API (docs/ui-contract.md). Lives next to the single-session API above. ----
+    in-out property <[SessionView]> sessions: [];
+    in-out property <string> focused_session: "";
+    in-out property <int> view_layout: 0; // 0 = tabs, 1 = split grid
+    in-out property <bool> show_new_session: false;
+
+    callback focus_session(string);
+    callback close_session(string);
+    callback set_view_layout(int);
+    callback new_session_page();
+    callback session_mouse_move(string, int, int);
+    callback session_mouse_down(string, int, int, int);
+    callback session_mouse_up(string, int, int, int);
+    callback session_mouse_wheel(string, int, int, int);
+    callback session_key_event(string, string, bool, bool, bool, bool, bool);
+    callback session_release_keys(string);
+    callback session_viewport_resized(string, int, int);
+    callback select_monitor(string, int);
+    callback session_send_files(string);
+    callback session_toggle_mic(string);
+    callback session_set_privacy(string, int);
+    callback session_toggle_block_input(string);
+    callback session_shortcut(string, string);
+    callback session_set_resolution(string, int);
+    callback session_set_audio_quality(string, int);
+
     VerticalLayout {
         padding: 0px;
         spacing: 0px;
@@ -92,7 +119,8 @@ export component MainWindow inherits Window {
             background: #dc2626;
         }
 
-        HeaderBar {
+        if sessions.length == 0: HeaderBar {
+            fullscreen <=> root.full-screen;
             is_relay_online: root.is_relay_online;
             status_text: root.status_text;
             is_connected: root.is_connected;
@@ -108,13 +136,70 @@ export component MainWindow inherits Window {
         }
 
         // Thin divider
-        Rectangle {
+        if sessions.length == 0: Rectangle {
             height: 1px;
             background: #1f1f23;
         }
 
-        // Solid Full-Window Body Container
-        Rectangle {
+        // Multi-session workspace: replaces the header + single viewer while Rust fills `sessions`.
+        if sessions.length > 0: SessionWorkspace {
+            vertical-stretch: 1;
+            sessions: root.sessions;
+            focused_session <=> root.focused_session;
+            view_layout <=> root.view_layout;
+            show_new_session <=> root.show_new_session;
+            fullscreen <=> root.full-screen;
+            show_settings <=> root.show_settings;
+            is_relay_online: root.is_relay_online;
+            status_text: root.status_text;
+            host_active: root.is_connected && root.is_host;
+            host_partner: root.active_partner_id;
+            end_host_session => { root.disconnect_session(); }
+            focus_session(id) => { root.focus_session(id); }
+            close_session(id) => { root.close_session(id); }
+            set_view_layout(n) => { root.set_view_layout(n); }
+            new_session_page => { root.new_session_page(); }
+            session_mouse_move(id, x, y) => { root.session_mouse_move(id, x, y); }
+            session_mouse_down(id, x, y, b) => { root.session_mouse_down(id, x, y, b); }
+            session_mouse_up(id, x, y, b) => { root.session_mouse_up(id, x, y, b); }
+            session_mouse_wheel(id, x, y, d) => { root.session_mouse_wheel(id, x, y, d); }
+            session_key_event(id, t, p, r, c, a, sh) => { root.session_key_event(id, t, p, r, c, a, sh); }
+            session_release_keys(id) => { root.session_release_keys(id); }
+            session_viewport_resized(id, w, h) => { root.session_viewport_resized(id, w, h); }
+            select_monitor(id, i) => { root.select_monitor(id, i); }
+            session_send_files(id) => { root.session_send_files(id); }
+            session_toggle_mic(id) => { root.session_toggle_mic(id); }
+            session_set_privacy(id, m) => { root.session_set_privacy(id, m); }
+            session_toggle_block_input(id) => { root.session_toggle_block_input(id); }
+            session_shortcut(id, sc) => { root.session_shortcut(id, sc); }
+            session_set_resolution(id, m) => { root.session_set_resolution(id, m); }
+            session_set_audio_quality(id, q) => { root.session_set_audio_quality(id, q); }
+
+            if root.show_new_session: DashboardView {
+                local_desk_id: root.local_desk_id;
+                is_relay_online: root.is_relay_online;
+                is_admin: root.is_admin;
+                as_new_session_page: true;
+                open_sessions: root.sessions.length;
+                active_tab <=> root.active_dashboard_tab;
+                target_desk_id <=> root.target_desk_id;
+                history_items: root.history_items;
+                server_hosts: root.server_hosts;
+                copy_local_id => { root.copy_local_id(); }
+                request_connect(id) => { root.request_connect(id); }
+                open_rename(id, alias) => { root.open_rename(id, alias); }
+                prompt_delete_history(id, label) => {
+                    root.delete_target_id = id;
+                    root.delete_target_label = label;
+                    root.show_delete_modal = true;
+                }
+                refresh_hosts => { root.refresh_hosts(); }
+                back_to_sessions => { root.show_new_session = false; }
+            }
+        }
+
+        // Solid Full-Window Body Container (single-session path, used while `sessions` is empty)
+        if sessions.length == 0: Rectangle {
             vertical-stretch: 1;
             background: #09090b;
             clip: true;
@@ -169,7 +254,7 @@ export component MainWindow inherits Window {
         save_gateway_url(url) => { root.save_gateway_url(url); }
     }
 
-    if show_session_options: SessionOptionsModal {
+    if show_session_options && sessions.length == 0: SessionOptionsModal {
         show_session_options <=> root.show_session_options;
         privacy_mode: root.privacy_mode;
         block_remote_input: root.block_remote_input;

@@ -11,3 +11,35 @@ export struct HostItem {
     online: bool,
     last_seen: string,
 }
+
+// ---- Multi-session viewer contract (see docs/ui-contract.md). Rust fills these; UI only renders them. ----
+
+export struct MonitorItem {
+    index: int,        // host monitor index, sent back in select_monitor
+    label: string,     // "1", "2", ...
+    width: int,        // native pixels
+    height: int,
+    primary: bool,
+}
+
+export struct SessionView {
+    id: string,             // host clean desk ID: the session key for every callback
+    title: string,          // alias or formatted ID
+    subtitle: string,       // device name / platform
+    connecting: bool,       // true until the first frame arrives
+    has_frame: bool,
+    frame: image,
+    cursor: int,            // cursor shape code (see remote_canvas.slint)
+    path: string,           // "P2P" or "Relay"
+    fps: int,
+    stream_width: int,
+    stream_height: int,
+    status: string,         // short per-session status line (transfers, errors)
+    mic_muted: bool,
+    privacy_mode: int,
+    block_input: bool,
+    resolution_mode: int,   // 1 = Otomatis, 0 = native, 1080/720/480 presets
+    audio_quality: int,
+    monitors: [MonitorItem],
+    active_monitor: int,    // index into the host's monitor list
+}

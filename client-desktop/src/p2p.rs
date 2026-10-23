@@ -57,6 +57,8 @@ pub struct Sinks {
     pub voice: Arc<VoiceEngine>,
     /// Wrapped `input-command` JSON for the network loop.
     pub input: Sender<String>,
+    /// Viewer of several hosts: audio plays only while this is true (its tab has focus). None = always.
+    pub audio_gate: Option<Arc<AtomicBool>>,
 }
 
 /// Sliding anti-replay window over explicit nonces (bit = nonce % window).
@@ -348,6 +350,11 @@ impl P2p {
         }
     }
 
+    /// True for the link this machine opened as the host of the session.
+    pub fn is_host(&self) -> bool {
+        self.is_host
+    }
+
     pub fn is_active(&self) -> bool {
         !self.closed.load(Ordering::SeqCst) && Self::alive(&self.state.lock().unwrap())
     }
@@ -506,7 +513,11 @@ impl P2p {
                     self.can_send_frame.store(true, Ordering::Release);
                 }
             }
-            K_AUDIO => self.sinks.voice.play_binary_packet(body),
+            K_AUDIO => {
+                if self.sinks.audio_gate.as_ref().is_none_or(|g| g.load(Ordering::Relaxed)) {
+                    self.sinks.voice.play_binary_packet(body);
+                }
+            }
             K_INPUT if self.is_host && body.len() > 4 => {
                 let seq = u32::from_be_bytes(body[0..4].try_into().unwrap());
                 if seq >= st.rx_next && seq - st.rx_next < MAX_UNACKED as u32 {
@@ -636,6 +647,11 @@ impl P2p {
 
     /// Queues one input event on the reliable, ordered channel. Returns false if it must go over the relay instead.
     pub fn send_input(&self, event: &Value) -> bool {
+        // The input channel only runs viewer -> host (the viewer drops K_INPUT); host events such as
+        // cursor-shape or monitors must take the relay.
+        if self.is_host {
+            return false;
+        }
         let body = event.to_string().into_bytes();
         let mut st = self.state.lock().unwrap();
         if !Self::alive(&st) || body.len() + 5 > MAX_PLAIN || st.unacked.len() >= MAX_UNACKED {
@@ -734,7 +750,7 @@ mod tests {
         let (tx_h, rx_h) = std::sync::mpsc::channel();
         let (in_tx, in_rx) = std::sync::mpsc::channel();
         let voice = VoiceEngine::new(tx_v.clone());
-        let mk = |input: Sender<String>| Sinks { video: Arc::new(crate::session::VideoInbox::default()), voice: Arc::clone(&voice), input };
+        let mk = |input: Sender<String>| Sinks { video: Arc::new(crate::session::VideoInbox::default()), voice: Arc::clone(&voice), input, audio_gate: None };
         let (dummy, _keep) = std::sync::mpsc::channel();
         let viewer_sinks = mk(dummy);
         let video = Arc::clone(&viewer_sinks.video);

@@ -1,0 +1,776 @@
+// Multi-session viewer workspace: tab strip, one toolbar for the focused session, tabs/split body.
+// See docs/ui-contract.md. Square corners only.
+
+import { SessionView, MonitorItem } from "types.slint";
+import { RemoteViewerCanvas } from "remote_canvas.slint";
+import { Theme, Icons, Icon, ToolButton, MenuRow, MenuCaption, Segment, PopoverFrame, VDivider } from "widgets.slint";
+
+// ---------------------------------------------------------------- Tab strip
+
+component SessionTab inherits Rectangle {
+    in property <SessionView> session;
+    in property <bool> selected: false;
+    callback select();
+    callback close();
+
+    height: 34px;
+    min-width: 116px;
+    max-width: 220px;
+    horizontal-stretch: 1;
+    background: selected ? Theme.surface : ta.has-hover ? #141418 : transparent;
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(event) => {
+            // Middle click closes the tab, like a browser.
+            if (event.kind == PointerEventKind.up && event.button == PointerEventButton.middle) {
+                root.close();
+            }
+        }
+        clicked => { root.select(); }
+    }
+
+    // Accent line on the selected tab, separator on the right edge.
+    if selected: Rectangle {
+        y: 0;
+        height: 2px;
+        background: Theme.accent;
+    }
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: Theme.divider;
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 5px;
+        spacing: 8px;
+
+        Rectangle {
+            width: 7px;
+            height: 7px;
+            y: (parent.height - self.height) / 2;
+            background: Theme.session-dot(root.session.connecting, root.session.path);
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.session.title;
+            color: root.selected ? Theme.text : Theme.text-2;
+            font-size: 12px;
+            font-weight: root.selected ? 600 : 400;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Rectangle {
+            width: 22px;
+            height: 22px;
+            y: (parent.height - self.height) / 2;
+            background: close-ta.has-hover ? Theme.border : transparent;
+            close-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.close(); }
+            }
+            Icon {
+                size: 10px;
+                commands: Icons.close;
+                tint: close-ta.has-hover ? Theme.text : Theme.text-3;
+            }
+            Tooltip {
+                text: @markdown("Tutup sesi (klik tengah pada tab juga bisa)");
+            }
+        }
+    }
+
+    Tooltip {
+        text: @markdown("\{root.session.subtitle != "" ? root.session.title + " — " + root.session.subtitle : root.session.title}");
+    }
+}
+
+// ---------------------------------------------------------------- Monitor picker
+
+component MonitorPicker inherits HorizontalLayout {
+    in property <[MonitorItem]> monitors;
+    in property <int> active;
+    callback select(int);
+
+    spacing: 0px;
+    alignment: start;
+    horizontal-stretch: 0;
+
+    Text {
+        text: "Layar";
+        color: Theme.text-3;
+        font-size: 11px;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+    Rectangle { width: 8px; }
+
+    for m in root.monitors: Segment {
+        y: (parent.height - self.height) / 2;
+        width: 28px;
+        horizontal-stretch: 0;
+        label: m.label;
+        selected: m.index == root.active;
+        clicked => { root.select(m.index); }
+
+        // Primary monitor: small mark in the top-right corner.
+        if m.primary: Rectangle {
+            x: parent.width - 6px;
+            y: 2px;
+            width: 4px;
+            height: 4px;
+            background: m.index == root.active ? #ffffff : Theme.text-2;
+        }
+        Rectangle {
+            Tooltip {
+                text: @markdown("\{"Monitor " + m.label + (m.primary ? " (utama)" : "") + " · " + m.width + "×" + m.height}");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Toolbar (focused session)
+
+component SessionToolbar inherits Rectangle {
+    in property <SessionView> s;
+    callback select_monitor(string, int);
+    callback send_files(string);
+    callback toggle_mic(string);
+    callback set_privacy(string, int);
+    callback toggle_block_input(string);
+    callback shortcut(string, string);
+    callback set_resolution(string, int);
+    callback set_audio_quality(string, int);
+    callback disconnect(string);
+
+    height: 38px;
+    background: Theme.surface;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        spacing: 4px;
+
+        if root.s.monitors.length > 1: MonitorPicker {
+            monitors: root.s.monitors;
+            active: root.s.active_monitor;
+            select(i) => { root.select_monitor(root.s.id, i); }
+        }
+        if root.s.monitors.length > 1: Rectangle {
+            width: 13px;
+            VDivider { }
+        }
+
+        ToolButton {
+            y: (parent.height - self.height) / 2;
+            label: "Kirim file";
+            tip: "Kirim file ke perangkat ini (atau tarik & lepas ke jendela)";
+            clicked => { root.send_files(root.s.id); }
+        }
+
+        ToolButton {
+            y: (parent.height - self.height) / 2;
+            label: root.s.mic_muted ? "Mikrofon mati" : "Mikrofon aktif";
+            active: !root.s.mic_muted;
+            tip: root.s.mic_muted ? "Nyalakan mikrofon ke sesi ini" : "Matikan mikrofon";
+            clicked => { root.toggle_mic(root.s.id); }
+        }
+
+        kb-btn := ToolButton {
+            y: (parent.height - self.height) / 2;
+            label: "Keyboard";
+            caret: true;
+            tip: "Kirim pintasan sistem ke perangkat ini";
+            clicked => { kb-pop.show(); }
+
+            kb-pop := PopupWindow {
+                x: 0;
+                y: parent.height + 4px;
+                width: 220px;
+                close-policy: close-on-click;
+                PopoverFrame {
+                    MenuCaption { text: "PINTASAN KEYBOARD"; }
+                    VerticalLayout {
+                        spacing: 0px;
+                        MenuRow { radio: false; label: "Ctrl + Alt + Del"; clicked => { root.shortcut(root.s.id, "ctrl-alt-del"); } }
+                        MenuRow { radio: false; label: "Tombol Windows"; hint: "Start"; clicked => { root.shortcut(root.s.id, "win"); } }
+                        MenuRow { radio: false; label: "Alt + Tab"; clicked => { root.shortcut(root.s.id, "alt-tab"); } }
+                        MenuRow { radio: false; label: "Task Manager"; hint: "Ctrl+Shift+Esc"; clicked => { root.shortcut(root.s.id, "taskmgr"); } }
+                        MenuRow { radio: false; label: "File Explorer"; hint: "Win+E"; clicked => { root.shortcut(root.s.id, "explorer"); } }
+                        MenuRow { radio: false; label: "Tampilkan desktop"; hint: "Win+D"; clicked => { root.shortcut(root.s.id, "desktop"); } }
+                    }
+                }
+            }
+        }
+
+        view-btn := ToolButton {
+            y: (parent.height - self.height) / 2;
+            label: "Tampilan";
+            caret: true;
+            tip: "Resolusi stream dan kualitas suara";
+            clicked => { view-pop.show(); }
+
+            view-pop := PopupWindow {
+                x: 0;
+                y: parent.height + 4px;
+                width: 300px;
+                close-policy: close-on-click-outside;
+                PopoverFrame {
+                    MenuCaption { text: "RESOLUSI STREAM"; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Segment { label: "Otomatis"; horizontal-stretch: 1.6; selected: root.s.resolution_mode == 1; clicked => { root.set_resolution(root.s.id, 1); } }
+                        Segment { label: "Asli"; selected: root.s.resolution_mode == 0; clicked => { root.set_resolution(root.s.id, 0); } }
+                        Segment { label: "1080"; selected: root.s.resolution_mode == 1080; clicked => { root.set_resolution(root.s.id, 1080); } }
+                        Segment { label: "720"; selected: root.s.resolution_mode == 720; clicked => { root.set_resolution(root.s.id, 720); } }
+                        Segment { label: "480"; selected: root.s.resolution_mode == 480; clicked => { root.set_resolution(root.s.id, 480); } }
+                    }
+                    Text {
+                        text: root.s.resolution_mode == 1 ? "Mengikuti ukuran jendela/tile ini."
+                            : root.s.resolution_mode == 0 ? "Resolusi asli host, paling tajam."
+                            : "Lebih kecil = latensi lebih rendah.";
+                        color: Theme.text-3;
+                        font-size: 11px;
+                    }
+                    Rectangle { height: 4px; }
+                    MenuCaption { text: "KUALITAS SUARA MIKROFON"; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Segment { label: "16 kHz Hemat"; selected: root.s.audio_quality == 0; clicked => { root.set_audio_quality(root.s.id, 0); } }
+                        Segment { label: "24 kHz Jernih"; selected: root.s.audio_quality == 1; clicked => { root.set_audio_quality(root.s.id, 1); } }
+                        Segment { label: "48 kHz HD"; selected: root.s.audio_quality == 2; clicked => { root.set_audio_quality(root.s.id, 2); } }
+                    }
+                }
+            }
+        }
+
+        priv-btn := ToolButton {
+            y: (parent.height - self.height) / 2;
+            label: "Privasi";
+            caret: true;
+            active: root.s.privacy_mode != 0 || root.s.block_input;
+            tip: "Layar fisik dan input di perangkat ini";
+            clicked => { priv-pop.show(); }
+
+            priv-pop := PopupWindow {
+                x: 0;
+                y: parent.height + 4px;
+                width: 260px;
+                close-policy: close-on-click-outside;
+                PopoverFrame {
+                    MenuCaption { text: "LAYAR FISIK PERANGKAT"; }
+                    VerticalLayout {
+                        spacing: 0px;
+                        MenuRow { label: "Normal"; selected: root.s.privacy_mode == 0; clicked => { root.set_privacy(root.s.id, 0); } }
+                        MenuRow { label: "Bekukan layar"; selected: root.s.privacy_mode == 1; clicked => { root.set_privacy(root.s.id, 1); } }
+                        MenuRow { label: "Mode maintenance"; selected: root.s.privacy_mode == 2; clicked => { root.set_privacy(root.s.id, 2); } }
+                        MenuRow { label: "Layar hitam"; selected: root.s.privacy_mode == 3; clicked => { root.set_privacy(root.s.id, 3); } }
+                    }
+                    Rectangle { height: 1px; background: Theme.divider; }
+                    Rectangle {
+                        height: 32px;
+                        background: block-ta.has-hover ? Theme.hover : transparent;
+                        block-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.toggle_block_input(root.s.id); }
+                        }
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: "Kunci mouse & keyboard fisik";
+                                color: Theme.text;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.s.block_input ? "AKTIF" : "MATI";
+                                color: root.s.block_input ? #f87171 : Theme.text-3;
+                                font-size: 11px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Per-session status (transfers, errors): takes the free space and elides when narrow.
+        Text {
+            horizontal-stretch: 1;
+            min-width: 0px;
+            text: root.s.status;
+            color: Theme.text-3;
+            font-size: 11px;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            overflow: elide;
+        }
+        Rectangle { width: 8px; }
+
+        // Connection info: path dot, path, fps, stream size.
+        HorizontalLayout {
+            spacing: 8px;
+            horizontal-stretch: 0;
+            Rectangle {
+                width: 7px;
+                height: 7px;
+                y: (parent.height - self.height) / 2;
+                background: Theme.session-dot(root.s.connecting, root.s.path);
+            }
+            Text {
+                text: root.s.connecting ? "Menghubungkan…"
+                    : root.s.path + "  ·  " + root.s.fps + " fps" + (root.s.stream_width > 0 ? "  ·  " + root.s.stream_width + "×" + root.s.stream_height : "");
+                color: Theme.text-2;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle {
+            width: 17px;
+            VDivider { }
+        }
+
+        ToolButton {
+            y: (parent.height - self.height) / 2;
+            label: "Putuskan";
+            danger: true;
+            pad: 12px;
+            tip: "Putuskan sesi " + root.s.title;
+            clicked => { root.disconnect(root.s.id); }
+        }
+    }
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.divider;
+    }
+}
+
+// ---------------------------------------------------------------- Session tile / canvas
+
+component SessionTile inherits Rectangle {
+    in property <SessionView> s;
+    in property <bool> focused: false;
+    in property <bool> show_header: false;
+    callback activate(string);
+    callback mouse_move(string, int, int);
+    callback mouse_down(string, int, int, int);
+    callback mouse_up(string, int, int, int);
+    callback mouse_wheel(string, int, int, int);
+    callback key_event(string, string, bool, bool, bool, bool, bool);
+    callback release_keys(string);
+    callback viewport_resized(string, int, int);
+
+    background: Theme.canvas;
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+
+        if root.show_header: Rectangle {
+            height: 24px;
+            background: root.focused ? Theme.surface-2 : Theme.surface;
+            hdr-ta := TouchArea {
+                mouse-cursor: root.focused ? default : pointer;
+                clicked => {
+                    if (!root.focused) {
+                        root.activate(root.s.id);
+                    }
+                }
+            }
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 8px;
+                Rectangle {
+                    width: 6px;
+                    height: 6px;
+                    y: (parent.height - self.height) / 2;
+                    background: Theme.session-dot(root.s.connecting, root.s.path);
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.s.title;
+                    color: root.focused ? Theme.text : Theme.text-2;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.s.connecting ? "Menghubungkan…" : root.s.path + " · " + root.s.fps + " fps";
+                    color: Theme.text-3;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            RemoteViewerCanvas {
+                has_remote_frame: root.s.has_frame;
+                remote_frame: root.s.frame;
+                remote_cursor: root.s.cursor;
+                active_partner_id: root.s.title;
+                focused: root.focused;
+                auto_focus: true;
+                click_to_focus: !root.focused;
+                activate => { root.activate(root.s.id); }
+                send_mouse_move(nx, ny) => { root.mouse_move(root.s.id, nx, ny); }
+                send_mouse_down(nx, ny, b) => { root.mouse_down(root.s.id, nx, ny, b); }
+                send_mouse_up(nx, ny, b) => { root.mouse_up(root.s.id, nx, ny, b); }
+                send_mouse_wheel(nx, ny, d) => { root.mouse_wheel(root.s.id, nx, ny, d); }
+                send_key_event(t, p, r, c, a, sh) => { root.key_event(root.s.id, t, p, r, c, a, sh); }
+                release_remote_keys => { root.release_keys(root.s.id); }
+                viewport_resized(w, h) => { root.viewport_resized(root.s.id, w, h); }
+            }
+        }
+    }
+
+    // Focus frame drawn on top so it never shifts the canvas.
+    if root.show_header: Rectangle {
+        border-width: 1px;
+        border-color: root.focused ? Theme.accent : Theme.border;
+    }
+}
+
+// ---------------------------------------------------------------- Workspace
+
+export component SessionWorkspace inherits Rectangle {
+    in property <[SessionView]> sessions;
+    in-out property <string> focused_session;
+    in-out property <int> view_layout;
+    in-out property <bool> show_new_session;
+    in-out property <bool> fullscreen;
+    in-out property <bool> show_settings;
+    in property <bool> is_relay_online;
+    in property <string> status_text;
+    // This PC is also being controlled (host side) while viewing.
+    in property <bool> host_active: false;
+    in property <string> host_partner: "";
+    callback end_host_session();
+
+    callback focus_session(string);
+    callback close_session(string);
+    callback set_view_layout(int);
+    callback new_session_page();
+    callback session_mouse_move(string, int, int);
+    callback session_mouse_down(string, int, int, int);
+    callback session_mouse_up(string, int, int, int);
+    callback session_mouse_wheel(string, int, int, int);
+    callback session_key_event(string, string, bool, bool, bool, bool, bool);
+    callback session_release_keys(string);
+    callback session_viewport_resized(string, int, int);
+    callback select_monitor(string, int);
+    callback session_send_files(string);
+    callback session_toggle_mic(string);
+    callback session_set_privacy(string, int);
+    callback session_toggle_block_input(string);
+    callback session_shortcut(string, string);
+    callback session_set_resolution(string, int);
+    callback session_set_audio_quality(string, int);
+
+    // Hide the toolbar for maximum remote space (tab strip stays).
+    property <bool> toolbar_hidden: false;
+    property <int> count: sessions.length;
+    property <bool> split: view_layout == 1 && count > 1;
+
+    background: Theme.bg;
+
+    function pick(id: string) {
+        root.show_new_session = false;
+        if (root.focused_session != id) {
+            root.focused_session = id;
+        }
+        root.focus_session(id);
+    }
+
+    function is-shown(id: string, i: int) -> bool {
+        return id == root.focused_session || (root.focused_session == "" && i == 0);
+    }
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+
+        // ---- Tab strip
+        Rectangle {
+            height: 34px;
+            background: #0c0c0f;
+
+            HorizontalLayout {
+                padding: 0px;
+                spacing: 0px;
+
+                // Relay status square (details in the tooltip).
+                Rectangle {
+                    width: 30px;
+                    Rectangle {
+                        width: 7px;
+                        height: 7px;
+                        background: root.is_relay_online ? Theme.ok : Theme.accent;
+                    }
+                    Tooltip {
+                        text: @markdown("\{"OpenDesk · " + root.status_text}");
+                    }
+                }
+
+                for s[i] in root.sessions: SessionTab {
+                    session: s;
+                    selected: !root.show_new_session && root.is-shown(s.id, i);
+                    select => { root.pick(s.id); }
+                    close => { root.close_session(s.id); }
+                }
+
+                // "+" = new session page (dashboard). Max 4 sessions.
+                Rectangle {
+                    width: 34px;
+                    background: root.show_new_session ? Theme.surface : (plus-ta.has-hover && root.count < 4) ? #141418 : transparent;
+                    plus-ta := TouchArea {
+                        mouse-cursor: root.count < 4 ? pointer : default;
+                        clicked => {
+                            if (root.count < 4) {
+                                root.show_new_session = true;
+                                root.new_session_page();
+                            }
+                        }
+                    }
+                    if root.show_new_session: Rectangle {
+                        y: 0;
+                        height: 2px;
+                        background: Theme.accent;
+                    }
+                    Icon {
+                        commands: Icons.plus;
+                        tint: root.count < 4 ? (root.show_new_session ? Theme.text : Theme.text-2) : #3f3f46;
+                    }
+                    Tooltip {
+                        text: @markdown("\{root.count < 4 ? "Sesi baru" : "Maksimal 4 sesi bersamaan"}");
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; min-width: 8px; }
+
+                // Right group: everything 28px high, centred in the 34px strip.
+                HorizontalLayout {
+                    padding-top: 3px;
+                    padding-bottom: 3px;
+                    padding-right: 4px;
+                    spacing: 0px;
+                    horizontal-stretch: 0;
+                    if root.host_active: Rectangle {
+                        background: Theme.accent-soft;
+                        border-width: 1px;
+                        border-color: Theme.accent;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 2px;
+                            spacing: 8px;
+                            Text {
+                                text: "Dikontrol: " + root.host_partner;
+                                color: #fca5a5;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                width: end-txt.preferred-width + 14px;
+                                height: 22px;
+                                y: (parent.height - self.height) / 2;
+                                background: end-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                                end-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.end_host_session(); }
+                                }
+                                end-txt := Text {
+                                    text: "Akhiri";
+                                    color: #ffffff;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                }
+                            }
+                        }
+                    }
+                    if root.host_active: Rectangle { width: 10px; }
+
+                    // Layout toggle Tab / Split
+                    HorizontalLayout {
+                        padding-top: 1px;
+                        padding-bottom: 1px;
+                        spacing: 0px;
+                        Segment {
+                            width: 46px;
+                            label: "Tab";
+                            selected: !root.split;
+                            clicked => {
+                                root.view_layout = 0;
+                                root.set_view_layout(0);
+                            }
+                            Rectangle { Tooltip { text: @markdown("Satu sesi memenuhi layar"); } }
+                        }
+                        Segment {
+                            width: 46px;
+                            label: "Split";
+                            enabled: root.count > 1;
+                            selected: root.split;
+                            clicked => {
+                                root.view_layout = 1;
+                                root.set_view_layout(1);
+                                root.show_new_session = false;
+                            }
+                            Rectangle { Tooltip { text: @markdown("\{root.count > 1 ? "Tampilkan semua sesi berdampingan" : "Buka minimal 2 sesi untuk split"}"); } }
+                        }
+                    }
+
+                    Rectangle { width: 6px; }
+
+                    ToolButton {
+                        y: (parent.height - self.height) / 2;
+                        width: 28px;
+                        pad: 0px;
+                        icon: root.toolbar_hidden ? Icons.chevron-down : Icons.chevron-up;
+                        tip: root.toolbar_hidden ? "Tampilkan toolbar" : "Sembunyikan toolbar (ruang layar maksimal)";
+                        clicked => { root.toolbar_hidden = !root.toolbar_hidden; }
+                    }
+                    ToolButton {
+                        y: (parent.height - self.height) / 2;
+                        width: 28px;
+                        pad: 0px;
+                        icon: root.fullscreen ? Icons.fullscreen-exit : Icons.fullscreen;
+                        active: root.fullscreen;
+                        tip: root.fullscreen ? "Keluar dari layar penuh" : "Layar penuh";
+                        clicked => { root.fullscreen = !root.fullscreen; }
+                    }
+                    ToolButton {
+                        y: (parent.height - self.height) / 2;
+                        label: "Server";
+                        open: root.show_settings;
+                        tip: "Pengaturan server relay";
+                        clicked => { root.show_settings = !root.show_settings; }
+                    }
+                }
+            }
+
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.divider;
+            }
+        }
+
+        // ---- Toolbar for the focused session
+        if !root.toolbar_hidden && !root.show_new_session: Rectangle {
+            height: 38px;
+            for s[i] in root.sessions: Rectangle {
+                if root.is-shown(s.id, i): SessionToolbar {
+                    s: s;
+                    select_monitor(id, idx) => { root.select_monitor(id, idx); }
+                    send_files(id) => { root.session_send_files(id); }
+                    toggle_mic(id) => { root.session_toggle_mic(id); }
+                    set_privacy(id, m) => { root.session_set_privacy(id, m); }
+                    toggle_block_input(id) => { root.session_toggle_block_input(id); }
+                    shortcut(id, sc) => { root.session_shortcut(id, sc); }
+                    set_resolution(id, m) => { root.session_set_resolution(id, m); }
+                    set_audio_quality(id, q) => { root.session_set_audio_quality(id, q); }
+                    disconnect(id) => { root.close_session(id); }
+                }
+            }
+        }
+
+        // ---- Body
+        body := Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+            background: root.show_new_session ? Theme.bg : root.split ? Theme.divider : Theme.canvas;
+
+            property <int> cols: root.count >= 2 ? 2 : 1;
+            property <int> rows: root.count >= 3 ? 2 : 1;
+            property <length> gap: 2px;
+            property <length> tile-w: (self.width - (cols - 1) * gap) / cols;
+            property <length> tile-h: (self.height - (rows - 1) * gap) / rows;
+
+            if !root.split && !root.show_new_session: Rectangle {
+                for s[i] in root.sessions: Rectangle {
+                    if root.is-shown(s.id, i): SessionTile {
+                        s: s;
+                        focused: true;
+                        show_header: false;
+                        activate(id) => { root.pick(id); }
+                        mouse_move(id, x, y) => { root.session_mouse_move(id, x, y); }
+                        mouse_down(id, x, y, b) => { root.session_mouse_down(id, x, y, b); }
+                        mouse_up(id, x, y, b) => { root.session_mouse_up(id, x, y, b); }
+                        mouse_wheel(id, x, y, d) => { root.session_mouse_wheel(id, x, y, d); }
+                        key_event(id, t, p, r, c, a, sh) => { root.session_key_event(id, t, p, r, c, a, sh); }
+                        release_keys(id) => { root.session_release_keys(id); }
+                        viewport_resized(id, w, h) => { root.session_viewport_resized(id, w, h); }
+                    }
+                }
+            }
+
+            if root.split && !root.show_new_session: Rectangle {
+                for s[i] in root.sessions: SessionTile {
+                    x: Math.mod(i, body.cols) * (body.tile-w + body.gap);
+                    y: floor(i / body.cols) * (body.tile-h + body.gap);
+                    width: body.tile-w;
+                    height: body.tile-h;
+                    s: s;
+                    focused: root.is-shown(s.id, i);
+                    show_header: true;
+                    activate(id) => { root.pick(id); }
+                    mouse_move(id, x, y) => { root.session_mouse_move(id, x, y); }
+                    mouse_down(id, x, y, b) => { root.session_mouse_down(id, x, y, b); }
+                    mouse_up(id, x, y, b) => { root.session_mouse_up(id, x, y, b); }
+                    mouse_wheel(id, x, y, d) => { root.session_mouse_wheel(id, x, y, d); }
+                    key_event(id, t, p, r, c, a, sh) => { root.session_key_event(id, t, p, r, c, a, sh); }
+                    release_keys(id) => { root.session_release_keys(id); }
+                    viewport_resized(id, w, h) => { root.session_viewport_resized(id, w, h); }
+                }
+
+                // Three sessions: the free fourth cell offers a new session.
+                if root.count == 3: Rectangle {
+                    x: body.tile-w + body.gap;
+                    y: body.tile-h + body.gap;
+                    width: body.tile-w;
+                    height: body.tile-h;
+                    background: empty-ta.has-hover ? #0e0e11 : Theme.canvas;
+                    empty-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.show_new_session = true;
+                            root.new_session_page();
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        HorizontalLayout {
+                            alignment: center;
+                            Icon {
+                                size: 18px;
+                                commands: Icons.plus;
+                                tint: empty-ta.has-hover ? Theme.text : Theme.text-3;
+                            }
+                        }
+                        Text {
+                            text: "Buka sesi baru";
+                            color: Theme.text-3;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // "+" page: MainWindow places the dashboard here (conditionally on show_new_session).
+            @children
+        }
+    }
+}

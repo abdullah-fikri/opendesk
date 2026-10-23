@@ -13,9 +13,10 @@ mod privacy;
 mod protocol;
 mod session;
 mod tray;
+mod viewer;
+mod viewer_ui;
 mod virtual_clip;
 
-use std::cell::RefCell;
 use std::env;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
@@ -48,45 +49,40 @@ fn to_slint_history_items(list: &[HistoryRecord]) -> Vec<HistoryItem> {
         .collect()
 }
 
-/// Sends forwarder output to the host as `keydown` / `keyup` / unicode `text` (all understood by
-/// every desktop host version, so no capability is needed).
-fn send_key_outs(tx: &mpsc::Sender<OutgoingMsg>, clean: &str, outs: Vec<keymap::KeyOut>) {
-    for out in outs {
-        let event = match out {
-            keymap::KeyOut::Down(vk) => json!({ "action": "keydown", "keyCode": vk }),
-            keymap::KeyOut::Up(vk) => json!({ "action": "keyup", "keyCode": vk }),
-            keymap::KeyOut::Text(text) => json!({ "action": "text", "text": text }),
-            keymap::KeyOut::Paste => continue,
-        };
-        let _ = tx.send(OutgoingMsg::Json(json!({
-            "type": "relay-input",
-            "targetClean": clean,
-            "event": event
-        })));
-    }
+/// Target of the old single-session settings callbacks: the focused viewer tab (even while it connects),
+/// else the partner of the host role.
+fn session_target(ctx: &viewer_ui::Ctx) -> String {
+    let focused = viewer::VIEWERS.focused_id();
+    if focused.is_empty() { ctx.active_partner.lock().unwrap().clone() } else { focused }
 }
 
-/// Automatic resolution: report the (debounced) canvas size when it changed noticeably.
-fn send_auto_resolution(tx: &mpsc::Sender<OutgoingMsg>, partner: &Mutex<String>) {
-    if session::VIEWER_RES_MODE.load(Ordering::SeqCst) != session::RES_AUTO {
-        return;
+/// Every session to end from the tray: all viewer tabs plus the host-role partner.
+fn session_targets(active_partner: &Mutex<String>) -> Vec<String> {
+    let mut targets: Vec<String> = viewer::VIEWERS.all().iter().map(|s| s.id.clone()).collect();
+    let clean = active_partner.lock().unwrap().clone();
+    if !clean.is_empty() && !targets.contains(&clean) {
+        targets.push(clean);
     }
-    let clean = partner.lock().unwrap().clone();
-    let packed = session::VIEWPORT_PX.load(Ordering::SeqCst);
-    let size = session::unpack_box(packed);
-    if clean.is_empty() || size.0 <= 0 || size.1 <= 0 {
-        return;
-    }
-    let last = session::unpack_box(session::LAST_SENT_BOX.load(Ordering::SeqCst));
-    if !session::box_changed_enough(last, size) {
-        return;
-    }
-    session::LAST_SENT_BOX.store(packed, Ordering::SeqCst);
-    let _ = tx.send(OutgoingMsg::Json(json!({
-        "type": "relay-input",
-        "targetClean": clean,
-        "event": session::resolution_event(session::RES_AUTO, size)
-    })));
+    targets
+}
+
+/// A connected viewer session.
+fn is_live(id: &str) -> bool {
+    viewer::VIEWERS.get(id).is_some_and(|s| s.is_connected())
+}
+
+/// Registers a UI callback that runs with the window and the shared viewer context.
+macro_rules! on_ui {
+    ($win:expr, $ctx:expr, $setter:ident, |$w:ident, $c:ident $(, $arg:ident)*| $body:block) => {{
+        let weak = $win.as_weak();
+        let ctx_owned = $ctx.clone();
+        $win.$setter(move |$($arg),*| {
+            if let Some($w) = weak.upgrade() {
+                let $c = &ctx_owned;
+                $body
+            }
+        });
+    }};
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -150,6 +146,15 @@ fn main() -> Result<(), slint::PlatformError> {
     let tx_out_clone = tx_out.clone();
     let voice_engine = VoiceEngine::new(tx_out.clone());
     privacy::init_privacy_and_hooks(tx_out.clone());
+    let ui_ctx = viewer_ui::Ctx {
+        tx: tx_out.clone(),
+        active_partner: Arc::clone(&active_partner),
+        is_host: Arc::clone(&is_host_capturing),
+        voice: Arc::clone(&voice_engine),
+        injector: Arc::clone(&injector),
+        last_clip_seq: Arc::clone(&last_clip_seq),
+        win_title: format!("OpenDesk - {}", format_desk_id(&cfg.desk_id)),
+    };
 
     // -------------------------------------------------------------------------
     // HEADLESS / ZERO-GUI HOST MODE (`make build-windows-host`)
@@ -179,6 +184,7 @@ fn main() -> Result<(), slint::PlatformError> {
             Arc::clone(&last_clip_seq),
             rx_out,
             tx_out.clone(),
+            ui_ctx.clone(),
         );
 
         loop {
@@ -190,6 +196,7 @@ fn main() -> Result<(), slint::PlatformError> {
     // GUI MODE (Standard User `make build-windows` or Admin `make build-windows-admin`)
     // -------------------------------------------------------------------------
     let main_window = MainWindow::new()?;
+    viewer_ui::init(&main_window);
 
     let formatted_local = format_desk_id(&cfg.desk_id);
     let win_title = format!("OpenDesk - {}", formatted_local);
@@ -243,15 +250,18 @@ fn main() -> Result<(), slint::PlatformError> {
             privacy::set_viewer_hook_state(false, "", "");
             tray_voice.is_session_active.store(false, Ordering::SeqCst);
             tray_voice.is_mic_muted.store(true, Ordering::SeqCst);
-            let clean = tray_partner.lock().unwrap().clone();
-            if !clean.is_empty() {
+            for clean in session_targets(&tray_partner) {
                 let disc = json!({
                     "type": "session-disconnect",
                     "targetClean": clean
                 });
                 let _ = tray_tx.send(OutgoingMsg::Json(disc));
             }
+            viewer_ui::end_all_core();
+            tray_partner.lock().unwrap().clear();
             let _ = tray_win.upgrade_in_event_loop(|win| {
+                viewer_ui::clear_all_ui();
+                win.set_focused_session("".into());
                 win.set_is_connected(false);
                 win.set_is_host(false);
                 win.set_is_mic_muted(true);
@@ -281,13 +291,15 @@ fn main() -> Result<(), slint::PlatformError> {
             privacy::reset_host_privacy();
             privacy::set_viewer_hook_state(false, "", "");
             tray_capturing.store(false, Ordering::SeqCst);
-            let clean = tray_partner.lock().unwrap().clone();
-            if !clean.is_empty() {
+            let targets = session_targets(&tray_partner);
+            for clean in &targets {
                 let disc = json!({
                     "type": "session-disconnect",
                     "targetClean": clean
                 });
                 let _ = tray_tx.send(OutgoingMsg::Json(disc));
+            }
+            if !targets.is_empty() {
                 thread::sleep(Duration::from_millis(80));
             }
             std::process::exit(0);
@@ -309,6 +321,7 @@ fn main() -> Result<(), slint::PlatformError> {
         Arc::clone(&last_clip_seq),
         rx_out,
         tx_out.clone(),
+        ui_ctx.clone(),
     );
 
     // Admin callback: Refresh Server Host List on demand
@@ -398,6 +411,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // Request Connect Callback (Unattended Direct Connect)
     let tx_req = tx_out_clone.clone();
+    let req_ctx = ui_ctx.clone();
     let win_req = main_window.as_weak();
     let history_req = Arc::clone(&history_records);
     main_window.on_request_connect(move |target| {
@@ -437,13 +451,21 @@ fn main() -> Result<(), slint::PlatformError> {
             &format!("Sending direct connection request for address {}", clean),
         );
 
-        let req = json!({
-            "type": "connect-request",
-            "targetId": clean
-        });
-        let _ = tx_req.send(OutgoingMsg::Json(req));
+        let alias = history_req
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.desk_id == formatted)
+            .map(|r| r.alias.clone())
+            .unwrap_or_default();
         if let Some(w) = win_req.upgrade() {
-            w.set_status_text(format!("Menghubungkan {}...", formatted).into());
+            if clean.is_empty() {
+                // Unchanged: the relay answers with its "not found" error.
+                let _ = tx_req.send(OutgoingMsg::Json(json!({ "type": "connect-request", "targetId": clean })));
+                return;
+            }
+            let (title, subtitle) = if alias.is_empty() { (formatted.clone(), String::new()) } else { (alias, formatted.clone()) };
+            viewer_ui::request_connect(&w, &req_ctx, &clean, title, subtitle);
         }
     });
 
@@ -513,38 +535,18 @@ fn main() -> Result<(), slint::PlatformError> {
         let _ = tx_reject.send(OutgoingMsg::Json(resp));
     });
 
+    // ---- Session actions. The old single-session callbacks act on the focused viewer session (or, in the
+    // host role, on the viewer this machine hosts); the multi-session callbacks name their session. ----
+
     // Toggle Voice Call Microphone Callback (syncs both local & remote partner mic!)
-    let voice_toggle = Arc::clone(&voice_engine);
-    let partner_mic = Arc::clone(&active_partner);
-    let tx_mic = tx_out_clone.clone();
-    let win_mic = main_window.as_weak();
-    main_window.on_toggle_mic(move || {
-        let prev = voice_toggle.is_mic_muted.load(Ordering::SeqCst);
-        let next = !prev;
-        voice_toggle.is_mic_muted.store(next, Ordering::SeqCst);
-        if let Some(w) = win_mic.upgrade() {
-            w.set_is_mic_muted(next);
-        }
-        let clean = partner_mic.lock().unwrap().clone();
-        if !clean.is_empty() {
-            let msg = json!({
-                "type": "relay-input",
-                "targetClean": clean,
-                "event": {
-                    "action": "set-mic",
-                    "muted": next
-                }
-            });
-            let _ = tx_mic.send(OutgoingMsg::Json(msg));
-        }
+    on_ui!(main_window, ui_ctx, on_toggle_mic, |w, c| {
+        viewer_ui::toggle_mic(&w, c, &session_target(c));
     });
 
-    // Switch Remote Monitor Callback (Viewer -> Host)
+    // Switch Remote Monitor Callback (Viewer -> Host): cycles, understood by every host version.
     let tx_mon = tx_out_clone.clone();
-    let partner_mon = Arc::clone(&active_partner);
-    let win_mon = main_window.as_weak();
-    main_window.on_switch_monitor(move || {
-        let clean = partner_mon.lock().unwrap().clone();
+    on_ui!(main_window, ui_ctx, on_switch_monitor, |w, c| {
+        let clean = c.active_partner.lock().unwrap().clone();
         if !clean.is_empty() {
             let msg = json!({
                 "type": "relay-input",
@@ -554,177 +556,74 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
             });
             let _ = tx_mon.send(OutgoingMsg::Json(msg));
-            if let Some(w) = win_mon.upgrade() {
-                w.set_status_text("Mengganti layar monitor...".into());
-            }
+            w.set_status_text("Mengganti layar monitor...".into());
         }
     });
 
     // Open File Picker Dialog Callback (Send Files button -> Auto-Paste into active remote folder)
-    let tx_pick = tx_out_clone.clone();
-    let partner_pick = Arc::clone(&active_partner);
-    let win_pick = main_window.as_weak();
-    main_window.on_open_file_picker(move || {
-        let clean = partner_pick.lock().unwrap().clone();
-        if clean.is_empty() {
-            return;
-        }
-        let tx_f = tx_pick.clone();
-        let win_f = win_pick.clone();
-        thread::spawn(move || {
-            let paths = dragdrop::pick_files_dialog();
-            if !paths.is_empty() {
-                file_transfer::send_files_async(paths, clean, tx_f, Some(win_f), true);
-            }
-        });
+    on_ui!(main_window, ui_ctx, on_open_file_picker, |w, c| {
+        let clean = c.active_partner.lock().unwrap().clone();
+        viewer_ui::send_files(&w, c, &clean);
     });
 
     // Privacy Mode Callback (0=Normal, 1=Freeze Screen, 2=Maintenance Screen, 3=Black Screen)
-    let tx_priv = tx_out_clone.clone();
-    let partner_priv = Arc::clone(&active_partner);
-    let win_priv = main_window.as_weak();
-    main_window.on_set_privacy_mode(move |mode| {
-        if let Some(w) = win_priv.upgrade() {
-            w.set_privacy_mode(mode);
-        }
-        let clean = partner_priv.lock().unwrap().clone();
-        if !clean.is_empty() {
-            let msg = json!({
-                "type": "relay-input",
-                "targetClean": clean,
-                "event": {
-                    "action": "set-privacy",
-                    "mode": mode
-                }
-            });
-            let _ = tx_priv.send(OutgoingMsg::Json(msg));
-        }
+    on_ui!(main_window, ui_ctx, on_set_privacy_mode, |w, c, mode| {
+        viewer_ui::set_privacy(&w, c, &session_target(c), mode);
     });
 
     // Toggle Block Remote Physical Input Callback
-    let tx_blk = tx_out_clone.clone();
-    let partner_blk = Arc::clone(&active_partner);
-    let win_blk = main_window.as_weak();
-    main_window.on_toggle_block_input(move || {
-        let mut next = false;
-        if let Some(w) = win_blk.upgrade() {
-            next = !w.get_block_remote_input();
-            w.set_block_remote_input(next);
-        }
-        let clean = partner_blk.lock().unwrap().clone();
-        if !clean.is_empty() {
-            let msg = json!({
-                "type": "relay-input",
-                "targetClean": clean,
-                "event": {
-                    "action": "set-block-input",
-                    "blocked": next
-                }
-            });
-            let _ = tx_blk.send(OutgoingMsg::Json(msg));
-        }
+    on_ui!(main_window, ui_ctx, on_toggle_block_input, |w, c| {
+        viewer_ui::toggle_block_input(&w, c, &session_target(c));
     });
 
     // System Shortcut Callback (Task Manager, Start Menu, Explorer, Desktop)
-    let tx_sc = tx_out_clone.clone();
-    let partner_sc = Arc::clone(&active_partner);
-    main_window.on_send_system_shortcut(move |sc_name| {
-        let clean = partner_sc.lock().unwrap().clone();
-        if !clean.is_empty() {
-            let msg = json!({
-                "type": "relay-input",
-                "targetClean": clean,
-                "event": {
-                    "action": "shortcut",
-                    "name": sc_name.as_str()
-                }
-            });
-            let _ = tx_sc.send(OutgoingMsg::Json(msg));
-        }
+    on_ui!(main_window, ui_ctx, on_send_system_shortcut, |w, c, sc_name| {
+        viewer_ui::shortcut(&w, c, &session_target(c), sc_name.as_str());
     });
 
     // Remote Resolution Mode Selection Callback (Otomatis, 1:1 Native, 1080p, 720p, 480p)
-    let tx_res = tx_out_clone.clone();
-    let partner_res = Arc::clone(&active_partner);
     let host_res = Arc::clone(&host_resolution_mode);
-    let win_res = main_window.as_weak();
-    main_window.on_set_resolution_mode(move |mode| {
-        let safe_mode = match mode {
-            0 => 0,
-            1 => session::RES_AUTO,
-            1080 => 1080,
-            720 => 720,
-            480 => 480,
-            _ => 1080,
-        };
-        host_res.store(safe_mode, Ordering::SeqCst);
-        session::VIEWER_RES_MODE.store(safe_mode, Ordering::SeqCst);
-        if let Some(w) = win_res.upgrade() {
-            w.set_resolution_mode(safe_mode as i32);
-        }
-        let clean = partner_res.lock().unwrap().clone();
-        if !clean.is_empty() {
-            let packed = session::VIEWPORT_PX.load(Ordering::SeqCst);
-            let event = session::resolution_event(safe_mode, session::unpack_box(packed));
-            let sent_box = if event.get("auto").is_some() { packed } else { 0 };
-            session::LAST_SENT_BOX.store(sent_box, Ordering::SeqCst);
-            let msg = json!({
-                "type": "relay-input",
-                "targetClean": clean,
-                "event": event
-            });
-            let _ = tx_res.send(OutgoingMsg::Json(msg));
-        }
+    on_ui!(main_window, ui_ctx, on_set_resolution_mode, |w, c, mode| {
+        host_res.store(viewer_ui::sanitize_res_mode(mode), Ordering::SeqCst);
+        viewer_ui::set_resolution(&w, c, &session_target(c), mode);
     });
 
-    // Canvas size (physical px) for automatic resolution, sent 300 ms after resizing stops:
-    // every change recreates the host capturer/encoder and costs a key frame.
-    let tx_vp = tx_out_clone.clone();
-    let partner_vp = Arc::clone(&active_partner);
-    let res_timer = Rc::new(slint::Timer::default());
-    main_window.on_viewport_resized(move |w, h| {
-        session::VIEWPORT_PX.store(session::pack_box(w, h), Ordering::SeqCst);
-        let tx = tx_vp.clone();
-        let partner = Arc::clone(&partner_vp);
-        res_timer.start(slint::TimerMode::SingleShot, Duration::from_millis(300), move || {
-            send_auto_resolution(&tx, &partner);
-        });
+    // Canvas size (physical px) for automatic resolution, sent 300 ms after resizing stops.
+    on_ui!(main_window, ui_ctx, on_viewport_resized, |_w, c, width, height| {
+        viewer_ui::viewport_resized(c, &viewer::VIEWERS.focused_id(), width, height);
     });
 
     // Voice Call Microphone Audio Quality Selection Callback (16kHz, 24kHz, 48kHz HD)
-    let tx_aq = tx_out_clone.clone();
-    let partner_aq = Arc::clone(&active_partner);
-    let voice_aq = Arc::clone(&voice_engine);
-    let win_aq = main_window.as_weak();
-    main_window.on_set_audio_quality(move |quality| {
-        let safe_q = (quality as usize).min(2);
-        voice_aq.audio_quality.store(safe_q, Ordering::SeqCst);
-        if let Some(w) = win_aq.upgrade() {
-            w.set_audio_quality(safe_q as i32);
-        }
-        let clean = partner_aq.lock().unwrap().clone();
-        if !clean.is_empty() {
-            let msg = json!({
-                "type": "relay-input",
-                "targetClean": clean,
-                "event": {
-                    "action": "set-audio-quality",
-                    "quality": safe_q
-                }
-            });
-            let _ = tx_aq.send(OutgoingMsg::Json(msg));
-        }
+    on_ui!(main_window, ui_ctx, on_set_audio_quality, |w, c, quality| {
+        viewer_ui::set_audio_quality(&w, c, &session_target(c), quality);
     });
 
     let tx_disc = tx_out_clone.clone();
     let partner_disc = Arc::clone(&active_partner);
     let host_cap_disc = Arc::clone(&is_host_capturing);
     let voice_disc = Arc::clone(&voice_engine);
-    let win_disc = main_window.as_weak();
-    main_window.on_disconnect_session(move || {
-        virtual_clip::clear_offer("");
+    on_ui!(main_window, ui_ctx, on_disconnect_session, |w, c| {
+        // While this PC is controlled (the "Dikontrol / Akhiri" chip) it ends only the host-side session.
+        // Otherwise (old viewer toolbar) it ends the focused viewer tab; the other tabs stay open.
+        let focused = viewer::VIEWERS.focused_id();
+        let hosting = host_cap_disc.load(Ordering::SeqCst);
+        if !hosting && !focused.is_empty() {
+            viewer_ui::close(&w, c, &focused, None);
+            return;
+        }
+        let viewing = !viewer::VIEWERS.is_empty();
+        let clean = partner_disc.lock().unwrap().clone();
+        virtual_clip::clear_offer(if viewing { &clean } else { "" });
         host_cap_disc.store(false, Ordering::SeqCst);
         privacy::reset_host_privacy();
+        if viewing {
+            // Never touches viewer sessions: input target, hook and voice go back to the focused tab.
+            let disc = json!({ "type": "session-disconnect", "targetClean": clean });
+            let _ = tx_disc.send(OutgoingMsg::Json(disc));
+            w.set_is_host(false);
+            viewer_ui::sync_focus(&w, c, &viewer::VIEWERS.focused_id());
+            return;
+        }
         privacy::set_viewer_hook_state(false, "", "");
         voice_disc.is_session_active.store(false, Ordering::SeqCst);
         voice_disc.is_mic_muted.store(true, Ordering::SeqCst);
@@ -735,24 +634,24 @@ fn main() -> Result<(), slint::PlatformError> {
             "targetClean": clean
         });
         let _ = tx_disc.send(OutgoingMsg::Json(disc));
-        if let Some(w) = win_disc.upgrade() {
-            w.set_is_connected(false);
-            w.set_is_host(false);
-            w.set_is_mic_muted(true);
-            w.set_privacy_mode(0);
-            w.set_block_remote_input(false);
-            w.set_show_session_options(false);
-            w.set_has_remote_frame(false);
-            w.set_status_text("Online".into());
-        }
+        w.set_is_connected(false);
+        w.set_is_host(false);
+        w.set_is_mic_muted(true);
+        w.set_privacy_mode(0);
+        w.set_block_remote_input(false);
+        w.set_show_session_options(false);
+        w.set_has_remote_frame(false);
+        w.set_status_text("Online".into());
     });
 
     // Coalesced Normalized Mouse Move Forwarding (Zero WebSocket Queue Flooding)
     let tx_move = tx_out_clone.clone();
+    let partner_move = Arc::clone(&active_partner);
     main_window.on_send_mouse_move(move |nx_10000, ny_10000| {
         let norm_x = (nx_10000 as f64 / 10000.0).clamp(0.0, 1.0);
         let norm_y = (ny_10000 as f64 / 10000.0).clamp(0.0, 1.0);
-        let _ = tx_move.send(OutgoingMsg::MouseMove(norm_x, norm_y));
+        let clean = partner_move.lock().unwrap().clone();
+        let _ = tx_move.send(OutgoingMsg::MouseMove(clean, norm_x, norm_y));
     });
 
     let tx_down = tx_out_clone.clone();
@@ -817,78 +716,94 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // Full Keyboard Forwarding: physical key down/up (modifiers included) so the host sees real key
     // state (Ctrl+click, Ctrl+scroll, held Shift...), unicode text for typing, Ctrl+V clipboard/files.
-    let key_fwd = Rc::new(RefCell::new(keymap::KeyForwarder::default()));
-    // Partner the held keys belong to; that host releases them itself when its session ends.
-    let key_owner = Rc::new(RefCell::new(String::new()));
-    let tx_key = tx_out_clone.clone();
-    let partner_key = Arc::clone(&active_partner);
-    let inj_key = Arc::clone(&injector);
-    let win_key = main_window.as_weak();
-    let (fwd_key, owner_key) = (Rc::clone(&key_fwd), Rc::clone(&key_owner));
-    main_window.on_send_key_event(move |text_shared, pressed, repeat, ctrl, alt, shift| {
-        let clean = partner_key.lock().unwrap().clone();
-        let mut fwd = fwd_key.borrow_mut();
-        if *owner_key.borrow() != clean {
-            fwd.reset();
-            *owner_key.borrow_mut() = clean.clone();
-        }
-        if clean.is_empty() {
-            return;
-        }
-        let mods = keymap::Mods { ctrl, alt, shift };
-        let outs = if pressed {
-            fwd.on_press(text_shared.as_str(), repeat, mods)
-        } else {
-            fwd.on_release(text_shared.as_str(), mods)
-        };
-        for out in outs {
-            if out != keymap::KeyOut::Paste {
-                send_key_outs(&tx_key, &clean, vec![out]);
-                continue;
-            }
-            // Ctrl+V: if the local clipboard has files, transfer & auto-paste them into the open remote folder.
-            let clip_files = inj_key.get_clipboard_files();
-            // Files that just came from the host are already there; only forward the keystroke.
-            // Offer-capable hosts already have the copied files as virtual clipboard entries: just paste.
-            if !clip_files.is_empty()
-                && !file_transfer::is_received_clipboard(&clip_files)
-                && !file_transfer::PEER_FILE_OFFER.load(Ordering::SeqCst)
-            {
-                file_transfer::send_files_async(
-                    clip_files,
-                    clean.clone(),
-                    tx_key.clone(),
-                    Some(win_key.clone()),
-                    true, // Auto-paste (Ctrl+V) on remote PC as soon as file lands!
-                );
-                continue;
-            }
-            if let Some(clip_text) = inj_key.get_clipboard_text() {
-                if !clip_text.is_empty() {
-                    let sync_msg = json!({
-                        "type": "relay-input",
-                        "targetClean": clean,
-                        "event": {
-                            "action": "clipboard",
-                            "text": clip_text
-                        }
-                    });
-                    let _ = tx_key.send(OutgoingMsg::Json(sync_msg));
-                }
-            }
-            // Ctrl is already held on the host, so V down pastes the text synced just above.
-            send_key_outs(&tx_key, &clean, fwd.paste_down());
-        }
+    on_ui!(main_window, ui_ctx, on_send_key_event, |w, c, text, pressed, repeat, ctrl, alt, shift| {
+        let clean = c.active_partner.lock().unwrap().clone();
+        viewer_ui::key_event(&w, c, &clean, text.as_str(), pressed, repeat, keymap::Mods { ctrl, alt, shift });
     });
 
     // Focus lost / window deactivated: lift every key still held on the host.
-    let tx_rel = tx_out_clone.clone();
-    let partner_rel = Arc::clone(&active_partner);
-    main_window.on_release_remote_keys(move || {
-        let clean = partner_rel.lock().unwrap().clone();
-        let outs = key_fwd.borrow_mut().release_all();
-        if !clean.is_empty() && *key_owner.borrow() == clean {
-            send_key_outs(&tx_rel, &clean, outs);
+    on_ui!(main_window, ui_ctx, on_release_remote_keys, |_w, c| {
+        let clean = c.active_partner.lock().unwrap().clone();
+        viewer_ui::release_keys(c, &clean);
+    });
+
+    // ---- Multi-session viewer API (docs/ui-contract.md) ----
+
+    on_ui!(main_window, ui_ctx, on_focus_session, |w, c, id| {
+        viewer_ui::focus(&w, c, &id);
+        w.set_show_new_session(false);
+    });
+    on_ui!(main_window, ui_ctx, on_close_session, |w, c, id| {
+        viewer_ui::close(&w, c, &id, None);
+    });
+    on_ui!(main_window, ui_ctx, on_set_view_layout, |w, _c, layout| {
+        viewer_ui::set_layout(&w, layout);
+    });
+    on_ui!(main_window, ui_ctx, on_new_session_page, |w, _c| {
+        w.set_show_new_session(true);
+    });
+    on_ui!(main_window, ui_ctx, on_session_mouse_move, |w, c, id, x, y| {
+        viewer_ui::mouse(&w, c, &id, viewer_ui::Mouse::Move, x, y);
+    });
+    on_ui!(main_window, ui_ctx, on_session_mouse_down, |w, c, id, x, y, btn| {
+        viewer_ui::mouse(&w, c, &id, viewer_ui::Mouse::Down(btn), x, y);
+    });
+    on_ui!(main_window, ui_ctx, on_session_mouse_up, |w, c, id, x, y, btn| {
+        viewer_ui::mouse(&w, c, &id, viewer_ui::Mouse::Up(btn), x, y);
+    });
+    on_ui!(main_window, ui_ctx, on_session_mouse_wheel, |w, c, id, x, y, dy| {
+        viewer_ui::mouse(&w, c, &id, viewer_ui::Mouse::Wheel(dy), x, y);
+    });
+    on_ui!(main_window, ui_ctx, on_session_key_event, |w, c, id, text, pressed, repeat, ctrl, alt, shift| {
+        // Only the focused session gets keyboard input.
+        if viewer::VIEWERS.is_focused(&id) && is_live(&id) {
+            viewer_ui::key_event(&w, c, &id, text.as_str(), pressed, repeat, keymap::Mods { ctrl, alt, shift });
+        }
+    });
+    on_ui!(main_window, ui_ctx, on_session_release_keys, |_w, c, id| {
+        viewer_ui::release_keys(c, &id);
+    });
+    on_ui!(main_window, ui_ctx, on_session_viewport_resized, |_w, c, id, width, height| {
+        viewer_ui::viewport_resized(c, &id, width, height);
+    });
+    on_ui!(main_window, ui_ctx, on_select_monitor, |w, c, id, index| {
+        if is_live(&id) {
+            viewer_ui::select_monitor(&w, c, &id, index);
+        }
+    });
+    on_ui!(main_window, ui_ctx, on_session_send_files, |w, c, id| {
+        if is_live(&id) {
+            viewer_ui::send_files(&w, c, &id);
+        }
+    });
+    on_ui!(main_window, ui_ctx, on_session_toggle_mic, |w, c, id| {
+        if is_live(&id) {
+            viewer_ui::toggle_mic(&w, c, &id);
+        }
+    });
+    on_ui!(main_window, ui_ctx, on_session_set_privacy, |w, c, id, mode| {
+        if is_live(&id) {
+            viewer_ui::set_privacy(&w, c, &id, mode);
+        }
+    });
+    on_ui!(main_window, ui_ctx, on_session_toggle_block_input, |w, c, id| {
+        if is_live(&id) {
+            viewer_ui::toggle_block_input(&w, c, &id);
+        }
+    });
+    on_ui!(main_window, ui_ctx, on_session_shortcut, |w, c, id, name| {
+        if is_live(&id) {
+            viewer_ui::shortcut(&w, c, &id, name.as_str());
+        }
+    });
+    on_ui!(main_window, ui_ctx, on_session_set_resolution, |w, c, id, mode| {
+        if viewer::VIEWERS.get(&id).is_some() {
+            viewer_ui::set_resolution(&w, c, &id, mode);
+        }
+    });
+    on_ui!(main_window, ui_ctx, on_session_set_audio_quality, |w, c, id, quality| {
+        if viewer::VIEWERS.get(&id).is_some() {
+            viewer_ui::set_audio_quality(&w, c, &id, quality);
         }
     });
 

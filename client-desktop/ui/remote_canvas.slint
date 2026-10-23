@@ -21,10 +21,30 @@ export component RemoteViewerCanvas inherits Rectangle {
     // Canvas size in physical pixels, for the host's automatic stream resolution.
     callback viewport_resized(int, int);
 
-    init => { root.viewport_resized(self.width / 1phx, self.height / 1phx); }
+    // Multi-session additions. Defaults keep the single-session behaviour unchanged.
+    // `focused`: this canvas owns the keyboard; when it becomes true (and `auto_focus`) it takes key focus.
+    in property <bool> focused: true;
+    in property <bool> auto_focus: false;
+    // `click_to_focus`: an unfocused split tile. A click only calls `activate()`; nothing reaches the host.
+    in property <bool> click_to_focus: false;
+    callback activate();
+
+    init => {
+        root.viewport_resized(self.width / 1phx, self.height / 1phx);
+        if (root.auto_focus && root.focused) {
+            viewer-focus.focus();
+        }
+    }
+    changed focused => {
+        if (root.auto_focus && root.focused) {
+            viewer-focus.focus();
+        }
+    }
     changed width => { root.viewport_resized(self.width / 1phx, self.height / 1phx); }
     changed height => { root.viewport_resized(self.width / 1phx, self.height / 1phx); }
 
+    property <bool> left-down: false;
+    property <bool> right-down: false;
     property <float> frame_w: remote_frame.width > 0 ? remote_frame.width : 16;
     property <float> frame_h: remote_frame.height > 0 ? remote_frame.height : 9;
     property <float> scale_x: self.width / (frame_w * 1px);
@@ -110,12 +130,25 @@ export component RemoteViewerCanvas inherits Rectangle {
                     viewer-focus.focus();
                     if (self.width > 0px && self.height > 0px) {
                         if (event.kind == PointerEventKind.down) {
+                            if (event.button == PointerEventButton.right) {
+                                root.right-down = true;
+                            } else {
+                                root.left-down = true;
+                            }
                             send_mouse_down(
                                 (self.mouse-x / self.width) * 10000,
                                 (self.mouse-y / self.height) * 10000,
                                 event.button == PointerEventButton.right ? 2 : 0
                             );
-                        } else if (event.kind == PointerEventKind.up) {
+                        } else if (event.kind == PointerEventKind.up
+                            && (event.button == PointerEventButton.right ? root.right-down : root.left-down)) {
+                            // Only release what was pressed here: a click that closed a popover
+                            // delivers just the release, which must not reach the host.
+                            if (event.button == PointerEventButton.right) {
+                                root.right-down = false;
+                            } else {
+                                root.left-down = false;
+                            }
                             send_mouse_up(
                                 (self.mouse-x / self.width) * 10000,
                                 (self.mouse-y / self.height) * 10000,
@@ -141,9 +174,8 @@ export component RemoteViewerCanvas inherits Rectangle {
     }
 
     if !has_remote_frame: Rectangle {
-        width: 320px;
+        width: Math.min(320px, parent.width - 24px);
         height: 100px;
-        border-radius: 2px;
         background: #111114;
         border-width: 1px;
         border-color: #27272a;
@@ -170,6 +202,30 @@ export component RemoteViewerCanvas inherits Rectangle {
                     text: active_partner_id;
                     color: #71717a;
                     font-size: 12px;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+
+    // Unfocused split tile: swallow pointer input, a click focuses this session only.
+    if click_to_focus: focus-ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.activate(); }
+        scroll-event(event) => { accept }
+        Rectangle {
+            background: focus-ta.has-hover ? #00000040 : transparent;
+            if focus-ta.has-hover: Rectangle {
+                width: hint.preferred-width + 20px;
+                height: 26px;
+                background: #111114e6;
+                border-width: 1px;
+                border-color: #27272a;
+                hint := Text {
+                    text: "Klik untuk fokus";
+                    color: #f4f4f5;
+                    font-size: 11px;
+                    font-weight: 600;
                 }
             }
         }

@@ -240,8 +240,6 @@ const AUTO_BOX_FLAG: usize = 1 << 40;
 pub static VIEWER_RES_MODE: AtomicUsize = AtomicUsize::new(RES_AUTO);
 /// Latest canvas size in physical pixels (w << 32 | h), 0 before the canvas was ever shown.
 pub static VIEWPORT_PX: AtomicU64 = AtomicU64::new(0);
-/// Canvas box last sent to the host in this session (same packing), 0 = none.
-pub static LAST_SENT_BOX: AtomicU64 = AtomicU64::new(0);
 
 pub fn pack_box(w: i32, h: i32) -> u64 {
     ((w.max(0) as u64) << 32) | h.max(0) as u64
@@ -315,6 +313,20 @@ pub fn resolution_mode_to_params(mode: usize, bounds: MonitorBounds) -> (i32, u3
     let by_height = (bounds.width.max(1) as i64 * box_h / bounds.height.max(1) as i64) as i32;
     (box_w.min(by_height).max(2), quality)
 }
+
+/// Host -> viewer `monitors` input event: the host's monitor list (primary first, as enumerate_monitors
+/// orders it) and the one being streamed. Viewers that predate it ignore unknown actions.
+pub fn monitors_event(monitors: &[MonitorBounds], active: usize) -> serde_json::Value {
+    let list: Vec<serde_json::Value> = monitors
+        .iter()
+        .enumerate()
+        .map(|(i, m)| serde_json::json!({ "index": i, "width": m.width, "height": m.height, "primary": i == 0 }))
+        .collect();
+    serde_json::json!({ "action": "monitors", "list": list, "active": active })
+}
+
+/// How often the capture loop re-enumerates monitors to notice plugged/unplugged or resized displays.
+const MONITOR_POLL: Duration = Duration::from_secs(2);
 
 /// Turns how long the capture loop waited for `can_send_frame` into a 0..1 congestion level:
 /// waits under ~40 ms are normal pacing, ~250 ms or more means the link cannot keep up.
@@ -407,6 +419,11 @@ pub fn spawn_host_capture_loop(
             ),
         );
 
+        // Announced at start and whenever the list or the streamed monitor changes.
+        let mut sent_monitors: Option<serde_json::Value> = None;
+        let mut monitors_dirty = true;
+        let mut last_monitor_poll = Instant::now();
+
         while is_capturing.load(Ordering::SeqCst) {
             let frame_start = Instant::now();
 
@@ -437,6 +454,7 @@ pub fn spawn_host_capture_loop(
                 capturer = DesktopCapturer::new_for_monitor(bounds, max_width);
                 capturer.set_hide_viewer_cursor(local_cursor);
                 encoder.reconfigure(capturer.width(), capturer.height(), base_quality);
+                monitors_dirty = true;
                 logger::info(
                     "desk_rt.display_component",
                     &format!(
@@ -451,6 +469,29 @@ pub fn spawn_host_capture_loop(
                         desktop_switched
                     ),
                 );
+            }
+
+            if frame_start.duration_since(last_monitor_poll) >= MONITOR_POLL {
+                last_monitor_poll = frame_start;
+                let fresh = enumerate_monitors();
+                if fresh.len() != monitors.len()
+                    || fresh.iter().zip(&monitors).any(|(a, b)| (a.left, a.top, a.width, a.height) != (b.left, b.top, b.width, b.height))
+                {
+                    monitors = fresh;
+                    monitors_dirty = true;
+                }
+            }
+            if monitors_dirty {
+                monitors_dirty = false;
+                let ev = monitors_event(&monitors, current_idx);
+                if sent_monitors.as_ref() != Some(&ev) {
+                    let _ = tx_out.send(OutgoingMsg::Json(serde_json::json!({
+                        "type": "relay-input",
+                        "targetClean": partner_clean,
+                        "event": ev
+                    })));
+                    sent_monitors = Some(ev);
+                }
             }
 
             if local_cursor {

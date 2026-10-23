@@ -11,7 +11,7 @@ use core_engine::capture::enumerate_monitors;
 use core_engine::codec::from_base64;
 use core_engine::input::InputInjector;
 use serde_json::{json, Value};
-use slint::{Image, ModelRc, VecModel, Weak};
+use slint::{ModelRc, VecModel, Weak};
 use tungstenite::connect;
 
 use crate::audio::VoiceEngine;
@@ -19,16 +19,51 @@ use crate::config::{
     format_desk_id, get_device_display_name, load_config, normalize_gateway_url,
 };
 use crate::file_transfer::{
-    abort_pending_sends, deliver_ack, is_received_clipboard, offer_files, send_files_async, serve_pull, FileReceiver, IN_FLIGHT_FILE_CHUNKS, LAST_FILE_RECV_MS, PEER_FILE_ACK, PEER_FILE_OFFER,
+    abort_pending_sends, deliver_ack, is_received_clipboard, offer_files, send_files_async, serve_pull, FileReceiver, IN_FLIGHT_FILE_CHUNKS, PEER_FILE_ACK, PEER_FILE_OFFER,
 };
 use crate::logger;
-use crate::p2p::{self, P2p, P2P_ACTIVE};
+use crate::p2p::{self, P2p};
 use crate::privacy;
 use crate::protocol::OutgoingMsg;
-use crate::session::{decode_b64_to_pixel_buffer, spawn_host_capture_loop, VideoInbox, ViewerDecoder, ViewerOutput, CAP_VIDEO_DELTA};
+use crate::session::{spawn_host_capture_loop, VideoInbox, CAP_VIDEO_DELTA};
+use crate::viewer::{self, VIEWERS};
+use crate::viewer_ui::{self, Ctx};
 use crate::{HostItem, MainWindow};
 
-fn now_epoch_ms() -> u64 {
+fn has_cap(caps: Option<&Value>, cap: &str) -> bool {
+    caps.and_then(|v| v.as_array()).is_some_and(|list| list.iter().any(|c| c.as_str() == Some(cap)))
+}
+
+/// Ends one viewer session from the network thread and updates its tab.
+fn end_viewer_session(win: &Option<Weak<MainWindow>>, ctx: &Ctx, id: &str, status: Option<String>) {
+    let prev = VIEWERS.focused_id();
+    if !viewer_ui::end_core(id) {
+        return;
+    }
+    logger::info("app.frontend_session", &format!("Viewer session with {} closed.", id));
+    viewer_ui::apply_focus_core(ctx);
+    if let Some(w) = win {
+        let (ctx, id) = (ctx.clone(), id.to_string());
+        let _ = w.upgrade_in_event_loop(move |win| viewer_ui::after_end(&win, &ctx, &id, &prev, status));
+    } else if VIEWERS.is_empty() && !ctx.is_host.load(Ordering::SeqCst) {
+        ctx.voice.is_session_active.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Ends every viewer session (relay connection gone). The old properties are reset by the caller.
+fn end_all_viewer_sessions(win: &Option<Weak<MainWindow>>) {
+    if viewer_ui::end_all_core().is_empty() {
+        return;
+    }
+    if let Some(w) = win {
+        let _ = w.upgrade_in_event_loop(|win| {
+            viewer_ui::clear_all_ui();
+            win.set_focused_session("".into());
+        });
+    }
+}
+
+pub fn now_epoch_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -66,16 +101,10 @@ pub fn spawn_network_worker(
     last_clip_seq: Arc<AtomicU32>,
     rx_out: Receiver<OutgoingMsg>,
     tx_out_for_capture: Sender<OutgoingMsg>,
+    ctx: Ctx,
 ) {
-    let latest_b64_frame: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let latest_bin_frame: Arc<VideoInbox> = Arc::new(VideoInbox::default());
-
-    let decode_b64_slot = Arc::clone(&latest_b64_frame);
-    let decode_bin_slot = Arc::clone(&latest_bin_frame);
-    let win_decode = win_handle.clone();
-    let res_decode = Arc::clone(&remote_resolution);
-    let key_partner = Arc::clone(&active_partner);
-    let key_tx = tx_out_for_capture.clone();
+    // Host role: P2P sinks need an inbox, but a host never receives video.
+    let host_video_sink: Arc<VideoInbox> = Arc::new(VideoInbox::default());
 
     let initial_monitors = enumerate_monitors();
     let host_monitor_bounds = Arc::new(Mutex::new(initial_monitors[0]));
@@ -140,6 +169,9 @@ pub fn spawn_network_worker(
                     if !files.is_empty() {
                         // Sets its own status; folders are walked off this thread.
                         if !is_received_clipboard(&files) {
+                            if let Some(s) = VIEWERS.get(&partner) {
+                                s.clip_seq.store(cur_seq, Ordering::SeqCst);
+                            }
                             offer_files(files, partner, clip_tx.clone(), clip_win.clone());
                         }
                         continue;
@@ -159,6 +191,10 @@ pub fn spawn_network_worker(
                 }
                 if let Some(txt) = clip_inj.get_clipboard_text() {
                     if !txt.is_empty() {
+                        // Clipboard follows focus: only the focused host gets it (see viewer_ui::push_clipboard).
+                        if let Some(s) = VIEWERS.get(&partner) {
+                            s.clip_seq.store(cur_seq, Ordering::SeqCst);
+                        }
                         let msg = json!({
                             "type": "relay-clipboard",
                             "targetClean": partner,
@@ -170,80 +206,6 @@ pub fn spawn_network_worker(
             }
         }
     });
-
-    // Dedicated Frame Decoder Thread (Only needed when GUI Viewer is present)
-    if let Some(win_dec_weak) = win_decode {
-        thread::spawn(move || {
-            let mut frame_count = 0u32;
-            let mut fps_timer = Instant::now();
-            let mut current_fps = 60u32;
-            let mut viewer = ViewerDecoder::new();
-            let mut last_key_request: Option<Instant> = None;
-
-            loop {
-                let batch = decode_bin_slot.drain();
-                let b64_opt = if batch.is_empty() {
-                    decode_b64_slot.lock().unwrap().take()
-                } else {
-                    None
-                };
-
-                let decoded = if !batch.is_empty() {
-                    match viewer.process(batch) {
-                        ViewerOutput::Frame(buf, w, h) => Some((buf, w, h)),
-                        ViewerOutput::Unchanged => None,
-                        ViewerOutput::NeedKey => {
-                            // Lost or undecodable delta: ask the host for a key frame, at most every 300 ms.
-                            if last_key_request.is_none_or(|t| t.elapsed() >= Duration::from_millis(300)) {
-                                last_key_request = Some(Instant::now());
-                                let partner = key_partner.lock().unwrap().clone();
-                                if !partner.is_empty() {
-                                    logger::info("desk_rt.video", "Delta chain broken; requesting key frame.");
-                                    let _ = key_tx.send(OutgoingMsg::Json(json!({
-                                        "type": "relay-input",
-                                        "targetClean": partner,
-                                        "event": { "action": "video-keyframe" }
-                                    })));
-                                }
-                            }
-                            None
-                        }
-                    }
-                } else if let Some(b64) = b64_opt {
-                    decode_b64_to_pixel_buffer(&b64)
-                } else {
-                    thread::sleep(Duration::from_millis(1));
-                    continue;
-                };
-
-                if let Some((buf, w, h)) = decoded {
-                    if w > 0 && h > 0 {
-                        *res_decode.lock().unwrap() = (w as i32, h as i32);
-                    }
-                    frame_count += 1;
-                    let elapsed = fps_timer.elapsed();
-                    if elapsed >= Duration::from_secs(1) {
-                        current_fps = ((frame_count as f64 / elapsed.as_secs_f64()).round() as u32).max(1);
-                        frame_count = 0;
-                        fps_timer = Instant::now();
-                    }
-                    let fps_display = current_fps.max(60);
-                    let file_busy = IN_FLIGHT_FILE_CHUNKS.load(Ordering::Relaxed) > 0
-                        || now_epoch_ms().saturating_sub(LAST_FILE_RECV_MS.load(Ordering::Relaxed)) < 2000;
-                    let path = if P2P_ACTIVE.load(Ordering::Relaxed) { "P2P" } else { "Relay" };
-                    let _ = win_dec_weak.upgrade_in_event_loop(move |win| {
-                        win.set_remote_frame(Image::from_rgba8(buf));
-                        win.set_has_remote_frame(true);
-                        if !win.get_is_host() && win.get_is_connected() && !file_busy {
-                            win.set_status_text(
-                                format!("{}x{} • {} FPS • {}", w, h, fps_display, path).into(),
-                            );
-                        }
-                    });
-                }
-            }
-        });
-    }
 
     thread::spawn(move || {
         let mut file_receiver = FileReceiver::new();
@@ -298,6 +260,11 @@ pub fn spawn_network_worker(
             if p2p::enabled() {
                 caps.push(p2p::CAP);
             }
+            // Sent before the relay's caps are known (register comes first). Old relays ignore it and never tag;
+            // the client switches to multi-session only when `registered-ack` lists the cap too.
+            if !cfg!(feature = "headless") {
+                caps.push(viewer::CAP);
+            }
             let reg_msg = json!({
                 "type": "register",
                 "deskId": local_id,
@@ -337,45 +304,78 @@ pub fn spawn_network_worker(
             let mut last_expire = Instant::now();
             let mut server_p2p = false;
             let mut server_offer = false;
-            let mut p2p_link: Option<Arc<P2p>> = None;
+            // One link per session: the hosted viewer (host role) or each viewed host.
+            let mut links: Vec<Arc<P2p>> = Vec::new();
+            let mut last_path_update = Instant::now();
+            VIEWERS.set_multi(false);
 
             while !reconnect_signal.load(Ordering::SeqCst) && !disconnected {
                 // 1. Drain outgoing queue: coalesce high-frequency MouseMove and VideoFrames,
                 // send Control JSON & Binary Audio immediately, and queue FileTransfer separately.
                 let mut pending_video: Option<Vec<u8>> = None;
-                let mut pending_mouse: Option<(f64, f64)> = None;
+                // Mouse moves coalesced per target host.
+                let mut pending_mouse: Vec<(String, f64, f64)> = Vec::new();
                 let partner_now = active_partner.lock().unwrap().clone();
 
-                // The P2P path lives exactly as long as the session it was opened for.
-                if p2p_link.as_ref().is_some_and(|p| p.partner != partner_now) {
-                    if let Some(p) = p2p_link.take() {
+                // A P2P path lives exactly as long as the session it was opened for.
+                links.retain(|p| {
+                    let keep = if p.is_host() {
+                        p.partner == partner_now
+                    } else {
+                        VIEWERS.get(&p.partner).is_some_and(|s| s.is_connected())
+                    };
+                    if !keep {
                         p.close();
+                        if p.is_host() {
+                            while p2p_in_rx.try_recv().is_ok() {}
+                        }
                     }
-                    while p2p_in_rx.try_recv().is_ok() {}
+                    keep
+                });
+                let direct: Vec<Arc<P2p>> = links.iter().filter(|p| p.is_active()).cloned().collect();
+                let direct_for = |id: &str| direct.iter().find(|p| p.partner == id);
+                if last_path_update.elapsed() >= Duration::from_millis(250) {
+                    last_path_update = Instant::now();
+                    for p in links.iter().filter(|p| !p.is_host()) {
+                        if let Some(s) = VIEWERS.get(&p.partner) {
+                            s.p2p_active.store(direct_for(&p.partner).is_some(), Ordering::Relaxed);
+                        }
+                    }
                 }
-                let direct = p2p_link.as_ref().filter(|p| p.is_active()).cloned();
 
                 loop {
                     match rx_out.try_recv() {
                         Ok(OutgoingMsg::Json(val)) => {
-                            let p2p_sent = direct.as_ref().is_some_and(|p| {
-                                val.get("type").and_then(|t| t.as_str()) == Some("relay-input")
-                                    && val.get("targetClean").and_then(|t| t.as_str()) == Some(p.partner.as_str())
-                                    && val.get("event").is_some_and(|ev| p.send_input(ev))
-                            });
+                            let p2p_sent = val.get("type").and_then(|t| t.as_str()) == Some("relay-input")
+                                && val
+                                    .get("targetClean")
+                                    .and_then(|t| t.as_str())
+                                    .and_then(direct_for)
+                                    .is_some_and(|p| val.get("event").is_some_and(|ev| p.send_input(ev)));
                             if !p2p_sent {
                                 let _ = socket.send(tungstenite::Message::Text(val.to_string().into()));
                             }
                         }
-                        Ok(OutgoingMsg::MouseMove(nx, ny)) => {
-                            pending_mouse = Some((nx, ny));
+                        Ok(OutgoingMsg::MouseMove(target, nx, ny)) => {
+                            match pending_mouse.iter_mut().find(|m| m.0 == target) {
+                                Some(m) => (m.1, m.2) = (nx, ny),
+                                None => pending_mouse.push((target, nx, ny)),
+                            }
                         }
                         Ok(OutgoingMsg::BinaryFrame(jpeg_bytes)) => {
                             pending_video = Some(jpeg_bytes);
                         }
                         Ok(OutgoingMsg::AudioChunk(pcm_pkt)) => {
-                            if !partner_now.is_empty() && !direct.as_ref().is_some_and(|p| p.send_audio(&pcm_pkt)) {
-                                let _ = socket.send(tungstenite::Message::Binary(pcm_pkt.into()));
+                            // Voice goes to the partner; a viewer of several hosts talks to the focused one only.
+                            if !partner_now.is_empty() && !direct_for(&partner_now).is_some_and(|p| p.send_audio(&pcm_pkt)) {
+                                let out = if VIEWERS.multi() && VIEWERS.get(&partner_now).is_some() {
+                                    viewer::tag_binary(&partner_now, &pcm_pkt)
+                                } else {
+                                    Some(pcm_pkt)
+                                };
+                                if let Some(out) = out {
+                                    let _ = socket.send(tungstenite::Message::Binary(out.into()));
+                                }
                             }
                         }
                         Ok(OutgoingMsg::FileTransfer { msg, status_text }) => {
@@ -385,27 +385,28 @@ pub fn spawn_network_worker(
                     }
                 }
 
-                if let Some((nx, ny)) = pending_mouse {
-                    if !partner_now.is_empty() {
-                        let event = json!({
-                            "action": "mousemove",
-                            "normX": nx,
-                            "normY": ny
+                for (target, nx, ny) in pending_mouse {
+                    if target.is_empty() {
+                        continue;
+                    }
+                    let event = json!({
+                        "action": "mousemove",
+                        "normX": nx,
+                        "normY": ny
+                    });
+                    if !direct_for(&target).is_some_and(|p| p.send_input(&event)) {
+                        let move_msg = json!({
+                            "type": "relay-input",
+                            "targetClean": target,
+                            "event": event
                         });
-                        if !direct.as_ref().is_some_and(|p| p.send_input(&event)) {
-                            let move_msg = json!({
-                                "type": "relay-input",
-                                "targetClean": partner_now,
-                                "event": event
-                            });
-                            let _ = socket.send(tungstenite::Message::Text(move_msg.to_string().into()));
-                        }
+                        let _ = socket.send(tungstenite::Message::Text(move_msg.to_string().into()));
                     }
                 }
 
                 if let Some(jpeg_bytes) = pending_video {
                     // Over P2P the viewer's frame-ack releases can_send_frame instead of the socket flush.
-                    if !direct.as_ref().is_some_and(|p| p.send_video(&jpeg_bytes)) {
+                    if !direct_for(&partner_now).is_some_and(|p| p.send_video(&jpeg_bytes)) {
                         let _ = socket.send(tungstenite::Message::Binary(jpeg_bytes.into()));
                         video_in_flight = true;
                     }
@@ -480,10 +481,21 @@ pub fn spawn_network_worker(
                             let _ = socket.flush();
                         }
                         Ok(tungstenite::Message::Binary(bin)) => {
-                            if bin.len() > 1 && bin[0] == 0x02 {
+                            if let Some((host, payload)) = viewer::untag_binary(&bin) {
+                                // Multi-session: the relay names the host. Frames for a closed tab are dropped.
+                                if let Some(s) = VIEWERS.get(host) {
+                                    if payload.len() > 1 && payload[0] == 0x02 {
+                                        if s.audio_on.load(Ordering::Relaxed) {
+                                            voice_engine.play_binary_packet(payload);
+                                        }
+                                    } else {
+                                        s.inbox.push(payload.to_vec());
+                                    }
+                                }
+                            } else if bin.len() > 1 && bin[0] == 0x02 {
                                 voice_engine.play_binary_packet(&bin);
-                            } else {
-                                latest_bin_frame.push(bin.to_vec());
+                            } else if let Some(s) = VIEWERS.legacy() {
+                                s.inbox.push(bin.to_vec());
                             }
                         }
                         Ok(tungstenite::Message::Text(text)) => {
@@ -506,6 +518,10 @@ pub fn spawn_network_worker(
                                         .get("caps")
                                         .and_then(|v| v.as_array())
                                         .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some("file-offer")));
+                                    // Both sides must have it: we sent it in `register` (never in headless builds).
+                                    let multi = !cfg!(feature = "headless") && has_cap(val.get("caps"), viewer::CAP);
+                                    VIEWERS.set_multi(multi);
+                                    logger::info("app.service", &format!("Viewer sessions: {}", if multi { "multi-session (up to 4)" } else { "single (relay without multi-session)" }));
                                     if let Some(ref w_weak) = win_handle {
                                         let _ = w_weak.upgrade_in_event_loop(|win| {
                                             win.set_status_text("Online".into());
@@ -600,64 +616,33 @@ pub fn spawn_network_worker(
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("viewer")
                                         .to_string();
-                                    *active_partner.lock().unwrap() = target_clean.clone();
+                                    let peer_caps = val.get("peerCaps");
+                                    // A viewer of several hosts keeps its focus; everything else has exactly one partner.
+                                    let multi_viewer = role != "host" && VIEWERS.multi();
+                                    if !multi_viewer {
+                                        *active_partner.lock().unwrap() = target_clean.clone();
+                                        PEER_FILE_ACK.store(has_cap(peer_caps, "file-ack"), Ordering::SeqCst);
+                                        crate::session::PEER_CURSOR_SHAPE.store(has_cap(peer_caps, "cursor-shape"), Ordering::SeqCst);
+                                        crate::session::PEER_VIDEO_DELTA.store(has_cap(peer_caps, CAP_VIDEO_DELTA), Ordering::SeqCst);
+                                        crate::session::PEER_VIDEO_H264.store(has_cap(peer_caps, crate::session::CAP_VIDEO_H264), Ordering::SeqCst);
+                                        PEER_FILE_OFFER.store(has_cap(peer_caps, "file-offer") && server_offer, Ordering::SeqCst);
+                                        // Folder entries ride on existing start/offer messages, so only the peer must understand them.
+                                        crate::file_transfer::PEER_FILE_FOLDER.store(has_cap(peer_caps, crate::file_transfer::CAP_FILE_FOLDER), Ordering::SeqCst);
+                                    }
                                     last_clip_seq.store(
                                         injector.get_clipboard_sequence_number(),
                                         Ordering::SeqCst,
                                     );
-                                    let peer_acks = val
-                                        .get("peerCaps")
-                                        .and_then(|v| v.as_array())
-                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some("file-ack")));
-                                    PEER_FILE_ACK.store(peer_acks, Ordering::SeqCst);
-                                    let peer_cursor = val
-                                        .get("peerCaps")
-                                        .and_then(|v| v.as_array())
-                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some("cursor-shape")));
-                                    crate::session::PEER_CURSOR_SHAPE.store(peer_cursor, Ordering::SeqCst);
-                                    let peer_delta = val
-                                        .get("peerCaps")
-                                        .and_then(|v| v.as_array())
-                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some(CAP_VIDEO_DELTA)));
-                                    crate::session::PEER_VIDEO_DELTA.store(peer_delta, Ordering::SeqCst);
-                                    let peer_h264 = val
-                                        .get("peerCaps")
-                                        .and_then(|v| v.as_array())
-                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some(crate::session::CAP_VIDEO_H264)));
-                                    crate::session::PEER_VIDEO_H264.store(peer_h264, Ordering::SeqCst);
-                                    let peer_offer = val
-                                        .get("peerCaps")
-                                        .and_then(|v| v.as_array())
-                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some("file-offer")));
-                                    crate::file_transfer::PEER_FILE_OFFER.store(peer_offer && server_offer, Ordering::SeqCst);
-                                    // Folder entries ride on existing start/offer messages, so only the peer must understand them.
-                                    let peer_folder = val
-                                        .get("peerCaps")
-                                        .and_then(|v| v.as_array())
-                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some(crate::file_transfer::CAP_FILE_FOLDER)));
-                                    crate::file_transfer::PEER_FILE_FOLDER.store(peer_folder, Ordering::SeqCst);
 
-                                    if let Some(old) = p2p_link.take() {
-                                        old.close();
-                                    }
-                                    let peer_p2p = val
-                                        .get("peerCaps")
-                                        .and_then(|v| v.as_array())
-                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some(p2p::CAP)));
-                                    if server_p2p && peer_p2p && p2p::enabled() {
-                                        p2p_link = P2p::start(
-                                            role == "host",
-                                            &local_id,
-                                            target_clean.clone(),
-                                            Arc::clone(&can_send_frame),
-                                            tx_out_for_capture.clone(),
-                                            p2p::Sinks {
-                                                video: Arc::clone(&latest_bin_frame),
-                                                voice: Arc::clone(&voice_engine),
-                                                input: p2p_in_tx.clone(),
-                                            },
-                                        );
-                                    }
+                                    // The P2P path belongs to this pair only.
+                                    links.retain(|p| {
+                                        let keep = multi_viewer && p.partner != target_clean;
+                                        if !keep {
+                                            p.close();
+                                        }
+                                        keep
+                                    });
+                                    let p2p_ok = server_p2p && has_cap(peer_caps, p2p::CAP) && p2p::enabled();
 
                                     logger::info(
                                         "app.frontend_session",
@@ -665,7 +650,6 @@ pub fn spawn_network_worker(
                                     );
 
                                     let formatted_partner = format_desk_id(&target_clean);
-                                    let local_win_title = format!("OpenDesk - {}", format_desk_id(&local_id));
                                     privacy::reset_host_privacy();
                                     voice_engine.is_session_active.store(true, Ordering::SeqCst);
                                     // Default Mic ON (Aktif) automatically on every remote connection!
@@ -673,6 +657,21 @@ pub fn spawn_network_worker(
                                     can_send_frame.store(true, Ordering::SeqCst);
 
                                     if role == "host" {
+                                        if p2p_ok {
+                                            links.extend(P2p::start(
+                                                true,
+                                                &local_id,
+                                                target_clean.clone(),
+                                                Arc::clone(&can_send_frame),
+                                                tx_out_for_capture.clone(),
+                                                p2p::Sinks {
+                                                    video: Arc::clone(&host_video_sink),
+                                                    voice: Arc::clone(&voice_engine),
+                                                    input: p2p_in_tx.clone(),
+                                                    audio_gate: None,
+                                                },
+                                            ));
+                                        }
                                         privacy::set_viewer_hook_state(false, "", "");
                                         is_host_capturing.store(false, Ordering::SeqCst);
                                         thread::sleep(Duration::from_millis(20));
@@ -703,23 +702,63 @@ pub fn spawn_network_worker(
                                             });
                                         }
                                     } else {
-                                        privacy::set_viewer_hook_state(
-                                            true,
-                                            &target_clean,
-                                            &local_win_title,
-                                        );
-                                        // Viewer informs host of preferred resolution & audio quality upon connection.
-                                        // Automatic mode uses the last canvas size; the new canvas re-reports it if it differs.
                                         let res_mode = crate::session::VIEWER_RES_MODE.load(Ordering::SeqCst);
                                         let viewport = crate::session::VIEWPORT_PX.load(Ordering::SeqCst);
-                                        let res_event = crate::session::resolution_event(res_mode, crate::session::unpack_box(viewport));
-                                        let sent_box = if res_event.get("auto").is_some() { viewport } else { 0 };
-                                        crate::session::LAST_SENT_BOX.store(sent_box, Ordering::SeqCst);
-                                        let current_aq = voice_engine.audio_quality.load(Ordering::SeqCst);
+                                        let quality = voice_engine.audio_quality.load(Ordering::SeqCst);
+                                        let sess = match VIEWERS.open(&target_clean, res_mode, viewport, quality) {
+                                            viewer::Open::Opened(s) | viewer::Open::Exists(s) => s,
+                                            viewer::Open::Full => {
+                                                // The relay enforces the same limit, so this is a stale or unexpected session.
+                                                logger::warn("app.frontend_session", "No room for a new viewer session; ending it.");
+                                                let _ = tx_out_for_capture.send(OutgoingMsg::Json(json!({
+                                                    "type": "session-disconnect",
+                                                    "targetClean": target_clean
+                                                })));
+                                                continue;
+                                            }
+                                        };
+                                        sess.connected.store(true, Ordering::SeqCst);
+                                        sess.mic_muted.store(false, Ordering::SeqCst);
+                                        sess.clip_seq.store(injector.get_clipboard_sequence_number(), Ordering::SeqCst);
+                                        sess.set_peer_caps(peer_caps.unwrap_or(&Value::Null), server_offer);
+                                        if VIEWERS.focused_id().is_empty() {
+                                            VIEWERS.set_focus(&target_clean);
+                                        }
+                                        // Input target, keyboard hook, voice and file caps follow the focused session.
+                                        viewer_ui::apply_focus_core(&ctx);
+
+                                        if p2p_ok {
+                                            links.extend(P2p::start(
+                                                false,
+                                                &local_id,
+                                                target_clean.clone(),
+                                                Arc::clone(&can_send_frame),
+                                                tx_out_for_capture.clone(),
+                                                p2p::Sinks {
+                                                    video: Arc::clone(&sess.inbox),
+                                                    voice: Arc::clone(&voice_engine),
+                                                    input: p2p_in_tx.clone(),
+                                                    audio_gate: Some(Arc::clone(&sess.audio_on)),
+                                                },
+                                            ));
+                                        }
+                                        if let Some(w) = win_handle.clone() {
+                                            let res = Arc::clone(&remote_resolution);
+                                            viewer::spawn_decoder(Arc::clone(&sess), tx_out_for_capture.clone(), move |s, f| {
+                                                if VIEWERS.is_focused(&s.id) {
+                                                    *res.lock().unwrap() = (f.width as i32, f.height as i32);
+                                                }
+                                                let id = s.id.clone();
+                                                let _ = w.upgrade_in_event_loop(move |win| viewer_ui::show_frame(&win, &id, f));
+                                            });
+                                        }
+
+                                        // Viewer informs host of preferred resolution & audio quality upon connection.
+                                        // Automatic mode uses the last canvas size; the new canvas re-reports it if it differs.
                                         let init_res_msg = json!({
                                             "type": "relay-input",
                                             "targetClean": target_clean,
-                                            "event": res_event
+                                            "event": viewer_ui::initial_resolution_event(&sess)
                                         });
                                         let _ = tx_out_for_capture.send(OutgoingMsg::Json(init_res_msg));
                                         let init_aq_msg = json!({
@@ -727,30 +766,40 @@ pub fn spawn_network_worker(
                                             "targetClean": target_clean,
                                             "event": {
                                                 "action": "set-audio-quality",
-                                                "quality": current_aq
+                                                "quality": sess.audio_quality.load(Ordering::SeqCst)
                                             }
                                         });
                                         let _ = tx_out_for_capture.send(OutgoingMsg::Json(init_aq_msg));
 
                                         if let Some(ref w_weak) = win_handle {
+                                            let ctx = ctx.clone();
                                             let _ = w_weak.upgrade_in_event_loop(move |win| {
+                                                viewer_ui::ensure_row(&sess, formatted_partner.clone(), String::new());
+                                                viewer_ui::row_update(&sess.id, |r| {
+                                                    r.connecting = true;
+                                                    r.mic_muted = false;
+                                                    r.privacy_mode = 0;
+                                                    r.block_input = false;
+                                                    r.status = viewer_ui::CONNECTING.into();
+                                                });
                                                 win.set_has_incoming(false);
-                                                win.set_active_partner_id(formatted_partner.into());
-                                                win.set_has_remote_frame(false);
-                                                win.set_is_mic_muted(false);
-                                                win.set_privacy_mode(0);
-                                                win.set_block_remote_input(false);
                                                 win.set_show_session_options(false);
                                                 win.set_is_host(false);
                                                 win.set_is_connected(true);
-                                                win.set_status_text("Menghubungkan...".into());
+                                                if VIEWERS.is_focused(&sess.id) {
+                                                    win.set_status_text(viewer_ui::CONNECTING.into());
+                                                }
+                                                // Same focus as before: only mirrors the focused tab into the old properties.
+                                                viewer_ui::sync_focus(&win, &ctx, &VIEWERS.focused_id());
                                             });
                                         }
                                     }
                                 }
                                 "frame" => {
                                     if let Some(b64) = val.get("data").and_then(|v| v.as_str()) {
-                                        *latest_b64_frame.lock().unwrap() = Some(b64.to_string());
+                                        if let Some(s) = VIEWERS.route(val.get("fromClean").and_then(|v| v.as_str())) {
+                                            *s.b64.lock().unwrap() = Some(b64.to_string());
+                                        }
                                     }
                                 }
                                 "input-command" => {
@@ -759,6 +808,64 @@ pub fn spawn_network_worker(
                                             .get("action")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
+
+                                        // From a host this machine views: tagged with fromClean (multi-session), or the
+                                        // single legacy session. A host never drives this machine's input.
+                                        let viewed = match val.get("fromClean").and_then(|v| v.as_str()) {
+                                            Some(from) => VIEWERS.get(from),
+                                            None if !is_host_capturing.load(Ordering::SeqCst) => VIEWERS.legacy(),
+                                            None => None,
+                                        };
+                                        if let Some(sess) = viewed {
+                                            let focused = VIEWERS.is_focused(&sess.id);
+                                            let id = sess.id.clone();
+                                            match action {
+                                                "audio" => {
+                                                    if sess.audio_on.load(Ordering::Relaxed) {
+                                                        if let Some(pcm) = event.get("data").and_then(|v| v.as_str()).and_then(from_base64) {
+                                                            voice_engine.play_pcm_chunk(&pcm);
+                                                        }
+                                                    }
+                                                }
+                                                // The viewer shows its own cursor in the host's current shape.
+                                                "cursor-shape" => {
+                                                    let shape = event.get("shape").and_then(|v| v.as_i64()).unwrap_or(1) as i32;
+                                                    if let Some(ref w_weak) = win_handle {
+                                                        let _ = w_weak.upgrade_in_event_loop(move |win| viewer_ui::set_cursor(&win, &id, shape));
+                                                    }
+                                                }
+                                                // A remote peer may silence this mic, but only the local user can enable it.
+                                                "set-mic" if event.get("muted").and_then(|v| v.as_bool()) == Some(true) => {
+                                                    sess.mic_muted.store(true, Ordering::SeqCst);
+                                                    if focused {
+                                                        voice_engine.is_mic_muted.store(true, Ordering::SeqCst);
+                                                    }
+                                                    if let Some(ref w_weak) = win_handle {
+                                                        let _ = w_weak.upgrade_in_event_loop(move |win| viewer_ui::host_muted_mic(&win, &id));
+                                                    }
+                                                }
+                                                "set-audio-quality" => {
+                                                    let q = (event.get("quality").and_then(|v| v.as_u64()).unwrap_or(2) as usize).min(2);
+                                                    sess.audio_quality.store(q, Ordering::SeqCst);
+                                                    if focused {
+                                                        voice_engine.audio_quality.store(q, Ordering::SeqCst);
+                                                    }
+                                                    if let Some(ref w_weak) = win_handle {
+                                                        let _ = w_weak.upgrade_in_event_loop(move |win| viewer_ui::host_set_audio_quality(&win, &id, q as i32));
+                                                    }
+                                                }
+                                                "monitors" => {
+                                                    if let Some((list, active)) = viewer::parse_monitors(event) {
+                                                        sess.has_monitors.store(true, Ordering::SeqCst);
+                                                        if let Some(ref w_weak) = win_handle {
+                                                            let _ = w_weak.upgrade_in_event_loop(move |_| viewer_ui::set_monitors(&id, list, active));
+                                                        }
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                            continue;
+                                        }
 
                                         if action == "audio" {
                                             if let Some(b64) = event.get("data").and_then(|v| v.as_str()) {
@@ -803,6 +910,14 @@ pub fn spawn_network_worker(
 
                                         if action == "switch-monitor" {
                                             active_monitor_idx.fetch_add(1, Ordering::SeqCst);
+                                            continue;
+                                        }
+
+                                        // Newer viewers pick a monitor from the announced list (the capture loop wraps it).
+                                        if action == "select-monitor" {
+                                            if let Some(index) = event.get("index").and_then(|v| v.as_u64()) {
+                                                active_monitor_idx.store(index.min(63) as usize, Ordering::SeqCst);
+                                            }
                                             continue;
                                         }
 
@@ -866,6 +981,11 @@ pub fn spawn_network_worker(
                                                     injector.key_down(0x5B);
                                                     injector.key_tap(b'D');
                                                     injector.key_up(0x5B);
+                                                }
+                                                "alt-tab" => {
+                                                    injector.key_down(0x12); // VK_MENU
+                                                    injector.key_tap(0x09); // VK_TAB
+                                                    injector.key_up(0x12);
                                                 }
                                                 _ => {}
                                             }
@@ -960,19 +1080,23 @@ pub fn spawn_network_worker(
                                 }
                                 "p2p-signal" => {
                                     let from = val.get("fromClean").and_then(|v| v.as_str()).unwrap_or("");
-                                    if let (Some(p), Some(cand)) = (p2p_link.as_ref(), val.get("candidate").and_then(|v| v.as_str())) {
-                                        if p.partner == from {
-                                            p.on_signal(cand);
-                                        }
+                                    if let (Some(p), Some(cand)) = (links.iter().find(|p| p.partner == from), val.get("candidate").and_then(|v| v.as_str())) {
+                                        p.on_signal(cand);
                                     }
                                 }
                                 "clipboard-sync" => {
+                                    // Clipboard follows focus: copies on a host in a background tab are ignored.
+                                    let viewed = val.get("fromClean").and_then(|v| v.as_str()).and_then(|f| VIEWERS.get(f));
+                                    if viewed.as_ref().is_some_and(|s| !VIEWERS.is_focused(&s.id)) {
+                                        continue;
+                                    }
                                     if let Some(text) = val.get("text").and_then(|v| v.as_str()) {
                                         injector.set_clipboard_text(text);
-                                        last_clip_seq.store(
-                                            injector.get_clipboard_sequence_number(),
-                                            Ordering::SeqCst,
-                                        );
+                                        let seq = injector.get_clipboard_sequence_number();
+                                        last_clip_seq.store(seq, Ordering::SeqCst);
+                                        if let Some(s) = viewed {
+                                            s.clip_seq.store(seq, Ordering::SeqCst);
+                                        }
                                     }
                                 }
                                 "file-transfer" => {
@@ -989,6 +1113,11 @@ pub fn spawn_network_worker(
                                         let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                         if action == "ack" {
                                             deliver_ack(&id, payload.get("ok").and_then(|v| v.as_bool()) == Some(true));
+                                            continue;
+                                        }
+                                        if action == "offer" && VIEWERS.get(&from).is_some() && !VIEWERS.is_focused(&from) {
+                                            // Clipboard follows focus: a copy on a background host is not offered here.
+                                            logger::info("clipbrd.capture", &format!("Ignored file offer from unfocused session {}.", from));
                                             continue;
                                         }
                                         if action == "offer" || action == "pull" {
@@ -1027,6 +1156,20 @@ pub fn spawn_network_worker(
                                     }
                                 }
                                 "session-closed" => {
+                                    let closed = val.get("targetClean").and_then(|v| v.as_str());
+                                    if let Some(id) = closed.filter(|id| VIEWERS.get(id).is_some()) {
+                                        // Multi-session: only that tab closes.
+                                        let msg = val.get("message").and_then(|v| v.as_str()).unwrap_or("Sesi berakhir.");
+                                        let status = format!("{} ({})", msg, format_desk_id(id));
+                                        end_viewer_session(&win_handle, &ctx, id, Some(status));
+                                        continue;
+                                    }
+                                    if closed.is_some() && VIEWERS.multi() && !is_host_capturing.load(Ordering::SeqCst) {
+                                        // A tab that is already gone (closed here first): nothing else ends.
+                                        continue;
+                                    }
+                                    // Host role or the single legacy session: everything ends, as before.
+                                    end_all_viewer_sessions(&win_handle);
                                     crate::virtual_clip::clear_offer(&active_partner.lock().unwrap());
                                     is_host_capturing.store(false, Ordering::SeqCst);
                                     privacy::reset_host_privacy();
@@ -1055,6 +1198,16 @@ pub fn spawn_network_worker(
                                         .unwrap_or("Error")
                                         .to_string();
                                     logger::warn("app.frontend_session", &format!("Relay error: {}", msg));
+                                    // A failed connect closes its pending tab: named by targetClean (multi-session), or the
+                                    // single pending session of a legacy relay.
+                                    let failed: Vec<String> = match val.get("targetClean").and_then(|v| v.as_str()) {
+                                        Some(id) => VIEWERS.get(id).filter(|s| !s.is_connected()).map(|s| s.id.clone()).into_iter().collect(),
+                                        None if !VIEWERS.multi() => VIEWERS.all().into_iter().filter(|s| !s.is_connected()).map(|s| s.id.clone()).collect(),
+                                        None => Vec::new(),
+                                    };
+                                    for id in failed {
+                                        end_viewer_session(&win_handle, &ctx, &id, Some(msg.clone()));
+                                    }
                                     if let Some(ref w_weak) = win_handle {
                                         let _ = w_weak.upgrade_in_event_loop(move |win| {
                                             win.set_status_text(msg.into());
@@ -1081,6 +1234,7 @@ pub fn spawn_network_worker(
                                 IN_FLIGHT_FILE_CHUNKS.fetch_sub(1, Ordering::Relaxed);
                             }
                             let recv_status = file_receiver.abort_all();
+                            end_all_viewer_sessions(&win_handle);
                             *active_partner.lock().unwrap() = String::new();
                             is_host_capturing.store(false, Ordering::SeqCst);
                             privacy::reset_host_privacy();
@@ -1112,9 +1266,24 @@ pub fn spawn_network_worker(
                 }
                 thread::sleep(Duration::from_millis(1));
             }
-            // The relay owns session authorization, so a lost relay connection also ends the direct path.
-            if let Some(p) = p2p_link.take() {
+            // The relay owns session authorization, so a lost relay connection also ends the direct paths
+            // and every viewer session (a reconnect starts without them).
+            for p in links.drain(..) {
                 p.close();
+            }
+            if !VIEWERS.is_empty() {
+                end_all_viewer_sessions(&win_handle);
+                *active_partner.lock().unwrap() = String::new();
+                privacy::set_viewer_hook_state(false, "", "");
+                voice_engine.is_session_active.store(is_host_capturing.load(Ordering::SeqCst), Ordering::SeqCst);
+                if let Some(ref w_weak) = win_handle {
+                    let _ = w_weak.upgrade_in_event_loop(|win| {
+                        if !win.get_is_host() {
+                            win.set_is_connected(false);
+                            win.set_has_remote_frame(false);
+                        }
+                    });
+                }
             }
         }
     });

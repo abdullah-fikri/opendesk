@@ -61,6 +61,41 @@ pub const CAP_FILE_FOLDER: &str = "file-folder";
 /// Whether the current partner advertised `file-folder`.
 pub static PEER_FILE_FOLDER: AtomicBool = AtomicBool::new(false);
 
+/// File caps (ack, offer, folder) of each host this machine views, keyed by clean ID. A viewer of several hosts
+/// (multi-session) must not use one host's caps for another; lookups for an unknown target fall back to the
+/// PEER_FILE_* globals, which still describe the single partner exactly as before.
+static SESSION_CAPS: Mutex<Vec<(String, [bool; 3])>> = Mutex::new(Vec::new());
+
+pub fn set_session_caps(clean: &str, ack: bool, offer: bool, folder: bool) {
+    let mut caps = SESSION_CAPS.lock().unwrap();
+    caps.retain(|(id, _)| id != clean);
+    caps.push((clean.to_string(), [ack, offer, folder]));
+}
+
+pub fn remove_session_caps(clean: &str) {
+    SESSION_CAPS.lock().unwrap().retain(|(id, _)| id != clean);
+}
+
+fn session_cap(target: &str, i: usize, global: &AtomicBool) -> bool {
+    let caps = SESSION_CAPS.lock().unwrap();
+    match caps.iter().find(|(id, _)| id == target) {
+        Some((_, c)) => c[i],
+        None => global.load(Ordering::SeqCst),
+    }
+}
+
+pub fn peer_ack(target: &str) -> bool {
+    session_cap(target, 0, &PEER_FILE_ACK)
+}
+
+pub fn peer_offer(target: &str) -> bool {
+    session_cap(target, 1, &PEER_FILE_OFFER)
+}
+
+pub fn peer_folder(target: &str) -> bool {
+    session_cap(target, 2, &PEER_FILE_FOLDER)
+}
+
 /// Files we offered, as (offer id, partner, paths); `None` marks a folder entry, which is never pulled.
 /// A pull may only ask for these. Newest last, a few kept.
 static OUR_OFFERS: Mutex<Vec<(String, String, Vec<Option<PathBuf>>)>> = Mutex::new(Vec::new());
@@ -870,12 +905,12 @@ pub fn send_files_async(
 
 /// Turns selected paths into send items. Returns (items, folders_skipped) or an error status.
 /// Without folders the list is exactly the selection, as before folder support.
-fn expand_paths(paths: Vec<PathBuf>) -> Result<(Vec<SendItem>, bool), String> {
+fn expand_paths(paths: Vec<PathBuf>, target_clean: &str) -> Result<(Vec<SendItem>, bool), String> {
     let plain = |p: PathBuf| SendItem { path: p, id: None, tag: None };
     if !paths.iter().any(|p| p.is_dir()) {
         return Ok((paths.into_iter().map(plain).collect(), false));
     }
-    if !PEER_FILE_FOLDER.load(Ordering::SeqCst) {
+    if !peer_folder(target_clean) {
         logger::info("app.tunnel_ft_comp", "Partner lacks file-folder; skipping folders in selection.");
         return Ok((paths.into_iter().filter(|p| !p.is_dir()).map(plain).collect(), true));
     }
@@ -910,7 +945,7 @@ fn send_folder_entry(
     let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_micros();
     let transfer_id = format!("fd_{}_{}", ts, SEQ.fetch_add(1, Ordering::Relaxed));
     let name = tag.rel.rsplit('\\').next().unwrap_or(&tag.rel);
-    let expect_ack = PEER_FILE_ACK.load(Ordering::SeqCst);
+    let expect_ack = peer_ack(target_clean.as_ref());
     let (ack_tx, ack_rx) = mpsc::channel();
     if expect_ack {
         PENDING_ACKS.lock().unwrap().push((transfer_id.clone(), ack_tx));
@@ -955,7 +990,7 @@ fn send_job(
         // Folders are walked here, on the worker thread, so a big tree never stalls the UI or the clipboard watcher.
         let (items, skipped_folders) = match job {
             SendJob::Pull(path, tid) => (vec![SendItem { path, id: Some(tid), tag: None }], false),
-            SendJob::Paths(paths) => match expand_paths(paths) {
+            SendJob::Paths(paths) => match expand_paths(paths, &target_clean) {
                 Ok(expanded) => expanded,
                 Err(status) => {
                     set_status(&win_opt, status);
@@ -1019,7 +1054,7 @@ fn send_job(
             );
 
             // Sampled per file: the session partner (and its caps) may change while a background transfer runs.
-            let expect_ack = PEER_FILE_ACK.load(Ordering::SeqCst);
+            let expect_ack = peer_ack(target_clean.as_ref());
             let (ack_tx, ack_rx) = mpsc::channel();
             PENDING_ACKS.lock().unwrap().push((transfer_id.clone(), ack_tx));
 
@@ -1196,7 +1231,7 @@ pub fn offer_files(paths: Vec<PathBuf>, target_clean: String, tx_out: Sender<Out
     }
     let generation = OFFER_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     let has_dir = paths.iter().any(|p| p.is_dir());
-    if !has_dir || !PEER_FILE_FOLDER.load(Ordering::SeqCst) {
+    if !has_dir || !peer_folder(&target_clean) {
         // Top-level files only, exactly as before folder support.
         let files: Vec<(Option<PathBuf>, Value)> = paths
             .iter()
