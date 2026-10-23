@@ -1,6 +1,14 @@
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::ptr;
+use std::sync::atomic::{AtomicI64, Ordering};
+
+/// Screen position the remote viewer last moved the cursor to; lets capture tell viewer moves from local host moves.
+pub static LAST_INJECTED_POS: AtomicI64 = AtomicI64::new(i64::MIN);
+
+pub fn pack_pos(x: i32, y: i32) -> i64 {
+    ((x as i64) << 32) | (y as u32 as i64)
+}
 
 type BOOL = i32;
 type DWORD = u32;
@@ -95,6 +103,7 @@ impl InputInjector {
     }
 
     pub fn set_cursor_pos(&self, x: i32, y: i32) {
+        LAST_INJECTED_POS.store(pack_pos(x, y), Ordering::Relaxed);
         unsafe {
             SetCursorPos(x, y);
         }

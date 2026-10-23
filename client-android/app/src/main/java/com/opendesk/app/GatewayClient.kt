@@ -11,6 +11,7 @@ import java.util.concurrent.TimeUnit
 
 class GatewayClient(
     private val deskId: String,
+    private val deviceToken: String,
     private val onMessageListener: (JsonObject) -> Unit,
     private val onStatusListener: (Boolean) -> Unit
 ) {
@@ -46,11 +47,11 @@ class GatewayClient(
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 isConnected = true
-                mainHandler.post { onStatusListener(true) }
 
                 val reg = JsonObject().apply {
                     addProperty("type", "register")
                     addProperty("deskId", deskId)
+                    addProperty("deviceToken", deviceToken)
                     addProperty("platform", "android")
                     addProperty("deviceName", "Android HP ($deskId)")
                 }
@@ -59,8 +60,13 @@ class GatewayClient(
 
             override fun onMessage(ws: WebSocket, bytes: ByteString) {
                 if (bytes.size > 1 && bytes[0] == 0x02.toByte()) {
-                    // Real-time 16kHz Voice Call PCM packet
-                    VoiceCallManager.playPcmChunk(bytes.substring(1).toByteArray())
+                    // Binary Voice Call PCM fast-path
+                    if (bytes.size % 2 == 0) {
+                        val rateKhz = bytes[1].toInt() and 0xFF
+                        VoiceCallManager.playPcmPacket(rateKhz, bytes.substring(2).toByteArray())
+                    } else {
+                        VoiceCallManager.playPcmPacket(16, bytes.substring(1).toByteArray())
+                    }
                 } else {
                     // Zero-copy binary video frame fast-path (never touches UI thread queue)
                     RemoteViewerActivity.instance?.enqueueBinaryFrame(bytes.toByteArray())
@@ -71,6 +77,7 @@ class GatewayClient(
                 try {
                     val json = gson.fromJson(text, JsonObject::class.java) ?: return
                     val type = json.get("type")?.asString ?: return
+                    if (type == "registered-ack") mainHandler.post { onStatusListener(true) }
                     if (type == "frame") {
                         // Legacy Base64 frame fast-path (bypass mainHandler UI queue!)
                         val data = json.get("data")?.asString ?: return

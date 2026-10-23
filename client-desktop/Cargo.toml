@@ -14,8 +14,12 @@ core-engine = { path = "../core-engine" }
 tungstenite = { version = "0.30.0", features = ["native-tls"] }
 url = "2.5"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+sha2 = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+snow = "0.10"
+getrandom = "0.3"
+socket2 = "0.6.5"
 
 [build-dependencies]
 slint-build = "1.18"

@@ -67,3 +67,6 @@ $RECYCLE.BIN/
 
 # Graphify & Knowledge Graph
 graphify-out/
+.continue/
+.agents/
+.claude/

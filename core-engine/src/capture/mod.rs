@@ -1,3 +1,5 @@
+pub mod dxgi;
+
 use std::ffi::c_void;
 use std::ptr;
 
@@ -14,6 +16,7 @@ type UINT = u32;
 const SRCCOPY: DWORD = 0x00CC0020;
 const CURSOR_SHOWING: DWORD = 0x00000001;
 const BI_RGB: DWORD = 0;
+const COLORONCOLOR: i32 = 3;
 const HALFTONE: i32 = 4;
 const DESKTOPHORZRES: i32 = 118;
 const DESKTOPVERTRES: i32 = 117;
@@ -119,6 +122,7 @@ unsafe extern "system" {
     fn ReleaseDC(h_wnd: HWND, h_dc: HDC) -> i32;
     fn GetCursorInfo(pci: *mut CURSORINFO) -> BOOL;
     fn DrawIcon(h_dc: HDC, x: i32, y: i32, h_icon: HICON) -> BOOL;
+    fn LoadCursorW(h_instance: *mut c_void, lp_cursor_name: *const u16) -> HICON;
     fn EnumDisplayDevicesW(
         lp_device: *const u16,
         i_dev_num: DWORD,
@@ -263,6 +267,9 @@ pub struct GdiScreenCapturer {
     mem_bmp: HBITMAP,
     old_bmp: HGDIOBJ,
     bits_ptr: *const u32,
+    /// Viewer renders its own cursor (shape synced via `cursor_shape`), so skip painting it while the viewer drives it.
+    pub hide_viewer_cursor: bool,
+    cursor_drawn: bool,
 }
 
 unsafe impl Send for GdiScreenCapturer {}
@@ -290,8 +297,12 @@ impl GdiScreenCapturer {
 
             let mem_dc = CreateCompatibleDC(screen_dc);
             if width != screen_width || height != screen_height {
-                SetStretchBltMode(mem_dc, HALFTONE);
-                SetBrushOrgEx(mem_dc, 0, 0, ptr::null_mut());
+                // Use fast COLORONCOLOR decimation for 720p/480p low-latency modes; HALFTONE for >720p text clarity
+                let stretch_mode = if width <= 1280 { COLORONCOLOR } else { HALFTONE };
+                SetStretchBltMode(mem_dc, stretch_mode);
+                if stretch_mode == HALFTONE {
+                    SetBrushOrgEx(mem_dc, 0, 0, ptr::null_mut());
+                }
             }
 
             let bmi = BITMAPINFO {
@@ -334,8 +345,20 @@ impl GdiScreenCapturer {
                 mem_bmp,
                 old_bmp,
                 bits_ptr: bits as *const u32,
+                hide_viewer_cursor: false,
+                cursor_drawn: false,
             }
         }
+    }
+}
+
+impl GdiScreenCapturer {
+    /// Last captured frame as top-down BGRX pixels (stride == width).
+    pub fn pixels(&self) -> &[u32] {
+        if self.bits_ptr.is_null() {
+            return &[];
+        }
+        unsafe { std::slice::from_raw_parts(self.bits_ptr, (self.width as usize) * (self.height as usize)) }
     }
 }
 
@@ -378,7 +401,13 @@ impl ScreenCapturer for GdiScreenCapturer {
                 h_cursor: ptr::null_mut(),
                 pt_screen_pos: POINT { x: 0, y: 0 },
             };
-            if GetCursorInfo(&mut ci) != 0 && (ci.flags & CURSOR_SHOWING) != 0 {
+            self.cursor_drawn = false;
+            if GetCursorInfo(&mut ci) != 0
+                && (ci.flags & CURSOR_SHOWING) != 0
+                && !(self.hide_viewer_cursor
+                    && crate::input::LAST_INJECTED_POS.load(std::sync::atomic::Ordering::Relaxed)
+                        == crate::input::pack_pos(ci.pt_screen_pos.x, ci.pt_screen_pos.y))
+            {
                 let rel_x = ci.pt_screen_pos.x - self.offset_x;
                 let rel_y = ci.pt_screen_pos.y - self.offset_y;
                 if rel_x >= 0
@@ -389,6 +418,7 @@ impl ScreenCapturer for GdiScreenCapturer {
                     let cx = (rel_x as i64 * self.width as i64 / self.screen_width as i64) as i32;
                     let cy = (rel_y as i64 * self.height as i64 / self.screen_height as i64) as i32;
                     DrawIcon(self.mem_dc, cx, cy, ci.h_cursor);
+                    self.cursor_drawn = true;
                 }
             }
 
@@ -437,13 +467,36 @@ impl ScreenCapturer for GdiScreenCapturer {
                 h_cursor: ptr::null_mut(),
                 pt_screen_pos: POINT { x: 0, y: 0 },
             };
-            if GetCursorInfo(&mut ci) != 0 {
+            if self.cursor_drawn && GetCursorInfo(&mut ci) != 0 {
                 let pos_hash = ((ci.pt_screen_pos.x as u32) << 16) ^ (ci.pt_screen_pos.y as u32);
                 samples.push(pos_hash);
             }
         }
         samples
     }
+}
+
+/// Current host cursor as a portable shape code: 0 hidden, 1 arrow, 2 text, 3 hand, 4 wait, 5 progress,
+/// 6 crosshair, 7 move, 8 ew-resize, 9 ns-resize, 10 nwse-resize, 11 nesw-resize, 12 not-allowed, 13 help.
+/// App-specific cursors fall back to arrow.
+pub fn cursor_shape() -> u8 {
+    // IDC_* resource IDs in the same order as shape codes 1..=13.
+    const IDS: [u16; 13] = [32512, 32513, 32649, 32514, 32650, 32515, 32646, 32644, 32645, 32642, 32643, 32648, 32651];
+    static HANDLES: std::sync::OnceLock<[usize; 13]> = std::sync::OnceLock::new();
+    let handles = HANDLES.get_or_init(|| IDS.map(|id| unsafe { LoadCursorW(ptr::null_mut(), id as usize as *const u16) } as usize));
+    let mut ci = CURSORINFO {
+        cb_size: std::mem::size_of::<CURSORINFO>() as DWORD,
+        flags: 0,
+        h_cursor: ptr::null_mut(),
+        pt_screen_pos: POINT { x: 0, y: 0 },
+    };
+    if unsafe { GetCursorInfo(&mut ci) } == 0 || (ci.flags & CURSOR_SHOWING) == 0 {
+        return 0;
+    }
+    handles
+        .iter()
+        .position(|&h| h == ci.h_cursor as usize)
+        .map_or(1, |i| i as u8 + 1)
 }
 
 impl Drop for GdiScreenCapturer {
@@ -454,5 +507,111 @@ impl Drop for GdiScreenCapturer {
             DeleteDC(self.mem_dc);
             ReleaseDC(ptr::null_mut(), self.screen_dc);
         }
+    }
+}
+
+/// Primary capturer: DXGI Desktop Duplication, with the GDI capturer as fallback (rotated outputs, no
+/// D3D11 device, duplication denied, or `OPENDESK_CAPTURE=gdi`).
+pub enum DesktopCapturer {
+    Dxgi(dxgi::DxgiCapturer),
+    Gdi(GdiScreenCapturer),
+}
+
+impl DesktopCapturer {
+    pub fn new_for_monitor(bounds: MonitorBounds, max_width: i32) -> Self {
+        let force_gdi = std::env::var("OPENDESK_CAPTURE").is_ok_and(|v| v.eq_ignore_ascii_case("gdi"));
+        if !force_gdi {
+            if let Ok(mut d) = dxgi::DxgiCapturer::new_for_monitor(bounds, max_width) {
+                // The first acquired frames can be pointer-only; wait briefly for a real image so a session
+                // never starts with a black key frame. A fully static desktop may need a moment to present.
+                let start = std::time::Instant::now();
+                while !d.has_image() && start.elapsed() < std::time::Duration::from_millis(300) {
+                    if d.grab(50).is_err() {
+                        break;
+                    }
+                }
+                return DesktopCapturer::Dxgi(d);
+            }
+        }
+        DesktopCapturer::Gdi(GdiScreenCapturer::new_for_monitor(bounds, max_width))
+    }
+
+    pub fn backend(&self) -> &'static str {
+        match self {
+            DesktopCapturer::Dxgi(_) => "dxgi",
+            DesktopCapturer::Gdi(_) => "gdi",
+        }
+    }
+
+    /// (offset_x, offset_y, screen_width, screen_height, width, height)
+    pub fn geometry(&self) -> (i32, i32, i32, i32, i32, i32) {
+        match self {
+            DesktopCapturer::Dxgi(d) => (d.offset_x, d.offset_y, d.screen_width, d.screen_height, d.width, d.height),
+            DesktopCapturer::Gdi(g) => (g.offset_x, g.offset_y, g.screen_width, g.screen_height, g.width, g.height),
+        }
+    }
+
+    pub fn width(&self) -> i32 {
+        self.geometry().4
+    }
+
+    pub fn height(&self) -> i32 {
+        self.geometry().5
+    }
+
+    pub fn set_hide_viewer_cursor(&mut self, hide: bool) {
+        match self {
+            DesktopCapturer::Dxgi(d) => d.hide_viewer_cursor = hide,
+            DesktopCapturer::Gdi(g) => g.hide_viewer_cursor = hide,
+        }
+    }
+
+    /// Captures the next frame. DXGI waits up to `timeout_ms` for a change; GDI returns at once.
+    /// A dead duplication switches this capturer to GDI permanently (same geometry).
+    pub fn grab(&mut self, timeout_ms: u32) {
+        let fallback = match self {
+            DesktopCapturer::Dxgi(d) => match d.grab(timeout_ms) {
+                Ok(_) => None,
+                Err(_) => Some((d.offset_x, d.offset_y, d.screen_width, d.screen_height, d.width, d.hide_viewer_cursor)),
+            },
+            DesktopCapturer::Gdi(g) => {
+                g.capture_frame();
+                None
+            }
+        };
+        if let Some((left, top, width, height, out_w, hide)) = fallback {
+            let max_w = if out_w < width { out_w } else { 0 };
+            let mut g = GdiScreenCapturer::new_for_monitor(MonitorBounds { left, top, width, height }, max_w);
+            g.hide_viewer_cursor = hide;
+            g.capture_frame();
+            *self = DesktopCapturer::Gdi(g);
+        }
+    }
+
+    pub fn pixels(&self) -> &[u32] {
+        match self {
+            DesktopCapturer::Dxgi(d) => d.pixels(),
+            DesktopCapturer::Gdi(g) => g.pixels(),
+        }
+    }
+
+    /// Changed regions of the last grab; None = unknown (GDI), compare the whole frame.
+    pub fn dirty_hint(&self) -> Option<&[crate::diff::Rect]> {
+        match self {
+            DesktopCapturer::Dxgi(d) => d.dirty_hint(),
+            DesktopCapturer::Gdi(_) => None,
+        }
+    }
+
+    pub fn moves(&self) -> &[crate::codec::frame::MoveRect] {
+        match self {
+            DesktopCapturer::Dxgi(d) => d.moves(),
+            DesktopCapturer::Gdi(_) => &[],
+        }
+    }
+
+    /// True when `grab` already waited for changes, so the caller should not sleep a full tick on top.
+    pub fn waits_for_changes(&self) -> bool {
+        matches!(self, DesktopCapturer::Dxgi(_))
     }
 }

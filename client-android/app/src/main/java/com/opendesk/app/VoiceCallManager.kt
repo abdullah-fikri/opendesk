@@ -29,7 +29,18 @@ object VoiceCallManager {
     val isMuted: Boolean
         get() = isMicMuted.get()
 
+    @Synchronized
     fun startSession(client: GatewayClient?, partnerClean: String = "") {
+        if (captureThread?.isAlive == true && !isSessionActive.get()) {
+            try {
+                captureThread?.join(1000)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+            if (captureThread?.isAlive == true) return
+            captureThread = null
+        }
         activeClient = client
         if (partnerClean.isNotEmpty()) targetClean = partnerClean
         isMicMuted.set(true)
@@ -38,11 +49,17 @@ object VoiceCallManager {
         }
     }
 
+    @Synchronized
     fun stopSession() {
         isSessionActive.set(false)
         isMicMuted.set(true)
         captureThread?.interrupt()
-        captureThread = null
+        try {
+            captureThread?.join(1000)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        if (captureThread?.isAlive != true) captureThread = null
         try {
             audioTrack?.pause()
             audioTrack?.flush()
@@ -51,24 +68,56 @@ object VoiceCallManager {
         audioTrack = null
     }
 
+    @Synchronized
     fun setMicMuted(muted: Boolean, client: GatewayClient?) {
         if (client != null) activeClient = client
-        if (!isSessionActive.get()) {
-            startSession(activeClient)
+        if (!isSessionActive.get()) return
+        if (!muted && captureThread?.isAlive == true && captureThread?.isInterrupted == true) return
+        if (muted) {
+            isMicMuted.set(true)
+            return
         }
-        val prev = isMicMuted.getAndSet(muted)
-        if (!muted && prev) {
-            startMicCaptureLoop()
-        }
+        // Report "active" only once a recorder is really running; it keeps running (discarding samples) while muted.
+        if (captureThread?.isAlive == true || startMicCaptureLoop()) isMicMuted.set(false)
     }
 
-    private fun initAudioTrack() {
+    private var currentSampleRate = 16000
+
+    fun playPcmPacket(rateKhz: Int, pcmBytes: ByteArray) {
+        if (!isSessionActive.get() || pcmBytes.isEmpty()) return
+        val targetRate = when (rateKhz) {
+            16 -> 16000
+            24 -> 24000
+            48 -> 48000
+            else -> 16000
+        }
+        if (audioTrack == null || currentSampleRate != targetRate) {
+            reinitAudioTrack(targetRate)
+        }
+        val track = audioTrack ?: return
         try {
+            track.write(pcmBytes, 0, pcmBytes.size)
+        } catch (_: Exception) {}
+    }
+
+    private fun reinitAudioTrack(sampleRate: Int) {
+        try {
+            audioTrack?.pause()
+            audioTrack?.flush()
+            audioTrack?.release()
+        } catch (_: Exception) {}
+        currentSampleRate = sampleRate
+        initAudioTrack(sampleRate)
+    }
+
+    private fun initAudioTrack(sampleRate: Int = SAMPLE_RATE) {
+        try {
+            val frameBytes = (sampleRate * 2 * 20) / 1000 // 20ms frame
             val minBuf = AudioTrack.getMinBufferSize(
-                SAMPLE_RATE,
+                sampleRate,
                 AudioFormat.CHANNEL_OUT_MONO,
                 AudioFormat.ENCODING_PCM_16BIT
-            ).coerceAtLeast(FRAME_BYTES * 4)
+            ).coerceAtLeast(frameBytes * 4)
 
             val track = AudioTrack.Builder()
                 .setAudioAttributes(
@@ -80,7 +129,7 @@ object VoiceCallManager {
                 .setAudioFormat(
                     AudioFormat.Builder()
                         .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(SAMPLE_RATE)
+                        .setSampleRate(sampleRate)
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                         .build()
                 )
@@ -94,40 +143,39 @@ object VoiceCallManager {
     }
 
     fun playPcmChunk(pcmBytes: ByteArray) {
-        if (!isSessionActive.get() || pcmBytes.isEmpty()) return
-        val track = audioTrack ?: return
-        try {
-            track.write(pcmBytes, 0, pcmBytes.size)
-        } catch (_: Exception) {}
+        playPcmPacket(16, pcmBytes)
     }
 
+    /** Creates and starts the recorder on the caller's thread; returns false if the mic is unavailable. */
     @SuppressLint("MissingPermission")
-    private fun startMicCaptureLoop() {
-        captureThread?.interrupt()
+    private fun startMicCaptureLoop(): Boolean {
+        val recorder = try {
+            val minBuf = AudioRecord.getMinBufferSize(
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            ).coerceAtLeast(FRAME_BYTES * 4)
+            AudioRecord(
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                minBuf
+            )
+        } catch (_: Exception) {
+            return false
+        }
+        val started = recorder.state == AudioRecord.STATE_INITIALIZED &&
+            runCatching { recorder.startRecording() }.isSuccess &&
+            recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING
+        if (!started) {
+            recorder.runCatching { release() }
+            return false
+        }
         captureThread = Thread({
-            var recorder: AudioRecord? = null
             var aec: AcousticEchoCanceler? = null
             var ns: NoiseSuppressor? = null
             try {
-                val minBuf = AudioRecord.getMinBufferSize(
-                    SAMPLE_RATE,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT
-                ).coerceAtLeast(FRAME_BYTES * 4)
-
-                recorder = AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                    SAMPLE_RATE,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    minBuf
-                )
-
-                if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-                    recorder.release()
-                    return@Thread
-                }
-
                 val sessionId = recorder.audioSessionId
                 if (AcousticEchoCanceler.isAvailable()) {
                     aec = AcousticEchoCanceler.create(sessionId)?.apply { enabled = true }
@@ -136,45 +184,35 @@ object VoiceCallManager {
                     ns = NoiseSuppressor.create(sessionId)?.apply { enabled = true }
                 }
 
-                recorder.startRecording()
                 val pcmBuf = ByteArray(FRAME_BYTES)
 
-                while (isSessionActive.get() && !isMicMuted.get()) {
+                while (isSessionActive.get() && !Thread.currentThread().isInterrupted) {
                     val read = recorder.read(pcmBuf, 0, FRAME_BYTES)
-                    if (read > 0) {
-                        val b64 = Base64.encodeToString(pcmBuf, 0, read, Base64.NO_WRAP)
-                        val tClean = targetClean
-                        if (tClean.isNotEmpty()) {
-                            val evt = JsonObject().apply {
-                                addProperty("action", "audio")
-                                addProperty("data", b64)
-                            }
-                            val msg = JsonObject().apply {
-                                addProperty("type", "relay-input")
-                                addProperty("targetClean", tClean)
-                                add("event", evt)
-                            }
-                            activeClient?.send(msg)
-                        } else {
-                            val pkt = ByteArray(1 + read)
-                            pkt[0] = 0x02
-                            System.arraycopy(pcmBuf, 0, pkt, 1, read)
-                            activeClient?.sendBinary(pkt)
-                        }
+                    if (read < 0) break // device lost (e.g. ERROR_DEAD_OBJECT)
+                    if (read > 0 && !isMicMuted.get() && isSessionActive.get()) {
+                        // Binary 0x02 fast-path: [0x02, rate_khz=16, ...pcm]
+                        val pkt = ByteArray(2 + read)
+                        pkt[0] = 0x02
+                        pkt[1] = 16
+                        System.arraycopy(pcmBuf, 0, pkt, 2, read)
+                        activeClient?.sendBinary(pkt)
                     }
                 }
             } catch (_: Exception) {
             } finally {
+                // The recorder is gone, so the UI must stop claiming the mic is active.
+                isMicMuted.set(true)
                 try {
                     aec?.release()
                     ns?.release()
-                    recorder?.stop()
-                    recorder?.release()
+                    recorder.stop()
+                    recorder.release()
                 } catch (_: Exception) {}
             }
         }, "OpenDesk-VoiceMic").apply {
             priority = Thread.MAX_PRIORITY
             start()
         }
+        return true
     }
 }

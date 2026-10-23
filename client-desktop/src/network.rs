@@ -1,10 +1,11 @@
+use std::collections::VecDeque;
 use std::net::{SocketAddr, TcpStream};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use core_engine::capture::enumerate_monitors;
 use core_engine::codec::from_base64;
@@ -17,12 +18,22 @@ use crate::audio::VoiceEngine;
 use crate::config::{
     format_desk_id, get_device_display_name, load_config, normalize_gateway_url,
 };
-use crate::file_transfer::{send_files_async, FileReceiver};
+use crate::file_transfer::{
+    abort_pending_sends, deliver_ack, is_received_clipboard, offer_files, send_files_async, serve_pull, FileReceiver, IN_FLIGHT_FILE_CHUNKS, LAST_FILE_RECV_MS, PEER_FILE_ACK, PEER_FILE_OFFER,
+};
 use crate::logger;
+use crate::p2p::{self, P2p, P2P_ACTIVE};
 use crate::privacy;
 use crate::protocol::OutgoingMsg;
-use crate::session::{decode_b64_to_pixel_buffer, decode_jpeg_bytes_to_pixel_buffer, spawn_host_capture_loop};
+use crate::session::{decode_b64_to_pixel_buffer, spawn_host_capture_loop, VideoInbox, ViewerDecoder, ViewerOutput, CAP_VIDEO_DELTA};
 use crate::{HostItem, MainWindow};
+
+fn now_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 fn resolve_optimal_gateway_url(configured_url: &str) -> String {
     let norm = normalize_gateway_url(configured_url);
@@ -49,6 +60,7 @@ pub fn spawn_network_worker(
     active_partner: Arc<Mutex<String>>,
     is_host_capturing: Arc<AtomicBool>,
     active_monitor_idx: Arc<AtomicUsize>,
+    host_resolution_mode: Arc<AtomicUsize>,
     voice_engine: Arc<VoiceEngine>,
     remote_resolution: Arc<Mutex<(i32, i32)>>,
     last_clip_seq: Arc<AtomicU32>,
@@ -56,12 +68,14 @@ pub fn spawn_network_worker(
     tx_out_for_capture: Sender<OutgoingMsg>,
 ) {
     let latest_b64_frame: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let latest_bin_frame: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+    let latest_bin_frame: Arc<VideoInbox> = Arc::new(VideoInbox::default());
 
     let decode_b64_slot = Arc::clone(&latest_b64_frame);
     let decode_bin_slot = Arc::clone(&latest_bin_frame);
     let win_decode = win_handle.clone();
     let res_decode = Arc::clone(&remote_resolution);
+    let key_partner = Arc::clone(&active_partner);
+    let key_tx = tx_out_for_capture.clone();
 
     let initial_monitors = enumerate_monitors();
     let host_monitor_bounds = Arc::new(Mutex::new(initial_monitors[0]));
@@ -73,6 +87,7 @@ pub fn spawn_network_worker(
     let clip_seq_tracker = Arc::clone(&last_clip_seq);
     let clip_tx = tx_out_for_capture.clone();
     let clip_win = win_handle.clone();
+    let clip_is_host = Arc::clone(&is_host_capturing);
     let cfg_gw_watch = Arc::clone(&current_gateway);
     let cfg_recon_watch = Arc::clone(&reconnect_signal);
     thread::spawn(move || {
@@ -116,22 +131,36 @@ pub fn spawn_network_worker(
             if cur_seq != 0 && cur_seq != prev_seq {
                 clip_seq_tracker.store(cur_seq, Ordering::SeqCst);
 
-                let files = clip_inj.get_clipboard_files();
-                if !files.is_empty() {
-                    logger::info(
-                        "app.clip_comp",
-                        &format!("Local file copy detected ({} files); syncing to remote clipboard.", files.len()),
-                    );
-                    send_files_async(
-                        files,
-                        partner,
-                        clip_tx.clone(),
-                        clip_win.clone(),
-                        false,
-                    );
-                    continue;
+                // Copy on the host (remote Ctrl+C) sends the files to the viewer's clipboard. The viewer side
+                // sends its files explicitly on Ctrl+V, so it never auto-uploads here (that would send twice).
+                // Files we received ourselves are skipped by provenance, which stops the echo loop.
+                // AnyDesk-style: copied files (either side) are only offered; the partner pulls them on paste.
+                if PEER_FILE_OFFER.load(Ordering::SeqCst) {
+                    let files = clip_inj.get_clipboard_files();
+                    if !files.is_empty() {
+                        if !is_received_clipboard(&files) && offer_files(&files, &partner, &clip_tx) {
+                            if let Some(ref w_weak) = clip_win {
+                                let n = files.len();
+                                let _ = w_weak.upgrade_in_event_loop(move |win| {
+                                    win.set_status_text(format!("{} berkas siap ditempel di perangkat lain", n).into());
+                                });
+                            }
+                        }
+                        continue;
+                    }
+                } else if clip_is_host.load(Ordering::SeqCst) {
+                    let files = clip_inj.get_clipboard_files();
+                    if !files.is_empty() {
+                        if !is_received_clipboard(&files) {
+                            logger::info(
+                                "app.clip_comp",
+                                &format!("Host file copy detected ({} files); sending to viewer clipboard.", files.len()),
+                            );
+                            send_files_async(files, partner, clip_tx.clone(), clip_win.clone(), false);
+                        }
+                        continue;
+                    }
                 }
-
                 if let Some(txt) = clip_inj.get_clipboard_text() {
                     if !txt.is_empty() {
                         let msg = json!({
@@ -152,17 +181,38 @@ pub fn spawn_network_worker(
             let mut frame_count = 0u32;
             let mut fps_timer = Instant::now();
             let mut current_fps = 60u32;
+            let mut viewer = ViewerDecoder::new();
+            let mut last_key_request: Option<Instant> = None;
 
             loop {
-                let bin_opt = decode_bin_slot.lock().unwrap().take();
-                let b64_opt = if bin_opt.is_none() {
+                let batch = decode_bin_slot.drain();
+                let b64_opt = if batch.is_empty() {
                     decode_b64_slot.lock().unwrap().take()
                 } else {
                     None
                 };
 
-                let decoded = if let Some(bin) = bin_opt {
-                    decode_jpeg_bytes_to_pixel_buffer(&bin)
+                let decoded = if !batch.is_empty() {
+                    match viewer.process(batch) {
+                        ViewerOutput::Frame(buf, w, h) => Some((buf, w, h)),
+                        ViewerOutput::Unchanged => None,
+                        ViewerOutput::NeedKey => {
+                            // Lost or undecodable delta: ask the host for a key frame, at most every 300 ms.
+                            if last_key_request.is_none_or(|t| t.elapsed() >= Duration::from_millis(300)) {
+                                last_key_request = Some(Instant::now());
+                                let partner = key_partner.lock().unwrap().clone();
+                                if !partner.is_empty() {
+                                    logger::info("desk_rt.video", "Delta chain broken; requesting key frame.");
+                                    let _ = key_tx.send(OutgoingMsg::Json(json!({
+                                        "type": "relay-input",
+                                        "targetClean": partner,
+                                        "event": { "action": "video-keyframe" }
+                                    })));
+                                }
+                            }
+                            None
+                        }
+                    }
                 } else if let Some(b64) = b64_opt {
                     decode_b64_to_pixel_buffer(&b64)
                 } else {
@@ -182,12 +232,15 @@ pub fn spawn_network_worker(
                         fps_timer = Instant::now();
                     }
                     let fps_display = current_fps.max(60);
+                    let file_busy = IN_FLIGHT_FILE_CHUNKS.load(Ordering::Relaxed) > 0
+                        || now_epoch_ms().saturating_sub(LAST_FILE_RECV_MS.load(Ordering::Relaxed)) < 2000;
+                    let path = if P2P_ACTIVE.load(Ordering::Relaxed) { "P2P" } else { "Relay" };
                     let _ = win_dec_weak.upgrade_in_event_loop(move |win| {
                         win.set_remote_frame(Image::from_rgba8(buf));
                         win.set_has_remote_frame(true);
-                        if !win.get_is_host() && win.get_is_connected() {
+                        if !win.get_is_host() && win.get_is_connected() && !file_busy {
                             win.set_status_text(
-                                format!("{}x{} • {} FPS", w, h, fps_display).into(),
+                                format!("{}x{} • {} FPS • {}", w, h, fps_display, path).into(),
                             );
                         }
                     });
@@ -198,6 +251,9 @@ pub fn spawn_network_worker(
 
     thread::spawn(move || {
         let mut file_receiver = FileReceiver::new();
+        let mut file_queue: VecDeque<(Value, Option<String>)> = VecDeque::new();
+        // Input that arrived over P2P, already wrapped as `input-command` JSON by the p2p module.
+        let (p2p_in_tx, p2p_in_rx) = mpsc::channel::<String>();
 
         loop {
             reconnect_signal.store(false, Ordering::SeqCst);
@@ -241,12 +297,19 @@ pub fn spawn_network_worker(
             } else {
                 "windows-pc"
             };
+            let mut caps = vec!["file-ack", "file-offer", "cursor-shape"];
+            caps.extend(crate::session::video_caps());
+            if p2p::enabled() {
+                caps.push(p2p::CAP);
+            }
             let reg_msg = json!({
                 "type": "register",
                 "deskId": local_id,
                 "platform": platform_tag,
                 "deviceName": get_device_display_name(),
-                "isAdmin": cfg!(feature = "admin")
+                "deviceToken": std::env::var("OPENDESK_DEVICE_TOKEN").unwrap_or_else(|_| crate::config::load_config().device_token),
+                "isAdmin": cfg!(feature = "admin"),
+                "caps": caps
             });
             let _ = socket.send(tungstenite::Message::Text(reg_msg.to_string().into()));
             let _ = socket.flush();
@@ -267,28 +330,46 @@ pub fn spawn_network_worker(
 
             if let Some(ref w_weak) = win_handle {
                 let _ = w_weak.upgrade_in_event_loop(|win| {
-                    win.set_status_text("Online".into());
-                    win.set_is_relay_online(true);
+                    win.set_status_text("Mendaftarkan perangkat...".into());
+                    win.set_is_relay_online(false);
                 });
             }
 
             can_send_frame.store(true, Ordering::SeqCst);
             let mut disconnected = false;
             let mut video_in_flight = false;
+            let mut last_expire = Instant::now();
+            let mut server_p2p = false;
+            let mut server_offer = false;
+            let mut p2p_link: Option<Arc<P2p>> = None;
 
             while !reconnect_signal.load(Ordering::SeqCst) && !disconnected {
-                // 1. Drain outgoing queue: coalesce high-frequency MouseMove and VideoFrames
+                // 1. Drain outgoing queue: coalesce high-frequency MouseMove and VideoFrames,
+                // send Control JSON & Binary Audio immediately, and queue FileTransfer separately.
                 let mut pending_video: Option<Vec<u8>> = None;
                 let mut pending_mouse: Option<(f64, f64)> = None;
                 let partner_now = active_partner.lock().unwrap().clone();
 
-                // Limit JSON batch per tick so large file transfers never block control/video
-                let mut json_sent_this_tick = 0usize;
-                while json_sent_this_tick < 8 {
+                // The P2P path lives exactly as long as the session it was opened for.
+                if p2p_link.as_ref().is_some_and(|p| p.partner != partner_now) {
+                    if let Some(p) = p2p_link.take() {
+                        p.close();
+                    }
+                    while p2p_in_rx.try_recv().is_ok() {}
+                }
+                let direct = p2p_link.as_ref().filter(|p| p.is_active()).cloned();
+
+                loop {
                     match rx_out.try_recv() {
                         Ok(OutgoingMsg::Json(val)) => {
-                            let _ = socket.send(tungstenite::Message::Text(val.to_string().into()));
-                            json_sent_this_tick += 1;
+                            let p2p_sent = direct.as_ref().is_some_and(|p| {
+                                val.get("type").and_then(|t| t.as_str()) == Some("relay-input")
+                                    && val.get("targetClean").and_then(|t| t.as_str()) == Some(p.partner.as_str())
+                                    && val.get("event").is_some_and(|ev| p.send_input(ev))
+                            });
+                            if !p2p_sent {
+                                let _ = socket.send(tungstenite::Message::Text(val.to_string().into()));
+                            }
                         }
                         Ok(OutgoingMsg::MouseMove(nx, ny)) => {
                             pending_mouse = Some((nx, ny));
@@ -296,19 +377,13 @@ pub fn spawn_network_worker(
                         Ok(OutgoingMsg::BinaryFrame(jpeg_bytes)) => {
                             pending_video = Some(jpeg_bytes);
                         }
-                        Ok(OutgoingMsg::AudioChunk(b64_pcm)) => {
-                            if !partner_now.is_empty() {
-                                let audio_msg = json!({
-                                    "type": "relay-input",
-                                    "targetClean": partner_now,
-                                    "event": {
-                                        "action": "audio",
-                                        "data": b64_pcm
-                                    }
-                                });
-                                let _ = socket.send(tungstenite::Message::Text(audio_msg.to_string().into()));
-                                json_sent_this_tick += 1;
+                        Ok(OutgoingMsg::AudioChunk(pcm_pkt)) => {
+                            if !partner_now.is_empty() && !direct.as_ref().is_some_and(|p| p.send_audio(&pcm_pkt)) {
+                                let _ = socket.send(tungstenite::Message::Binary(pcm_pkt.into()));
                             }
+                        }
+                        Ok(OutgoingMsg::FileTransfer { msg, status_text }) => {
+                            file_queue.push_back((msg, status_text));
                         }
                         Err(_) => break,
                     }
@@ -316,22 +391,66 @@ pub fn spawn_network_worker(
 
                 if let Some((nx, ny)) = pending_mouse {
                     if !partner_now.is_empty() {
-                        let move_msg = json!({
-                            "type": "relay-input",
-                            "targetClean": partner_now,
-                            "event": {
-                                "action": "mousemove",
-                                "normX": nx,
-                                "normY": ny
-                            }
+                        let event = json!({
+                            "action": "mousemove",
+                            "normX": nx,
+                            "normY": ny
                         });
-                        let _ = socket.send(tungstenite::Message::Text(move_msg.to_string().into()));
+                        if !direct.as_ref().is_some_and(|p| p.send_input(&event)) {
+                            let move_msg = json!({
+                                "type": "relay-input",
+                                "targetClean": partner_now,
+                                "event": event
+                            });
+                            let _ = socket.send(tungstenite::Message::Text(move_msg.to_string().into()));
+                        }
                     }
                 }
 
                 if let Some(jpeg_bytes) = pending_video {
-                    let _ = socket.send(tungstenite::Message::Binary(jpeg_bytes.into()));
-                    video_in_flight = true;
+                    // Over P2P the viewer's frame-ack releases can_send_frame instead of the socket flush.
+                    if !direct.as_ref().is_some_and(|p| p.send_video(&jpeg_bytes)) {
+                        let _ = socket.send(tungstenite::Message::Binary(jpeg_bytes.into()));
+                        video_in_flight = true;
+                    }
+                }
+
+                // Drain background file transfer queue:
+                // - Up to 8 chunks/tick during active screen session (keeps video & audio latency low)
+                // - Up to 64 chunks/tick when screen session is disconnected (full-speed background transfer!)
+                let max_file_chunks = if partner_now.is_empty() { 64 } else { 8 };
+                let mut latest_file_status: Option<String> = None;
+                for _ in 0..max_file_chunks {
+                    let Some((f_msg, f_status)) = file_queue.pop_front() else {
+                        break;
+                    };
+                    // WouldBlock means tungstenite buffered the frame; any other error leaves it queued
+                    // until the read loop notices the dead socket and fails the transfer.
+                    match socket.send(tungstenite::Message::Text(f_msg.to_string().into())) {
+                        Ok(()) => {}
+                        Err(tungstenite::Error::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(_) => {
+                            file_queue.push_front((f_msg, f_status));
+                            break;
+                        }
+                    }
+                    IN_FLIGHT_FILE_CHUNKS.fetch_sub(1, Ordering::Relaxed);
+                    if f_status.is_some() {
+                        latest_file_status = f_status;
+                    }
+                }
+                if last_expire.elapsed() >= Duration::from_secs(1) {
+                    last_expire = Instant::now();
+                    if let Some(st) = file_receiver.expire_stale(last_expire) {
+                        latest_file_status = Some(st);
+                    }
+                }
+                if let Some(st) = latest_file_status {
+                    if let Some(ref w_weak) = win_handle {
+                        let _ = w_weak.upgrade_in_event_loop(move |win| {
+                            win.set_status_text(st.into());
+                        });
+                    }
                 }
 
                 // Flush socket: only release backpressure gate `can_send_frame` when TCP/TLS buffer is fully flushed!
@@ -355,16 +474,20 @@ pub fn spawn_network_worker(
 
                 // 2. Drain ALL available incoming messages from socket before sleeping
                 loop {
-                    match socket.read() {
+                    let incoming = match p2p_in_rx.try_recv() {
+                        Ok(text) => Ok(tungstenite::Message::Text(text.into())),
+                        Err(_) => socket.read(),
+                    };
+                    match incoming {
                         Ok(tungstenite::Message::Ping(payload)) => {
                             let _ = socket.send(tungstenite::Message::Pong(payload));
                             let _ = socket.flush();
                         }
                         Ok(tungstenite::Message::Binary(bin)) => {
                             if bin.len() > 1 && bin[0] == 0x02 {
-                                voice_engine.play_pcm_chunk(&bin[1..]);
+                                voice_engine.play_binary_packet(&bin);
                             } else {
-                                *latest_bin_frame.lock().unwrap() = Some(bin.to_vec());
+                                latest_bin_frame.push(bin.to_vec());
                             }
                         }
                         Ok(tungstenite::Message::Text(text)) => {
@@ -378,6 +501,15 @@ pub fn spawn_network_worker(
                             match msg_type {
                                 "registered-ack" => {
                                     logger::info("app.service", "Client registration acknowledged by relay.");
+                                    server_p2p = val
+                                        .get("caps")
+                                        .and_then(|v| v.as_array())
+                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some("p2p-signal")));
+                                    // Older relays drop offer/pull, so clipboard offers need relay support too.
+                                    server_offer = val
+                                        .get("caps")
+                                        .and_then(|v| v.as_array())
+                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some("file-offer")));
                                     if let Some(ref w_weak) = win_handle {
                                         let _ = w_weak.upgrade_in_event_loop(|win| {
                                             win.set_status_text("Online".into());
@@ -477,6 +609,53 @@ pub fn spawn_network_worker(
                                         injector.get_clipboard_sequence_number(),
                                         Ordering::SeqCst,
                                     );
+                                    let peer_acks = val
+                                        .get("peerCaps")
+                                        .and_then(|v| v.as_array())
+                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some("file-ack")));
+                                    PEER_FILE_ACK.store(peer_acks, Ordering::SeqCst);
+                                    let peer_cursor = val
+                                        .get("peerCaps")
+                                        .and_then(|v| v.as_array())
+                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some("cursor-shape")));
+                                    crate::session::PEER_CURSOR_SHAPE.store(peer_cursor, Ordering::SeqCst);
+                                    let peer_delta = val
+                                        .get("peerCaps")
+                                        .and_then(|v| v.as_array())
+                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some(CAP_VIDEO_DELTA)));
+                                    crate::session::PEER_VIDEO_DELTA.store(peer_delta, Ordering::SeqCst);
+                                    let peer_h264 = val
+                                        .get("peerCaps")
+                                        .and_then(|v| v.as_array())
+                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some(crate::session::CAP_VIDEO_H264)));
+                                    crate::session::PEER_VIDEO_H264.store(peer_h264, Ordering::SeqCst);
+                                    let peer_offer = val
+                                        .get("peerCaps")
+                                        .and_then(|v| v.as_array())
+                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some("file-offer")));
+                                    crate::file_transfer::PEER_FILE_OFFER.store(peer_offer && server_offer, Ordering::SeqCst);
+
+                                    if let Some(old) = p2p_link.take() {
+                                        old.close();
+                                    }
+                                    let peer_p2p = val
+                                        .get("peerCaps")
+                                        .and_then(|v| v.as_array())
+                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some(p2p::CAP)));
+                                    if server_p2p && peer_p2p && p2p::enabled() {
+                                        p2p_link = P2p::start(
+                                            role == "host",
+                                            &local_id,
+                                            target_clean.clone(),
+                                            Arc::clone(&can_send_frame),
+                                            tx_out_for_capture.clone(),
+                                            p2p::Sinks {
+                                                video: Arc::clone(&latest_bin_frame),
+                                                voice: Arc::clone(&voice_engine),
+                                                input: p2p_in_tx.clone(),
+                                            },
+                                        );
+                                    }
 
                                     logger::info(
                                         "app.frontend_session",
@@ -502,6 +681,7 @@ pub fn spawn_network_worker(
                                             target_clean.clone(),
                                             Arc::clone(&is_host_capturing),
                                             Arc::clone(&active_monitor_idx),
+                                            Arc::clone(&host_resolution_mode),
                                             Arc::clone(&host_monitor_bounds),
                                             Arc::clone(&can_send_frame),
                                             tx_out_for_capture.clone(),
@@ -526,6 +706,28 @@ pub fn spawn_network_worker(
                                             &target_clean,
                                             &local_win_title,
                                         );
+                                        // Viewer informs host of preferred resolution & audio quality upon connection
+                                        let current_res = host_resolution_mode.load(Ordering::SeqCst);
+                                        let current_aq = voice_engine.audio_quality.load(Ordering::SeqCst);
+                                        let init_res_msg = json!({
+                                            "type": "relay-input",
+                                            "targetClean": target_clean,
+                                            "event": {
+                                                "action": "set-resolution",
+                                                "mode": current_res
+                                            }
+                                        });
+                                        let _ = tx_out_for_capture.send(OutgoingMsg::Json(init_res_msg));
+                                        let init_aq_msg = json!({
+                                            "type": "relay-input",
+                                            "targetClean": target_clean,
+                                            "event": {
+                                                "action": "set-audio-quality",
+                                                "quality": current_aq
+                                            }
+                                        });
+                                        let _ = tx_out_for_capture.send(OutgoingMsg::Json(init_aq_msg));
+
                                         if let Some(ref w_weak) = win_handle {
                                             let _ = w_weak.upgrade_in_event_loop(move |win| {
                                                 win.set_has_incoming(false);
@@ -563,19 +765,66 @@ pub fn spawn_network_worker(
                                             continue;
                                         }
 
+                                        // Host -> viewer only: the viewer shows its own cursor in the host's current shape.
+                                        if action == "cursor-shape" {
+                                            if !is_host_capturing.load(Ordering::SeqCst) {
+                                                let shape = event.get("shape").and_then(|v| v.as_i64()).unwrap_or(1) as i32;
+                                                if let Some(ref w_weak) = win_handle {
+                                                    let _ = w_weak.upgrade_in_event_loop(move |win| win.set_remote_cursor(shape));
+                                                }
+                                            }
+                                            continue;
+                                        }
+
+                                        // Viewer lost a delta frame; the capture loop answers with a key frame.
+                                        if action == "video-keyframe" {
+                                            if is_host_capturing.load(Ordering::SeqCst) {
+                                                crate::session::KEYFRAME_REQUESTED.store(true, Ordering::SeqCst);
+                                            }
+                                            continue;
+                                        }
+
                                         if action == "set-mic" {
-                                            let muted = event.get("muted").and_then(|v| v.as_bool()).unwrap_or(false);
-                                            voice_engine.is_mic_muted.store(muted, Ordering::SeqCst);
-                                            if let Some(ref w_weak) = win_handle {
-                                                let _ = w_weak.upgrade_in_event_loop(move |win| {
-                                                    win.set_is_mic_muted(muted);
-                                                });
+                                            // A remote peer may silence this mic, but only the local user can enable it.
+                                            if event.get("muted").and_then(|v| v.as_bool()) == Some(true) {
+                                                voice_engine.is_mic_muted.store(true, Ordering::SeqCst);
+                                                if let Some(ref w_weak) = win_handle {
+                                                    let _ = w_weak.upgrade_in_event_loop(|win| {
+                                                        win.set_is_mic_muted(true);
+                                                    });
+                                                }
                                             }
                                             continue;
                                         }
 
                                         if action == "switch-monitor" {
                                             active_monitor_idx.fetch_add(1, Ordering::SeqCst);
+                                            continue;
+                                        }
+
+                                        if action == "set-resolution" {
+                                            let mode = event.get("mode").and_then(|v| v.as_u64()).unwrap_or(1080) as usize;
+                                            host_resolution_mode.store(mode, Ordering::SeqCst);
+                                            logger::info(
+                                                "app.frontend_session",
+                                                &format!("Viewer requested resolution mode: {}", mode),
+                                            );
+                                            continue;
+                                        }
+
+                                        if action == "set-audio-quality" {
+                                            let q = event.get("quality").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
+                                            let safe_q = q.min(2);
+                                            voice_engine.audio_quality.store(safe_q, Ordering::SeqCst);
+                                            if let Some(ref w_weak) = win_handle {
+                                                let _ = w_weak.upgrade_in_event_loop(move |win| {
+                                                    win.set_audio_quality(safe_q as i32);
+                                                });
+                                            }
+                                            logger::info(
+                                                "app.frontend_session",
+                                                &format!("Partner set voice audio quality: {}", safe_q),
+                                            );
                                             continue;
                                         }
 
@@ -700,6 +949,14 @@ pub fn spawn_network_worker(
                                         }
                                     }
                                 }
+                                "p2p-signal" => {
+                                    let from = val.get("fromClean").and_then(|v| v.as_str()).unwrap_or("");
+                                    if let (Some(p), Some(cand)) = (p2p_link.as_ref(), val.get("candidate").and_then(|v| v.as_str())) {
+                                        if p.partner == from {
+                                            p.on_signal(cand);
+                                        }
+                                    }
+                                }
                                 "clipboard-sync" => {
                                     if let Some(text) = val.get("text").and_then(|v| v.as_str()) {
                                         injector.set_clipboard_text(text);
@@ -710,21 +967,58 @@ pub fn spawn_network_worker(
                                     }
                                 }
                                 "file-transfer" => {
-                                    if let Some(payload) = val.get("payload") {
-                                        if let Some(status_msg) = file_receiver.handle_payload(
+                                    // fromClean is stamped by the relay, never taken from the payload.
+                                    // Relays built before file grants do not stamp it; attribute the transfer to the session partner
+                                    // (outside a session `from` stays empty and the payload is dropped).
+                                    let from = val
+                                        .get("fromClean")
+                                        .and_then(|v| v.as_str())
+                                        .map(str::to_string)
+                                        .unwrap_or_else(|| active_partner.lock().unwrap().clone());
+                                    if let (Some(payload), false) = (val.get("payload"), from.is_empty()) {
+                                        let action = payload.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                                        let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        if action == "ack" {
+                                            deliver_ack(&id, payload.get("ok").and_then(|v| v.as_bool()) == Some(true));
+                                            continue;
+                                        }
+                                        if action == "offer" || action == "pull" {
+                                            let status = if action == "offer" {
+                                                crate::virtual_clip::set_offer(&from, payload, tx_out_for_capture.clone())
+                                            } else {
+                                                serve_pull(&from, payload, &tx_out_for_capture, win_handle.clone());
+                                                None
+                                            };
+                                            if let (Some(st), Some(w_weak)) = (status, win_handle.as_ref()) {
+                                                let _ = w_weak.upgrade_in_event_loop(move |win| win.set_status_text(st.into()));
+                                            }
+                                            continue;
+                                        }
+                                        let allow_auto_paste = !active_partner.lock().unwrap().is_empty();
+                                        let (status_msg, ack) = file_receiver.handle_payload(
                                             payload,
+                                            &from,
                                             &injector,
                                             &last_clip_seq,
-                                        ) {
-                                            if let Some(ref w_weak) = win_handle {
-                                                let _ = w_weak.upgrade_in_event_loop(move |win| {
-                                                    win.set_status_text(status_msg.into());
-                                                });
-                                            }
+                                            allow_auto_paste,
+                                        );
+                                        if let Some(ok) = ack {
+                                            let ack_msg = json!({
+                                                "type": "relay-file",
+                                                "targetClean": from,
+                                                "payload": { "action": "ack", "id": id, "ok": ok }
+                                            });
+                                            let _ = socket.send(tungstenite::Message::Text(ack_msg.to_string().into()));
+                                        }
+                                        if let (Some(status_msg), Some(w_weak)) = (status_msg, win_handle.as_ref()) {
+                                            let _ = w_weak.upgrade_in_event_loop(move |win| {
+                                                win.set_status_text(status_msg.into());
+                                            });
                                         }
                                     }
                                 }
                                 "session-closed" => {
+                                    crate::virtual_clip::clear_offer(&active_partner.lock().unwrap());
                                     is_host_capturing.store(false, Ordering::SeqCst);
                                     privacy::reset_host_privacy();
                                     privacy::set_viewer_hook_state(false, "", "");
@@ -770,6 +1064,15 @@ pub fn spawn_network_worker(
                         Ok(_) => {}
                         Err(e) => {
                             logger::warn("anynet.any_socket", &format!("Socket disconnected: {}", e));
+                            // Relay grants die with this connection, so every transfer on it has failed.
+                            abort_pending_sends();
+                            crate::virtual_clip::abort_pulls();
+                            crate::virtual_clip::clear_offer("");
+                            for _ in file_queue.drain(..) {
+                                IN_FLIGHT_FILE_CHUNKS.fetch_sub(1, Ordering::Relaxed);
+                            }
+                            let recv_status = file_receiver.abort_all();
+                            *active_partner.lock().unwrap() = String::new();
                             is_host_capturing.store(false, Ordering::SeqCst);
                             privacy::reset_host_privacy();
                             privacy::set_viewer_hook_state(false, "", "");
@@ -782,7 +1085,10 @@ pub fn spawn_network_worker(
                                     win.set_privacy_mode(0);
                                     win.set_block_remote_input(false);
                                     win.set_show_session_options(false);
-                                    win.set_status_text("Terputus".into());
+                                    win.set_is_connected(false);
+                                    win.set_is_host(false);
+                                    win.set_has_remote_frame(false);
+                                    win.set_status_text(recv_status.unwrap_or_else(|| "Terputus".into()).into());
                                 });
                             }
                             disconnected = true;
@@ -796,6 +1102,10 @@ pub fn spawn_network_worker(
                     break;
                 }
                 thread::sleep(Duration::from_millis(1));
+            }
+            // The relay owns session authorization, so a lost relay connection also ends the direct path.
+            if let Some(p) = p2p_link.take() {
+                p.close();
             }
         }
     });

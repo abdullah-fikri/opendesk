@@ -17,6 +17,7 @@ import android.util.Base64
 import android.view.LayoutInflater
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -26,6 +27,7 @@ import androidx.core.content.ContextCompat
 import com.google.gson.JsonObject
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 
 class MainActivity : AppCompatActivity() {
 
@@ -240,6 +242,7 @@ class MainActivity : AppCompatActivity() {
         gatewayClient?.disconnect()
         gatewayClient = GatewayClient(
             deskId = myDeskId,
+            deviceToken = getSharedPreferences("opendesk_prefs", Context.MODE_PRIVATE).getString("device_token", "") ?: "",
             onMessageListener = { msg -> handleGatewayMessage(msg) },
             onStatusListener = { online ->
                 tvStatus.text = if (online) "Terhubung" else "Terputus"
@@ -257,19 +260,33 @@ class MainActivity : AppCompatActivity() {
             setPadding(40, 30, 40, 30)
         }
 
+        val tokenInput = EditText(this).apply {
+            hint = "Token perangkat (minimal 32 karakter)"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setText(getSharedPreferences("opendesk_prefs", Context.MODE_PRIVATE).getString("device_token", ""))
+        }
+        val fields = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(input)
+            addView(tokenInput)
+        }
         AlertDialog.Builder(this)
             .setTitle("Pengaturan Relay Gateway")
-            .setMessage("Masukkan alamat WebSocket Relay Gateway (lokal ws:// atau Cloudflare wss://):")
-            .setView(input)
+            .setMessage("Masukkan alamat WebSocket Relay Gateway dan token perangkat yang terdaftar di relay:")
+            .setView(fields)
             .setPositiveButton("Simpan & Sambungkan") { _, _ ->
                 val newUrl = input.text.toString().trim()
-                if (newUrl.isNotEmpty()) {
+                val token = tokenInput.text.toString().trim()
+                if (newUrl.isNotEmpty() && token.length >= 32) {
                     getSharedPreferences("opendesk_prefs", Context.MODE_PRIVATE)
                         .edit()
                         .putString("gateway_url", newUrl)
+                        .putString("device_token", token)
                         .apply()
                     initGateway()
                     Toast.makeText(this, "Gateway diperbarui", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Alamat dan token minimal 32 karakter wajib diisi", Toast.LENGTH_LONG).show()
                 }
             }
             .setNeutralButton("Reset Default") { _, _ ->
@@ -365,6 +382,14 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Exception) {}
             return
         }
+        if (action == "set-mic") {
+            // Remote controls may silence capture, but only the device owner can enable it.
+            if (event.get("muted")?.asBoolean == true) {
+                VoiceCallManager.setMicMuted(true, gatewayClient)
+                updateHostMicButtonUI()
+            }
+            return
+        }
         val service = OpenDeskAccessibilityService.instance ?: return
 
         val dm = resources.displayMetrics
@@ -420,49 +445,93 @@ class MainActivity : AppCompatActivity() {
 
     private val incomingFiles = mutableMapOf<String, FileOutputStream>()
     private val incomingFilePaths = mutableMapOf<String, File>()
+    private val incomingFileNames = mutableMapOf<String, String>()
+    private val incomingFileSizes = mutableMapOf<String, Long>()
+    private val incomingFileReceived = mutableMapOf<String, Long>()
+    private val incomingFileHashes = mutableMapOf<String, MessageDigest>()
 
     private fun handleIncomingFile(payload: JsonObject) {
         val action = payload.get("action")?.asString ?: return
         val id = payload.get("id")?.asString ?: return
+        if (id.length !in 1..80 || !id.all { it.isLetterOrDigit() && it.code < 128 || it == '_' }) return
 
         when (action) {
             "start" -> {
                 val rawName = payload.get("name")?.asString ?: "opendesk_${System.currentTimeMillis()}.bin"
                 val cleanName = rawName.replace("[\\\\/:*?\"<>|]".toRegex(), "_")
+                val size = payload.get("size")?.asLong ?: return
+                if (incomingFiles.size >= 8 || incomingFiles.containsKey(id) || size !in 0..2147483648L || cleanName.isBlank() || cleanName.length > 200 || cleanName == "." || cleanName == ".." || cleanName.any { Character.isISOControl(it) }) return
                 val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                 if (!downloadsDir.exists()) downloadsDir.mkdirs()
                 var targetFile = File(downloadsDir, cleanName)
                 try {
-                    val fos = FileOutputStream(targetFile)
+                    val staged = File.createTempFile(".opendesk-", ".part", downloadsDir)
+                    val fos = FileOutputStream(staged)
+                    targetFile = staged
                     incomingFiles[id] = fos
                     incomingFilePaths[id] = targetFile
+                    incomingFileNames[id] = cleanName
+                    incomingFileSizes[id] = size
+                    incomingFileReceived[id] = 0
+                    incomingFileHashes[id] = MessageDigest.getInstance("SHA-256")
                     Toast.makeText(this, "Menerima berkas: $cleanName...", Toast.LENGTH_SHORT).show()
                 } catch (e: Exception) {
                     val fallbackDir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: filesDir
-                    targetFile = File(fallbackDir, cleanName)
                     try {
+                        targetFile = File.createTempFile(".opendesk-", ".part", fallbackDir)
                         val fos = FileOutputStream(targetFile)
                         incomingFiles[id] = fos
                         incomingFilePaths[id] = targetFile
+                        incomingFileNames[id] = cleanName
+                        incomingFileSizes[id] = size
+                        incomingFileReceived[id] = 0
+                        incomingFileHashes[id] = MessageDigest.getInstance("SHA-256")
                         Toast.makeText(this, "Menerima berkas: $cleanName...", Toast.LENGTH_SHORT).show()
                     } catch (e2: Exception) {}
                 }
             }
             "chunk" -> {
                 val b64 = payload.get("chunk")?.asString ?: return
-                val bytes = Base64.decode(b64, Base64.DEFAULT)
+                if (b64.length > 48000) return
+                val bytes = try { Base64.decode(b64, Base64.DEFAULT) } catch (_: Exception) { return }
+                val received = incomingFileReceived[id] ?: return
+                val size = incomingFileSizes[id] ?: return
+                if (bytes.size > 32768 || received + bytes.size > size) return
                 try {
                     incomingFiles[id]?.write(bytes)
-                } catch (e: Exception) {}
+                    incomingFileHashes[id]?.update(bytes)
+                    incomingFileReceived[id] = received + bytes.size
+                } catch (_: Exception) {
+                    incomingFiles.remove(id)?.runCatching { close() }
+                    incomingFilePaths.remove(id)?.delete()
+                    incomingFileNames.remove(id)
+                    incomingFileHashes.remove(id)
+                    incomingFileReceived.remove(id)
+                    incomingFileSizes.remove(id)
+                }
             }
             "end" -> {
+                val staged = incomingFilePaths.remove(id) ?: return
+                val expected = payload.get("sha256")?.asString
+                val actual = incomingFileHashes.remove(id)?.digest()?.joinToString("") { "%02x".format(it) }
+                val size = incomingFileSizes.remove(id)
+                val received = incomingFileReceived.remove(id)
+                val valid = expected != null && expected == actual && size == received
+                val fileName = incomingFileNames.remove(id)
+                val saved = File(staged.parentFile, fileName ?: ".")
                 try {
-                    incomingFiles[id]?.flush()
-                    incomingFiles[id]?.close()
-                } catch (e: Exception) {}
-                incomingFiles.remove(id)
-                val savedFile = incomingFilePaths.remove(id)
-                Toast.makeText(this, "Berkas tersimpan: ${savedFile?.name}", Toast.LENGTH_LONG).show()
+                    val output = incomingFiles.remove(id) ?: return
+                    output.flush()
+                    output.fd.sync()
+                    output.close()
+                    if (!valid || fileName == null || !staged.renameTo(saved.takeIf { !it.exists() } ?: throw IllegalStateException("Nama file sudah dipakai"))) {
+                        throw IllegalStateException("SHA-256, ukuran, atau nama file tidak valid")
+                    }
+                    Toast.makeText(this, "Berkas tersimpan: ${saved.name}", Toast.LENGTH_LONG).show()
+                } catch (_: Exception) {
+                    staged.delete()
+                    Toast.makeText(this, "Gagal menerima berkas", Toast.LENGTH_LONG).show()
+                }
             }
         }
     }
@@ -486,6 +555,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        incomingFiles.values.forEach { it.runCatching { close() } }
+        incomingFilePaths.values.forEach { it.delete() }
         VoiceCallManager.stopSession()
         gatewayClient?.disconnect()
         super.onDestroy()

@@ -34,6 +34,7 @@ export component MainWindow inherits Window {
     in-out property <int> active_dashboard_tab: 0;
     in-out property <bool> is_mic_muted: false;
     in-out property <bool> has_remote_frame: false;
+    in-out property <int> remote_cursor: 1;
     in-out property <image> remote_frame;
     in-out property <bool> has_incoming: false;
     in-out property <string> incoming_caller: "";
@@ -41,6 +42,8 @@ export component MainWindow inherits Window {
     in-out property <bool> show_session_options: false;
     in-out property <int> privacy_mode: 0;
     in-out property <bool> block_remote_input: false;
+    in-out property <int> resolution_mode: 1080;
+    in-out property <int> audio_quality: 2;
 
     in-out property <[HistoryItem]> history_items: [];
     in-out property <[HostItem]> server_hosts: [];
@@ -74,6 +77,8 @@ export component MainWindow inherits Window {
     callback toggle_block_input();
     callback send_system_shortcut(string);
     callback refresh_hosts();
+    callback set_resolution_mode(int);
+    callback set_audio_quality(int);
 
     VerticalLayout {
         padding: 0px;
@@ -141,6 +146,7 @@ export component MainWindow inherits Window {
             if is_connected && !is_host: RemoteViewerCanvas {
                 has_remote_frame: root.has_remote_frame;
                 remote_frame: root.remote_frame;
+                remote_cursor: root.remote_cursor;
                 active_partner_id: root.active_partner_id;
                 send_mouse_move(nx, ny) => { root.send_mouse_move(nx, ny); }
                 send_mouse_down(nx, ny, btn) => { root.send_mouse_down(nx, ny, btn); }
@@ -163,9 +169,13 @@ export component MainWindow inherits Window {
         show_session_options <=> root.show_session_options;
         privacy_mode: root.privacy_mode;
         block_remote_input: root.block_remote_input;
+        resolution_mode: root.resolution_mode;
+        audio_quality: root.audio_quality;
         set_privacy_mode(m) => { root.set_privacy_mode(m); }
         toggle_block_input => { root.toggle_block_input(); }
         send_system_shortcut(sc) => { root.send_system_shortcut(sc); }
+        set_resolution_mode(m) => { root.set_resolution_mode(m); }
+        set_audio_quality(q) => { root.set_audio_quality(q); }
     }
 
     if show_rename_modal: RenameDeviceModal {

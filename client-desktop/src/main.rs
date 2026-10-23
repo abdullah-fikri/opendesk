@@ -7,10 +7,12 @@ mod dragdrop;
 mod file_transfer;
 mod logger;
 mod network;
+mod p2p;
 mod privacy;
 mod protocol;
 mod session;
 mod tray;
+mod virtual_clip;
 
 use std::env;
 use std::rc::Rc;
@@ -131,6 +133,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let active_partner = Arc::new(Mutex::new(String::new()));
     let is_host_capturing = Arc::new(AtomicBool::new(false));
     let active_monitor_idx = Arc::new(AtomicUsize::new(0));
+    let host_resolution_mode = Arc::new(AtomicUsize::new(1080));
     let remote_resolution = Arc::new(Mutex::new((local_w, local_h)));
     let last_clip_seq = Arc::new(AtomicU32::new(injector.get_clipboard_sequence_number()));
 
@@ -161,6 +164,7 @@ fn main() -> Result<(), slint::PlatformError> {
             Arc::clone(&active_partner),
             Arc::clone(&is_host_capturing),
             Arc::clone(&active_monitor_idx),
+            Arc::clone(&host_resolution_mode),
             Arc::clone(&voice_engine),
             Arc::clone(&remote_resolution),
             Arc::clone(&last_clip_seq),
@@ -186,6 +190,8 @@ fn main() -> Result<(), slint::PlatformError> {
     main_window.set_is_relay_online(false);
     main_window.set_is_admin(cfg!(feature = "admin"));
     main_window.set_active_dashboard_tab(if cfg!(feature = "admin") { 1 } else { 0 });
+    main_window.set_resolution_mode(1080);
+    main_window.set_audio_quality(2);
 
     // Intercept window close (X) -> keep running in System Tray so device is always connectable
     let close_title = win_title.clone();
@@ -288,6 +294,7 @@ fn main() -> Result<(), slint::PlatformError> {
         Arc::clone(&active_partner),
         Arc::clone(&is_host_capturing),
         Arc::clone(&active_monitor_idx),
+        Arc::clone(&host_resolution_mode),
         Arc::clone(&voice_engine),
         Arc::clone(&remote_resolution),
         Arc::clone(&last_clip_seq),
@@ -627,12 +634,69 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    // Remote Resolution Mode Selection Callback (1:1 Native, 1080p, 720p, 480p)
+    let tx_res = tx_out_clone.clone();
+    let partner_res = Arc::clone(&active_partner);
+    let host_res = Arc::clone(&host_resolution_mode);
+    let win_res = main_window.as_weak();
+    main_window.on_set_resolution_mode(move |mode| {
+        let safe_mode = match mode {
+            0 => 0,
+            1080 => 1080,
+            720 => 720,
+            480 => 480,
+            _ => 1080,
+        };
+        host_res.store(safe_mode, Ordering::SeqCst);
+        if let Some(w) = win_res.upgrade() {
+            w.set_resolution_mode(safe_mode as i32);
+        }
+        let clean = partner_res.lock().unwrap().clone();
+        if !clean.is_empty() {
+            let msg = json!({
+                "type": "relay-input",
+                "targetClean": clean,
+                "event": {
+                    "action": "set-resolution",
+                    "mode": safe_mode
+                }
+            });
+            let _ = tx_res.send(OutgoingMsg::Json(msg));
+        }
+    });
+
+    // Voice Call Microphone Audio Quality Selection Callback (16kHz, 24kHz, 48kHz HD)
+    let tx_aq = tx_out_clone.clone();
+    let partner_aq = Arc::clone(&active_partner);
+    let voice_aq = Arc::clone(&voice_engine);
+    let win_aq = main_window.as_weak();
+    main_window.on_set_audio_quality(move |quality| {
+        let safe_q = (quality as usize).min(2);
+        voice_aq.audio_quality.store(safe_q, Ordering::SeqCst);
+        if let Some(w) = win_aq.upgrade() {
+            w.set_audio_quality(safe_q as i32);
+        }
+        let clean = partner_aq.lock().unwrap().clone();
+        if !clean.is_empty() {
+            let msg = json!({
+                "type": "relay-input",
+                "targetClean": clean,
+                "event": {
+                    "action": "set-audio-quality",
+                    "quality": safe_q
+                }
+            });
+            let _ = tx_aq.send(OutgoingMsg::Json(msg));
+        }
+    });
+
     let tx_disc = tx_out_clone.clone();
     let partner_disc = Arc::clone(&active_partner);
     let host_cap_disc = Arc::clone(&is_host_capturing);
     let voice_disc = Arc::clone(&voice_engine);
     let win_disc = main_window.as_weak();
     main_window.on_disconnect_session(move || {
+        virtual_clip::clear_offer("");
         host_cap_disc.store(false, Ordering::SeqCst);
         privacy::reset_host_privacy();
         privacy::set_viewer_hook_state(false, "", "");
@@ -775,7 +839,12 @@ fn main() -> Result<(), slint::PlatformError> {
                 // On Ctrl+V: If local clipboard has files, transfer & auto-paste into the open remote folder!
                 if ctrl && !alt && (upper == 'V' || ch == '\u{0016}') {
                     let clip_files = inj_key.get_clipboard_files();
-                    if !clip_files.is_empty() {
+                    // Files that just came from the host are already there; only forward the keystroke.
+                    // Offer-capable hosts already have the copied files as virtual clipboard entries: just paste.
+                    if !clip_files.is_empty()
+                        && !file_transfer::is_received_clipboard(&clip_files)
+                        && !file_transfer::PEER_FILE_OFFER.load(Ordering::SeqCst)
+                    {
                         file_transfer::send_files_async(
                             clip_files,
                             clean.clone(),

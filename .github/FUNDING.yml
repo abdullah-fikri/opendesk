@@ -1,0 +1,11 @@
+# GitHub Sponsors configuration
+# Reference: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+
+# github: [your-github-username]
+# patreon: your-patreon-id
+# ko_fi: your-kofi-id
+# buy_me_a_coffee: your-buymeacoffee-id
+custom: 
+  - https://saweria.co/yourusername
+  - https://trakteer.id/yourusername
+

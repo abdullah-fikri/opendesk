@@ -1,12 +1,10 @@
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-
-use core_engine::codec::to_base64;
 
 use crate::logger;
 use crate::protocol::OutgoingMsg;
@@ -22,14 +20,12 @@ const WHDR_DONE: u32 = 0x00000001;
 const WHDR_PREPARED: u32 = 0x00000002;
 const WHDR_INQUEUE: u32 = 0x00000010;
 
-// 16 kHz, 16-bit Mono PCM = 32,000 bytes/sec (1,280 bytes per 40ms frame)
-const SAMPLE_RATE: u32 = 16000;
 const CHANNELS: u16 = 1;
 const BITS_PER_SAMPLE: u16 = 16;
-const FRAME_BYTES: usize = 1280; // 40ms
-const IN_RING_COUNT: usize = 8;
-const OUT_RING_COUNT: usize = 16;
-const MAX_OUT_BUF: usize = 4096;
+const IN_RING_COUNT: usize = 12;
+const OUT_RING_COUNT: usize = 24;
+const MAX_FRAME_BYTES: usize = 3840; // Up to 40ms @ 48kHz 16-bit mono
+const MAX_OUT_BUF: usize = 8192;
 
 #[repr(C)]
 struct WAVEFORMATEX {
@@ -93,24 +89,81 @@ unsafe extern "system" {
     fn waveOutSetVolume(hwo: HWAVEOUT, dw_volume: u32) -> MMRESULT;
 }
 
-/// Applies 2.5x software microphone gain with soft-saturation clamping on 16-bit signed PCM
-fn boost_pcm_16le(raw: &[u8], out: &mut [u8]) {
-    let n = raw.len().min(out.len()) & !1;
-    let mut i = 0;
-    while i < n {
-        let sample = i16::from_le_bytes([raw[i], raw[i + 1]]) as i32;
-        let boosted = ((sample * 5) / 2).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        let bytes = boosted.to_le_bytes();
-        out[i] = bytes[0];
-        out[i + 1] = bytes[1];
-        i += 2;
+/// Maps audio quality tier (0 = 16kHz, 1 = 24kHz, 2 = 48kHz HD) to (sample_rate_hz, rate_tag_khz, frame_bytes_20ms)
+pub fn quality_to_audio_params(quality: usize) -> (u32, u8, usize) {
+    match quality {
+        0 => (16000, 16, 640),  // 20ms @ 16kHz 16-bit mono
+        1 => (24000, 24, 960),  // 20ms @ 24kHz 16-bit mono
+        _ => (48000, 48, 1920), // 20ms @ 48kHz 16-bit mono (WhatsApp / AnyDesk HD Voice)
+    }
+}
+
+/// VoIP DSP pipeline: High-Pass DC/rumble filter + Smooth Noise Gate + Soft-Knee Limiter (Zero Hard-Clipping)
+struct VoiceDspState {
+    prev_in: f32,
+    prev_out: f32,
+    env: f32,
+}
+
+impl VoiceDspState {
+    fn new() -> Self {
+        Self {
+            prev_in: 0.0,
+            prev_out: 0.0,
+            env: 0.0,
+        }
+    }
+
+    fn process_pcm_16le(&mut self, raw: &[u8], out: &mut [u8]) {
+        let n = raw.len().min(out.len()) & !1;
+        let mut i = 0;
+        while i < n {
+            let s = i16::from_le_bytes([raw[i], raw[i + 1]]) as f32 / 32768.0;
+
+            // 1. 1st-order high-pass filter (~85Hz cutoff) removes DC offset, fan rumble & mic pops
+            let hp = 0.985 * (self.prev_out + s - self.prev_in);
+            self.prev_in = s;
+            self.prev_out = hp;
+
+            // 2. Envelope follower for smooth noise gate (suppresses idle mic hiss)
+            let abs_x = hp.abs();
+            if abs_x > self.env {
+                self.env = 0.80 * self.env + 0.20 * abs_x; // fast attack
+            } else {
+                self.env = 0.995 * self.env + 0.005 * abs_x; // smooth release
+            }
+
+            let gate_gain = if self.env < 0.004 {
+                (self.env / 0.004).powi(2)
+            } else {
+                1.0
+            };
+
+            // 3. Clean 1.65x vocal presence pre-gain + Padé soft-knee tanh limiter (never hard-clips!)
+            let x = hp * gate_gain * 1.65;
+            let limited = if x >= 1.5 {
+                0.96
+            } else if x <= -1.5 {
+                -0.96
+            } else {
+                let x2 = x * x;
+                x * (27.0 + x2) / (27.0 + 9.0 * x2)
+            };
+
+            let sample_out = (limited * 32760.0).clamp(-32768.0, 32767.0) as i16;
+            let bytes = sample_out.to_le_bytes();
+            out[i] = bytes[0];
+            out[i + 1] = bytes[1];
+            i += 2;
+        }
     }
 }
 
 pub struct VoiceEngine {
-    tx_play: Sender<Vec<u8>>,
+    tx_play: Sender<(u32, Vec<u8>)>,
     pub is_session_active: Arc<AtomicBool>,
     pub is_mic_muted: Arc<AtomicBool>,
+    pub audio_quality: Arc<AtomicUsize>,
 }
 
 impl VoiceEngine {
@@ -120,49 +173,55 @@ impl VoiceEngine {
             timeBeginPeriod(1);
         }
 
-        let (tx_play, rx_play) = mpsc::channel::<Vec<u8>>();
+        let (tx_play, rx_play) = mpsc::channel::<(u32, Vec<u8>)>();
         let is_session_active = Arc::new(AtomicBool::new(false));
-        // Default Mic ON (unmuted = false) when a remote session starts!
         let is_mic_muted = Arc::new(AtomicBool::new(false));
+        // Default to tier 2 (48kHz HD Voice like WhatsApp/AnyDesk)
+        let audio_quality = Arc::new(AtomicUsize::new(2));
 
         let active_cap = Arc::clone(&is_session_active);
         let muted_cap = Arc::clone(&is_mic_muted);
+        let quality_cap = Arc::clone(&audio_quality);
 
-        // 1. Microphone Capture Thread (waveIn 16kHz Mono PCM + 2.5x Pre-Amp Gain)
+        // 1. Microphone Capture Thread
+        // Keeps waveIn open across mute/unmute toggles during a session so re-enabling mic never fails!
         thread::spawn(move || unsafe {
             let block_align = (CHANNELS * BITS_PER_SAMPLE) / 8;
-            let wfx = WAVEFORMATEX {
-                w_format_tag: WAVE_FORMAT_PCM,
-                n_channels: CHANNELS,
-                n_samples_per_sec: SAMPLE_RATE,
-                n_avg_bytes_per_sec: SAMPLE_RATE * block_align as u32,
-                n_block_align: block_align,
-                w_bits_per_sample: BITS_PER_SAMPLE,
-                cb_size: 0,
-            };
-
-            let mut boosted_buf = [0u8; FRAME_BYTES];
+            let mut processed_buf = [0u8; MAX_FRAME_BYTES];
 
             loop {
-                while !active_cap.load(Ordering::Relaxed) || muted_cap.load(Ordering::Relaxed) {
+                while !active_cap.load(Ordering::Relaxed) {
                     thread::sleep(Duration::from_millis(25));
                 }
+
+                let cur_quality = quality_cap.load(Ordering::Relaxed);
+                let (sample_rate, rate_tag_khz, frame_bytes) = quality_to_audio_params(cur_quality);
+
+                let wfx = WAVEFORMATEX {
+                    w_format_tag: WAVE_FORMAT_PCM,
+                    n_channels: CHANNELS,
+                    n_samples_per_sec: sample_rate,
+                    n_avg_bytes_per_sec: sample_rate * block_align as u32,
+                    n_block_align: block_align,
+                    w_bits_per_sample: BITS_PER_SAMPLE,
+                    cb_size: 0,
+                };
 
                 let mut h_in: HWAVEIN = ptr::null_mut();
                 let res = waveInOpen(&mut h_in, WAVE_MAPPER, &wfx, 0, 0, CALLBACK_NULL);
                 if res != 0 || h_in.is_null() {
-                    logger::warn("desk_rt.audio_in", &format!("waveInOpen failed: {}", res));
-                    thread::sleep(Duration::from_millis(800));
+                    logger::warn("desk_rt.audio_in", &format!("waveInOpen ({}Hz) failed: {}", sample_rate, res));
+                    thread::sleep(Duration::from_millis(500));
                     continue;
                 }
 
-                let mut buffers: Vec<Box<[u8; FRAME_BYTES]>> = (0..IN_RING_COUNT)
-                    .map(|_| Box::new([0u8; FRAME_BYTES]))
+                let mut buffers: Vec<Box<[u8; MAX_FRAME_BYTES]>> = (0..IN_RING_COUNT)
+                    .map(|_| Box::new([0u8; MAX_FRAME_BYTES]))
                     .collect();
 
                 let mut headers: Box<[WAVEHDR; IN_RING_COUNT]> = Box::new([WAVEHDR {
                     lp_data: ptr::null_mut(),
-                    dw_buffer_length: FRAME_BYTES as u32,
+                    dw_buffer_length: frame_bytes as u32,
                     dw_bytes_recorded: 0,
                     dw_user: 0,
                     dw_flags: 0,
@@ -176,7 +235,7 @@ impl VoiceEngine {
                 for i in 0..IN_RING_COUNT {
                     let h_ptr = headers_ptr.add(i);
                     (*h_ptr).lp_data = buffers[i].as_mut_ptr();
-                    (*h_ptr).dw_buffer_length = FRAME_BYTES as u32;
+                    (*h_ptr).dw_buffer_length = frame_bytes as u32;
                     (*h_ptr).dw_bytes_recorded = 0;
                     (*h_ptr).dw_flags = 0;
                     waveInPrepareHeader(h_in, h_ptr, hdr_size);
@@ -184,31 +243,43 @@ impl VoiceEngine {
                 }
 
                 waveInStart(h_in);
-                logger::info("desk_rt.audio_in", "Microphone capture active (16kHz Mono).");
+                logger::info(
+                    "desk_rt.audio_in",
+                    &format!("Microphone capture active ({}Hz Mono, 20ms frame).", sample_rate),
+                );
 
+                let mut dsp = VoiceDspState::new();
                 let mut idx = 0usize;
-                while active_cap.load(Ordering::Relaxed) && !muted_cap.load(Ordering::Relaxed) {
+
+                while active_cap.load(Ordering::Relaxed)
+                    && quality_cap.load(Ordering::Relaxed) == cur_quality
+                {
                     let h_ptr = headers_ptr.add(idx);
                     // Volatile read is mandatory so LLVM --release never caches dw_flags!
                     let flags = ptr::read_volatile(&(*h_ptr).dw_flags);
                     if (flags & WHDR_DONE) != 0 {
                         let recorded = (ptr::read_volatile(&(*h_ptr).dw_bytes_recorded) as usize)
-                            .min(FRAME_BYTES);
-                        if recorded > 0 {
+                            .min(frame_bytes)
+                            & !1;
+                        if recorded > 0 && !muted_cap.load(Ordering::Relaxed) {
                             let slice = std::slice::from_raw_parts((*h_ptr).lp_data, recorded);
-                            boost_pcm_16le(slice, &mut boosted_buf[..recorded]);
-                            let b64 = to_base64(&boosted_buf[..recorded]);
-                            let _ = tx_out.send(OutgoingMsg::AudioChunk(b64));
+                            dsp.process_pcm_16le(slice, &mut processed_buf[..recorded]);
+                            // Binary fast-path: [0x02, rate_khz, ...pcm_bytes] (even total length)
+                            let mut pkt = Vec::with_capacity(2 + recorded);
+                            pkt.push(0x02);
+                            pkt.push(rate_tag_khz);
+                            pkt.extend_from_slice(&processed_buf[..recorded]);
+                            let _ = tx_out.send(OutgoingMsg::AudioChunk(pkt));
                         }
                         waveInUnprepareHeader(h_in, h_ptr, hdr_size);
                         (*h_ptr).dw_bytes_recorded = 0;
                         (*h_ptr).dw_flags = 0;
-                        (*h_ptr).dw_buffer_length = FRAME_BYTES as u32;
+                        (*h_ptr).dw_buffer_length = frame_bytes as u32;
                         waveInPrepareHeader(h_in, h_ptr, hdr_size);
                         waveInAddBuffer(h_in, h_ptr, hdr_size);
                         idx = (idx + 1) % IN_RING_COUNT;
                     } else {
-                        thread::sleep(Duration::from_millis(4));
+                        thread::sleep(Duration::from_millis(3));
                     }
                 }
 
@@ -220,24 +291,16 @@ impl VoiceEngine {
                     }
                 }
                 waveInClose(h_in);
-                logger::info("desk_rt.audio_in", "Microphone capture paused.");
+                logger::info("desk_rt.audio_in", "Microphone capture device closed.");
             }
         });
 
-        // 2. Speaker Playback Thread (waveOut 16kHz Mono PCM with Jitter Pre-Buffering)
+        // 2. Speaker Playback Thread (Dynamic 16kHz / 24kHz / 48kHz waveOut with low-latency jitter prebuffer)
         thread::spawn(move || unsafe {
             let block_align = (CHANNELS * BITS_PER_SAMPLE) / 8;
-            let wfx = WAVEFORMATEX {
-                w_format_tag: WAVE_FORMAT_PCM,
-                n_channels: CHANNELS,
-                n_samples_per_sec: SAMPLE_RATE,
-                n_avg_bytes_per_sec: SAMPLE_RATE * block_align as u32,
-                n_block_align: block_align,
-                w_bits_per_sample: BITS_PER_SAMPLE,
-                cb_size: 0,
-            };
-
             let mut h_out: HWAVEOUT = ptr::null_mut();
+            let mut current_rate: u32 = 0;
+
             let mut buffers: Vec<Box<[u8; MAX_OUT_BUF]>> = (0..OUT_RING_COUNT)
                 .map(|_| Box::new([0u8; MAX_OUT_BUF]))
                 .collect();
@@ -260,8 +323,8 @@ impl VoiceEngine {
             let mut prebuf_count = 0usize;
 
             loop {
-                let pcm = match rx_play.recv_timeout(Duration::from_millis(60)) {
-                    Ok(data) => data,
+                let (pkt_rate, pcm) = match rx_play.recv_timeout(Duration::from_millis(45)) {
+                    Ok(item) => item,
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         if is_paused && !h_out.is_null() && prebuf_count > 0 {
                             waveOutRestart(h_out);
@@ -276,18 +339,42 @@ impl VoiceEngine {
                     continue;
                 }
 
-                // Lazily open waveOut if not yet open
+                // Reopen waveOut if sample rate changed (e.g. 16kHz <-> 24kHz <-> 48kHz)
+                if !h_out.is_null() && current_rate != pkt_rate {
+                    waveOutReset(h_out);
+                    for i in 0..OUT_RING_COUNT {
+                        let h_ptr = headers_ptr.add(i);
+                        if (ptr::read_volatile(&(*h_ptr).dw_flags) & WHDR_PREPARED) != 0 {
+                            waveOutUnprepareHeader(h_out, h_ptr, hdr_size);
+                        }
+                        (*h_ptr).dw_flags = 0;
+                    }
+                    waveOutClose(h_out);
+                    h_out = ptr::null_mut();
+                }
+
                 if h_out.is_null() {
+                    let wfx = WAVEFORMATEX {
+                        w_format_tag: WAVE_FORMAT_PCM,
+                        n_channels: CHANNELS,
+                        n_samples_per_sec: pkt_rate,
+                        n_avg_bytes_per_sec: pkt_rate * block_align as u32,
+                        n_block_align: block_align,
+                        w_bits_per_sample: BITS_PER_SAMPLE,
+                        cb_size: 0,
+                    };
                     if waveOutOpen(&mut h_out, WAVE_MAPPER, &wfx, 0, 0, CALLBACK_NULL) == 0
                         && !h_out.is_null()
                     {
-                        let _ = waveOutSetVolume(h_out, 0xFFFFFFFF); // 100% Left + Right volume
+                        current_rate = pkt_rate;
+                        let _ = waveOutSetVolume(h_out, 0xFFFFFFFF);
                         waveOutPause(h_out);
                         is_paused = true;
                         prebuf_count = 0;
+                        next_slot = 0;
                         logger::info(
                             "desk_rt.audio_out",
-                            "Speaker playback device opened (16kHz Mono).",
+                            &format!("Speaker playback opened ({}Hz Mono).", pkt_rate),
                         );
                     } else {
                         h_out = ptr::null_mut();
@@ -295,7 +382,6 @@ impl VoiceEngine {
                     }
                 }
 
-                // Check how many buffers are currently in hardware queue
                 let mut active_in_queue = 0usize;
                 for i in 0..OUT_RING_COUNT {
                     let flags = ptr::read_volatile(&(*headers_ptr.add(i)).dw_flags);
@@ -304,15 +390,16 @@ impl VoiceEngine {
                     }
                 }
 
-                // If hardware queue drained completely, pause briefly to pre-buffer 2 frames (80ms)
-                // so Windows Audio Engine never underruns on network jitter
                 if active_in_queue == 0 && !is_paused {
                     waveOutPause(h_out);
                     is_paused = true;
                     prebuf_count = 0;
                 }
 
-                let copy_len = pcm.len().min(MAX_OUT_BUF);
+                let copy_len = pcm.len().min(MAX_OUT_BUF) & !1;
+                if copy_len == 0 {
+                    continue;
+                }
                 for _ in 0..OUT_RING_COUNT {
                     let h_ptr = headers_ptr.add(next_slot);
                     let flags = ptr::read_volatile(&(*h_ptr).dw_flags);
@@ -358,12 +445,31 @@ impl VoiceEngine {
             tx_play,
             is_session_active,
             is_mic_muted,
+            audio_quality,
         })
+    }
+
+    /// Plays incoming binary audio frame (`[0x02, rate_khz, pcm...]` or legacy `[0x02, pcm...]`)
+    pub fn play_binary_packet(&self, bin: &[u8]) {
+        if !self.is_session_active.load(Ordering::Relaxed) || bin.len() <= 2 {
+            return;
+        }
+        // Even total length with valid rate_khz tag (16, 24, 48) -> new header format
+        let (rate_hz, pcm_slice) = if bin.len() % 2 == 0
+            && (bin[1] == 16 || bin[1] == 24 || bin[1] == 48)
+        {
+            ((bin[1] as u32) * 1000, &bin[2..])
+        } else {
+            (16000, &bin[1..])
+        };
+        if !pcm_slice.is_empty() {
+            let _ = self.tx_play.send((rate_hz, pcm_slice.to_vec()));
+        }
     }
 
     pub fn play_pcm_chunk(&self, pcm: &[u8]) {
         if self.is_session_active.load(Ordering::Relaxed) && !pcm.is_empty() {
-            let _ = self.tx_play.send(pcm.to_vec());
+            let _ = self.tx_play.send((16000, pcm.to_vec()));
         }
     }
 }

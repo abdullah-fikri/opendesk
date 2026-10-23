@@ -25,6 +25,9 @@ const LEGACY_HARDCODED_ID: &str = "145494982";
 pub struct Config {
     pub gateway_url: String,
     pub desk_id: String,
+    /// Relay credential for this Desk ID (see server-relay/PROVISIONING.md); OPENDESK_DEVICE_TOKEN overrides it.
+    #[serde(default)]
+    pub device_token: String,
 }
 
 impl Default for Config {
@@ -32,6 +35,7 @@ impl Default for Config {
         Self {
             gateway_url: "ws://127.0.0.1:8088".to_string(),
             desk_id: generate_unique_desk_id(),
+            device_token: String::new(),
         }
     }
 }

@@ -1,10 +1,12 @@
 package gateway
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"regexp"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -30,17 +32,19 @@ type framePacket struct {
 }
 
 type Peer struct {
-	CleanID     string
-	DeskID      string
-	Platform    string
-	DeviceName  string
-	IsAdmin     bool
-	SessionWith string
-	WS          *websocket.Conn
-	writeMu     sync.Mutex
-	frameCh     chan framePacket
-	closeCh     chan struct{}
-	closeOnce   sync.Once
+	CleanID       string
+	DeskID        string
+	Platform      string
+	DeviceName    string
+	IsAdmin       bool
+	SessionWith   string
+	SessionActive bool
+	Caps          []string
+	WS            *websocket.Conn
+	writeMu       sync.Mutex
+	frameCh       chan framePacket
+	closeCh       chan struct{}
+	closeOnce     sync.Once
 }
 
 func NewPeer(cleanID, platform, deviceName string, isAdmin bool, ws *websocket.Conn) *Peer {
@@ -54,7 +58,7 @@ func NewPeer(cleanID, platform, deviceName string, isAdmin bool, ws *websocket.C
 		DeviceName: deviceName,
 		IsAdmin:    isAdmin,
 		WS:         ws,
-		frameCh:    make(chan framePacket, 1),
+		frameCh:    make(chan framePacket, frameQueueLen),
 		closeCh:    make(chan struct{}),
 	}
 	go p.frameWriterLoop()
@@ -82,54 +86,90 @@ func (p *Peer) frameWriterLoop() {
 	}
 }
 
-// EnqueueBinaryFrame uses latest-frame-wins to prevent Cloudflare tunnel bufferbloat
-func (p *Peer) EnqueueBinaryFrame(data []byte) {
-	pkt := framePacket{isBinary: true, data: data}
-	select {
-	case p.frameCh <- pkt:
-	default:
+// frameQueueLen bounds queued video per viewer: deltas need order, but a slow link must not build latency.
+const frameQueueLen = 8
+
+// isRestartFrame reports whether a viewer can start decoding at data: legacy JPEGs, framed key frames
+// (FF D8 00 4F, kind 1) and H.264 IDR units (kind 3, flag 1). Framed deltas depend on every frame before them.
+func isRestartFrame(data []byte) bool {
+	if len(data) < 7 || data[2] != 0x00 || data[3] != 0x4F {
+		return true
+	}
+	return data[5] == 1 || (data[5] == 3 && data[6]&1 != 0)
+}
+
+// dropQueuedFrames empties the queue; only the sender's read loop enqueues, so this cannot race a producer.
+func (p *Peer) dropQueuedFrames() {
+	for {
 		select {
 		case <-p.frameCh:
+			metrics.droppedFrames.Add(1)
 		default:
-		}
-		select {
-		case p.frameCh <- pkt:
-		default:
+			return
 		}
 	}
 }
 
-// EnqueueJSONFrame uses latest-frame-wins for legacy JSON base64 frames
-func (p *Peer) EnqueueJSONFrame(msg map[string]interface{}) {
-	pkt := framePacket{isBinary: false, jsonMsg: msg}
+// enqueueFrame keeps deltas in order and never lets the queue grow past frameQueueLen. A restart frame makes
+// everything queued obsolete; a delta that does not fit flushes the queue (the viewer then asks for a key
+// frame once) instead of silently breaking the delta chain on every congested frame.
+func (p *Peer) enqueueFrame(pkt framePacket, restart bool) {
+	if restart {
+		p.dropQueuedFrames()
+	}
 	select {
 	case p.frameCh <- pkt:
 	default:
-		select {
-		case <-p.frameCh:
-		default:
-		}
-		select {
-		case p.frameCh <- pkt:
-		default:
-		}
+		p.dropQueuedFrames()
+		metrics.droppedFrames.Add(1)
 	}
+}
+
+// EnqueueBinaryFrame queues a video frame for the viewer (see enqueueFrame).
+func (p *Peer) EnqueueBinaryFrame(data []byte) {
+	p.enqueueFrame(framePacket{isBinary: true, data: data}, isRestartFrame(data))
+}
+
+// EnqueueJSONFrame keeps latest-frame-wins for legacy JSON base64 frames (each is a full image).
+func (p *Peer) EnqueueJSONFrame(msg map[string]interface{}) {
+	p.enqueueFrame(framePacket{isBinary: false, jsonMsg: msg}, true)
+}
+
+// writeTimeout bounds how long a stalled receiver can block the sender's read loop.
+const writeTimeout = 10 * time.Second
+
+func (p *Peer) write(messageType int, data []byte) error {
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
+	_ = p.WS.SetWriteDeadline(time.Now().Add(writeTimeout))
+	err := p.WS.WriteMessage(messageType, data)
+	if err != nil {
+		// A failed write leaves the connection unusable; closing it ends the peer's read loop and cleanup runs.
+		_ = p.WS.Close()
+		return err
+	}
+	metrics.egressMessages.Add(1)
+	metrics.egressBytes.Add(uint64(len(data)))
+	return nil
 }
 
 func (p *Peer) SendJSON(v interface{}) error {
-	p.writeMu.Lock()
-	defer p.writeMu.Unlock()
-	return p.WS.WriteJSON(v)
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return p.write(websocket.TextMessage, data)
 }
 
 func (p *Peer) SendRawText(data []byte) error {
-	p.writeMu.Lock()
-	defer p.writeMu.Unlock()
-	return p.WS.WriteMessage(websocket.TextMessage, data)
+	return p.write(websocket.TextMessage, data)
 }
 
 func (p *Peer) SendRawBinary(data []byte) error {
-	p.writeMu.Lock()
-	defer p.writeMu.Unlock()
-	return p.WS.WriteMessage(websocket.BinaryMessage, data)
+	return p.write(websocket.BinaryMessage, data)
+}
+
+// SendPing uses a control frame; gorilla allows WriteControl concurrently with other writes.
+func (p *Peer) SendPing() error {
+	return p.WS.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeTimeout))
 }

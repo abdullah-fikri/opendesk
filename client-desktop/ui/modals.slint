@@ -440,14 +440,18 @@ export component SessionOptionsModal inherits Rectangle {
     in-out property <bool> show_session_options: false;
     in property <int> privacy_mode: 0;
     in property <bool> block_remote_input: false;
+    in property <int> resolution_mode: 1080;
+    in property <int> audio_quality: 2;
 
     callback set_privacy_mode(int);
     callback toggle_block_input();
     callback send_system_shortcut(string);
+    callback set_resolution_mode(int);
+    callback set_audio_quality(int);
 
     Rectangle {
-        width: 440px;
-        height: 320px;
+        width: 460px;
+        height: 480px;
         background: #111114;
         border-radius: 2px;
         border-width: 1px;
@@ -466,8 +470,8 @@ export component SessionOptionsModal inherits Rectangle {
             }
 
             VerticalLayout {
-                padding: 20px;
-                spacing: 16px;
+                padding: 18px;
+                spacing: 12px;
                 alignment: space-between;
 
                 HorizontalLayout {
@@ -494,6 +498,171 @@ export component SessionOptionsModal inherits Rectangle {
                             font-size: 11px;
                             vertical-alignment: center;
                             horizontal-alignment: center;
+                        }
+                    }
+                }
+
+                // 1. Resolution Mode Selection
+                VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Resolusi Layar Remote (Tingkat Ketajaman vs Latensi)";
+                        color: #a1a1aa;
+                        font-size: 11px;
+                        font-weight: 600;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        height: 28px;
+
+                        Rectangle {
+                            border-radius: 2px;
+                            background: resolution_mode == 0 ? #dc2626 : #18181c;
+                            border-width: 1px;
+                            border-color: resolution_mode == 0 ? #dc2626 : #27272a;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { set_resolution_mode(0); }
+                            }
+                            Text {
+                                text: "1:1 Asli";
+                                color: resolution_mode == 0 ? #ffffff : #d4d4d8;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            border-radius: 2px;
+                            background: resolution_mode == 1080 ? #dc2626 : #18181c;
+                            border-width: 1px;
+                            border-color: resolution_mode == 1080 ? #dc2626 : #27272a;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { set_resolution_mode(1080); }
+                            }
+                            Text {
+                                text: "1080p FHD";
+                                color: resolution_mode == 1080 ? #ffffff : #d4d4d8;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            border-radius: 2px;
+                            background: resolution_mode == 720 ? #dc2626 : #18181c;
+                            border-width: 1px;
+                            border-color: resolution_mode == 720 ? #dc2626 : #27272a;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { set_resolution_mode(720); }
+                            }
+                            Text {
+                                text: "720p HD";
+                                color: resolution_mode == 720 ? #ffffff : #d4d4d8;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            border-radius: 2px;
+                            background: resolution_mode == 480 ? #dc2626 : #18181c;
+                            border-width: 1px;
+                            border-color: resolution_mode == 480 ? #dc2626 : #27272a;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { set_resolution_mode(480); }
+                            }
+                            Text {
+                                text: "480p Cepat";
+                                color: resolution_mode == 480 ? #ffffff : #d4d4d8;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // 2. Microphone Audio Quality (VoIP DSP)
+                VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Kualitas Suara Mic (Peredam Bising & Kejelasan)";
+                        color: #a1a1aa;
+                        font-size: 11px;
+                        font-weight: 600;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        height: 28px;
+
+                        Rectangle {
+                            border-radius: 2px;
+                            background: audio_quality == 0 ? #dc2626 : #18181c;
+                            border-width: 1px;
+                            border-color: audio_quality == 0 ? #dc2626 : #27272a;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { set_audio_quality(0); }
+                            }
+                            Text {
+                                text: "16 kHz Hemat";
+                                color: audio_quality == 0 ? #ffffff : #d4d4d8;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            border-radius: 2px;
+                            background: audio_quality == 1 ? #dc2626 : #18181c;
+                            border-width: 1px;
+                            border-color: audio_quality == 1 ? #dc2626 : #27272a;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { set_audio_quality(1); }
+                            }
+                            Text {
+                                text: "24 kHz Jernih";
+                                color: audio_quality == 1 ? #ffffff : #d4d4d8;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            border-radius: 2px;
+                            background: audio_quality == 2 ? #dc2626 : #18181c;
+                            border-width: 1px;
+                            border-color: audio_quality == 2 ? #dc2626 : #27272a;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { set_audio_quality(2); }
+                            }
+                            Text {
+                                text: "48 kHz HD (WA)";
+                                color: audio_quality == 2 ? #ffffff : #d4d4d8;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
                         }
                     }
                 }

@@ -6,13 +6,17 @@ services:
     container_name: opendesk-relay
     restart: unless-stopped
     ports:
-      - "8088:8088"
+      # Loopback only: plaintext WS is reachable just by the local TLS tunnel (cloudflared -> 127.0.0.1:8088).
+      - "127.0.0.1:8088:8088"
+      - "[::1]:8088:8088"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./server-relay/config.json:/app/config.json:ro
     environment:
       - TZ=Asia/Jakarta
+      # Connections reach the container from the Docker bridge, never loopback; TLS ends at the tunnel.
+      - OPENDESK_TLS_PROXY=1
       - DB_HOST=host.docker.internal
       - DB_PORT=5432
       - DB_USER=postgres

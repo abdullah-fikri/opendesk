@@ -7,6 +7,8 @@ export component RemoteViewerCanvas inherits Rectangle {
     in property <bool> has_remote_frame: false;
     in property <image> remote_frame;
     in property <string> active_partner_id: "";
+    // Host cursor shape code (see core_engine::capture::cursor_shape); the local cursor takes this shape.
+    in property <int> remote_cursor: 1;
 
     callback send_mouse_move(int, int);
     callback send_mouse_down(int, int, int);
@@ -54,20 +56,32 @@ export component RemoteViewerCanvas inherits Rectangle {
             TouchArea {
                 width: parent.width;
                 height: parent.height;
-
-                moved => {
-                    if (!viewer-focus.has-focus) {
-                        viewer-focus.focus();
-                    }
-                    if (self.width > 0px && self.height > 0px) {
-                        send_mouse_move(
-                            (self.mouse-x / self.width) * 10000,
-                            (self.mouse-y / self.height) * 10000
-                        );
-                    }
-                }
+                mouse-cursor: remote_cursor == 0 ? MouseCursor.none
+                    : remote_cursor == 2 ? MouseCursor.text
+                    : remote_cursor == 3 ? MouseCursor.pointer
+                    : remote_cursor == 4 ? MouseCursor.wait
+                    : remote_cursor == 5 ? MouseCursor.progress
+                    : remote_cursor == 6 ? MouseCursor.crosshair
+                    : remote_cursor == 7 ? MouseCursor.move
+                    : remote_cursor == 8 ? MouseCursor.ew-resize
+                    : remote_cursor == 9 ? MouseCursor.ns-resize
+                    : remote_cursor == 10 ? MouseCursor.nwse-resize
+                    : remote_cursor == 11 ? MouseCursor.nesw-resize
+                    : remote_cursor == 12 ? MouseCursor.not-allowed
+                    : remote_cursor == 13 ? MouseCursor.help
+                    : MouseCursor.default;
 
                 pointer-event(event) => {
+                    if (self.width > 0px && self.height > 0px) {
+                        // `moved` only fires while a button is held; move events also cover hover.
+                        if (event.kind == PointerEventKind.move) {
+                            send_mouse_move(
+                                (self.mouse-x / self.width) * 10000,
+                                (self.mouse-y / self.height) * 10000
+                            );
+                            return;
+                        }
+                    }
                     viewer-focus.focus();
                     if (self.width > 0px && self.height > 0px) {
                         if (event.kind == PointerEventKind.down) {
