@@ -176,14 +176,24 @@ func (s *Store) GetAllHosts() []HostRecord {
 	return list
 }
 
-func (s *Store) StartSession(viewerClean, viewerDesk, hostClean, hostDesk, status string) {
-	// Close any previous dangling sessions for these two peers first
-	_, _ = s.DB.Exec(`
-		UPDATE remote_sessions
-		SET status = 'closed', ended_at = NOW()
-		WHERE status IN ('active', 'pending')
-		  AND (viewer_clean_id IN ($1, $2) OR host_clean_id IN ($1, $2));
-	`, viewerClean, hostClean)
+func (s *Store) StartSession(viewerClean, viewerDesk, hostClean, hostDesk, status string, multiViewer bool) {
+	if multiViewer {
+		// A multi-session viewer keeps its other open sessions; only rows involving the host (or this pair) are stale.
+		_, _ = s.DB.Exec(`
+			UPDATE remote_sessions
+			SET status = 'closed', ended_at = NOW()
+			WHERE status IN ('active', 'pending')
+			  AND (viewer_clean_id = $2 OR host_clean_id = $2 OR (viewer_clean_id = $1 AND host_clean_id = $2));
+		`, viewerClean, hostClean)
+	} else {
+		// Close any previous dangling sessions for these two peers first
+		_, _ = s.DB.Exec(`
+			UPDATE remote_sessions
+			SET status = 'closed', ended_at = NOW()
+			WHERE status IN ('active', 'pending')
+			  AND (viewer_clean_id IN ($1, $2) OR host_clean_id IN ($1, $2));
+		`, viewerClean, hostClean)
+	}
 
 	query := `
 	INSERT INTO remote_sessions (viewer_clean_id, viewer_desk_id, host_clean_id, host_desk_id, status, started_at)

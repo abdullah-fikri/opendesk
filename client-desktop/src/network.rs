@@ -138,13 +138,9 @@ pub fn spawn_network_worker(
                 if PEER_FILE_OFFER.load(Ordering::SeqCst) {
                     let files = clip_inj.get_clipboard_files();
                     if !files.is_empty() {
-                        if !is_received_clipboard(&files) && offer_files(&files, &partner, &clip_tx) {
-                            if let Some(ref w_weak) = clip_win {
-                                let n = files.len();
-                                let _ = w_weak.upgrade_in_event_loop(move |win| {
-                                    win.set_status_text(format!("{} berkas siap ditempel di perangkat lain", n).into());
-                                });
-                            }
+                        // Sets its own status; folders are walked off this thread.
+                        if !is_received_clipboard(&files) {
+                            offer_files(files, partner, clip_tx.clone(), clip_win.clone());
                         }
                         continue;
                     }
@@ -297,7 +293,7 @@ pub fn spawn_network_worker(
             } else {
                 "windows-pc"
             };
-            let mut caps = vec!["file-ack", "file-offer", "cursor-shape"];
+            let mut caps = vec!["file-ack", "file-offer", crate::file_transfer::CAP_FILE_FOLDER, "cursor-shape"];
             caps.extend(crate::session::video_caps());
             if p2p::enabled() {
                 caps.push(p2p::CAP);
@@ -634,6 +630,12 @@ pub fn spawn_network_worker(
                                         .and_then(|v| v.as_array())
                                         .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some("file-offer")));
                                     crate::file_transfer::PEER_FILE_OFFER.store(peer_offer && server_offer, Ordering::SeqCst);
+                                    // Folder entries ride on existing start/offer messages, so only the peer must understand them.
+                                    let peer_folder = val
+                                        .get("peerCaps")
+                                        .and_then(|v| v.as_array())
+                                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some(crate::file_transfer::CAP_FILE_FOLDER)));
+                                    crate::file_transfer::PEER_FILE_FOLDER.store(peer_folder, Ordering::SeqCst);
 
                                     if let Some(old) = p2p_link.take() {
                                         old.close();
@@ -706,16 +708,18 @@ pub fn spawn_network_worker(
                                             &target_clean,
                                             &local_win_title,
                                         );
-                                        // Viewer informs host of preferred resolution & audio quality upon connection
-                                        let current_res = host_resolution_mode.load(Ordering::SeqCst);
+                                        // Viewer informs host of preferred resolution & audio quality upon connection.
+                                        // Automatic mode uses the last canvas size; the new canvas re-reports it if it differs.
+                                        let res_mode = crate::session::VIEWER_RES_MODE.load(Ordering::SeqCst);
+                                        let viewport = crate::session::VIEWPORT_PX.load(Ordering::SeqCst);
+                                        let res_event = crate::session::resolution_event(res_mode, crate::session::unpack_box(viewport));
+                                        let sent_box = if res_event.get("auto").is_some() { viewport } else { 0 };
+                                        crate::session::LAST_SENT_BOX.store(sent_box, Ordering::SeqCst);
                                         let current_aq = voice_engine.audio_quality.load(Ordering::SeqCst);
                                         let init_res_msg = json!({
                                             "type": "relay-input",
                                             "targetClean": target_clean,
-                                            "event": {
-                                                "action": "set-resolution",
-                                                "mode": current_res
-                                            }
+                                            "event": res_event
                                         });
                                         let _ = tx_out_for_capture.send(OutgoingMsg::Json(init_res_msg));
                                         let init_aq_msg = json!({
@@ -803,11 +807,15 @@ pub fn spawn_network_worker(
                                         }
 
                                         if action == "set-resolution" {
-                                            let mode = event.get("mode").and_then(|v| v.as_u64()).unwrap_or(1080) as usize;
+                                            // `auto` + width/height: stream at the viewer's canvas size (newer viewers only).
+                                            let mode = crate::session::mode_from_resolution_event(event);
                                             host_resolution_mode.store(mode, Ordering::SeqCst);
                                             logger::info(
                                                 "app.frontend_session",
-                                                &format!("Viewer requested resolution mode: {}", mode),
+                                                &format!(
+                                                    "Viewer requested resolution mode: {}",
+                                                    if event.get("auto").is_some() { format!("auto {}x{}", event["width"], event["height"]) } else { mode.to_string() }
+                                                ),
                                             );
                                             continue;
                                         }
@@ -935,14 +943,15 @@ pub fn spawn_network_worker(
                                                     injector.key_tap(key_code);
                                                 }
                                             }
+                                            // Tracked so a session end releases whatever the viewer still held.
                                             "keydown" => {
                                                 if key_code > 0 {
-                                                    injector.key_down(key_code);
+                                                    crate::keymap::host_key_down(&injector, key_code);
                                                 }
                                             }
                                             "keyup" => {
                                                 if key_code > 0 {
-                                                    injector.key_up(key_code);
+                                                    crate::keymap::host_key_up(&injector, key_code);
                                                 }
                                             }
                                             _ => {}

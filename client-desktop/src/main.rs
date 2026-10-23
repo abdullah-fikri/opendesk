@@ -5,6 +5,7 @@ mod config;
 mod daemon;
 mod dragdrop;
 mod file_transfer;
+mod keymap;
 mod logger;
 mod network;
 mod p2p;
@@ -14,6 +15,7 @@ mod session;
 mod tray;
 mod virtual_clip;
 
+use std::cell::RefCell;
 use std::env;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
@@ -46,38 +48,45 @@ fn to_slint_history_items(list: &[HistoryRecord]) -> Vec<HistoryItem> {
         .collect()
 }
 
-/// Maps Slint key event string to Win32 Virtual-Key code when it's a control/navigation key.
-fn map_special_key_to_vk(text: &str) -> Option<u16> {
-    let ch = text.chars().next()?;
-    match ch {
-        '\u{0008}' => Some(0x08), // Backspace
-        '\u{0009}' => Some(0x09), // Tab
-        '\r' | '\n' => Some(0x0D), // Enter
-        '\u{001b}' => Some(0x1B), // Escape
-        '\u{007f}' => Some(0x2E), // Delete
-        '\u{f700}' => Some(0x26), // UpArrow
-        '\u{f701}' => Some(0x28), // DownArrow
-        '\u{f702}' => Some(0x25), // LeftArrow
-        '\u{f703}' => Some(0x27), // RightArrow
-        '\u{f729}' => Some(0x24), // Home
-        '\u{f72b}' => Some(0x23), // End
-        '\u{f72c}' => Some(0x21), // PageUp
-        '\u{f72d}' => Some(0x22), // PageDown
-        '\u{f727}' => Some(0x2D), // Insert
-        '\u{f704}' => Some(0x70), // F1
-        '\u{f705}' => Some(0x71), // F2
-        '\u{f706}' => Some(0x72), // F3
-        '\u{f707}' => Some(0x73), // F4
-        '\u{f708}' => Some(0x74), // F5
-        '\u{f709}' => Some(0x75), // F6
-        '\u{f70a}' => Some(0x76), // F7
-        '\u{f70b}' => Some(0x77), // F8
-        '\u{f70c}' => Some(0x78), // F9
-        '\u{f70d}' => Some(0x79), // F10
-        '\u{f70e}' => Some(0x7A), // F11
-        '\u{f70f}' => Some(0x7B), // F12
-        _ => None,
+/// Sends forwarder output to the host as `keydown` / `keyup` / unicode `text` (all understood by
+/// every desktop host version, so no capability is needed).
+fn send_key_outs(tx: &mpsc::Sender<OutgoingMsg>, clean: &str, outs: Vec<keymap::KeyOut>) {
+    for out in outs {
+        let event = match out {
+            keymap::KeyOut::Down(vk) => json!({ "action": "keydown", "keyCode": vk }),
+            keymap::KeyOut::Up(vk) => json!({ "action": "keyup", "keyCode": vk }),
+            keymap::KeyOut::Text(text) => json!({ "action": "text", "text": text }),
+            keymap::KeyOut::Paste => continue,
+        };
+        let _ = tx.send(OutgoingMsg::Json(json!({
+            "type": "relay-input",
+            "targetClean": clean,
+            "event": event
+        })));
     }
+}
+
+/// Automatic resolution: report the (debounced) canvas size when it changed noticeably.
+fn send_auto_resolution(tx: &mpsc::Sender<OutgoingMsg>, partner: &Mutex<String>) {
+    if session::VIEWER_RES_MODE.load(Ordering::SeqCst) != session::RES_AUTO {
+        return;
+    }
+    let clean = partner.lock().unwrap().clone();
+    let packed = session::VIEWPORT_PX.load(Ordering::SeqCst);
+    let size = session::unpack_box(packed);
+    if clean.is_empty() || size.0 <= 0 || size.1 <= 0 {
+        return;
+    }
+    let last = session::unpack_box(session::LAST_SENT_BOX.load(Ordering::SeqCst));
+    if !session::box_changed_enough(last, size) {
+        return;
+    }
+    session::LAST_SENT_BOX.store(packed, Ordering::SeqCst);
+    let _ = tx.send(OutgoingMsg::Json(json!({
+        "type": "relay-input",
+        "targetClean": clean,
+        "event": session::resolution_event(session::RES_AUTO, size)
+    })));
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -190,7 +199,7 @@ fn main() -> Result<(), slint::PlatformError> {
     main_window.set_is_relay_online(false);
     main_window.set_is_admin(cfg!(feature = "admin"));
     main_window.set_active_dashboard_tab(if cfg!(feature = "admin") { 1 } else { 0 });
-    main_window.set_resolution_mode(1080);
+    main_window.set_resolution_mode(session::RES_AUTO as i32);
     main_window.set_audio_quality(2);
 
     // Intercept window close (X) -> keep running in System Tray so device is always connectable
@@ -634,7 +643,7 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    // Remote Resolution Mode Selection Callback (1:1 Native, 1080p, 720p, 480p)
+    // Remote Resolution Mode Selection Callback (Otomatis, 1:1 Native, 1080p, 720p, 480p)
     let tx_res = tx_out_clone.clone();
     let partner_res = Arc::clone(&active_partner);
     let host_res = Arc::clone(&host_resolution_mode);
@@ -642,27 +651,44 @@ fn main() -> Result<(), slint::PlatformError> {
     main_window.on_set_resolution_mode(move |mode| {
         let safe_mode = match mode {
             0 => 0,
+            1 => session::RES_AUTO,
             1080 => 1080,
             720 => 720,
             480 => 480,
             _ => 1080,
         };
         host_res.store(safe_mode, Ordering::SeqCst);
+        session::VIEWER_RES_MODE.store(safe_mode, Ordering::SeqCst);
         if let Some(w) = win_res.upgrade() {
             w.set_resolution_mode(safe_mode as i32);
         }
         let clean = partner_res.lock().unwrap().clone();
         if !clean.is_empty() {
+            let packed = session::VIEWPORT_PX.load(Ordering::SeqCst);
+            let event = session::resolution_event(safe_mode, session::unpack_box(packed));
+            let sent_box = if event.get("auto").is_some() { packed } else { 0 };
+            session::LAST_SENT_BOX.store(sent_box, Ordering::SeqCst);
             let msg = json!({
                 "type": "relay-input",
                 "targetClean": clean,
-                "event": {
-                    "action": "set-resolution",
-                    "mode": safe_mode
-                }
+                "event": event
             });
             let _ = tx_res.send(OutgoingMsg::Json(msg));
         }
+    });
+
+    // Canvas size (physical px) for automatic resolution, sent 300 ms after resizing stops:
+    // every change recreates the host capturer/encoder and costs a key frame.
+    let tx_vp = tx_out_clone.clone();
+    let partner_vp = Arc::clone(&active_partner);
+    let res_timer = Rc::new(slint::Timer::default());
+    main_window.on_viewport_resized(move |w, h| {
+        session::VIEWPORT_PX.store(session::pack_box(w, h), Ordering::SeqCst);
+        let tx = tx_vp.clone();
+        let partner = Arc::clone(&partner_vp);
+        res_timer.start(slint::TimerMode::SingleShot, Duration::from_millis(300), move || {
+            send_auto_resolution(&tx, &partner);
+        });
     });
 
     // Voice Call Microphone Audio Quality Selection Callback (16kHz, 24kHz, 48kHz HD)
@@ -789,135 +815,81 @@ fn main() -> Result<(), slint::PlatformError> {
         let _ = tx_wheel.send(OutgoingMsg::Json(input_msg));
     });
 
-    // Full Keyboard + Clipboard Paste (Ctrl+V File & Text) Forwarding
+    // Full Keyboard Forwarding: physical key down/up (modifiers included) so the host sees real key
+    // state (Ctrl+click, Ctrl+scroll, held Shift...), unicode text for typing, Ctrl+V clipboard/files.
+    let key_fwd = Rc::new(RefCell::new(keymap::KeyForwarder::default()));
+    // Partner the held keys belong to; that host releases them itself when its session ends.
+    let key_owner = Rc::new(RefCell::new(String::new()));
     let tx_key = tx_out_clone.clone();
     let partner_key = Arc::clone(&active_partner);
     let inj_key = Arc::clone(&injector);
     let win_key = main_window.as_weak();
-    main_window.on_send_key_event(move |text_shared, ctrl, alt, shift| {
+    let (fwd_key, owner_key) = (Rc::clone(&key_fwd), Rc::clone(&key_owner));
+    main_window.on_send_key_event(move |text_shared, pressed, repeat, ctrl, alt, shift| {
         let clean = partner_key.lock().unwrap().clone();
+        let mut fwd = fwd_key.borrow_mut();
+        if *owner_key.borrow() != clean {
+            fwd.reset();
+            *owner_key.borrow_mut() = clean.clone();
+        }
         if clean.is_empty() {
             return;
         }
-        let text = text_shared.as_str();
-        if text.is_empty() {
-            return;
-        }
-
-        // 1. Check if it's a special navigation/control key (Backspace, Enter, Arrows, Tab, Esc, F1-F12)
-        if let Some(vk) = map_special_key_to_vk(text) {
-            let msg = if ctrl || alt || shift {
-                json!({
-                    "type": "relay-input",
-                    "targetClean": clean,
-                    "event": {
-                        "action": "keycombo",
-                        "ctrl": ctrl,
-                        "alt": alt,
-                        "shift": shift,
-                        "vk": vk
-                    }
-                })
-            } else {
-                json!({
-                    "type": "relay-input",
-                    "targetClean": clean,
-                    "event": {
-                        "action": "keypress",
-                        "keyCode": vk
-                    }
-                })
-            };
-            let _ = tx_key.send(OutgoingMsg::Json(msg));
-            return;
-        }
-
-        // 2. Handle Ctrl / Alt shortcuts (Ctrl+C, Ctrl+V, Ctrl+A, Ctrl+X, Ctrl+Z, etc.)
-        if ctrl || alt {
-            if let Some(ch) = text.chars().next() {
-                let upper = ch.to_ascii_uppercase();
-                // On Ctrl+V: If local clipboard has files, transfer & auto-paste into the open remote folder!
-                if ctrl && !alt && (upper == 'V' || ch == '\u{0016}') {
-                    let clip_files = inj_key.get_clipboard_files();
-                    // Files that just came from the host are already there; only forward the keystroke.
-                    // Offer-capable hosts already have the copied files as virtual clipboard entries: just paste.
-                    if !clip_files.is_empty()
-                        && !file_transfer::is_received_clipboard(&clip_files)
-                        && !file_transfer::PEER_FILE_OFFER.load(Ordering::SeqCst)
-                    {
-                        file_transfer::send_files_async(
-                            clip_files,
-                            clean.clone(),
-                            tx_key.clone(),
-                            Some(win_key.clone()),
-                            true, // Auto-paste (Ctrl+V) on remote PC as soon as file lands!
-                        );
-                        return;
-                    }
-                    if let Some(clip_text) = inj_key.get_clipboard_text() {
-                        if !clip_text.is_empty() {
-                            let sync_msg = json!({
-                                "type": "relay-input",
-                                "targetClean": clean,
-                                "event": {
-                                    "action": "clipboard",
-                                    "text": clip_text
-                                }
-                            });
-                            let _ = tx_key.send(OutgoingMsg::Json(sync_msg));
-                        }
-                    }
-                    let paste_msg = json!({
+        let mods = keymap::Mods { ctrl, alt, shift };
+        let outs = if pressed {
+            fwd.on_press(text_shared.as_str(), repeat, mods)
+        } else {
+            fwd.on_release(text_shared.as_str(), mods)
+        };
+        for out in outs {
+            if out != keymap::KeyOut::Paste {
+                send_key_outs(&tx_key, &clean, vec![out]);
+                continue;
+            }
+            // Ctrl+V: if the local clipboard has files, transfer & auto-paste them into the open remote folder.
+            let clip_files = inj_key.get_clipboard_files();
+            // Files that just came from the host are already there; only forward the keystroke.
+            // Offer-capable hosts already have the copied files as virtual clipboard entries: just paste.
+            if !clip_files.is_empty()
+                && !file_transfer::is_received_clipboard(&clip_files)
+                && !file_transfer::PEER_FILE_OFFER.load(Ordering::SeqCst)
+            {
+                file_transfer::send_files_async(
+                    clip_files,
+                    clean.clone(),
+                    tx_key.clone(),
+                    Some(win_key.clone()),
+                    true, // Auto-paste (Ctrl+V) on remote PC as soon as file lands!
+                );
+                continue;
+            }
+            if let Some(clip_text) = inj_key.get_clipboard_text() {
+                if !clip_text.is_empty() {
+                    let sync_msg = json!({
                         "type": "relay-input",
                         "targetClean": clean,
                         "event": {
-                            "action": "keycombo",
-                            "ctrl": true,
-                            "alt": false,
-                            "shift": shift,
-                            "vk": 0x56
+                            "action": "clipboard",
+                            "text": clip_text
                         }
                     });
-                    let _ = tx_key.send(OutgoingMsg::Json(paste_msg));
-                    return;
-                }
-
-                let vk: u16 = if (ch as u32) >= 1 && (ch as u32) <= 26 {
-                    (b'A' + (ch as u8 - 1)) as u16
-                } else if upper.is_ascii_alphanumeric() {
-                    upper as u16
-                } else {
-                    0
-                };
-
-                if vk > 0 {
-                    let combo_msg = json!({
-                        "type": "relay-input",
-                        "targetClean": clean,
-                        "event": {
-                            "action": "keycombo",
-                            "ctrl": ctrl,
-                            "alt": alt,
-                            "shift": shift,
-                            "vk": vk
-                        }
-                    });
-                    let _ = tx_key.send(OutgoingMsg::Json(combo_msg));
-                    return;
+                    let _ = tx_key.send(OutgoingMsg::Json(sync_msg));
                 }
             }
+            // Ctrl is already held on the host, so V down pastes the text synced just above.
+            send_key_outs(&tx_key, &clean, fwd.paste_down());
         }
+    });
 
-        // 3. Printable Unicode text (letters, numbers, symbols, spaces)
-        let text_msg = json!({
-            "type": "relay-input",
-            "targetClean": clean,
-            "event": {
-                "action": "text",
-                "text": text
-            }
-        });
-        let _ = tx_key.send(OutgoingMsg::Json(text_msg));
+    // Focus lost / window deactivated: lift every key still held on the host.
+    let tx_rel = tx_out_clone.clone();
+    let partner_rel = Arc::clone(&active_partner);
+    main_window.on_release_remote_keys(move || {
+        let clean = partner_rel.lock().unwrap().clone();
+        let outs = key_fwd.borrow_mut().release_all();
+        if !clean.is_empty() && *key_owner.borrow() == clean {
+            send_key_outs(&tx_rel, &clean, outs);
+        }
     });
 
     main_window.run()

@@ -45,6 +45,12 @@ type Peer struct {
 	frameCh       chan framePacket
 	closeCh       chan struct{}
 	closeOnce     sync.Once
+
+	// Multi is set at registration when the client advertises capMultiSession; it never changes afterwards.
+	Multi bool
+	// views holds a multi-session viewer's sessions keyed by host clean ID (guarded by Gateway.peersMu).
+	// Legacy peers and the host role keep using SessionWith/SessionActive.
+	views map[string]*viewSession
 }
 
 func NewPeer(cleanID, platform, deviceName string, isAdmin bool, ws *websocket.Conn) *Peer {
@@ -98,11 +104,11 @@ func isRestartFrame(data []byte) bool {
 	return data[5] == 1 || (data[5] == 3 && data[6]&1 != 0)
 }
 
-// dropQueuedFrames empties the queue; only the sender's read loop enqueues, so this cannot race a producer.
-func (p *Peer) dropQueuedFrames() {
+// drainFrames empties a queue; only the sending host's read loop enqueues, so this cannot race a producer.
+func drainFrames(ch chan framePacket) {
 	for {
 		select {
-		case <-p.frameCh:
+		case <-ch:
 			metrics.droppedFrames.Add(1)
 		default:
 			return
@@ -110,20 +116,22 @@ func (p *Peer) dropQueuedFrames() {
 	}
 }
 
-// enqueueFrame keeps deltas in order and never lets the queue grow past frameQueueLen. A restart frame makes
+// pushFrame keeps deltas in order and never lets the queue grow past frameQueueLen. A restart frame makes
 // everything queued obsolete; a delta that does not fit flushes the queue (the viewer then asks for a key
 // frame once) instead of silently breaking the delta chain on every congested frame.
-func (p *Peer) enqueueFrame(pkt framePacket, restart bool) {
+func pushFrame(ch chan framePacket, pkt framePacket, restart bool) {
 	if restart {
-		p.dropQueuedFrames()
+		drainFrames(ch)
 	}
 	select {
-	case p.frameCh <- pkt:
+	case ch <- pkt:
 	default:
-		p.dropQueuedFrames()
+		drainFrames(ch)
 		metrics.droppedFrames.Add(1)
 	}
 }
+
+func (p *Peer) enqueueFrame(pkt framePacket, restart bool) { pushFrame(p.frameCh, pkt, restart) }
 
 // EnqueueBinaryFrame queues a video frame for the viewer (see enqueueFrame).
 func (p *Peer) EnqueueBinaryFrame(data []byte) {
@@ -134,6 +142,53 @@ func (p *Peer) EnqueueBinaryFrame(data []byte) {
 func (p *Peer) EnqueueJSONFrame(msg map[string]interface{}) {
 	p.enqueueFrame(framePacket{isBinary: false, jsonMsg: msg}, true)
 }
+
+// viewSession is one session of a multi-session viewer. Each has its own ordered frame queue so a key frame or
+// congestion from one host never flushes another host's delta chain.
+type viewSession struct {
+	active  bool // guarded by Gateway.peersMu
+	frameCh chan framePacket
+	done    chan struct{}
+}
+
+// startView creates a session queue whose writer tags every binary message with the host's clean ID.
+func (p *Peer) startView(hostClean string, active bool) *viewSession {
+	v := &viewSession{active: active, frameCh: make(chan framePacket, frameQueueLen), done: make(chan struct{})}
+	go p.viewWriterLoop(v, hostClean)
+	return v
+}
+
+func (p *Peer) viewWriterLoop(v *viewSession, hostClean string) {
+	for {
+		select {
+		case <-p.closeCh:
+			return
+		case <-v.done:
+			return
+		case pkt := <-v.frameCh:
+			if pkt.isBinary {
+				_ = p.SendTaggedBinary(hostClean, pkt.data)
+			} else if pkt.jsonMsg != nil {
+				_ = p.SendJSON(pkt.jsonMsg)
+			}
+		}
+	}
+}
+
+func (v *viewSession) enqueueBinary(data []byte) {
+	pushFrame(v.frameCh, framePacket{isBinary: true, data: data}, isRestartFrame(data))
+}
+
+func (v *viewSession) enqueueJSON(msg map[string]interface{}) {
+	pushFrame(v.frameCh, framePacket{jsonMsg: msg}, true)
+}
+
+// Binary messages to and from a multi-session viewer carry a session tag: binTag followed by the host's
+// 9-digit clean ID, then the unchanged legacy payload (0x02 audio or FF D8 video).
+const (
+	binTag    = 0x10
+	binTagLen = 10
+)
 
 // writeTimeout bounds how long a stalled receiver can block the sender's read loop.
 const writeTimeout = 10 * time.Second
@@ -150,6 +205,32 @@ func (p *Peer) write(messageType int, data []byte) error {
 	}
 	metrics.egressMessages.Add(1)
 	metrics.egressBytes.Add(uint64(len(data)))
+	return nil
+}
+
+// SendTaggedBinary writes binTag+hostClean+data as one message without copying data into a new buffer.
+func (p *Peer) SendTaggedBinary(hostClean string, data []byte) error {
+	var hdr [binTagLen]byte
+	hdr[0] = binTag
+	copy(hdr[1:], hostClean)
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
+	_ = p.WS.SetWriteDeadline(time.Now().Add(writeTimeout))
+	w, err := p.WS.NextWriter(websocket.BinaryMessage)
+	if err == nil {
+		if _, err = w.Write(hdr[:]); err == nil {
+			_, err = w.Write(data)
+		}
+		if cerr := w.Close(); err == nil {
+			err = cerr
+		}
+	}
+	if err != nil {
+		_ = p.WS.Close()
+		return err
+	}
+	metrics.egressMessages.Add(1)
+	metrics.egressBytes.Add(uint64(binTagLen + len(data)))
 	return nil
 }
 

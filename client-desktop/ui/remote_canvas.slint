@@ -14,7 +14,16 @@ export component RemoteViewerCanvas inherits Rectangle {
     callback send_mouse_down(int, int, int);
     callback send_mouse_up(int, int, int);
     callback send_mouse_wheel(int, int, int);
-    callback send_key_event(string, bool, bool, bool);
+    // (text, pressed, repeat, ctrl, alt, shift): every physical press AND release goes to the host.
+    callback send_key_event(string, bool, bool, bool, bool, bool);
+    // Lift every key held on the host (focus lost / window deactivated) so nothing stays stuck.
+    callback release_remote_keys();
+    // Canvas size in physical pixels, for the host's automatic stream resolution.
+    callback viewport_resized(int, int);
+
+    init => { root.viewport_resized(self.width / 1phx, self.height / 1phx); }
+    changed width => { root.viewport_resized(self.width / 1phx, self.height / 1phx); }
+    changed height => { root.viewport_resized(self.width / 1phx, self.height / 1phx); }
 
     property <float> frame_w: remote_frame.width > 0 ? remote_frame.width : 16;
     property <float> frame_h: remote_frame.height > 0 ? remote_frame.height : 9;
@@ -31,12 +40,28 @@ export component RemoteViewerCanvas inherits Rectangle {
         key-pressed(event) => {
             send_key_event(
                 event.text,
+                true,
+                event.repeat,
                 event.modifiers.control,
                 event.modifiers.alt,
                 event.modifiers.shift
             );
             accept
         }
+
+        key-released(event) => {
+            send_key_event(
+                event.text,
+                false,
+                false,
+                event.modifiers.control,
+                event.modifiers.alt,
+                event.modifiers.shift
+            );
+            accept
+        }
+
+        focus-lost => { release_remote_keys(); }
 
         if has_remote_frame: Rectangle {
             width: root.fitted_w;

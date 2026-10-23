@@ -440,7 +440,7 @@ export component SessionOptionsModal inherits Rectangle {
     in-out property <bool> show_session_options: false;
     in property <int> privacy_mode: 0;
     in property <bool> block_remote_input: false;
-    in property <int> resolution_mode: 1080;
+    in property <int> resolution_mode: 1;
     in property <int> audio_quality: 2;
 
     callback set_privacy_mode(int);
@@ -515,6 +515,26 @@ export component SessionOptionsModal inherits Rectangle {
                     HorizontalLayout {
                         spacing: 6px;
                         height: 28px;
+
+                        // 1 = Otomatis: the host streams at the size of this viewer's window.
+                        Rectangle {
+                            border-radius: 2px;
+                            background: resolution_mode == 1 ? #dc2626 : #18181c;
+                            border-width: 1px;
+                            border-color: resolution_mode == 1 ? #dc2626 : #27272a;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { set_resolution_mode(1); }
+                            }
+                            Text {
+                                text: "Otomatis";
+                                color: resolution_mode == 1 ? #ffffff : #d4d4d8;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
 
                         Rectangle {
                             border-radius: 2px;

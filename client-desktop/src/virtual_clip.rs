@@ -38,7 +38,9 @@ const DVASPECT_CONTENT: u32 = 1;
 const DATADIR_GET: u32 = 1;
 const GMEM_MOVEABLE: u32 = 0x0002;
 const GMEM_ZEROINIT: u32 = 0x0040;
+const FD_ATTRIBUTES: u32 = 0x0004;
 const FD_FILESIZE: u32 = 0x0040;
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const FD_PROGRESSUI: u32 = 0x4000;
 const DROPEFFECT_COPY: u32 = 1;
 const STREAM_SEEK_SET: u32 = 0;
@@ -190,11 +192,20 @@ fn formats() -> &'static Formats {
     })
 }
 
+/// One entry of the partner's offer. `name` is a validated relative path with backslash separators.
+struct OfferFile {
+    name: String,
+    size: u64,
+    dir: bool,
+    /// Index in the partner's list (what a pull asks for); differs from ours when invalid entries were dropped.
+    remote: usize,
+}
+
 /// One file list offered by the partner.
 struct Offer {
     from: String,
     offer_id: String,
-    files: Vec<(String, u64)>,
+    files: Vec<OfferFile>,
     tx_out: Sender<OutgoingMsg>,
 }
 
@@ -483,7 +494,8 @@ unsafe extern "system" fn stream_clone(_: *mut c_void, out: *mut *mut c_void) ->
 
 /// Starts pulling `index` from the offer and returns an owned IStream (refcount 1) that yields its bytes.
 fn open_pull(offer: &Offer, index: usize) -> *mut c_void {
-    let (name, size) = offer.files[index].clone();
+    let entry = &offer.files[index];
+    let (name, size) = (entry.name.clone(), entry.size);
     let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_micros();
     let tid = format!("fp_{}_{}", ts, index);
     let (tx, rx) = mpsc::channel();
@@ -497,7 +509,7 @@ fn open_pull(offer: &Offer, index: usize) -> *mut c_void {
     let _ = offer.tx_out.send(OutgoingMsg::Json(json!({
         "type": "relay-file",
         "targetClean": offer.from,
-        "payload": { "action": "pull", "id": offer.offer_id, "index": index, "tid": tid }
+        "payload": { "action": "pull", "id": offer.offer_id, "index": entry.remote, "tid": tid }
     })));
     let stream = Box::new(PullStream {
         vtbl: &STREAM_VTBL,
@@ -590,18 +602,25 @@ fn global_from_bytes(bytes: &[u8]) -> *mut c_void {
     }
 }
 
-fn descriptor_bytes(files: &[(String, u64)]) -> Vec<u8> {
+fn descriptor_bytes(files: &[OfferFile]) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + files.len() * std::mem::size_of::<FILEDESCRIPTORW>());
     out.extend_from_slice(&(files.len() as u32).to_le_bytes());
-    for (name, size) in files {
+    for f in files {
         let mut fd: FILEDESCRIPTORW = unsafe { std::mem::zeroed() };
-        fd.dw_flags = FD_FILESIZE | FD_PROGRESSUI;
-        fd.n_file_size_high = (*size >> 32) as u32;
-        fd.n_file_size_low = *size as u32;
-        // Names come from the partner: keep only a plain file name Explorer can create.
-        let clean: Vec<u16> = name
+        if f.dir {
+            // Explorer recreates the tree from the relative names; folder entries also keep empty folders.
+            fd.dw_flags = FD_ATTRIBUTES | FD_PROGRESSUI;
+            fd.dw_file_attributes = FILE_ATTRIBUTE_DIRECTORY;
+        } else {
+            fd.dw_flags = FD_FILESIZE | FD_PROGRESSUI;
+            fd.n_file_size_high = (f.size >> 32) as u32;
+            fd.n_file_size_low = f.size as u32;
+        }
+        // Names were validated by set_offer (`\` separates folders); replace anything else Explorer cannot create.
+        let clean: Vec<u16> = f
+            .name
             .chars()
-            .map(|c| if matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '_' } else { c })
+            .map(|c| if matches!(c, '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '_' } else { c })
             .collect::<String>()
             .encode_utf16()
             .take(259)
@@ -661,7 +680,8 @@ unsafe extern "system" fn data_get_data(this: *mut c_void, fmt: *const FORMATETC
         (*medium).p_unk_for_release = ptr::null_mut();
         if cf == f.contents {
             let Ok(index) = usize::try_from(fmt.lindex) else { return DV_E_LINDEX };
-            if index >= obj.offer.files.len() {
+            // Folder entries have no contents; Explorer creates them from the descriptor alone.
+            if obj.offer.files.get(index).is_none_or(|f| f.dir) {
                 return DV_E_LINDEX;
             }
             (*medium).tymed = TYMED_ISTREAM;
@@ -803,27 +823,42 @@ fn post(cmd: Cmd) {
     }
 }
 
+/// Validates the partner's file list. Entries with unsafe names (absolute, `..`, devices, ...) are dropped;
+/// a list over the entry or size limit is refused with a status line.
+fn parse_offer_files(list: &[Value]) -> Result<Vec<OfferFile>, String> {
+    use crate::file_transfer::{safe_rel_path, MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES};
+    if list.len() > MAX_TREE_ENTRIES {
+        return Err(format!("Gagal menerima daftar berkas: lebih dari {} item", MAX_TREE_ENTRIES));
+    }
+    let files: Vec<OfferFile> = list
+        .iter()
+        .enumerate()
+        .filter_map(|(remote, f)| {
+            let comps = safe_rel_path(f.get("name")?.as_str()?)?;
+            let dir = f.get("dir").and_then(|v| v.as_bool()) == Some(true);
+            let size = if dir { 0 } else { f.get("size")?.as_u64().filter(|s| *s <= MAX_FILE_BYTES)? };
+            Some(OfferFile { name: comps.join("\\"), size, dir, remote })
+        })
+        .collect();
+    if files.iter().map(|f| f.size).sum::<u64>() > MAX_TREE_BYTES {
+        return Err(format!("Gagal menerima daftar berkas: total melebihi {} GB", MAX_TREE_BYTES >> 30));
+    }
+    Ok(files)
+}
+
 /// Partner copied files: expose them on our clipboard as virtual files. Nothing is downloaded yet.
 pub fn set_offer(from: &str, payload: &Value, tx_out: Sender<OutgoingMsg>) -> Option<String> {
     let offer_id = payload.get("id").and_then(|v| v.as_str())?.to_string();
-    let files: Vec<(String, u64)> = payload
-        .get("files")
-        .and_then(|v| v.as_array())?
-        .iter()
-        .filter_map(|f| {
-            let name = f.get("name")?.as_str()?;
-            let size = f.get("size")?.as_u64()?;
-            (!name.is_empty() && name.len() <= 200 && size <= 2 * 1024 * 1024 * 1024).then(|| (name.to_string(), size))
-        })
-        .take(100)
-        .collect();
-    if files.is_empty() {
-        return None;
-    }
-    let status = if files.len() == 1 {
-        format!("Siap tempel: {} (Ctrl+V)", files[0].0)
-    } else {
-        format!("Siap tempel: {} berkas (Ctrl+V)", files.len())
+    let files = match parse_offer_files(payload.get("files").and_then(|v| v.as_array())?) {
+        Ok(files) if files.is_empty() => return None,
+        Ok(files) => files,
+        Err(status) => return Some(status),
+    };
+    let tops: Vec<&OfferFile> = files.iter().filter(|f| !f.name.contains('\\')).collect();
+    let status = match tops.as_slice() {
+        [one] => format!("Siap tempel: {} (Ctrl+V)", one.name),
+        _ if files.iter().all(|f| !f.dir) => format!("Siap tempel: {} berkas (Ctrl+V)", files.len()),
+        _ => format!("Siap tempel: {} item (Ctrl+V)", tops.len()),
     };
     logger::info("clipbrd.capture", &format!("Received file offer {} ({} files).", offer_id, files.len()));
     post(Cmd::Set(Offer { from: from.to_string(), offer_id, files, tx_out }));
@@ -843,7 +878,7 @@ mod tests {
     fn descriptor_layout_matches_windows() {
         assert_eq!(std::mem::size_of::<FILEDESCRIPTORW>(), 592);
         assert_eq!(std::mem::size_of::<STATSTG>(), 80);
-        let bytes = descriptor_bytes(&[("a:b.txt".into(), 5_000_000_000)]);
+        let bytes = descriptor_bytes(&[OfferFile { name: "a:b.txt".into(), size: 5_000_000_000, dir: false, remote: 0 }]);
         assert_eq!(bytes.len(), 4 + 592);
         assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), 1);
         let fd = &bytes[4..];
@@ -853,62 +888,167 @@ mod tests {
         assert_eq!(String::from_utf16_lossy(&name), "a_b.txt");
     }
 
-    /// Real Explorer paste across processes. Overwrites the clipboard, so run it by hand:
-    /// `cargo test --release explorer_paste -- --ignored --nocapture`
-    #[test]
-    #[ignore]
-    fn explorer_paste_pulls_virtual_file() {
-        let dir = std::env::temp_dir().join(format!("opendesk-paste-{}", std::process::id()));
+    /// Puts `offer` on the clipboard, pastes it with Explorer into a fresh temp folder and plays the partner,
+    /// answering each pull with `contents[remote index]`. Returns the folder, or None in manual mode.
+    fn paste_with_explorer(tag: &str, offer: Value, contents: &HashMap<u64, Vec<u8>>) -> Option<std::path::PathBuf> {
+        // Both ignored tests use the one system clipboard.
+        static CLIPBOARD: Mutex<()> = Mutex::new(());
+        let _guard = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("opendesk-paste-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let data: Vec<u8> = (0..200_000u32).map(|i| (i * 7 % 251) as u8).collect();
         let (tx_out, rx_out) = mpsc::channel();
-        let offer = json!({ "id": "of_t", "files": [{ "name": "pasted.bin", "size": data.len() }] });
         assert!(set_offer("111", &offer, tx_out).is_some());
         thread::sleep(Duration::from_millis(300));
 
         // A fresh process must hold the OLE clipboard object (as Explorer always does for its Paste menu state)
         // before pasting; otherwise Shell reads through Win32 clipboard emulation, which has no per-file lindex.
         let script = format!(
-            "Add-Type -AssemblyName System.Windows.Forms; $null=[System.Windows.Forms.Clipboard]::GetDataObject().GetFormats(); $f=(New-Object -ComObject Shell.Application).NameSpace('{}'); $f.Self.InvokeVerb('Paste'); Start-Sleep -Seconds 8",
+            "Add-Type -AssemblyName System.Windows.Forms; $null=[System.Windows.Forms.Clipboard]::GetDataObject().GetFormats(); $f=(New-Object -ComObject Shell.Application).NameSpace('{}'); $f.Self.InvokeVerb('Paste'); Start-Sleep -Seconds 10",
             dir.display()
         );
         // OPENDESK_MANUAL_PASTE=1: paste by hand (Ctrl+V in any Explorer folder) instead of the scripted paste.
         let manual = std::env::var("OPENDESK_MANUAL_PASTE").is_ok();
         let mut ps = if manual {
-            println!("Clipboard now holds virtual file pasted.bin: press Ctrl+V in an Explorer folder within 60 s.");
+            println!("Clipboard now holds the virtual {}: press Ctrl+V in an Explorer folder within 60 s.", tag);
             None
         } else {
             Some(std::process::Command::new("powershell").args(["-NoProfile", "-STA", "-Command", &script]).spawn().unwrap())
         };
 
-        // Play the partner: answer the pull with start/chunk/end.
-        let OutgoingMsg::Json(pull) = rx_out.recv_timeout(Duration::from_secs(if manual { 60 } else { 40 })).expect("Explorer never pulled") else {
-            panic!("unexpected message")
-        };
-        let tid = pull["payload"]["tid"].as_str().unwrap().to_string();
-        assert_eq!(pull["payload"]["index"], 0);
-        on_transfer("111", "start", &tid, &json!({ "size": data.len() }));
-        for chunk in data.chunks(32768) {
-            on_transfer("111", "chunk", &tid, &json!({ "chunk": core_engine::codec::to_base64(chunk) }));
+        // Play the partner: answer every pull with start/chunk/end.
+        for _ in 0..contents.len() {
+            let OutgoingMsg::Json(pull) = rx_out.recv_timeout(Duration::from_secs(if manual { 60 } else { 40 })).expect("Explorer never pulled") else {
+                panic!("unexpected message")
+            };
+            let tid = pull["payload"]["tid"].as_str().unwrap().to_string();
+            let index = pull["payload"]["index"].as_u64().unwrap();
+            let data = contents.get(&index).expect("pull for a folder or unknown entry");
+            on_transfer("111", "start", &tid, &json!({ "size": data.len() }));
+            for chunk in data.chunks(32768) {
+                on_transfer("111", "chunk", &tid, &json!({ "chunk": core_engine::codec::to_base64(chunk) }));
+            }
+            let sha: String = Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect();
+            assert_eq!(on_transfer("111", "end", &tid, &json!({ "sha256": sha })).unwrap().1, Some(true));
         }
-        let sha: String = Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(on_transfer("111", "end", &tid, &json!({ "sha256": sha })).unwrap().1, Some(true));
 
-        if let Some(ps) = ps.as_mut() {
+        let result = if let Some(ps) = ps.as_mut() {
             let _ = ps.wait();
+            Some(dir)
+        } else {
+            thread::sleep(Duration::from_secs(3)); // let Explorer finish writing; check the pasted files by hand
+            None
+        };
+        clear_offer("");
+        result
+    }
+
+    /// Real Explorer paste across processes. Overwrites the clipboard, so run it by hand:
+    /// `cargo test --release explorer_paste -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn explorer_paste_pulls_virtual_file() {
+        let data: Vec<u8> = (0..200_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        let offer = json!({ "id": "of_t", "files": [{ "name": "pasted.bin", "size": data.len() }] });
+        if let Some(dir) = paste_with_explorer("file", offer, &HashMap::from([(0, data.clone())])) {
             let pasted = std::fs::read(dir.join("pasted.bin")).expect("Explorer did not create the file");
             assert_eq!(pasted, data);
-        } else {
-            thread::sleep(Duration::from_secs(3)); // let Explorer finish writing; check the pasted file by hand
+            let _ = std::fs::remove_dir_all(dir);
         }
-        clear_offer("");
-        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Same, for a nested folder with an empty subfolder; an unsafe entry in the offer must be dropped and the
+    /// remaining pulls must still name the partner's own indices.
+    #[test]
+    #[ignore]
+    fn explorer_paste_recreates_nested_folder() {
+        let main_rs = b"fn main() {}\n".to_vec();
+        let big: Vec<u8> = (0..150_000u32).map(|i| (i * 13 % 251) as u8).collect();
+        let offer = json!({ "id": "of_tree", "files": [
+            { "name": "Proyek", "dir": true },
+            { "name": "..\\escape.txt", "size": 3 },
+            { "name": "Proyek\\src", "dir": true },
+            { "name": "Proyek\\src\\main.rs", "size": main_rs.len() },
+            { "name": "Proyek\\kosong", "dir": true },
+            { "name": "Proyek\\src\\data.bin", "size": big.len() },
+        ]});
+        let contents = HashMap::from([(3, main_rs.clone()), (5, big.clone())]);
+        if let Some(dir) = paste_with_explorer("tree", offer, &contents) {
+            assert_eq!(std::fs::read(dir.join(r"Proyek\src\main.rs")).expect("main.rs missing"), main_rs);
+            assert_eq!(std::fs::read(dir.join(r"Proyek\src\data.bin")).expect("data.bin missing"), big);
+            assert!(dir.join(r"Proyek\kosong").is_dir(), "empty folder not recreated");
+            assert!(!dir.join("escape.txt").exists() && !dir.parent().unwrap().join("escape.txt").exists());
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn descriptor_marks_nested_folders_and_relative_names() {
+        let files = parse_offer_files(json!([
+            { "name": "Proyek", "dir": true },
+            { "name": "Proyek/src", "dir": true },
+            { "name": "Proyek\\src\\main.rs", "size": 7 },
+        ]).as_array().unwrap())
+        .unwrap();
+        let bytes = descriptor_bytes(&files);
+        assert_eq!(bytes.len(), 4 + 3 * 592);
+        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), 3);
+        let fd = |i: usize| &bytes[4 + i * 592..4 + (i + 1) * 592];
+        let name = |i: usize| {
+            let raw: Vec<u16> = fd(i)[72..72 + 520].chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+            String::from_utf16_lossy(&raw[..raw.iter().position(|&c| c == 0).unwrap()])
+        };
+        let u32_at = |i: usize, off: usize| u32::from_le_bytes(fd(i)[off..off + 4].try_into().unwrap());
+        for i in 0..2 {
+            assert_eq!(u32_at(i, 0), FD_ATTRIBUTES | FD_PROGRESSUI);
+            assert_eq!(u32_at(i, 36), FILE_ATTRIBUTE_DIRECTORY); // dwFileAttributes
+        }
+        assert_eq!(u32_at(2, 0), FD_FILESIZE | FD_PROGRESSUI);
+        assert_eq!(u32_at(2, 68), 7); // size low
+        assert_eq!((name(0), name(1), name(2)), ("Proyek".into(), r"Proyek\src".into(), r"Proyek\src\main.rs".into()));
+    }
+
+    #[test]
+    fn offer_parsing_drops_unsafe_names_and_keeps_partner_indices() {
+        let files = parse_offer_files(json!([
+            { "name": "..\\x", "size": 1 },
+            { "name": "C:\\Windows\\x", "size": 1 },
+            { "name": "\\\\server\\share\\x", "size": 1 },
+            { "name": "a\\NUL.txt", "size": 1 },
+            { "name": "ok.txt", "size": 1 },
+            { "name": "big.bin", "size": 3u64 << 30 },
+            { "name": "d", "dir": true },
+        ]).as_array().unwrap())
+        .unwrap();
+        let kept: Vec<(&str, usize, bool)> = files.iter().map(|f| (f.name.as_str(), f.remote, f.dir)).collect();
+        assert_eq!(kept, vec![("ok.txt", 4, false), ("d", 6, true)]);
+        let too_many: Vec<Value> = (0..10_001).map(|i| json!({ "name": format!("f{i}"), "size": 0 })).collect();
+        assert!(parse_offer_files(&too_many).is_err());
+    }
+
+    #[test]
+    fn folder_entries_are_never_pulled() {
+        let (tx_out, rx_out) = mpsc::channel();
+        let offer = Offer {
+            from: "111".into(),
+            offer_id: "of_d".into(),
+            files: vec![OfferFile { name: "d".into(), size: 0, dir: true, remote: 0 }],
+            tx_out,
+        };
+        let obj = Box::into_raw(Box::new(DataObject { vtbl: &DATA_VTBL, refs: AtomicU32::new(1), offer: Arc::new(offer) })) as *mut c_void;
+        let fmt = FORMATETC { cf_format: formats().contents, ptd: ptr::null_mut(), dw_aspect: DVASPECT_CONTENT, lindex: 0, tymed: TYMED_ISTREAM };
+        let mut medium = STGMEDIUM { tymed: 0, data: ptr::null_mut(), p_unk_for_release: ptr::null_mut() };
+        unsafe {
+            assert_eq!(data_get_data(obj, &fmt, &mut medium), DV_E_LINDEX);
+            data_release(obj);
+        }
+        assert!(rx_out.try_recv().is_err(), "no pull may be sent for a folder");
     }
 
     #[test]
     fn pulled_bytes_flow_to_the_stream_and_are_verified() {
         let (tx_out, _rx_out) = mpsc::channel();
-        let offer = Offer { from: "111".into(), offer_id: "of_1".into(), files: vec![("x.bin".into(), 4)], tx_out };
+        let offer = Offer { from: "111".into(), offer_id: "of_1".into(), files: vec![OfferFile { name: "x.bin".into(), size: 4, dir: false, remote: 0 }], tx_out };
         let stream = open_pull(&offer, 0);
         let tid = unsafe { (*(stream as *const PullStream)).tid.clone() };
         assert!(on_transfer("999", "chunk", &tid, &json!({})).is_none(), "other peer must not feed the stream");

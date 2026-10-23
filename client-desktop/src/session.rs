@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::io::Cursor;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -230,9 +230,82 @@ impl ViewerDecoder {
     }
 }
 
+/// Viewer-side mode "Otomatis": ask the host to stream at the size of the viewer canvas.
+/// Hosts treat a bare 1 like 1080 (the `_` arm), which is also what old hosts do with it.
+pub const RES_AUTO: usize = 1;
+/// Host-side encoding of an automatic request: flag | width << 16 | height, so the existing
+/// `host_resolution_mode` atomic and the capture loop's reconfigure path carry it unchanged.
+const AUTO_BOX_FLAG: usize = 1 << 40;
+/// Resolution mode picked in this viewer's UI (independent of the mode a remote viewer set on us).
+pub static VIEWER_RES_MODE: AtomicUsize = AtomicUsize::new(RES_AUTO);
+/// Latest canvas size in physical pixels (w << 32 | h), 0 before the canvas was ever shown.
+pub static VIEWPORT_PX: AtomicU64 = AtomicU64::new(0);
+/// Canvas box last sent to the host in this session (same packing), 0 = none.
+pub static LAST_SENT_BOX: AtomicU64 = AtomicU64::new(0);
+
+pub fn pack_box(w: i32, h: i32) -> u64 {
+    ((w.max(0) as u64) << 32) | h.max(0) as u64
+}
+
+pub fn unpack_box(v: u64) -> (i32, i32) {
+    ((v >> 32) as i32, (v & 0xFFFF_FFFF) as i32)
+}
+
+/// Debounced resizes only reach the host when they change the box noticeably
+/// (each change recreates the capturer/encoder and costs a key frame).
+pub fn box_changed_enough(prev: (i32, i32), next: (i32, i32)) -> bool {
+    let differs = |a: i32, b: i32| (a - b).abs() >= 32.max(a / 25); // 32 px or 4 %
+    prev.0 <= 0 || prev.1 <= 0 || differs(prev.0, next.0) || differs(prev.1, next.1)
+}
+
+/// The `set-resolution` event a viewer sends for `mode`. Automatic requests still carry
+/// `mode: 1080`, so old hosts keep their default instead of guessing.
+pub fn resolution_event(mode: usize, viewport: (i32, i32)) -> serde_json::Value {
+    if mode == RES_AUTO {
+        if viewport.0 > 0 && viewport.1 > 0 {
+            return serde_json::json!({
+                "action": "set-resolution",
+                "mode": 1080,
+                "auto": true,
+                "width": viewport.0,
+                "height": viewport.1
+            });
+        }
+        return serde_json::json!({ "action": "set-resolution", "mode": 1080 });
+    }
+    serde_json::json!({ "action": "set-resolution", "mode": mode })
+}
+
+/// Host side: the value to store in `host_resolution_mode` for a `set-resolution` event.
+pub fn mode_from_resolution_event(event: &serde_json::Value) -> usize {
+    let dim = |k: &str| event.get(k).and_then(|v| v.as_u64()).unwrap_or(0).min(16_384) as usize;
+    if event.get("auto").and_then(|v| v.as_bool()) == Some(true) && dim("width") > 0 && dim("height") > 0 {
+        return AUTO_BOX_FLAG | dim("width").max(320) << 16 | dim("height").max(180);
+    }
+    let mode = event.get("mode").and_then(|v| v.as_u64()).unwrap_or(1080) as usize;
+    // Only this side builds automatic values; a raw one from the wire falls back to the default.
+    if mode >= AUTO_BOX_FLAG { 1080 } else { mode }
+}
+
+/// Automatic mode: largest stream that fits the viewer box, keeping the monitor's aspect
+/// ratio and never upscaling (the capturer keeps native size when max_width >= native).
+fn auto_box_params(box_w: i32, box_h: i32, bounds: MonitorBounds) -> (i32, u32) {
+    let (sw, sh) = (bounds.width.max(1) as i64, bounds.height.max(1) as i64);
+    let by_height = sw * box_h as i64 / sh;
+    let w = (box_w as i64).min(by_height).clamp(2, sw) as i32 & !1;
+    let out_h = sh * w as i64 / sw;
+    let quality = if out_h >= 900 { 82 } else if out_h >= 600 { 78 } else { 72 };
+    // Native is reported as the monitor width, the same value the 1080 preset yields on a
+    // 1080p monitor, so switching between them does not recreate the capturer.
+    (if w as i64 >= sw - 1 { sw as i32 } else { w.max(2) }, quality)
+}
+
 /// Returns `(max_width, jpeg_quality)`. The width is chosen so the stream fits the mode's
 /// box (e.g. 1280x720) on any aspect ratio, so "720p" never exceeds 720 rows on 16:10 or portrait monitors.
 pub fn resolution_mode_to_params(mode: usize, bounds: MonitorBounds) -> (i32, u32) {
+    if mode & AUTO_BOX_FLAG != 0 {
+        return auto_box_params(((mode >> 16) & 0xFFFF) as i32, (mode & 0xFFFF) as i32, bounds);
+    }
     let (box_w, box_h, quality) = match mode {
         0 => return (0, 85),     // 1:1 Native Resolution, Quality 85
         720 => (1280, 720, 78),  // 720p HD Smooth (COLORONCOLOR fast StretchBlt), Quality 78
@@ -280,6 +353,11 @@ pub fn spawn_host_capture_loop(
     can_send_frame: Arc<AtomicBool>,
     tx_out: Sender<OutgoingMsg>,
 ) {
+    // An automatic size belongs to the viewer that asked for it; a new viewer (old or Android ones
+    // never send one) starts from the default. Runs on the network thread, before its next message.
+    if host_resolution_mode.load(Ordering::SeqCst) & AUTO_BOX_FLAG != 0 {
+        host_resolution_mode.store(1080, Ordering::SeqCst);
+    }
     thread::spawn(move || {
         // Follow the secure desktop (UAC / lock screen) when running as SYSTEM; a no-op otherwise.
         core_engine::desktop::switch_to_input_desktop();
@@ -336,7 +414,13 @@ pub fn spawn_host_capture_loop(
             let req_idx = active_monitor_idx.load(Ordering::Relaxed);
             let req_res_mode = host_resolution_mode.load(Ordering::Relaxed);
             let desktop_switched = core_engine::desktop::switch_to_input_desktop();
-            if req_idx != current_idx || req_res_mode != current_res_mode || desktop_switched {
+            let mode_only = req_res_mode != current_res_mode && req_idx == current_idx && !desktop_switched;
+            if mode_only
+                && resolution_mode_to_params(req_res_mode, *host_monitor_bounds.lock().unwrap()) == (max_width, base_quality)
+            {
+                // Same stream size and quality (e.g. a viewer resize the aspect ratio absorbs): keep the pipeline.
+                current_res_mode = req_res_mode;
+            } else if req_idx != current_idx || req_res_mode != current_res_mode || desktop_switched {
                 monitors = enumerate_monitors();
                 let count = monitors.len().max(1);
                 current_idx = req_idx % count;
@@ -420,6 +504,8 @@ pub fn spawn_host_capture_loop(
             }
         }
 
+        // The session is over: lift any key its viewer left pressed on this machine.
+        crate::keymap::host_release_all(&core_engine::input::InputInjector::new());
         logger::info("desk_rt.display_component", "Host capture stopped.");
     });
 }
@@ -440,6 +526,53 @@ mod tests {
         assert_eq!(resolution_mode_to_params(480, mon(3440, 1440)).0, 854); // ultrawide: 854x357
         assert_eq!(resolution_mode_to_params(0, mon(3840, 2160)).0, 0);
         assert_eq!(resolution_mode_to_params(999, mon(1920, 1080)), (1920, 82));
+        assert_eq!(resolution_mode_to_params(RES_AUTO, mon(1920, 1080)), (1920, 82));
+    }
+
+    fn auto(w: u64, h: u64) -> usize {
+        mode_from_resolution_event(&serde_json::json!({"action": "set-resolution", "mode": 1080, "auto": true, "width": w, "height": h}))
+    }
+
+    #[test]
+    fn auto_mode_fits_the_viewer_box() {
+        // Small window on a 1080p host: width-limited, aspect kept, even.
+        assert_eq!(resolution_mode_to_params(auto(1000, 700), mon(1920, 1080)), (1000, 72)); // 1000x562
+        // Height-limited box (wide window): 900 rows -> 1600 wide.
+        assert_eq!(resolution_mode_to_params(auto(2500, 900), mon(1920, 1080)), (1600, 82));
+        // Odd sizes round down to even.
+        assert_eq!(resolution_mode_to_params(auto(1279, 2000), mon(1920, 1080)).0, 1278);
+        // Bigger than native never upscales; native equals the 1080 preset value (no recreate).
+        assert_eq!(resolution_mode_to_params(auto(3840, 2160), mon(1920, 1080)), resolution_mode_to_params(1080, mon(1920, 1080)));
+        assert_eq!(resolution_mode_to_params(auto(5000, 3000), mon(3840, 2160)), (3840, 82));
+        // 4K host, 1440p-ish viewer canvas: sharp but not native.
+        assert_eq!(resolution_mode_to_params(auto(2560, 1300), mon(3840, 2160)), (2310, 82));
+        // Portrait host in a landscape window.
+        assert_eq!(resolution_mode_to_params(auto(1600, 800), mon(1080, 1920)), (450, 78));
+        // Absurdly small boxes are clamped to something usable.
+        assert_eq!(resolution_mode_to_params(auto(10, 10), mon(1920, 1080)), (320, 72));
+    }
+
+    #[test]
+    fn resolution_events_stay_compatible() {
+        // Old hosts read only `mode`: automatic requests look like the 1080 default to them.
+        let ev = resolution_event(RES_AUTO, (1200, 700));
+        assert_eq!(ev["mode"], 1080);
+        assert_eq!(mode_from_resolution_event(&ev), auto(1200, 700));
+        // Unknown viewport, presets, old viewers and forged values.
+        assert_eq!(mode_from_resolution_event(&resolution_event(RES_AUTO, (0, 0))), 1080);
+        assert_eq!(mode_from_resolution_event(&resolution_event(720, (1200, 700))), 720);
+        assert_eq!(mode_from_resolution_event(&serde_json::json!({"mode": 0})), 0);
+        assert_eq!(mode_from_resolution_event(&serde_json::json!({})), 1080);
+        assert_eq!(mode_from_resolution_event(&serde_json::json!({"mode": AUTO_BOX_FLAG | 5})), 1080);
+    }
+
+    #[test]
+    fn tiny_resizes_are_ignored() {
+        assert!(box_changed_enough((0, 0), (1200, 700)));
+        assert!(!box_changed_enough((1200, 700), (1210, 690)));
+        assert!(box_changed_enough((1200, 700), (1260, 700))); // > 4 % wider
+        assert!(box_changed_enough((1200, 700), (1200, 650)));
+        assert_eq!(unpack_box(pack_box(2560, 1377)), (2560, 1377));
     }
 
     /// PSNR in dB between a BGRX source frame and the viewer's RGBA framebuffer.

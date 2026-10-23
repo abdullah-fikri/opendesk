@@ -6,6 +6,9 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::ptr;
+use std::sync::OnceLock;
+use std::thread;
+use std::time::Duration;
 
 use crate::config::{
     format_desk_id, get_app_dir, get_device_display_name, load_config, normalize_gateway_url,
@@ -19,6 +22,14 @@ type HWND = *mut c_void;
 type BOOL = i32;
 
 const ERROR_ALREADY_EXISTS: u32 = 183;
+const ERROR_ACCESS_DENIED: u32 = 5;
+const TOKEN_QUERY: u32 = 0x0008;
+const TOKEN_ELEVATION_CLASS: u32 = 20; // TokenElevation
+const MSGFLT_ADD: u32 = 1;
+
+/// Task Scheduler task registered by the installer (elevated, at logon, for the installing user).
+/// Must match `ElevatedTaskName` in installer/opendesk.iss.
+pub const ELEVATED_TASK_NAME: &str = "OpenDesk Autostart";
 const WM_LBUTTONUP: isize = 0x0202;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const ATTACH_PARENT_PROCESS: u32 = 0xFFFFFFFF;
@@ -32,6 +43,8 @@ unsafe extern "system" {
         lp_name: *const u16,
     ) -> HANDLE;
     fn GetLastError() -> u32;
+    fn CloseHandle(h_object: HANDLE) -> BOOL;
+    fn GetCurrentProcess() -> HANDLE;
     fn AttachConsole(dw_process_id: u32) -> BOOL;
     fn GetStdHandle(n_std_handle: u32) -> HANDLE;
     fn WriteFile(
@@ -47,10 +60,87 @@ unsafe extern "system" {
 unsafe extern "system" {
     fn FindWindowW(lp_class_name: *const u16, lp_window_name: *const u16) -> HWND;
     fn PostMessageW(h_wnd: HWND, msg: u32, w_param: usize, l_param: isize) -> BOOL;
+    fn ChangeWindowMessageFilter(message: u32, dw_flag: u32) -> BOOL;
+}
+
+#[link(name = "advapi32")]
+unsafe extern "system" {
+    fn OpenProcessToken(process: HANDLE, desired_access: u32, token: *mut HANDLE) -> BOOL;
+    fn GetTokenInformation(
+        token: HANDLE,
+        class: u32,
+        info: *mut c_void,
+        info_len: u32,
+        return_len: *mut u32,
+    ) -> BOOL;
 }
 
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// True when this process runs with an elevated (admin) token.
+fn is_elevated() -> bool {
+    unsafe {
+        let mut token: HANDLE = ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut elevated: u32 = 0;
+        let mut ret_len: u32 = 0;
+        let ok = GetTokenInformation(
+            token,
+            TOKEN_ELEVATION_CLASS,
+            &mut elevated as *mut u32 as *mut c_void,
+            std::mem::size_of::<u32>() as u32,
+            &mut ret_len,
+        );
+        CloseHandle(token);
+        ok != 0 && elevated != 0
+    }
+}
+
+/// True when the installer's elevated logon task is visible to this user.
+/// Cached so `schtasks` is spawned at most once per process. Portable/dev runs: no task -> false.
+fn elevated_task_installed() -> bool {
+    static INSTALLED: OnceLock<bool> = OnceLock::new();
+    *INSTALLED.get_or_init(|| run_schtasks("/Query"))
+}
+
+fn run_schtasks(verb: &str) -> bool {
+    Command::new("schtasks")
+        .args([verb, "/TN", ELEVATED_TASK_NAME])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn find_tray_window() -> HWND {
+    let tray_class = to_wide("OpenDeskTrayMsgClass");
+    let tray_win = to_wide("OpenDeskTrayMessageWindow");
+    unsafe { FindWindowW(tray_class.as_ptr(), tray_win.as_ptr()) }
+}
+
+/// Non-elevated launch (Start Menu, desktop icon, leftover watchdog) while the elevated task exists:
+/// start the task instead, so a UIPI-limited copy never runs. False = task not startable (caller falls back).
+fn delegate_to_elevated_task(start_in_background: bool) -> bool {
+    if !run_schtasks("/Run") {
+        return false;
+    }
+    logger::info("app.service", "Non-elevated launch delegated to elevated logon task.");
+    // The task always starts with --background; pop the window for interactive launches.
+    if !start_in_background && !cfg!(feature = "headless") {
+        for _ in 0..50 {
+            let hwnd = find_tray_window();
+            if !hwnd.is_null() {
+                unsafe { PostMessageW(hwnd, WM_TRAYICON, 0, WM_LBUTTONUP) };
+                break;
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+    true
 }
 
 fn cli_println(msg: &str) {
@@ -123,12 +213,21 @@ pub fn handle_cli_commands() {
     // 2. `opendesk status`, `opendesk id`, `opendesk stop`, `opendesk uninstall`
     if first.eq_ignore_ascii_case("stop") || first.eq_ignore_ascii_case("kill") {
         mark_intentional_stop();
+        // End via Task Scheduler first so its restart-on-failure policy does not bring it back.
+        let _ = run_schtasks("/End");
         let _ = Command::new("taskkill")
             .args(["/F", "/IM", "wscript.exe"])
             .output();
-        let _ = Command::new("taskkill")
+        // taskkill exit code 1 = access denied (elevated instance, non-elevated terminal).
+        let denied = Command::new("taskkill")
             .args(["/F", "/IM", "OpenDesk.exe"])
-            .output();
+            .output()
+            .map(|o| o.status.code() == Some(1))
+            .unwrap_or(false);
+        if denied {
+            cli_println("[OpenDesk CLI] Gagal: OpenDesk berjalan sebagai Administrator.\r\n  Jalankan terminal sebagai Administrator, atau gunakan menu tray \"Stop & Keluar\".");
+            std::process::exit(1);
+        }
         let _ = Command::new("taskkill")
             .args(["/F", "/IM", "OpenDesk-Host.exe"])
             .output();
@@ -141,6 +240,12 @@ pub fn handle_cli_commands() {
 
     if first.eq_ignore_ascii_case("uninstall") {
         mark_intentional_stop();
+        // Best effort: removing the elevated task needs an elevated terminal (the uninstaller does it too).
+        let _ = run_schtasks("/End");
+        let _ = Command::new("schtasks")
+            .args(["/Delete", "/TN", ELEVATED_TASK_NAME, "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
         let _ = Command::new("taskkill")
             .args(["/F", "/IM", "wscript.exe"])
             .output();
@@ -185,18 +290,39 @@ pub fn ensure_single_instance(start_in_background: bool) {
     unsafe {
         let mutex_name = to_wide("Local\\OpenDesk_SingleInstance_Mutex_v2");
         let handle = CreateMutexW(ptr::null(), 1, mutex_name.as_ptr());
-        if !handle.is_null() && GetLastError() == ERROR_ALREADY_EXISTS {
+        let err = GetLastError();
+        // A mutex owned by an elevated instance cannot be opened from a non-elevated one
+        // (admin-only DACL + High integrity label) -> ACCESS_DENIED also means "already running".
+        let already_running = (!handle.is_null() && err == ERROR_ALREADY_EXISTS)
+            || (handle.is_null() && err == ERROR_ACCESS_DENIED);
+        if already_running {
             if !start_in_background && !cfg!(feature = "headless") {
-                let tray_class = to_wide("OpenDeskTrayMsgClass");
-                let tray_win = to_wide("OpenDeskTrayMessageWindow");
-                let hwnd = FindWindowW(tray_class.as_ptr(), tray_win.as_ptr());
+                let hwnd = find_tray_window();
                 if !hwnd.is_null() {
                     PostMessageW(hwnd, WM_TRAYICON, 0, WM_LBUTTONUP);
                 }
             }
             std::process::exit(0);
         }
-        let _ = handle;
+
+        if is_elevated() {
+            // UIPI drops messages from non-elevated senders; let a second launch (shortcut click)
+            // still wake our tray window. Explorer's tray callbacks use the same message.
+            let _ = ChangeWindowMessageFilter(WM_TRAYICON, MSGFLT_ADD);
+        } else if elevated_task_installed() {
+            // Release the lock first so the elevated copy started by the task can take it.
+            if !handle.is_null() {
+                CloseHandle(handle);
+            }
+            if delegate_to_elevated_task(start_in_background) {
+                std::process::exit(0);
+            }
+            // Task could not be started: keep today's behaviour and run non-elevated.
+            let retry = CreateMutexW(ptr::null(), 1, mutex_name.as_ptr());
+            if retry.is_null() || GetLastError() == ERROR_ALREADY_EXISTS {
+                std::process::exit(0);
+            }
+        }
     }
 }
 
@@ -246,6 +372,27 @@ pub fn init_background_guardian() {
 
     let lock_path = app_dir.join("watchdog.lock");
     let vbs_path = app_dir.join("opendesk-watchdog.vbs");
+
+    // Installed build: the elevated logon task owns autostart (+ restart on failure).
+    // Re-adding HKCU Run / the VBS watchdog would start a second, non-elevated copy.
+    if elevated_task_installed() {
+        if vbs_path.exists() {
+            // One-time cleanup of leftovers from pre-task versions (installer normally did this).
+            for value in ["OpenDesk", "OpenDeskWatchdog"] {
+                let _ = Command::new("reg")
+                    .args(["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", value, "/f"])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output();
+            }
+            let _ = fs::remove_file(&vbs_path);
+            let _ = fs::remove_file(&lock_path);
+        }
+        logger::info(
+            "app.service",
+            &format!("Elevated logon task '{}' active; HKCU Run & watchdog skipped.", ELEVATED_TASK_NAME),
+        );
+        return;
+    }
 
     let vbs_script = format!(
         r#"On Error Resume Next

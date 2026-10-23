@@ -42,7 +42,7 @@ export component MainWindow inherits Window {
     in-out property <bool> show_session_options: false;
     in-out property <int> privacy_mode: 0;
     in-out property <bool> block_remote_input: false;
-    in-out property <int> resolution_mode: 1080;
+    in-out property <int> resolution_mode: 1; // 1 = Otomatis (follows the viewer window)
     in-out property <int> audio_quality: 2;
 
     in-out property <[HistoryItem]> history_items: [];
@@ -64,7 +64,9 @@ export component MainWindow inherits Window {
     callback send_mouse_up(int, int, int);
     callback send_mouse_wheel(int, int, int);
     callback send_key(int);
-    callback send_key_event(string, bool, bool, bool);
+    callback send_key_event(string, bool, bool, bool, bool, bool);
+    callback release_remote_keys();
+    callback viewport_resized(int, int);
     callback switch_monitor();
     callback open_file_picker();
     callback save_gateway_url(string);
@@ -152,9 +154,11 @@ export component MainWindow inherits Window {
                 send_mouse_down(nx, ny, btn) => { root.send_mouse_down(nx, ny, btn); }
                 send_mouse_up(nx, ny, btn) => { root.send_mouse_up(nx, ny, btn); }
                 send_mouse_wheel(nx, ny, dy) => { root.send_mouse_wheel(nx, ny, dy); }
-                send_key_event(txt, ctrl, alt, shift) => {
-                    root.send_key_event(txt, ctrl, alt, shift);
+                send_key_event(txt, pressed, repeat, ctrl, alt, shift) => {
+                    root.send_key_event(txt, pressed, repeat, ctrl, alt, shift);
                 }
+                release_remote_keys => { root.release_remote_keys(); }
+                viewport_resized(w, h) => { root.viewport_resized(w, h); }
             }
         }
     }
