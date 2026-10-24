@@ -20,11 +20,6 @@ class SettingsRepository(context: Context) {
         get() = prefs.getString(KEY_DEVICE_TOKEN, "") ?: ""
         set(value) = prefs.edit().putString(KEY_DEVICE_TOKEN, value).apply()
 
-    /** Whether the first-run accessibility prompt was shown. */
-    var promptedForAccessibility: Boolean
-        get() = prefs.getBoolean(KEY_PROMPTED_ACCESSIBILITY, false)
-        set(value) = prefs.edit().putBoolean(KEY_PROMPTED_ACCESSIBILITY, value).apply()
-
     /** This device's desk ID ("123 456 789"), derived from ANDROID_ID once and then kept. */
     val deskId: String
         get() = prefs.getString(KEY_DESK_ID, null) ?: DeskId.fromDeviceIdentifier(androidId ?: FALLBACK_IDENTIFIER).also {
@@ -35,7 +30,6 @@ class SettingsRepository(context: Context) {
         const val PREFS_NAME = "opendesk_prefs"
         const val KEY_GATEWAY_URL = "gateway_url"
         const val KEY_DEVICE_TOKEN = "device_token"
-        const val KEY_PROMPTED_ACCESSIBILITY = "has_prompted_accessibility"
         // Key name kept from earlier builds so existing installs keep their ID.
         const val KEY_DESK_ID = "hardware_desk_id"
         const val FALLBACK_IDENTIFIER = "android_opendesk"

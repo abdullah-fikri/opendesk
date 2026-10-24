@@ -13,5 +13,4 @@
     <color name="accent">#DC2626</color>
     <color name="status_online">#22C55E</color>
     <color name="status_offline">#64748B</color>
-    <color name="status_error">#EF4444</color>
 </resources>

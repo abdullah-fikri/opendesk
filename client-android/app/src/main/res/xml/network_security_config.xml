@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Release builds talk to the relay over wss:// only. Plain ws:// is allowed to this device's own loopback (and the
+  emulator's alias for the host machine), matching the relay, which refuses plaintext from remote addresses anyway.
+  Debug builds additionally allow plaintext everywhere (src/debug/res/xml/network_security_config.xml) for LAN
+  development.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>
