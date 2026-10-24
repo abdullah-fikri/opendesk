@@ -1,5 +1,5 @@
 # Release: push a tag "vX.Y.Z" matching VERSION. Publishes the relay image to GHCR and attaches the Windows
-# executables, installers and the Android APK to a GitHub Release. See docs/ci-cd.md.
+# executables and installers, the Linux packages and the Android APK to a GitHub Release. See docs/ci-cd.md.
 name: Release
 
 on:
@@ -106,6 +106,35 @@ jobs:
           name: windows
           path: dist/*
 
+  linux:
+    name: Linux client and packages
+    needs: verify
+    # The oldest supported Ubuntu, so the binaries run on every newer distribution too.
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libasound2-dev libfontconfig1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client-desktop
+      - run: cargo install cargo-deb --locked
+      - name: Build packages and archive
+        run: |
+          mkdir -p dist
+          make linux-deb linux-tar
+          cp builds/linux/*.deb builds/linux/*.tar.gz dist/
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
   android:
     name: Android APK
     needs: verify
@@ -127,19 +156,22 @@ jobs:
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
             echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
           fi
-      - name: Build release APK
+      - name: Build release APK and App Bundle
         working-directory: client-android
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon assembleRelease
+        run: ./gradlew --no-daemon assembleRelease bundleRelease
       - name: Collect
         run: |
           mkdir -p dist
           apk=$(ls client-android/app/build/outputs/apk/release/*.apk | head -1)
           suffix=$([ -n "${ANDROID_KEYSTORE_FILE:-}" ] && echo "" || echo "-unsigned")
           cp "$apk" "dist/OpenDesk-$VERSION$suffix.apk"
+          # The App Bundle is what Google Play (internal testing / closed tracks) takes; see client-android/README.md.
+          aab=$(ls client-android/app/build/outputs/bundle/release/*.aab | head -1)
+          cp "$aab" "dist/OpenDesk-$VERSION$suffix.aab"
       - uses: actions/upload-artifact@v4
         with:
           name: android
@@ -147,7 +179,7 @@ jobs:
 
   publish:
     name: GitHub Release
-    needs: [verify, relay-image, windows, android]
+    needs: [verify, relay-image, windows, linux, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write

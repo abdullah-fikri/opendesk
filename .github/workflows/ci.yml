@@ -75,6 +75,54 @@ jobs:
           cargo build --manifest-path client-desktop/Cargo.toml --release --locked --features admin
           cargo build --manifest-path client-desktop/Cargo.toml --release --locked --features headless
 
+  desktop-linux:
+    name: Desktop + core engine (Rust, Linux)
+    # The oldest supported Ubuntu, so the glibc baseline of what we build stays low.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev libasound2-dev libfontconfig1-dev libxkbcommon-dev \
+            xvfb xauth dbus-x11 bzip2 \
+            libx11-6 libx11-xcb1 libxcursor1 libxrandr2 libxi6 libxkbcommon-x11-0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core-engine
+            client-desktop
+      - name: rustfmt
+        run: |
+          cargo fmt --manifest-path core-engine/Cargo.toml --check
+          cargo fmt --manifest-path client-desktop/Cargo.toml --check
+      - name: clippy (every edition)
+        run: |
+          cargo clippy --manifest-path core-engine/Cargo.toml --release --all-targets --locked -- -D warnings
+          for f in "" admin headless; do
+            cargo clippy --manifest-path client-desktop/Cargo.toml --release --all-targets --locked --features "$f" -- -D warnings
+          done
+      - name: Cisco OpenH264 (for the H.264 round-trip test; skipped when unavailable)
+        run: packaging/linux/install-openh264.sh || echo "::warning::OpenH264 download failed; H.264 tests are skipped"
+      - name: test (live X11 capture, XTEST input and clipboard under Xvfb)
+        run: |
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24' \
+            cargo test --manifest-path core-engine/Cargo.toml --release --locked -- --include-ignored
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24' \
+            cargo test --manifest-path client-desktop/Cargo.toml --release --locked
+      - name: Debian packages (every edition)
+        run: |
+          cargo install cargo-deb --locked
+          cd client-desktop
+          cargo deb --locked --output ../dist/
+          cargo deb --locked --variant admin --output ../dist/
+          cargo deb --locked --variant host --output ../dist/
+          dpkg-deb -I ../dist/opendesk_*.deb
+
   android:
     name: Android (Kotlin)
     runs-on: ubuntu-latest
