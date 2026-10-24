@@ -7,6 +7,16 @@ const (
 	CapP2PSignal    = "p2p-signal"
 	CapCaps         = "caps"
 	CapMultiSession = "multi-session"
+	// CapMonitor: the relay runs the read-only monitor wall (see docs/features/monitor-wall.md at the repository root).
+	CapMonitor = "monitor"
+)
+
+// Client capabilities the relay acts on for the monitor wall.
+const (
+	// CapMonitorHost: the client streams a thumbnail profile on monitor-start.
+	CapMonitorHost = "monitor-host"
+	// CapMonitorView: the client understands monitor-state and the monitor binary tag (admin edition).
+	CapMonitorView = "monitor-view"
 )
 
 // PlatformAndroid identifies Android peers. Android hosts must approve each session before it becomes active.

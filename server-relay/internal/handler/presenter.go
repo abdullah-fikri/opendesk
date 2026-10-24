@@ -58,3 +58,16 @@ func hostListDTO(hosts []model.Host) dto.HostList {
 	}
 	return dto.HostList{Type: dto.TypeHostList, Hosts: out}
 }
+
+// sendMonitorUpdate delivers the monitor-wall messages a relay change produced.
+func sendMonitorUpdate(up usecase.MonitorUpdate) {
+	for _, host := range up.Start {
+		_ = host.Send(dto.MonitorStart{Type: dto.TypeMonitorStart, MaxWidth: model.MonitorMaxWidth, FPS: model.MonitorFPS})
+	}
+	for _, host := range up.Stop {
+		_ = host.Send(dto.MonitorStop{Type: dto.TypeMonitorStop})
+	}
+	for _, n := range up.Notices {
+		_ = n.Admin.Send(dto.MonitorState{Type: dto.TypeMonitorState, TargetClean: n.Host, State: string(n.State)})
+	}
+}

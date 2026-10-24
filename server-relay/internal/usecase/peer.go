@@ -2,7 +2,10 @@ package usecase
 
 import (
 	"encoding/json"
+	"slices"
 	"sync"
+
+	"opendesk/server-relay/internal/model"
 )
 
 // PeerInfo is what a device declares about itself at registration.
@@ -26,12 +29,17 @@ type Peer struct {
 	Caps       []string
 	// Multi is set when the client advertised the multi-session capability; it never changes afterwards.
 	Multi bool
+	// MonitorHost and MonitorView are set from the monitor-host and monitor-view capabilities.
+	MonitorHost bool
+	MonitorView bool
 
 	// Single-session state: hosts, legacy viewers and Android peers (guarded by Relay.mu).
 	sessionWith   string
 	sessionActive bool
 	// views holds a multi-session viewer's sessions keyed by host clean ID (guarded by Relay.mu).
 	views map[string]*viewSession
+	// watching holds an administrator's monitor-wall tiles keyed by host clean ID (guarded by Relay.mu).
+	watching map[string]*monitorTile
 
 	conn      Conn
 	writeMu   sync.Mutex
@@ -51,19 +59,21 @@ type viewSession struct {
 
 func newPeer(info PeerInfo, deskID string, multi bool, conn Conn, m FrameMetrics) *Peer {
 	p := &Peer{
-		CleanID:    info.CleanID,
-		DeskID:     deskID,
-		Platform:   info.Platform,
-		DeviceName: info.DeviceName,
-		IsAdmin:    info.IsAdmin,
-		Caps:       info.Caps,
-		Multi:      multi,
-		conn:       conn,
-		frames:     newFrameQueue(m),
-		closeCh:    make(chan struct{}),
-		metrics:    m,
+		CleanID:     info.CleanID,
+		DeskID:      deskID,
+		Platform:    info.Platform,
+		DeviceName:  info.DeviceName,
+		IsAdmin:     info.IsAdmin,
+		Caps:        info.Caps,
+		Multi:       multi,
+		MonitorHost: slices.Contains(info.Caps, model.CapMonitorHost),
+		MonitorView: slices.Contains(info.Caps, model.CapMonitorView),
+		conn:        conn,
+		frames:      newFrameQueue(m),
+		closeCh:     make(chan struct{}),
+		metrics:     m,
 	}
-	go p.writeFrames(p.frames, nil, "")
+	go p.writeFrames(p.frames, nil, 0, "")
 	return p
 }
 
@@ -73,8 +83,8 @@ func (p *Peer) close() {
 }
 
 // writeFrames sends queued video until the peer (or the view, when done is non-nil) ends.
-// A non-empty tag prefixes every frame with the session tag of that host.
-func (p *Peer) writeFrames(q *frameQueue, done <-chan struct{}, tag string) {
+// A non-empty tag prefixes every frame with marker and that host's clean ID.
+func (p *Peer) writeFrames(q *frameQueue, done <-chan struct{}, marker byte, tag string) {
 	for {
 		select {
 		case <-p.closeCh:
@@ -85,7 +95,7 @@ func (p *Peer) writeFrames(q *frameQueue, done <-chan struct{}, tag string) {
 			if tag == "" {
 				_ = p.SendBinary(frame)
 			} else {
-				_ = p.sendTagged(tag, frame)
+				_ = p.sendTagged(marker, tag, frame)
 			}
 		}
 	}
@@ -94,7 +104,7 @@ func (p *Peer) writeFrames(q *frameQueue, done <-chan struct{}, tag string) {
 // startView creates a session queue whose writer tags every frame with the host's clean ID.
 func (p *Peer) startView(hostClean string, active bool) *viewSession {
 	v := &viewSession{active: active, frames: newFrameQueue(p.metrics), done: make(chan struct{})}
-	go p.writeFrames(v.frames, v.done, hostClean)
+	go p.writeFrames(v.frames, v.done, sessionTag, hostClean)
 	return v
 }
 
@@ -117,10 +127,11 @@ func (p *Peer) SendBinary(data []byte) error {
 	return p.write(func() error { return p.conn.WriteBinary(data) }, len(data))
 }
 
-// sendTagged writes sessionTag+hostClean+data as one binary message without copying data.
-func (p *Peer) sendTagged(hostClean string, data []byte) error {
+// sendTagged writes marker+hostClean+data as one binary message without copying data. The marker is
+// sessionTag for multi-session traffic and monitorTag for monitor-wall frames.
+func (p *Peer) sendTagged(marker byte, hostClean string, data []byte) error {
 	var hdr [sessionTagLen]byte
-	hdr[0] = sessionTag
+	hdr[0] = marker
 	copy(hdr[1:], hostClean)
 	return p.write(func() error { return p.conn.WriteBinary(hdr[:], data) }, sessionTagLen+len(data))
 }
@@ -144,7 +155,7 @@ func (p *Peer) write(send func() error, size int) error {
 // deliverAudio forwards a voice packet, tagged with its host when it goes to a multi-session viewer.
 func (p *Peer) deliverAudio(view *viewSession, from string, data []byte) {
 	if view != nil {
-		_ = p.sendTagged(from, data)
+		_ = p.sendTagged(sessionTag, from, data)
 		return
 	}
 	_ = p.SendBinary(data)

@@ -13,6 +13,9 @@ const (
 	TypeFileTransfer     = "file-transfer"
 	TypeSessionClosed    = "session-closed"
 	TypeError            = "error"
+	TypeMonitorState     = "monitor-state"
+	TypeMonitorStart     = "monitor-start"
+	TypeMonitorStop      = "monitor-stop"
 )
 
 // RegisteredAck confirms registration and lists the relay's capabilities.
@@ -95,4 +98,24 @@ type Error struct {
 	Type        string `json:"type"`
 	Message     string `json:"message"`
 	TargetClean string `json:"targetClean,omitempty"`
+}
+
+// MonitorState tells an administrator what one monitor-wall tile shows: live, offline, unsupported or denied.
+type MonitorState struct {
+	Type        string `json:"type"`
+	TargetClean string `json:"targetClean"`
+	State       string `json:"state"`
+}
+
+// MonitorStart asks a host to stream monitor-wall thumbnails: plain JPEGs at most MaxWidth pixels wide, at most
+// FPS per second, sent only when the screen changed.
+type MonitorStart struct {
+	Type     string `json:"type"`
+	MaxWidth int    `json:"maxWidth"`
+	FPS      int    `json:"fps"`
+}
+
+// MonitorStop tells a host that nobody watches it any more.
+type MonitorStop struct {
+	Type string `json:"type"`
 }

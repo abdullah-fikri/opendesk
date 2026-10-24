@@ -142,6 +142,8 @@ func (c *connection) onText(msg []byte) bool {
 		c.onSessionDisconnect(msg)
 	case dto.TypeP2PSignal:
 		c.onP2PSignal(msg)
+	case dto.TypeMonitorSet:
+		c.onMonitorSet(msg)
 	}
 	return true
 }
@@ -181,6 +183,8 @@ func (c *connection) onRegister(msg []byte) bool {
 	c.h.log.Info("client registered", "id", peer.DeskID, "name", peer.DeviceName, "platform", peer.Platform,
 		"admin", peer.IsAdmin, "addr", c.remoteAddr, "active_peers", c.h.relay.PeerCount())
 	_ = peer.Send(dto.RegisteredAck{Type: dto.TypeRegisteredAck, DeskID: peer.DeskID, Caps: c.h.relay.Capabilities()})
+	// Administrators already watching this ID see it go live, and it starts streaming thumbnails.
+	sendMonitorUpdate(c.h.relay.MonitorAttach(peer))
 	c.h.broadcastHostList()
 	return true
 }
@@ -310,6 +314,24 @@ func (c *connection) onSessionDisconnect(msg []byte) {
 	c.h.log.Info("session ended by client", "id", c.peer.DeskID)
 }
 
+// onMonitorSet replaces the hosts an administrator watches. Read-only by construction: a watch is not a
+// session, so nothing the administrator sends ever reaches the watched hosts.
+func (c *connection) onMonitorSet(msg []byte) {
+	var req dto.MonitorSet
+	if err := json.Unmarshal(msg, &req); err != nil {
+		return
+	}
+	targets := make([]string, 0, min(len(req.Targets), model.MaxMonitorTiles))
+	for _, t := range req.Targets {
+		targets = append(targets, model.CleanDeskID(t))
+	}
+	up, err := c.h.relay.WatchMonitors(c.peer, targets)
+	if err != nil {
+		c.h.log.Warn("monitor request refused: not an administrator", "id", c.peer.DeskID)
+	}
+	sendMonitorUpdate(up)
+}
+
 func (c *connection) onP2PSignal(msg []byte) {
 	if !c.h.relay.P2PEnabled() || len(msg) > maxSignalMessageBytes {
 		return
@@ -339,6 +361,8 @@ func (c *connection) unregister() {
 		return
 	}
 	removed, partners := c.h.relay.Unregister(c.peer)
+	// Also for a replaced connection: its own monitor-wall tiles end with it.
+	sendMonitorUpdate(c.h.relay.MonitorDetach(c.peer))
 	if !removed {
 		return
 	}
@@ -392,7 +416,8 @@ func ingressKind(msgType string) string {
 		return metrics.KindClipboard
 	case dto.TypeP2PSignal:
 		return metrics.KindSignal
-	case dto.TypeRegister, dto.TypeGetHosts, dto.TypeConnectRequest, dto.TypeApprovalResponse, dto.TypeSessionDisconnect:
+	case dto.TypeRegister, dto.TypeGetHosts, dto.TypeConnectRequest, dto.TypeApprovalResponse, dto.TypeSessionDisconnect,
+		dto.TypeMonitorSet:
 		return metrics.KindControl
 	}
 	return metrics.KindOther

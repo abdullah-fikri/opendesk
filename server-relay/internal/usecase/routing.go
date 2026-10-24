@@ -14,7 +14,13 @@ func (r *Relay) ActivePartner(sender *Peer, targetClean string) *Peer {
 // A multi-session viewer addresses a host with the session-tag prefix, which is stripped (zero copy) so the
 // host receives the plain payload. Messages to a multi-session viewer are tagged with the sending host's ID;
 // its video goes through that session's own queue.
+//
+// A monitor-wall thumbnail (monitorTag + JPEG) is never session traffic: it goes only to the administrators
+// watching the sender (see monitor.go).
 func (r *Relay) ForwardBinary(sender *Peer, msg []byte) bool {
+	if len(msg) > 1 && msg[0] == monitorTag {
+		return r.fanOutMonitor(sender, msg[1:])
+	}
 	targetID := ""
 	if sender.Multi && len(msg) > sessionTagLen && msg[0] == sessionTag {
 		targetID, msg = string(msg[1:sessionTagLen]), msg[sessionTagLen:]

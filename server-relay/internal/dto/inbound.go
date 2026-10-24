@@ -15,6 +15,7 @@ const (
 	TypeRelayFile         = "relay-file"
 	TypeSessionDisconnect = "session-disconnect"
 	TypeP2PSignal         = "p2p-signal"
+	TypeMonitorSet        = "monitor-set"
 )
 
 // Envelope is decoded first from every text message; Type selects the concrete request type.
@@ -96,4 +97,10 @@ type SessionDisconnect struct {
 type P2PSignal struct {
 	TargetClean string `json:"targetClean"`
 	Candidate   string `json:"candidate"`
+}
+
+// MonitorSet replaces the hosts an administrator watches on the monitor wall (clean IDs, at most 16 used).
+// An empty list stops watching.
+type MonitorSet struct {
+	Targets []string `json:"targets"`
 }

@@ -27,6 +27,8 @@ type Relay struct {
 	mu     sync.RWMutex
 	peers  map[string]*Peer      // keyed by clean desk ID; guarded by mu
 	grants map[string]*fileGrant // guarded by mu
+	// monitors holds the monitor-wall feeds keyed by host clean ID; guarded by mu.
+	monitors map[string]*monitorFeed
 
 	hosts       HostRepository
 	sessions    SessionRepository
@@ -39,7 +41,7 @@ type Relay struct {
 
 // New builds a Relay on top of the given storage.
 func New(hosts HostRepository, sessions SessionRepository, m FrameMetrics, opts Options, log *slog.Logger) *Relay {
-	caps := []string{model.CapFileGrant, model.CapFileOffer, model.CapP2PSignal, model.CapCaps, model.CapMultiSession}
+	caps := []string{model.CapFileGrant, model.CapFileOffer, model.CapP2PSignal, model.CapCaps, model.CapMultiSession, model.CapMonitor}
 	if opts.P2PDisabled {
 		caps = slices.DeleteFunc(caps, func(c string) bool { return c == model.CapP2PSignal })
 	}
@@ -50,6 +52,7 @@ func New(hosts HostRepository, sessions SessionRepository, m FrameMetrics, opts 
 	return &Relay{
 		peers:       make(map[string]*Peer),
 		grants:      make(map[string]*fileGrant),
+		monitors:    make(map[string]*monitorFeed),
 		hosts:       hosts,
 		sessions:    sessions,
 		metrics:     m,

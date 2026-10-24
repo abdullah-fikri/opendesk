@@ -17,6 +17,10 @@ const (
 	sessionTagLen = 10
 )
 
+// Monitor-wall frames: a host sends monitorTag followed by a plain JPEG; the relay fans it out to every
+// watching administrator as monitorTag, the host's 9-digit clean ID, then the JPEG (same layout as sessionTag).
+const monitorTag = 0x11
+
 func isAudio(b []byte) bool { return len(b) > 1 && b[0] == audioMarker }
 
 func isVideo(b []byte) bool { return len(b) > 2 && b[0] == jpegMarker0 && b[1] == jpegMarker1 }

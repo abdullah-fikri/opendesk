@@ -13,4 +13,6 @@ var (
 	ErrSelfConnect = errors.New("cannot connect to own device")
 	// ErrNoPendingSession means an approval did not match a pending session.
 	ErrNoPendingSession = errors.New("no matching pending session")
+	// ErrNotAdmin means a request reserved for administrators came from another device.
+	ErrNotAdmin = errors.New("administrator rights required")
 )
