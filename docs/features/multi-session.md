@@ -1,7 +1,8 @@
 # Multi-session viewing
 
 A desktop viewer can control up to **four hosts at once**, shown as tabs or as a split grid. Hosts stay
-single-session: a host controlled by one viewer refuses others.
+single-session: a host controlled by one viewer refuses others. The admin edition's read-only
+[monitor wall](monitor-wall.md) is separate: its watches are not sessions and count toward none of these limits.
 
 Implemented in:
 

@@ -61,7 +61,8 @@ screen, keystroke or file passes through anyone else's servers.
 - Unattended Windows hosts: start at logon (elevated, so admin windows can be controlled), stay in the tray,
   restart through a watchdog in portable installs.
 - `opendesk` CLI to set the relay, show the device ID, stop or prepare uninstall.
-- Admin edition with a live list of every device on the relay.
+- Admin edition with a live list of every device on the relay and a read-only monitor wall (up to 16 live
+  thumbnails per page, paged and optionally auto-rotating).
 - Relay with per-device credentials, metrics, health endpoint, versioned database migrations and a published
   container image.
 

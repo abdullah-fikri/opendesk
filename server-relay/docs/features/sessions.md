@@ -25,6 +25,9 @@ re-register        ──▶ Register replaces the old connection ──▶ sess
   (`activePartnerLocked`). Pending sessions forward nothing.
 - Approvals and rejections apply only to the matching pending pair.
 - A replaced or removed connection loses every right immediately; messages still in its read loop are ignored.
+- Monitor-wall watches (`internal/usecase/monitor.go`) are not sessions: they never pass `activePartnerLocked`,
+  do not make a host busy and do not count toward the viewer limit (see
+  [monitor wall](../../../docs/features/monitor-wall.md)).
 
 ## Storage
 

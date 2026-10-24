@@ -19,7 +19,7 @@ Desktop peers may then move video, voice and input to an encrypted direct UDP pa
 | Component | Role | Docs |
 | --- | --- | --- |
 | [`server-relay`](../server-relay) | Registration, session state machine, authorized routing, file grants, device registry | [server-relay/docs](../server-relay/docs) |
-| [`client-desktop`](../client-desktop) | Windows app: views up to 4 hosts, hosts one viewer, files, clipboard, voice | [client-desktop/docs](../client-desktop/docs) |
+| [`client-desktop`](../client-desktop) | Windows app: views up to 4 hosts, hosts one viewer, files, clipboard, voice; admin edition: monitor wall | [client-desktop/docs](../client-desktop/docs) |
 | [`core-engine`](../core-engine) | Library used by the desktop client: DXGI/GDI capture, framed JPEG/H.264 video, input, clipboard | [core-engine/README.md](../core-engine/README.md) |
 | [`client-android`](../client-android) | Android app: views a PC, or is controlled through MediaProjection and Accessibility | [client-android/docs](../client-android/docs) |
 | [`installer`](../installer) | Inno Setup script for the Windows installers | |
@@ -64,5 +64,8 @@ Rules that keep it that way:
   (`Noise_NN_25519_ChaChaPoly_BLAKE2s`), bound to the relay-approved pair.
 - **Authorization.** The relay forwards input, clipboard, files and signals only inside an active session,
   checked from both sides, and stamps the sender of every file message itself.
+- **Monitor wall.** Administrators may watch up to 16 hosts' thumbnails at once
+  ([features/monitor-wall.md](features/monitor-wall.md)). A watch is not a session, so it carries nothing from the
+  administrator to the host; Windows hosts accept it unattended, like a session, and say so in their status line.
 - **Files.** Receivers validate every name and path from the peer, stage bytes outside the destination, verify
   SHA-256 and never overwrite an existing file.

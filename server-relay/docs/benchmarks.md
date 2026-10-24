@@ -13,6 +13,8 @@ Intel Core Ultra 5 125U, Windows/amd64, Go 1.26:
 | `BenchmarkActivePartner` | Authorizing one message (session lookup, both sides) | 21.8 | 0 | 0 |
 | `BenchmarkDecodeRelayInput` | Decoding a mouse-move `relay-input` | 1 856 | 608 | 15 |
 | `BenchmarkDecodeRelayFileChunk` | Decoding a `relay-file` chunk and its payload header | 2 549 | 888 | 22 |
+| `BenchmarkMonitorFanOut` | One 30 KiB monitor-wall thumbnail fanned out to 16 administrators (including their writers) | 3 376 | 810 | 25 |
+| `BenchmarkMonitorPage` | One thumbnail from each of the 16 hosts on an administrator's 4x4 page | 2 824 | 262 | 8 |
 
 Compared with the 0.x relay, which decoded every message into a generic map: session lookup 31.7 ns before;
 input decode 1 816 ns with 26 allocations before (now the same speed with 42 % fewer allocations); file-chunk

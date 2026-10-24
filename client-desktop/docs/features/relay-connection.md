@@ -22,7 +22,9 @@ Code: `src/service/relay/connection.rs` (transport loop), `src/service/relay/dis
 | Message | Effect |
 | --- | --- |
 | `registered-ack` | Store relay capabilities, enable multi-session when both sides support it, show "Online". |
-| `host-list` | Admin list (this device excluded). |
+| `host-list` | Admin list (this device excluded); also the monitor wall's device list. |
+| `monitor-start`, `monitor-stop` | Start or stop the monitor-wall thumbnail stream (`service/host/monitor_stream.rs`). |
+| `monitor-state` | Admin edition: one wall tile's state (`service/monitor_wall.rs`). |
 | `session-connected` as host | Start hosting (`service::host::start`), optionally a P2P link. |
 | `session-connected` as viewer | Connect the viewer tab (`viewer::controller::on_connected`), optionally a P2P link. |
 | `input-command` | From a viewed host: cursor, monitors, mic, voice quality. Otherwise: the hosted viewer's input. |

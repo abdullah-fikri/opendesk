@@ -42,6 +42,7 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 | `relay-file` | `targetClean`, `payload` | One file-transfer message (see [File transfer](#file-transfer)). |
 | `session-disconnect` | `targetClean` | End this client's session with that partner. |
 | `p2p-signal` | `targetClean`, `candidate` | Noise handshake and UDP candidates for a direct path (max 4096 bytes, 10 per second per partner). |
+| `monitor-set` | `targets[]` | Administrators with `monitor-view` only: replace the hosts on the monitor wall (at most 16; empty stops). See [Monitor wall](#monitor-wall). |
 
 ## Relay to client
 
@@ -57,6 +58,9 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 | `p2p-signal` | `fromClean`, `candidate` | A relayed signal. |
 | `session-closed` | `message`, `targetClean`* | The session ended (partner left, disconnected, or reconnected). |
 | `error` | `message`, `targetClean`* | A request failed (invalid ID, target offline or busy, rejected). |
+| `monitor-state` | `targetClean`, `state` (`live`, `offline`, `unsupported`, `denied`) | Monitor wall: what one tile shows (administrators with `monitor-view`). |
+| `monitor-start` | `maxWidth`, `fps` | Monitor wall: an administrator watches this host; stream thumbnails (hosts with `monitor-host`). |
+| `monitor-stop` | | Monitor wall: nobody watches this host any more. |
 
 \* Only for multi-session viewers (see [docs/features/multi-session.md](features/multi-session.md)).
 
@@ -83,7 +87,9 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `video-h264` | client | H.264 inside the framed format. |
 | `p2p.v1` | client | Direct encrypted UDP path. |
 | `multi-session` | client + relay | Up to four viewer sessions per connection. |
-| `p2p-signal`, `file-grant`, `file-offer`, `caps` | relay | Relay features in `registered-ack`. |
+| `monitor-host` | client | Streams monitor-wall thumbnails on `monitor-start` (every desktop edition). |
+| `monitor-view` | client | Shows the monitor wall: `monitor-state` and the `0x11` tag (admin edition). |
+| `p2p-signal`, `file-grant`, `file-offer`, `caps`, `monitor` | relay | Relay features in `registered-ack`. |
 
 Android advertises no capabilities, so it always receives plain JPEGs and single-session message shapes.
 
@@ -135,6 +141,8 @@ same two connections. At most 8 grants per sender. See `client-desktop/docs/feat
 voice   [0x02][rate_khz: 16|24|48][PCM 16-bit little-endian mono ...]
 video   [0xFF 0xD8 ...]   a plain JPEG, or a framed message (below)
 tagged  [0x10][9 ASCII digits: host clean ID][voice or video]   multi-session viewers only
+monitor [0x11][JPEG]                                           host to relay: monitor-wall thumbnail
+monitor [0x11][9 ASCII digits: host clean ID][JPEG]            relay to administrator
 ```
 
 Framed video (`video-delta`), all integers big-endian:
@@ -155,6 +163,24 @@ Framed video (`video-delta`), all integers big-endian:
 
 The relay keeps at most 8 queued frames per receiver. A key frame or IDR flushes the queue; a delta that does
 not fit flushes it too, and the viewer then sends `video-keyframe`.
+
+## Monitor wall
+
+A read-only grid of many hosts for administrators (details in
+[docs/features/monitor-wall.md](features/monitor-wall.md)). A watch is **not a session**: it never authorizes
+input, clipboard, files, P2P signals or voice in either direction, does not count toward the four viewer sessions
+and does not make a host busy.
+
+- The administrator (admin role decided as for `get-hosts`, and `monitor-view`) sends `monitor-set` with the hosts
+  on its visible page. Others receive `monitor-state {state: "denied"}` per target.
+- The relay answers each new target with `monitor-state` and sends `monitor-start` to a watched host with
+  `monitor-host` that is not streaming yet, once however many administrators watch it. Hosts without the
+  capability are reported `unsupported` and never contacted.
+- The host sends `[0x11][JPEG]`: plain JPEGs only (no framed video), at most 512 KiB, scaled to `maxWidth`, at most
+  `fps` per second, and only when the screen changed. The relay forwards them only from a host it asked to stream,
+  to every watcher, through one bounded queue per tile, and shows the newest one to a new watcher at once.
+- When the last watcher leaves (new `monitor-set`, or its connection drops) the host receives `monitor-stop`. When
+  the host drops, watchers receive `offline` and keep watching; it goes `live` again when it registers.
 
 ## Compatibility
 
