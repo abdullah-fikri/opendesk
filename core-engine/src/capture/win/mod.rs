@@ -8,7 +8,14 @@ mod win32;
 
 pub use cursor::cursor_shape;
 pub use gdi::GdiScreenCapturer;
-pub use monitor::{MonitorBounds, enable_per_monitor_dpi_awareness, enumerate_monitors};
+pub use monitor::{enable_per_monitor_dpi_awareness, enumerate_monitors};
+
+use crate::capture::{HostSupport, MonitorBounds};
+
+/// Windows can always share its screen (the input desktop is followed when running as SYSTEM).
+pub fn host_support() -> HostSupport {
+    HostSupport::Supported
+}
 
 /// Primary capturer: DXGI Desktop Duplication, with the GDI capturer as fallback (rotated outputs, no
 /// D3D11 device, duplication denied, or `OPENDESK_CAPTURE=gdi`).
