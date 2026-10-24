@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"slices"
 
 	"opendesk/server-relay/internal/model"
 )
@@ -23,6 +24,9 @@ func (r *Relay) Connect(caller *Peer, targetClean string) (ConnectResult, error)
 	target := r.Lookup(targetClean)
 	if target == nil {
 		return ConnectResult{}, ErrTargetUnavailable
+	}
+	if slices.Contains(target.Caps, model.CapViewerOnly) {
+		return ConnectResult{}, ErrTargetViewerOnly
 	}
 	needsApproval := target.Platform == model.PlatformAndroid
 	if !r.openSession(caller, target, !needsApproval) {

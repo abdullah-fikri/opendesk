@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"time"
@@ -33,6 +34,7 @@ const (
 	msgInvalidCredentials = "Invalid device credentials."
 	msgEnterTargetID      = "Enter a target ID."
 	msgSelfConnect        = "You cannot connect to your own device."
+	msgTargetViewerOnly   = "Device %s can only view other devices; it cannot be controlled remotely."
 	msgTargetUnavailable  = "Device %s was not found or is offline."
 	msgRequestRejected    = "The target device rejected the connection request."
 	msgPeerOffline        = "The remote device disconnected or went offline."
@@ -210,8 +212,12 @@ func (c *connection) onConnectRequest(msg []byte) {
 		_ = c.peer.Send(dto.Error{Type: dto.TypeError, Message: msgSelfConnect})
 		return
 	case err != nil:
-		c.h.log.Warn("connect request failed: target unavailable", "target", model.FormatDeskID(target))
-		failure := dto.Error{Type: dto.TypeError, Message: targetUnavailableMessage(target)}
+		message := targetUnavailableMessage(target)
+		if errors.Is(err, usecase.ErrTargetViewerOnly) {
+			message = fmt.Sprintf(msgTargetViewerOnly, model.FormatDeskID(target))
+		}
+		c.h.log.Warn("connect request failed", "target", model.FormatDeskID(target), "reason", err)
+		failure := dto.Error{Type: dto.TypeError, Message: message}
 		if c.peer.Multi {
 			// Lets a multi-session viewer fail the right tab (also sent when its session cap is reached).
 			failure.TargetClean = target

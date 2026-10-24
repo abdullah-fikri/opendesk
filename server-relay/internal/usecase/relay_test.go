@@ -223,3 +223,18 @@ func TestRejectEndsPendingSessionOnly(t *testing.T) {
 		t.Fatal("reject ended an active session")
 	}
 }
+
+func TestViewerOnlyDevicesCannotBeControlled(t *testing.T) {
+	r := newTestRelay(Options{})
+	viewer := addPeer(r, "111111111", true)
+	phone := addPeer(r, "222222222", false)
+	phone.Caps = []string{model.CapViewerOnly}
+	if _, err := r.Connect(viewer, phone.CleanID); err != ErrTargetViewerOnly {
+		t.Fatalf("connect to a viewer-only device: got %v, want ErrTargetViewerOnly", err)
+	}
+	// The viewer-only device may still view others.
+	host := addPeer(r, "333333333", false)
+	if _, err := r.Connect(phone, host.CleanID); err != nil {
+		t.Fatalf("viewer-only device could not view: %v", err)
+	}
+}
