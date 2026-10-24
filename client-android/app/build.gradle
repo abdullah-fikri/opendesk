@@ -7,18 +7,20 @@ plugins {
 def appVersion = rootProject.file('../VERSION').text.trim()
 def (major, minor, patch) = appVersion.tokenize('.').collect { it.toInteger() }
 
-// Release signing is optional: CI provides a keystore through these variables (see docs/ci-cd.md at the repository root);
-// without them the release APK is built unsigned.
-def keystoreFile = System.getenv('ANDROID_KEYSTORE_FILE')
+// Release signing (see client-android/README.md#release-signing). Each value comes from an environment variable
+// (CI) or the Gradle property of the same name (~/.gradle/gradle.properties locally). The keystore and its
+// passwords are never committed. Without a keystore the release APK is built unsigned.
+def signingValue = { String name -> System.getenv(name) ?: (project.findProperty(name) as String) }
+def keystoreFile = signingValue('ANDROID_KEYSTORE_FILE')
 
 android {
     namespace 'com.opendesk.app'
-    compileSdk 34
+    compileSdk 36
 
     defaultConfig {
         applicationId "com.opendesk.app"
         minSdk 24
-        targetSdk 34
+        targetSdk 36
         versionCode major * 10000 + minor * 100 + patch
         versionName appVersion
     }
@@ -27,16 +29,21 @@ android {
         if (keystoreFile) {
             release {
                 storeFile file(keystoreFile)
-                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
-                keyAlias System.getenv('ANDROID_KEY_ALIAS')
-                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+                storePassword signingValue('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias signingValue('ANDROID_KEY_ALIAS')
+                keyPassword signingValue('ANDROID_KEY_PASSWORD')
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
             }
         }
     }
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             if (keystoreFile) {
                 signingConfig signingConfigs.release
             }
@@ -48,6 +55,11 @@ android {
     }
     kotlinOptions {
         jvmTarget = '17'
+    }
+    lint {
+        // The viewer must stay installable without warnings: fail the build on any lint error.
+        abortOnError true
+        checkReleaseBuilds true
     }
 }
 
