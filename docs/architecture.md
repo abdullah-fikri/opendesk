@@ -7,24 +7,38 @@ Desktop peers may then move video, voice and input to an encrypted direct UDP pa
 ```text
  ┌──────────────────┐          WSS           ┌──────────────────┐          WSS          ┌──────────────────┐
  │  client-desktop  │ ─────────────────────▶ │   server-relay   │ ◀──────────────────── │  client-android  │
- │  Windows, Rust   │                        │  Go + PostgreSQL │                       │  Kotlin          │
- │  viewer and host │ ◀── direct UDP (P2P) ─▶│  session broker  │                       │  viewer and host │
+ │  Windows, Linux  │                        │  Go + PostgreSQL │                       │  Kotlin          │
+ │  viewer and host │ ◀── direct UDP (P2P) ─▶│  session broker  │                       │  viewer only     │
  └────────┬─────────┘   desktop to desktop   └──────────────────┘                       └──────────────────┘
           │ uses
  ┌────────▼─────────┐
- │   core-engine    │  screen capture, video codecs, input injection, clipboard (Windows APIs)
+ │   core-engine    │  screen capture, video codecs, input injection, clipboard (Windows APIs / X11)
  └──────────────────┘
 ```
 
 | Component | Role | Docs |
 | --- | --- | --- |
 | [`server-relay`](../server-relay) | Registration, session state machine, authorized routing, file grants, device registry | [server-relay/docs](../server-relay/docs) |
-| [`client-desktop`](../client-desktop) | Windows app: views up to 4 hosts, hosts one viewer, files, clipboard, voice | [client-desktop/docs](../client-desktop/docs) |
-| [`core-engine`](../core-engine) | Library used by the desktop client: DXGI/GDI capture, framed JPEG/H.264 video, input, clipboard | [core-engine/README.md](../core-engine/README.md) |
-| [`client-android`](../client-android) | Android app: views a PC, or is controlled through MediaProjection and Accessibility | [client-android/docs](../client-android/docs) |
+| [`client-desktop`](../client-desktop) | Windows and Linux app: views up to 4 hosts, hosts one viewer, files, clipboard, voice | [client-desktop/docs](../client-desktop/docs) |
+| [`core-engine`](../core-engine) | Library used by the desktop client: capture (DXGI/GDI, X11), framed JPEG/H.264 video, input, clipboard | [core-engine/README.md](../core-engine/README.md) |
+| [`client-android`](../client-android) | Android app: views a computer; never hosts | [client-android/docs](../client-android/docs) |
 | [`installer`](../installer) | Inno Setup script for the Windows installers | |
+| [`packaging`](../packaging) | Linux desktop entries and the OpenH264 installer (the `.deb` metadata is in `client-desktop/Cargo.toml`) | |
 
-The wire format shared by all of them is specified in [protocol.md](protocol.md).
+The wire format shared by all of them is specified in [protocol.md](protocol.md). What each OS supports is in
+[platforms.md](platforms.md).
+
+## Platform code
+
+OS-specific code sits behind one module API per facility, with a backend per OS selected by `cfg` at compile
+time (static dispatch, no trait objects in the capture or encode path):
+
+- `core-engine`: `capture`, `input`, `clipboard`, `desktop`, `codec::jpeg` and `codec::h264` each have a Windows
+  backend (`win`, `gdiplus`, `mf`) and a backend for other systems (`x11`, `unix`, `portable`, `cisco`).
+- `client-desktop/src/infra`: `audio`, `autostart`, `privacy`, `tray`, `virtual_clipboard` and `window` are
+  directories with `win.rs` and `unix.rs`; small differences (paths, clock, device name) are inline `cfg`s.
+- Features a platform lacks are not faked: the peer advertises what it can do (`host-features`, `viewer-only`,
+  `file-offer`, `video-h264`) and the other side hides or avoids the rest.
 
 ## Layering
 
@@ -56,9 +70,9 @@ Rules that keep it that way:
   `OPENDESK_DEVICE_CREDENTIALS` to require a per-device token (see
   [server-relay/docs/provisioning.md](../server-relay/docs/provisioning.md)). Keep the relay URL private either
   way.
-- **Unattended Windows hosts.** A Windows host accepts every session request without a prompt. Anyone who
-  can register on your relay and knows a desk ID can control that machine. Android hosts ask for consent every
-  time.
+- **Unattended desktop hosts.** Windows and Linux hosts accept every session request without a prompt. Anyone
+  who can register on your relay and knows a desk ID can control that machine. Android devices and Linux desktops
+  in a Wayland session register as `viewer-only` and the relay refuses every connect request to them.
 - **Transport.** Use `wss://` through a TLS terminator. The relay refuses plaintext WebSocket from
   non-loopback addresses unless told TLS ends at a proxy. The P2P path is encrypted with Noise
   (`Noise_NN_25519_ChaChaPoly_BLAKE2s`), bound to the relay-approved pair.

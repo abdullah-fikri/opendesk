@@ -1,6 +1,7 @@
 # Voice
 
-Code: `src/infra/audio.rs` (Windows waveIn/waveOut), routing in `src/service/relay/connection.rs`.
+Code: `src/infra/audio/` (DSP in `mod.rs`; devices: `win.rs` waveIn/waveOut, `unix.rs` cpal on ALSA, which
+PipeWire and PulseAudio serve), routing in `src/service/relay/connection.rs`.
 
 - Two-way voice between session partners. The microphone is on when a session starts; either side can mute the
   other, but only the local user can unmute.

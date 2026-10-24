@@ -8,7 +8,7 @@ main.rs ─▶ cli.rs (CLI commands, exits)
               │ builds
               ▼
    ui/ ──────▶ service/ ──────▶ protocol/, domain/
-   (Slint)     (use cases)  └──▶ infra/ (Windows, files, network)
+   (Slint)     (use cases)  └──▶ infra/ (OS, files, network)
       ▲            │
       └── UiPort ◀─┘   services report to the UI only through this trait
 ```
@@ -53,7 +53,7 @@ in-flight chunk counter used for backpressure.
 | Clipboard watcher | `service::clipboard_sync::spawn` | Poll the clipboard, send changes to the partner |
 | Settings watcher | `service::settings::spawn_watcher` | Pick up `opendesk server <url>` from the CLI |
 | File senders | `service::file_transfer::sender` | One per send job |
-| Audio, P2P, privacy, tray, OLE clipboard | `infra::*` | Windows API loops |
+| Audio, P2P, privacy, tray, OLE clipboard | `infra::*` | OS loops (Win32 message loops; cpal and D-Bus threads on Linux) |
 
 Services never block the UI thread: the presenter forwards every `UiPort` call with
 `upgrade_in_event_loop`.

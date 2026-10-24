@@ -32,8 +32,11 @@ and cannot be taken as a host.
 ## Messages
 
 - One `connect-request` per host. Each success yields its own `session-connected {targetClean, role: "viewer"}`.
-  Android hosts keep it pending until they approve; a pending session counts toward the limit of four.
-- Failures (offline, busy, already open, limit reached, rejected) arrive as `error {message, targetClean}`.
+  Legacy Android apps (before the viewer-only release) keep it pending until they approve; a pending session
+  counts toward the limit of four. Current Android apps and Linux desktops in a Wayland session are `viewer-only`
+  and are refused.
+- Failures (offline, busy, already open, limit reached, rejected, viewer-only) arrive as
+  `error {message, targetClean}`.
 - Every viewer-to-host text message must carry `targetClean`; a multi-session viewer that omits it reaches
   nobody.
 - Host-to-viewer `input-command` and `clipboard-sync` gain `fromClean`; `session-closed` gains `targetClean`.

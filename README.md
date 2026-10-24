@@ -4,7 +4,7 @@
 
   <h1>OpenDesk</h1>
 
-  <h3>Self-hosted remote desktop for Windows and Android</h3>
+  <h3>Self-hosted remote desktop for Windows, Linux and Android</h3>
 
   <p>Native clients, your own relay, no third-party cloud.</p>
 
@@ -30,16 +30,27 @@
 
 ## About
 
-OpenDesk lets you control Windows PCs and Android phones through a relay server you run yourself. Clients are
-native (Rust with Slint on Windows, Kotlin on Android); the relay is a single Go binary backed by PostgreSQL. No
-screen, keystroke or file passes through anyone else's servers.
+OpenDesk lets you control Windows and Linux computers from other computers or from an Android phone, through a
+relay server you run yourself. Clients are native (Rust with Slint on Windows and Linux, Kotlin on Android); the
+relay is a single Go binary backed by PostgreSQL. No screen, keystroke or file passes through anyone else's servers.
+
+| | View other devices | Can be controlled |
+| --- | --- | --- |
+| Windows | Yes | Yes |
+| Linux (X11 session) | Yes | Yes |
+| Linux (Wayland session) | Yes | No (shows how to switch to X11) |
+| Android | Yes | Never: the app is a viewer only |
+
+Feature differences between platforms are listed in [docs/platforms.md](docs/platforms.md).
 
 ## Features
 
 **Remote control**
-- Up to four Windows hosts at once from one viewer, as tabs or a split grid.
-- DXGI Desktop Duplication capture with GDI fallback; only changed regions are sent (JPEG atlases), with H.264
-  (hardware encoder when available) for sustained motion.
+- Up to four hosts at once from one desktop viewer, as tabs or a split grid; Android views one at a time with
+  touch gestures, zoom and a soft keyboard.
+- Windows: DXGI Desktop Duplication capture with GDI fallback. Linux: X11 (MIT-SHM). Only changed regions are sent
+  (JPEG atlases), with H.264 for sustained motion (hardware encoder on Windows, Cisco OpenH264 on Linux when
+  installed).
 - Stream resolution follows the viewer window automatically, or native, 1080p, 720p, 480p.
 - Multi-monitor hosts with a monitor picker; cursor shape mirrored on the viewer.
 - Direct encrypted UDP path between desktops (Noise protocol) when the network allows it, with automatic fallback
@@ -48,19 +59,19 @@ screen, keystroke or file passes through anyone else's servers.
 **Collaboration**
 - Two-way voice (16, 24 or 48 kHz) with noise gating; either side can mute the other.
 - File transfer by drag-and-drop, file picker or Ctrl+V, including folders, verified with SHA-256 and pasted
-  straight into the remote Explorer window.
-- Copy files on one machine and paste on the other: files are pulled only when pasted.
+  straight into the remote Explorer window (Windows).
+- Copy files on one Windows machine and paste on the other: files are pulled only when pasted.
 - Clipboard text sync that follows the focused session.
 
-**Host control**
+**Host control** (Windows hosts; viewers hide what a host cannot do)
 - Privacy screen on the host (frozen, maintenance or black), invisible to the viewer's stream.
 - Block the host's physical keyboard and mouse during a session.
 - System shortcuts (Win, Alt+Tab, Task Manager, Explorer, Show desktop).
 
 **Operations**
-- Unattended Windows hosts: start at logon (elevated, so admin windows can be controlled), stay in the tray,
-  restart through a watchdog in portable installs.
-- `opendesk` CLI to set the relay, show the device ID, stop or prepare uninstall.
+- Unattended hosts: start at logon (Windows: elevated, so admin windows can be controlled, with a watchdog in
+  portable installs; Linux: XDG autostart), stay in the tray.
+- `opendesk` CLI on Windows and Linux to set the relay, show the device ID, stop or prepare uninstall.
 - Admin edition with a live list of every device on the relay.
 - Relay with per-device credentials, metrics, health endpoint, versioned database migrations and a published
   container image.
@@ -69,10 +80,10 @@ screen, keystroke or file passes through anyone else's servers.
 
 | Edition | File | For |
 | --- | --- | --- |
-| Standard | `OpenDesk-Setup-<version>.exe` / `OpenDesk-<version>.exe` | Desktops: view other machines and be controlled |
-| Admin | `OpenDesk-Admin-Setup-<version>.exe` | Administrators: Standard plus the relay's device list |
-| Headless host | `OpenDesk-Host-Setup-<version>.exe` | Servers, VMs and kiosks: no window or tray, incoming sessions only |
-| Android | `OpenDesk-<version>.apk` | Phones: control a PC, or be controlled with consent |
+| Standard | Windows: `OpenDesk-Setup-<version>.exe` / `OpenDesk-<version>.exe`; Linux: `opendesk_<version>-1_amd64.deb` / `opendesk-<version>-linux-x86_64.tar.gz` | Desktops: view other machines and be controlled |
+| Admin | `OpenDesk-Admin-Setup-<version>.exe`; `opendesk-admin_<version>-1_amd64.deb` | Administrators: Standard plus the relay's device list |
+| Headless host | `OpenDesk-Host-Setup-<version>.exe`; `opendesk-host_<version>-1_amd64.deb` | Servers, VMs and kiosks: no window or tray, incoming sessions only |
+| Android | `OpenDesk-<version>.apk` (`.aab` for Google Play) | Phones: view and control a computer (viewer only) |
 | Relay | `ghcr.io/abdullah-fikri/opendesk-relay` | Your server |
 
 Download them from [GitHub Releases](https://github.com/abdullah-fikri/opendesk/releases).
@@ -90,11 +101,16 @@ docker compose up -d
 Put a TLS terminator in front of `127.0.0.1:8088` (for example a Cloudflare Tunnel) so clients can reach
 `wss://relay.example.com`. Details: [server-relay/docs/deployment.md](server-relay/docs/deployment.md).
 
-**2. Install the clients** and point them at the relay: in the app's relay settings, or on Windows with
-`opendesk server wss://relay.example.com`.
+**2. Install the clients** and point them at the relay: in the app's relay settings, or with
+`opendesk server wss://relay.example.com` on Windows and Linux.
 
-**3. Connect.** Each device shows its 9-digit ID. Enter the other device's ID and press Connect. Windows hosts
-accept immediately; Android asks the phone's owner.
+- Windows: run the installer (or the portable `.exe`).
+- Debian/Ubuntu: `sudo apt install ./opendesk_<version>-1_amd64.deb`. For H.264 video, also run
+  `/usr/share/opendesk/install-openh264.sh` (downloads Cisco's OpenH264; without it video uses JPEG only).
+- Android: install the APK; see [client-android/README.md](client-android/README.md) for signing and Play Protect.
+
+**3. Connect.** Each device shows its 9-digit ID. Enter the other device's ID and press Connect. Desktop hosts
+accept immediately.
 
 ## Security
 
@@ -102,8 +118,9 @@ Read this before exposing a relay:
 
 - **The relay is open by default.** Anyone who can reach it can register. Provision per-device tokens with
   `OPENDESK_DEVICE_CREDENTIALS` ([guide](server-relay/docs/provisioning.md)) and keep the address private.
-- **Windows hosts are unattended.** They accept every session the relay grants, without a prompt. Combined with
-  an open relay, knowing a device ID is enough to control it.
+- **Desktop hosts are unattended.** Windows and Linux hosts accept every session the relay grants, without a
+  prompt. Combined with an open relay, knowing a device ID is enough to control it. Android phones can never be
+  controlled.
 - **Encryption:** use `wss://` (the relay refuses plaintext from remote addresses); the direct path uses Noise
   (`Noise_NN_25519_ChaChaPoly_BLAKE2s`) bound to the relay-approved pair.
 - **Files from a peer** are validated, staged, checksum-verified and never overwrite existing files.
@@ -114,11 +131,12 @@ More: [docs/architecture.md](docs/architecture.md#security-model).
 
 ```text
 opendesk/
-├── client-desktop/   Windows client (Rust + Slint)          docs: client-desktop/docs
+├── client-desktop/   Windows and Linux client (Rust + Slint) docs: client-desktop/docs
 ├── core-engine/      Capture, codecs, input (Rust library)   docs: core-engine/README.md
-├── client-android/   Android client (Kotlin)                 docs: client-android/docs
+├── client-android/   Android viewer (Kotlin)                 docs: client-android/docs
 ├── server-relay/     Relay (Go + PostgreSQL)                 docs: server-relay/docs
-├── installer/        Inno Setup script
+├── installer/        Inno Setup script (Windows)
+├── packaging/        Linux desktop entries and the OpenH264 installer
 ├── docs/             Architecture, wire protocol, CI/CD, cross-component features
 ├── scripts/          Repository tooling (version check)
 ├── .github/          CI, release and Dependabot configuration
@@ -127,18 +145,28 @@ opendesk/
 └── docker-compose.yml
 ```
 
-- [Architecture](docs/architecture.md) · [Wire protocol](docs/protocol.md) · [CI/CD and releases](docs/ci-cd.md)
+- [Architecture](docs/architecture.md) · [Platforms](docs/platforms.md) · [Wire protocol](docs/protocol.md) ·
+  [CI/CD and releases](docs/ci-cd.md)
 - [Contributing](CONTRIBUTING.md): build, test, layering rules and code conventions
 
 ## Building from source
 
+`make` works on Windows (cmd.exe) and Linux (sh); `make help` lists the targets for the OS you are on.
+
 ```bash
 make help        # all targets
 make test        # every unit test
+make relay       # builds/relay/opendesk-relay(.exe)
+make android     # builds/android/OpenDesk.apk
+
+# Windows
 make windows     # builds\windows\OpenDesk.exe
 make setup       # installer (needs Inno Setup 6)
-make relay       # builds\relay\opendesk-relay.exe
-make android     # builds\android\OpenDesk.apk
+
+# Linux
+make linux       # builds/linux/opendesk
+make linux-deb   # builds/linux/opendesk*.deb (needs `cargo install cargo-deb`)
+make linux-tar   # builds/linux/opendesk-<version>-linux-<arch>.tar.gz
 ```
 
 Prerequisites per component are listed in [CONTRIBUTING.md](CONTRIBUTING.md#prerequisites).
