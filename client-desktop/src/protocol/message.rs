@@ -32,6 +32,9 @@ pub enum ClientMessage {
     RelayFile { target_clean: String, payload: FilePayload },
     /// P2P handshake or address candidate for the session partner.
     P2pSignal { target_clean: String, candidate: String },
+    /// Administrators only: replaces the hosts shown on the monitor wall (at most 16; empty stops watching).
+    #[cfg(feature = "admin")]
+    MonitorSet { targets: Vec<String> },
 }
 
 impl ClientMessage {
@@ -101,6 +104,21 @@ pub enum ServerMessage {
         message: Option<String>,
         target_clean: Option<String>,
     },
+    /// An administrator watches this machine: stream thumbnails (see `service::host::monitor_stream`).
+    MonitorStart {
+        #[serde(default)]
+        max_width: i64,
+        #[serde(default)]
+        fps: i64,
+    },
+    /// Nobody watches this machine any more.
+    MonitorStop,
+    /// What one monitor-wall tile shows: `live`, `offline`, `unsupported` or `denied`.
+    #[cfg(feature = "admin")]
+    MonitorState {
+        target_clean: String,
+        state: String,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -163,5 +181,23 @@ mod tests {
         assert_eq!(ServerMessage::parse("not json"), None);
         let closed = ServerMessage::parse(r#"{"type":"session-closed","message":"bye"}"#);
         assert_eq!(closed, Some(ServerMessage::SessionClosed { message: Some("bye".into()), target_clean: None }));
+    }
+
+    #[test]
+    fn monitor_messages_decode() {
+        let start = ServerMessage::parse(r#"{"type":"monitor-start","maxWidth":640,"fps":2}"#);
+        assert_eq!(start, Some(ServerMessage::MonitorStart { max_width: 640, fps: 2 }));
+        assert_eq!(ServerMessage::parse(r#"{"type":"monitor-stop"}"#), Some(ServerMessage::MonitorStop));
+        let state = ServerMessage::parse(r#"{"type":"monitor-state","targetClean":"222222222","state":"live"}"#);
+        #[cfg(feature = "admin")]
+        assert_eq!(state, Some(ServerMessage::MonitorState { target_clean: "222222222".into(), state: "live".into() }));
+        // Other editions never ask for the wall, and ignore its messages.
+        #[cfg(not(feature = "admin"))]
+        assert_eq!(state, Some(ServerMessage::Unknown));
+        #[cfg(feature = "admin")]
+        {
+            let set = ClientMessage::MonitorSet { targets: vec!["222222222".into()] };
+            assert_eq!(set.to_json(), r#"{"type":"monitor-set","targets":["222222222"]}"#);
+        }
     }
 }

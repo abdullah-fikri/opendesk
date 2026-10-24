@@ -38,6 +38,14 @@ impl Connection {
                 self.on_session_closed(message, target_clean.as_deref())
             }
             ServerMessage::Error { message, target_clean } => self.on_error(message, target_clean.as_deref()),
+            ServerMessage::MonitorStart { max_width, fps } => {
+                host::monitor_stream::start(&self.ctx, host::monitor_stream::Profile::clamped(max_width, fps))
+            }
+            ServerMessage::MonitorStop => host::monitor_stream::stop(&self.ctx),
+            #[cfg(feature = "admin")]
+            ServerMessage::MonitorState { target_clean, state } => {
+                crate::service::monitor_wall::on_state(&self.ctx, &target_clean, &state)
+            }
             ServerMessage::Unknown => {}
         }
     }
@@ -51,11 +59,13 @@ impl Connection {
         ctx.viewers.set_multi(multi);
         logger::info("relay", &format!("Registered. Viewer sessions: {}", if multi { "up to 4" } else { "one" }));
         ctx.ui.relay_status(RelayStatus::Online);
+        #[cfg(feature = "admin")]
+        crate::service::monitor_wall::relay_registered(ctx, relay.monitor);
     }
 
     fn on_host_list(&self, hosts: Vec<HostEntry>) {
         let local = desk_id::format(&self.ctx.local_id);
-        let hosts = hosts
+        let hosts: Vec<RemoteHost> = hosts
             .into_iter()
             .filter(|h| !h.desk_id.is_empty() && h.desk_id != local)
             .map(|h| RemoteHost {
@@ -66,6 +76,8 @@ impl Connection {
                 last_seen: h.last_seen,
             })
             .collect();
+        #[cfg(feature = "admin")]
+        crate::service::monitor_wall::set_hosts(&self.ctx, &hosts);
         self.ctx.ui.host_list(hosts);
     }
 

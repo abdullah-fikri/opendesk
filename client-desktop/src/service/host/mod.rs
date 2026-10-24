@@ -2,9 +2,11 @@
 //!
 //! - [`capture`]: the screen capture and encode loop.
 //! - [`input`]: applies the viewer's input and control events.
+//! - [`monitor_stream`]: view-only thumbnails for administrators' monitor walls, independent of the session.
 
 pub mod capture;
 pub mod input;
+pub mod monitor_stream;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -37,6 +39,10 @@ pub struct HostState {
     pub keyframe_requested: AtomicBool,
     /// Keys injected as down and not yet released, so a session end never leaves one stuck.
     held_keys: Mutex<Vec<u8>>,
+    /// An administrator's monitor wall shows this machine (see [`monitor_stream`]).
+    pub monitored: AtomicBool,
+    /// Bumped on every monitor-stream start and stop; a stream thread exits once its generation is stale.
+    pub monitor_generation: AtomicU64,
 }
 
 impl Default for HostState {
@@ -51,6 +57,8 @@ impl Default for HostState {
             peer_caps: Mutex::default(),
             keyframe_requested: AtomicBool::new(false),
             held_keys: Mutex::new(Vec::new()),
+            monitored: AtomicBool::new(false),
+            monitor_generation: AtomicU64::new(0),
         }
     }
 }

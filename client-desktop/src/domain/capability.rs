@@ -18,6 +18,13 @@ pub const P2P: &str = "p2p.v1";
 pub const MULTI_SESSION: &str = "multi-session";
 /// The relay forwards P2P signaling.
 pub const RELAY_P2P_SIGNAL: &str = "p2p-signal";
+/// This machine streams monitor-wall thumbnails when the relay asks (every edition).
+pub const MONITOR_HOST: &str = "monitor-host";
+/// This client shows the monitor wall (admin edition only).
+#[cfg(feature = "admin")]
+pub const MONITOR_VIEW: &str = "monitor-view";
+/// The relay runs the monitor wall.
+pub const RELAY_MONITOR: &str = "monitor";
 
 /// Features a session partner advertised in `peerCaps`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -54,13 +61,19 @@ pub struct RelayCaps {
     pub p2p_signal: bool,
     pub file_offer: bool,
     pub multi_session: bool,
+    pub monitor: bool,
 }
 
 impl RelayCaps {
     /// Reads the relay's capability list.
     pub fn from_list(caps: &[String]) -> Self {
         let has = |cap: &str| caps.iter().any(|c| c == cap);
-        Self { p2p_signal: has(RELAY_P2P_SIGNAL), file_offer: has(FILE_OFFER), multi_session: has(MULTI_SESSION) }
+        Self {
+            p2p_signal: has(RELAY_P2P_SIGNAL),
+            file_offer: has(FILE_OFFER),
+            multi_session: has(MULTI_SESSION),
+            monitor: has(RELAY_MONITOR),
+        }
     }
 }
 

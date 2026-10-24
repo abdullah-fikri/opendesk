@@ -7,6 +7,8 @@ pub mod edition;
 pub mod history;
 pub mod keyboard;
 pub mod monitor;
+#[cfg(feature = "admin")]
+pub mod monitor_wall;
 pub mod resolution;
 pub mod settings;
 pub mod transfer;

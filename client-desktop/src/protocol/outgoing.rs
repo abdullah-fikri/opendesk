@@ -14,6 +14,9 @@ pub enum Outgoing {
     MouseMove(String, f64, f64),
     /// Encoded video for the hosted viewer; only the newest frame per tick is sent.
     VideoFrame(Vec<u8>),
+    /// A monitor-wall thumbnail, already tagged (`binary::monitor_frame`); always through the relay, which fans
+    /// it out. Only the newest is kept while the previous one is still in the socket.
+    MonitorFrame(Vec<u8>),
     /// Voice packet for the current partner.
     Audio(Vec<u8>),
 }

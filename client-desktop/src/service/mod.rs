@@ -7,6 +7,8 @@ pub mod context;
 pub mod file_transfer;
 pub mod history;
 pub mod host;
+#[cfg(feature = "admin")]
+pub mod monitor_wall;
 pub mod relay;
 pub mod sessions;
 pub mod settings;

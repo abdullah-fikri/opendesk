@@ -16,12 +16,41 @@ pub struct Settings {
     /// overrides it.
     #[serde(default)]
     pub device_token: String,
+    /// Monitor wall (admin edition). Stored by every edition so switching editions never loses it.
+    #[serde(default)]
+    pub monitor: MonitorSettings,
+}
+
+/// Monitor-wall preferences (see `docs/features/monitor-wall.md` at the repository root).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct MonitorSettings {
+    /// Tiles per row and column: 2, 3 or 4.
+    pub grid: u8,
+    /// Switch to the next page every `rotate_secs` seconds.
+    pub rotate: bool,
+    pub rotate_secs: u32,
+    /// Show every online device; otherwise only `selected`.
+    pub all: bool,
+    /// Clean desk IDs picked by hand.
+    pub selected: Vec<String>,
+}
+
+impl Default for MonitorSettings {
+    fn default() -> Self {
+        Self { grid: 3, rotate: false, rotate_secs: 10, all: true, selected: Vec::new() }
+    }
 }
 
 impl Settings {
     /// Fresh settings for a device whose ID is `desk_id`.
     pub fn new(desk_id: String) -> Self {
-        Self { gateway_url: DEFAULT_GATEWAY_URL.to_string(), desk_id, device_token: String::new() }
+        Self {
+            gateway_url: DEFAULT_GATEWAY_URL.to_string(),
+            desk_id,
+            device_token: String::new(),
+            monitor: MonitorSettings::default(),
+        }
     }
 
     /// Repairs stored values: an invalid desk ID is replaced by `fresh_id()`, the gateway URL is normalized.
@@ -75,10 +104,17 @@ mod tests {
 
     #[test]
     fn repair_replaces_invalid_ids_only() {
-        let mut s =
-            Settings { gateway_url: "relay.example.com".into(), desk_id: "42".into(), device_token: String::new() };
+        let mut s = Settings { gateway_url: "relay.example.com".into(), ..Settings::new("42".into()) };
         assert!(s.repair(|| "123456789".into()));
         assert_eq!((s.desk_id.as_str(), s.gateway_url.as_str()), ("123456789", "wss://relay.example.com"));
         assert!(!s.repair(|| unreachable!()));
+    }
+
+    #[test]
+    fn settings_without_monitor_section_still_load() {
+        let s: Settings = serde_json::from_str(r#"{"gateway_url":"ws://x","desk_id":"123456789"}"#).unwrap();
+        assert_eq!(s.monitor, MonitorSettings::default());
+        let partial: MonitorSettings = serde_json::from_str(r#"{"grid":4}"#).unwrap();
+        assert_eq!((partial.grid, partial.all, partial.rotate_secs), (4, true, 10));
     }
 }

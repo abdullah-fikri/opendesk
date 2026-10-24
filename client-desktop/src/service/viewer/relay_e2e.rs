@@ -201,4 +201,173 @@ mod tests {
         host_a.send(Message::Text(json!({ "type": "relay-input", "targetClean": legacy_id, "event": { "action": "cursor-shape", "shape": 2 } }).to_string().into())).unwrap();
         assert!(wait_json(&mut legacy, |v| v["type"] == "input-command").get("fromClean").is_none());
     }
+
+    /// The real host pipeline (relay connection thread, dispatcher, thumbnail stream) watched by a raw
+    /// administrator socket: thumbnails arrive tagged, nothing the administrator sends is relayed, and the host
+    /// still accepts an interactive session while it is watched. Needs a relay with the monitor capability and no
+    /// device credentials (the administrator claims its role).
+    #[test]
+    #[ignore]
+    fn relay_e2e_monitor_wall_is_view_only() {
+        use crate::domain::edition::Edition;
+        use crate::infra::audio::VoiceEngine;
+        use crate::service::context::AppContext;
+        use crate::service::ui_port::NoUi;
+        use std::sync::Arc;
+
+        let [admin_id, host_id, viewer_id, _] = ids();
+        let url = std::env::var("OPENDESK_E2E_RELAY").unwrap_or_else(|_| "ws://127.0.0.1:8088".into());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let voice = VoiceEngine::new(tx.clone());
+        let ctx = Arc::new(AppContext::new(Edition::Standard, host_id.clone(), url, tx, Arc::new(NoUi), voice));
+        crate::service::relay::spawn(Arc::clone(&ctx), rx);
+
+        let url = std::env::var("OPENDESK_E2E_RELAY").unwrap_or_else(|_| "ws://127.0.0.1:8088".into());
+        let (mut admin, _) = tungstenite::connect(url.as_str()).expect("relay reachable");
+        if let MaybeTlsStream::Plain(s) = admin.get_mut() {
+            s.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        }
+        let reg = json!({ "type": "register", "deskId": admin_id, "platform": "windows-admin", "deviceName": "e2e-admin", "deviceToken": "", "isAdmin": true, "caps": ["multi-session", "monitor-view"] });
+        admin.send(Message::Text(reg.to_string().into())).unwrap();
+        let ack = wait_json(&mut admin, |v| v["type"] == "registered-ack");
+        if !caps_has(&ack["caps"], "monitor") {
+            eprintln!("relay lacks the monitor wall; skipping");
+            return;
+        }
+        // Wait until the host connection has registered, then watch it.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let state = loop {
+            admin.send(Message::Text(json!({ "type": "monitor-set", "targets": [] }).to_string().into())).unwrap();
+            admin
+                .send(Message::Text(json!({ "type": "monitor-set", "targets": [host_id] }).to_string().into()))
+                .unwrap();
+            let st = wait_json(&mut admin, |v| v["type"] == "monitor-state");
+            if st["state"] == "live" || Instant::now() > deadline {
+                break st;
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        };
+        assert_eq!(state["state"], "live", "{state}");
+        let bin = wait_binary(&mut admin);
+        assert!(crate::protocol::binary::is_monitor(&bin) && bin.len() > 10, "tagged thumbnail");
+        let (from, jpeg) = (std::str::from_utf8(&bin[1..10]).unwrap(), &bin[10..]);
+        assert_eq!(from, host_id);
+        let (_, w, h) = crate::service::viewer::decoder::decode_jpeg_rgba(jpeg).expect("plain JPEG");
+        assert!(w <= 640 && h > 0, "tile-sized: {w}x{h}");
+        assert!(ctx.host.monitored.load(Ordering::SeqCst));
+
+        // Watched, the host still takes an interactive session, and the administrator still controls nothing.
+        admin
+            .send(Message::Text(
+                json!({ "type": "relay-input", "targetClean": host_id, "event": { "action": "set-block-input", "blocked": true } })
+                    .to_string()
+                    .into(),
+            ))
+            .unwrap();
+        let (mut viewer, _) = connect(&viewer_id, &["video-delta"]);
+        viewer
+            .send(Message::Text(json!({ "type": "connect-request", "targetId": host_id }).to_string().into()))
+            .unwrap();
+        wait_json(&mut viewer, |v| v["type"] == "session-connected");
+        assert!(!wait_binary(&mut viewer).is_empty(), "session video flows while watched");
+        assert!(ctx.is_hosting());
+
+        // The last watcher leaving stops the thumbnail stream on the host.
+        admin.send(Message::Text(json!({ "type": "monitor-set", "targets": [] }).to_string().into())).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while ctx.host.monitored.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!ctx.host.monitored.load(Ordering::SeqCst), "monitor-stop reached the host");
+        assert!(ctx.is_hosting(), "ending the watch left the session alone");
+    }
+
+    /// Admin edition end to end: the wall service on a real relay connection watches a real host pipeline in the
+    /// same process, decodes its thumbnails off the UI thread and hands them to the UI.
+    #[cfg(feature = "admin")]
+    #[test]
+    #[ignore]
+    fn relay_e2e_monitor_wall_admin_service() {
+        use crate::domain::edition::Edition;
+        use crate::domain::history::HistoryRecord;
+        use crate::infra::audio::VoiceEngine;
+        use crate::service::context::{AppContext, Ctx};
+        use crate::service::ui_port::*;
+        use slint::{Rgba8Pixel, SharedPixelBuffer};
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct Recorder {
+            view: Mutex<Option<WallView>>,
+            frames: Mutex<Vec<(String, u32)>>,
+        }
+        impl UiPort for Recorder {
+            fn status(&self, _: String) {}
+            fn relay_status(&self, _: RelayStatus) {}
+            fn gateway_changed(&self, _: String) {}
+            fn host_list(&self, _: Vec<RemoteHost>) {}
+            fn history(&self, _: Vec<HistoryRecord>) {}
+            fn hosting_started(&self, _: String) {}
+            fn hosting_ended(&self) {}
+            fn hosting_mic(&self, _: bool) {}
+            fn session_opened(&self, _: String, _: String, _: String, _: i32, _: i32) {}
+            fn session_connected(&self, _: String, _: String) {}
+            fn session_frame(&self, _: String, _: Frame) {}
+            fn session_changed(&self, _: String, _: SessionChange) {}
+            fn session_closed(&self, _: String, _: Option<String>) {}
+            fn all_sessions_closed(&self) {}
+            fn focus_changed(&self, _: String) {}
+            fn layout_changed(&self, _: i32) {}
+            fn wall_changed(&self, view: WallView) {
+                *self.view.lock().unwrap() = Some(view);
+            }
+            fn wall_frames(&self, frames: Vec<(String, SharedPixelBuffer<Rgba8Pixel>)>) {
+                self.frames.lock().unwrap().extend(frames.into_iter().map(|(id, px)| (id, px.width())));
+            }
+        }
+
+        let [admin_id, host_id, _, _] = ids();
+        let url = std::env::var("OPENDESK_E2E_RELAY").unwrap_or_else(|_| "ws://127.0.0.1:8088".into());
+        let start = |edition, id: &str, ui: Arc<dyn UiPort>| -> Ctx {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let voice = VoiceEngine::new(tx.clone());
+            let ctx = Arc::new(AppContext::new(edition, id.to_string(), url.clone(), tx, ui, voice));
+            crate::service::relay::spawn(Arc::clone(&ctx), rx);
+            ctx
+        };
+        let ui = Arc::new(Recorder::default());
+        let admin = start(Edition::Admin, &admin_id, ui.clone());
+        let _host = start(Edition::Standard, &host_id, Arc::new(NoUi));
+
+        crate::service::monitor_wall::open(&admin);
+        crate::service::monitor_wall::set_all(&admin, false);
+        crate::service::monitor_wall::toggle_host(&admin, &host_id);
+        // The device list comes from the relay's database; a relay without one (in-memory test relay) lists
+        // nothing, so the host is listed here, again whenever an empty broadcast replaced it.
+        let listed = [RemoteHost {
+            desk_id: crate::domain::desk_id::format(&host_id),
+            device_name: "e2e-host".into(),
+            platform: "windows-pc".into(),
+            online: true,
+            last_seen: String::new(),
+        }];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let tile = loop {
+            if ui.view.lock().unwrap().as_ref().is_none_or(|v| v.picks.is_empty()) {
+                crate::service::monitor_wall::set_hosts(&admin, &listed);
+            }
+            let live = ui.view.lock().unwrap().as_ref().and_then(|v| v.tiles.iter().find(|t| t.id == host_id).cloned());
+            if live.as_ref().is_some_and(|t| t.state == TileState::Live) && !ui.frames.lock().unwrap().is_empty() {
+                break live.unwrap();
+            }
+            assert!(Instant::now() < deadline, "no live tile with a picture: {live:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(tile.subtitle, crate::domain::desk_id::format(&host_id));
+        let (id, width) = ui.frames.lock().unwrap()[0].clone();
+        assert!(id == host_id && width <= 640, "decoded tile-sized thumbnail: {id} {width}");
+        crate::service::monitor_wall::toggle_host(&admin, &host_id);
+        crate::service::monitor_wall::close(&admin);
+        crate::service::monitor_wall::set_all(&admin, true);
+    }
 }

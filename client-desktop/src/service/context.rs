@@ -28,6 +28,9 @@ pub struct AppContext {
     pub viewers: Registry,
     /// Host role (a viewer controls this machine).
     pub host: HostState,
+    /// Monitor wall (admin edition).
+    #[cfg(feature = "admin")]
+    pub wall: crate::service::monitor_wall::MonitorWall,
     pub voice: Arc<VoiceEngine>,
     pub injector: InputInjector,
     pub relay: RelayLink,
@@ -67,6 +70,8 @@ impl AppContext {
             ui,
             viewers: Registry::new(),
             host: HostState::default(),
+            #[cfg(feature = "admin")]
+            wall: Default::default(),
             voice,
             injector: InputInjector::new(),
             relay: RelayLink {

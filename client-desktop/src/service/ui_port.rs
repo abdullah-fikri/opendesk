@@ -55,6 +55,57 @@ pub enum SessionChange {
     Resolution(i32),
 }
 
+/// What a monitor-wall tile shows besides its picture (admin edition).
+#[cfg(feature = "admin")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TileState {
+    /// Asked the relay; no answer yet.
+    Waiting = 0,
+    Live = 1,
+    Offline = 2,
+    /// Android or an older desktop client.
+    Unsupported = 3,
+    /// This device is not an administrator on the relay.
+    Denied = 4,
+}
+
+/// One tile of the visible monitor-wall page.
+#[cfg(feature = "admin")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct WallTile {
+    /// Clean desk ID.
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub state: TileState,
+}
+
+/// One device in the monitor wall's selection list.
+#[cfg(feature = "admin")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct WallPick {
+    pub id: String,
+    pub name: String,
+    pub online: bool,
+    pub selected: bool,
+}
+
+/// Everything the monitor wall shows except pictures.
+#[cfg(feature = "admin")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct WallView {
+    pub tiles: Vec<WallTile>,
+    pub picks: Vec<WallPick>,
+    /// Zero-based page and page count.
+    pub page: usize,
+    pub pages: usize,
+    /// Hosts on the wall across all pages.
+    pub total: usize,
+    pub settings: crate::domain::settings::MonitorSettings,
+    /// The relay advertised the monitor capability.
+    pub relay_supported: bool,
+}
+
 /// Everything services report to the user interface.
 pub trait UiPort: Send + Sync {
     /// Replaces the status line.
@@ -91,6 +142,13 @@ pub trait UiPort: Send + Sync {
     fn focus_changed(&self, id: String);
     /// The viewer layout changed (0 tabs, 1 split).
     fn layout_changed(&self, layout: i32);
+
+    /// The monitor wall's page, tiles or settings changed (admin edition).
+    #[cfg(feature = "admin")]
+    fn wall_changed(&self, _view: WallView) {}
+    /// New pictures for monitor-wall tiles, at most a few times per second, all in one batch.
+    #[cfg(feature = "admin")]
+    fn wall_frames(&self, _frames: Vec<(String, SharedPixelBuffer<Rgba8Pixel>)>) {}
 }
 
 /// Headless mode: nothing to show.

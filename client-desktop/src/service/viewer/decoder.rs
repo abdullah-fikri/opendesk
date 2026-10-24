@@ -34,13 +34,13 @@ pub fn supported_video_caps() -> Vec<&'static str> {
     if h264 { vec![capability::VIDEO_DELTA, capability::VIDEO_H264] } else { vec![capability::VIDEO_DELTA] }
 }
 
-fn decode_jpeg_rgba(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+pub(crate) fn decode_jpeg_rgba(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
     let img = ImageReader::new(Cursor::new(bytes)).with_guessed_format().ok()?.decode().ok()?.to_rgba8();
     let (width, height) = img.dimensions();
     Some((img.into_raw(), width, height))
 }
 
-fn to_pixel_buffer(rgba: &[u8], width: u32, height: u32) -> SharedPixelBuffer<Rgba8Pixel> {
+pub(crate) fn to_pixel_buffer(rgba: &[u8], width: u32, height: u32) -> SharedPixelBuffer<Rgba8Pixel> {
     let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
     buffer.make_mut_bytes().copy_from_slice(rgba);
     buffer

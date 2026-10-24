@@ -51,6 +51,8 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
             p2p_input_tx: input_tx,
             p2p_input: input_rx,
             links: Vec::new(),
+            monitor_pending: None,
+            monitor_in_flight: false,
         };
         loop {
             conn.run_once();
@@ -70,6 +72,9 @@ pub(super) struct Connection {
     p2p_input: Receiver<InputEvent>,
     /// One direct path per session: the hosted viewer, or each viewed host.
     pub(super) links: Vec<Arc<P2p>>,
+    /// Newest monitor-wall thumbnail not sent yet, and whether the previous one is still in the socket.
+    monitor_pending: Option<Vec<u8>>,
+    monitor_in_flight: bool,
 }
 
 impl Connection {
@@ -116,6 +121,10 @@ impl Connection {
             }
 
             video_in_flight |= self.pump_outbox(&mut socket, &partner);
+            if !video_in_flight {
+                // Thumbnails only fill gaps: they never queue in front of the hosted session's video.
+                self.pump_monitor(&mut socket);
+            }
             let mut status = self.pump_files(&mut socket, partner.is_empty());
             if last_expire.elapsed() >= Duration::from_secs(1) {
                 last_expire = Instant::now();
@@ -131,10 +140,14 @@ impl Connection {
                     if std::mem::take(&mut video_in_flight) {
                         ctx.host.can_send_frame.store(true, Ordering::Release);
                     }
+                    self.monitor_in_flight = false;
                 }
                 Err(tungstenite::Error::Io(ref e))
                     if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
-                Err(_) => ctx.host.can_send_frame.store(true, Ordering::Release),
+                Err(_) => {
+                    ctx.host.can_send_frame.store(true, Ordering::Release);
+                    self.monitor_in_flight = false;
+                }
             }
 
             lost = !self.read_all(&mut socket);
@@ -160,6 +173,10 @@ impl Connection {
         if edition.can_view() {
             caps.push(capability::MULTI_SESSION);
         }
+        // Every edition can be watched; only the admin edition watches.
+        caps.push(capability::MONITOR_HOST);
+        #[cfg(feature = "admin")]
+        caps.push(capability::MONITOR_VIEW);
         let device_token =
             std::env::var("OPENDESK_DEVICE_TOKEN").unwrap_or_else(|_| storage::load_settings().device_token);
         ClientMessage::Register {
@@ -217,6 +234,7 @@ impl Connection {
                     None => mouse.push((target, x, y)),
                 },
                 Outgoing::VideoFrame(frame) => video = Some(frame),
+                Outgoing::MonitorFrame(frame) => self.monitor_pending = Some(frame),
                 Outgoing::Audio(packet) => self.send_audio(socket, partner, packet),
                 Outgoing::File { message, status } => self.files.push_back((message, status)),
             }
@@ -234,6 +252,18 @@ impl Connection {
         }
         let _ = socket.send(Message::Binary(frame.into()));
         true
+    }
+
+    /// Sends the newest monitor-wall thumbnail once the previous one has left the socket, so a slow link holds
+    /// at most one thumbnail here and older ones are dropped, never queued.
+    fn pump_monitor(&mut self, socket: &mut Socket) {
+        if self.monitor_in_flight {
+            return;
+        }
+        if let Some(frame) = self.monitor_pending.take() {
+            let _ = socket.send(Message::Binary(frame.into()));
+            self.monitor_in_flight = true;
+        }
     }
 
     /// Voice goes to the partner; a viewer of several hosts talks to the focused one only (tagged).
@@ -307,6 +337,14 @@ impl Connection {
     /// Voice and video from the relay: tagged per host for a multi-session viewer, else the single session.
     fn on_binary(&self, bin: &[u8]) {
         let ctx = &self.ctx;
+        if binary::is_monitor(bin) {
+            // Monitor-wall thumbnails never belong to a viewer session (and reach only the admin edition).
+            #[cfg(feature = "admin")]
+            if let Some((host, jpeg)) = binary::untag_monitor(bin) {
+                crate::service::monitor_wall::on_frame(ctx, host, jpeg);
+            }
+            return;
+        }
         match binary::untag(bin) {
             // Frames for a closed tab are dropped.
             Some((host, payload)) => {
@@ -350,6 +388,11 @@ impl Connection {
             p.close();
         }
         let ctx = &self.ctx;
+        // Watches live in the relay: a new connection starts without them until the relay asks again.
+        crate::service::host::monitor_stream::stop(ctx);
+        (self.monitor_pending, self.monitor_in_flight) = (None, false);
+        #[cfg(feature = "admin")]
+        crate::service::monitor_wall::relay_lost(ctx);
         if !ctx.viewers.is_empty() {
             crate::service::viewer::controller::end_all(ctx);
             if !ctx.is_hosting() {
