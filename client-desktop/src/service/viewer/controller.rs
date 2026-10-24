@@ -166,6 +166,10 @@ pub fn on_connected(ctx: &Ctx, id: &str, caps: PeerCaps) -> Option<Arc<Session>>
     sess.mic_muted.store(false, Ordering::SeqCst);
     sess.clip_seq.store(core_engine::clipboard::sequence_number(), Ordering::SeqCst);
     file_transfer::set_session_caps(id, caps);
+    ctx.ui.session_changed(
+        id.to_string(),
+        SessionChange::HostFeatures { privacy: caps.privacy_screen, block_input: caps.block_input },
+    );
     if ctx.viewers.focused_id().is_empty() {
         ctx.viewers.set_focus(id);
     }

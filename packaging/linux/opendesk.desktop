@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=OpenDesk
+GenericName=Remote Desktop
+Comment=View and control other computers through your own relay
+Exec=opendesk
+Icon=opendesk
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=remote;desktop;vnc;support;
+StartupWMClass=opendesk-client

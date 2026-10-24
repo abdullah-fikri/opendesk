@@ -324,8 +324,8 @@ mod tests {
         }
         assert!(finished, "group end marker never arrived");
         let copy = downloads.join("Project (1)");
-        assert_eq!(fs::read(copy.join(r"src\main.rs")).unwrap(), b"fn main() {}");
-        assert_eq!(fs::read(copy.join(r"src\deep\x.txt")).unwrap(), b"x");
+        assert_eq!(fs::read(copy.join("src/main.rs")).unwrap(), b"fn main() {}");
+        assert_eq!(fs::read(copy.join("src/deep/x.txt")).unwrap(), b"x");
         assert!(copy.join("empty").is_dir());
         assert_eq!(fs::read(downloads.join("loose.txt")).unwrap(), b"12345");
         assert_eq!(fs::read_dir(downloads.join("Project")).unwrap().count(), 0, "existing folder untouched");

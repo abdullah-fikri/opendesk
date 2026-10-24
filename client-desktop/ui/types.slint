@@ -40,6 +40,8 @@ export struct SessionView {
     mic_muted: bool,
     privacy_mode: int,
     block_input: bool,
+    privacy_unavailable: bool,      // the host cannot show a privacy screen (Linux hosts)
+    block_input_unavailable: bool,  // the host cannot lock its local input (Linux hosts)
     resolution_mode: int,   // 1 = automatic, 0 = native, 1080/720/480 presets
     audio_quality: int,
     monitors: [MonitorItem],

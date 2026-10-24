@@ -7,7 +7,7 @@ use super::desk_id;
 /// Relay URL used until the user configures one.
 pub const DEFAULT_GATEWAY_URL: &str = "ws://127.0.0.1:8088";
 
-/// Settings stored in `%APPDATA%\OpenDesk\config.json`.
+/// Settings stored in `config.json` of the app directory (`%APPDATA%\OpenDesk`, `~/.config/opendesk`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Settings {
     pub gateway_url: String,

@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use core_engine::capture::HostSupport;
 use slint::ComponentHandle;
 
 use crate::domain::desk_id;
@@ -33,14 +34,23 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, gateway_url: &s
     win.set_is_admin(ctx.edition == Edition::Admin);
     win.set_active_dashboard_tab(if ctx.edition == Edition::Admin { 1 } else { 0 });
     win.set_history_items(view_model::history_items(&history.records()));
+    if let HostSupport::Unsupported(reason) = core_engine::capture::host_support() {
+        win.set_host_notice(reason.into());
+    }
     callbacks::bind(win, ctx, history);
 
     // Closing the window keeps OpenDesk running in the tray, so this device stays reachable.
     let title = ctx.window_title.clone();
     win.window().on_close_requested(move || {
         logger::info("ui", "Window closed; OpenDesk keeps running in the tray.");
-        window::hide_window_by_title(&title);
-        slint::CloseRequestResponse::KeepWindowShown
+        if window::NATIVE_HIDE {
+            // Windows: hide the native window but keep Slint's event loop alive (it quits when its last window hides).
+            window::hide_window_by_title(&title);
+            slint::CloseRequestResponse::KeepWindowShown
+        } else {
+            // Elsewhere `app::run` keeps the event loop alive without a visible window.
+            slint::CloseRequestResponse::HideWindow
+        }
     });
 }
 
@@ -84,6 +94,10 @@ pub fn install_tray(win: &MainWindow, ctx: &Ctx) -> SystemTray {
 /// happen on the UI thread once the native window exists, so it is retried for a few seconds after start.
 /// `hide_after` hides the window once registered (background start).
 pub fn enable_file_drop(win: &MainWindow, ctx: &Ctx, hide_after: bool) {
+    if !window::FILE_DROP_SUPPORTED {
+        // Files are sent with the toolbar's file picker instead.
+        return;
+    }
     let weak = win.as_weak();
     let ctx = Arc::clone(ctx);
     thread::spawn(move || {

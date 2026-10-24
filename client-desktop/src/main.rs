@@ -1,9 +1,9 @@
-//! OpenDesk desktop client: remote desktop host and viewer for Windows.
+//! OpenDesk desktop client: remote desktop host and viewer for Windows and Linux.
 //!
 //! Layers (see `docs/architecture.md`), each depending only on the ones listed after it:
 //! - [`ui`]: Slint window, tray and callbacks (presentation)
 //! - [`service`]: use cases: relay connection, viewer and host roles, file transfer, clipboard
-//! - [`infra`]: Windows, file system and network adapters
+//! - [`infra`]: OS (Windows, Linux), file system and network adapters
 //! - [`protocol`]: wire messages (DTOs)
 //! - [`domain`]: types and rules without I/O
 

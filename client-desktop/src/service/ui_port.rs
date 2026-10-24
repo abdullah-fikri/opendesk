@@ -52,6 +52,11 @@ pub enum SessionChange {
     AudioQuality(i32),
     Privacy(i32),
     BlockInput(bool),
+    /// Which host controls the partner supports (privacy screen, input lock).
+    HostFeatures {
+        privacy: bool,
+        block_input: bool,
+    },
     Resolution(i32),
 }
 

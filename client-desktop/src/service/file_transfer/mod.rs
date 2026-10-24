@@ -51,6 +51,8 @@ static PARTNER_CAPS: Mutex<PeerCaps> = Mutex::new(PeerCaps {
     video_delta: false,
     video_h264: false,
     p2p: false,
+    privacy_screen: false,
+    block_input: false,
 });
 
 /// Records the capabilities of viewed host `id`.

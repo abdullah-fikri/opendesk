@@ -1,4 +1,4 @@
-//! Command-line entrypoint: `opendesk server|status|id|stop|uninstall|help`.
+//! Command-line entrypoint: `opendesk server|status|id|stop|uninstall|help` (Windows and Linux).
 //!
 //! The same executable is the GUI app; when the first argument is a known command it is handled here and the
 //! process exits before any window, tray or network thread starts. The running app watches `config.json`, so
@@ -52,13 +52,19 @@ fn set_server(url: Option<String>) -> i32 {
 fn stop() -> i32 {
     match autostart::stop_running() {
         Ok(()) => {
-            autostart::print_to_console("[OpenDesk] OpenDesk and its watchdog were stopped.");
+            autostart::print_to_console(if cfg!(windows) {
+                "[OpenDesk] OpenDesk and its watchdog were stopped."
+            } else {
+                "[OpenDesk] OpenDesk was stopped."
+            });
             0
         }
         Err(StopError::AccessDenied) => {
-            autostart::print_to_console(
-                "[OpenDesk] Failed: OpenDesk runs as Administrator.\r\n  Run this terminal as Administrator, or use the tray menu \"Stop & Exit\".",
-            );
+            autostart::print_to_console(if cfg!(windows) {
+                "[OpenDesk] Failed: OpenDesk runs as Administrator.\r\n  Run this terminal as Administrator, or use the tray menu \"Stop & Exit\"."
+            } else {
+                "[OpenDesk] Failed: the running OpenDesk belongs to another user.\r\n  Run this command as that user, or use the tray menu \"Stop & Exit\"."
+            });
             1
         }
     }
@@ -66,9 +72,11 @@ fn stop() -> i32 {
 
 fn uninstall() -> i32 {
     autostart::remove_autostart();
-    autostart::print_to_console(
-        "[OpenDesk] Processes stopped and autostart entries removed.\r\nRun the uninstaller or delete the installation folder.",
-    );
+    autostart::print_to_console(if cfg!(windows) {
+        "[OpenDesk] Processes stopped and autostart entries removed.\r\nRun the uninstaller or delete the installation folder."
+    } else {
+        "[OpenDesk] OpenDesk stopped and its start-at-login entry removed.\r\nRemove the package (sudo apt remove opendesk) or delete the binary."
+    });
     0
 }
 

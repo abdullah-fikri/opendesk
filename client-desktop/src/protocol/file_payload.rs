@@ -117,6 +117,8 @@ impl FilePayload {
     }
 
     /// Requests entry `index` of offer `offer_id`, to be sent as transfer `tid`.
+    // Only the Windows virtual clipboard pulls offered files.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn pull(offer_id: &str, index: u64, tid: &str) -> Self {
         Self { index: Some(index), tid: Some(tid.to_string()), ..Self::new(FileAction::Pull, offer_id) }
     }

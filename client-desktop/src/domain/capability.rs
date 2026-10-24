@@ -18,6 +18,16 @@ pub const P2P: &str = "p2p.v1";
 pub const MULTI_SESSION: &str = "multi-session";
 /// The relay forwards P2P signaling.
 pub const RELAY_P2P_SIGNAL: &str = "p2p-signal";
+/// This device only views; it can never be controlled (Android, Linux in a Wayland session). The relay refuses
+/// connect requests to it.
+pub const VIEWER_ONLY: &str = "viewer-only";
+/// The host lists its optional host features (`privacy-screen`, `block-input`). Without this marker a host is a
+/// legacy Windows host that has all of them, so older clients keep their controls.
+pub const HOST_FEATURES: &str = "host-features";
+/// With `host-features`: the host can show a privacy screen (`set-privacy`).
+pub const PRIVACY_SCREEN: &str = "privacy-screen";
+/// With `host-features`: the host can lock its physical keyboard and mouse (`set-block-input`).
+pub const BLOCK_INPUT: &str = "block-input";
 
 /// Features a session partner advertised in `peerCaps`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -30,12 +40,17 @@ pub struct PeerCaps {
     pub video_delta: bool,
     pub video_h264: bool,
     pub p2p: bool,
+    /// The partner can show a privacy screen while hosting.
+    pub privacy_screen: bool,
+    /// The partner can lock its local input while hosting.
+    pub block_input: bool,
 }
 
 impl PeerCaps {
     /// Reads `peer_caps`; `relay_offer` is whether the relay listed `file-offer`.
     pub fn from_list(peer_caps: &[String], relay_offer: bool) -> Self {
         let has = |cap: &str| peer_caps.iter().any(|c| c == cap);
+        let legacy_host = !has(HOST_FEATURES);
         Self {
             file_ack: has(FILE_ACK),
             file_offer: has(FILE_OFFER) && relay_offer,
@@ -44,6 +59,8 @@ impl PeerCaps {
             video_delta: has(VIDEO_DELTA),
             video_h264: has(VIDEO_H264),
             p2p: has(P2P),
+            privacy_screen: legacy_host || has(PRIVACY_SCREEN),
+            block_input: legacy_host || has(BLOCK_INPUT),
         }
     }
 }
@@ -75,5 +92,15 @@ mod tests {
         assert!(!PeerCaps::from_list(&caps, false).file_offer);
         assert!(PeerCaps::from_list(&caps, false).file_ack);
         assert!(RelayCaps::from_list(&[MULTI_SESSION.to_string()]).multi_session);
+    }
+
+    #[test]
+    fn host_features_default_to_legacy_windows_hosts() {
+        let legacy = PeerCaps::from_list(&[VIDEO_DELTA.to_string()], true);
+        assert!(legacy.privacy_screen && legacy.block_input);
+        let linux = PeerCaps::from_list(&[HOST_FEATURES.to_string()], true);
+        assert!(!linux.privacy_screen && !linux.block_input);
+        let partial = PeerCaps::from_list(&[HOST_FEATURES.to_string(), BLOCK_INPUT.to_string()], true);
+        assert!(!partial.privacy_screen && partial.block_input);
     }
 }

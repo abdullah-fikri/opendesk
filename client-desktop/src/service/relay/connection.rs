@@ -150,8 +150,12 @@ impl Connection {
 
     fn register_message(&self) -> ClientMessage {
         let edition = self.ctx.edition;
-        let mut caps =
-            vec![capability::FILE_ACK, capability::FILE_OFFER, capability::FILE_FOLDER, capability::CURSOR_SHAPE];
+        let mut caps = vec![capability::FILE_ACK];
+        // Clipboard file offers need Explorer's virtual files: Windows only.
+        if cfg!(windows) {
+            caps.push(capability::FILE_OFFER);
+        }
+        caps.extend([capability::FILE_FOLDER, capability::CURSOR_SHAPE]);
         caps.extend(decoder::supported_video_caps());
         if p2p::enabled() {
             caps.push(capability::P2P);
@@ -159,6 +163,13 @@ impl Connection {
         // Sent before the relay's caps are known; multi-session is used only once `registered-ack` lists it too.
         if edition.can_view() {
             caps.push(capability::MULTI_SESSION);
+        }
+        // Hosts list their optional controls; Windows hosts omit the marker and keep the legacy "all of them".
+        if !cfg!(windows) {
+            caps.push(capability::HOST_FEATURES);
+        }
+        if core_engine::capture::host_support() != core_engine::capture::HostSupport::Supported {
+            caps.push(capability::VIEWER_ONLY);
         }
         let device_token =
             std::env::var("OPENDESK_DEVICE_TOKEN").unwrap_or_else(|_| storage::load_settings().device_token);

@@ -28,6 +28,7 @@ export component MainWindow inherits Window {
     in property <string> status_text: "Connecting...";
     in property <bool> is_relay_online: false;
     in property <bool> is_admin: false;
+    in property <string> host_notice: "";
     in-out property <int> active_dashboard_tab: 0;
     in-out property <string> target_desk_id: "";
     in property <[HistoryItem]> history_items: [];
@@ -158,6 +159,7 @@ export component MainWindow inherits Window {
 
             if root.show_new_session: DashboardView {
                 local_desk_id: root.local_desk_id;
+                host_notice: root.host_notice;
                 is_relay_online: root.is_relay_online;
                 is_admin: root.is_admin;
                 as_new_session_page: true;
@@ -187,6 +189,7 @@ export component MainWindow inherits Window {
 
             if !hosting: DashboardView {
                 local_desk_id: root.local_desk_id;
+                host_notice: root.host_notice;
                 is_relay_online: root.is_relay_online;
                 is_admin: root.is_admin;
                 active_tab <=> root.active_dashboard_tab;

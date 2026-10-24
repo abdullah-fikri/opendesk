@@ -4,6 +4,8 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use core_engine::capture::HostSupport;
+
 use crate::domain::capability::{PeerCaps, RelayCaps};
 use crate::domain::desk_id;
 use crate::infra::p2p::{self, P2p, Sinks};
@@ -74,6 +76,13 @@ impl Connection {
         let relay = *ctx.relay.caps.lock().unwrap();
         let caps = PeerCaps::from_list(peer_caps, relay.file_offer);
         let is_host = role == "host";
+        // A session that cannot be captured (Linux on Wayland) is ended at once; normally the relay already
+        // refused it because registration said `viewer-only`.
+        if is_host && let HostSupport::Unsupported(reason) = core_engine::capture::host_support() {
+            logger::warn("relay", &format!("Refusing to host {target}: {reason}"));
+            ctx.send(ClientMessage::disconnect(target));
+            return;
+        }
         // A viewer of several hosts keeps one capability set per host; everything else has one partner.
         let multi_viewer = !is_host && ctx.viewers.multi();
         if !multi_viewer {
