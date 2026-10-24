@@ -2,16 +2,17 @@
 // properties are written by Rust and read by the UI unless noted; callbacks are invoked by the UI and
 // implemented in src/ui/callbacks.rs.
 
-import { HistoryItem, HostItem, SessionView, MonitorItem } from "types.slint";
+import { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick } from "types.slint";
 import { HeaderBar } from "views/header_bar.slint";
 import { DashboardView } from "views/dashboard.slint";
 import { HostActiveView } from "views/host_panel.slint";
 import { SessionWorkspace } from "views/workspace/session_workspace.slint";
+import { MonitorWallView } from "views/monitor/monitor_wall.slint";
 import { ServerSettingsModal } from "dialogs/server_settings_dialog.slint";
 import { RenameDeviceModal } from "dialogs/rename_device_dialog.slint";
 import { DeleteConfirmModal } from "dialogs/delete_confirm_dialog.slint";
 
-export { HistoryItem, HostItem, SessionView, MonitorItem }
+export { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick }
 
 export component MainWindow inherits Window {
     title: "OpenDesk - " + local_desk_id;
@@ -46,6 +47,20 @@ export component MainWindow inherits Window {
     in-out property <int> view_layout: 0;
     // Shows the dashboard as the "+" page while sessions exist.
     in-out property <bool> show_new_session: false;
+
+    // ---- Monitor wall (admin edition; never shown while is_admin is false) ----
+    // Set by the UI when the wall opens or closes; it then calls open_monitor / close_monitor.
+    in-out property <bool> monitor_open: false;
+    in property <[MonitorTile]> monitor_tiles: [];
+    in property <[MonitorPick]> monitor_picks: [];
+    in property <int> monitor_grid: 3;
+    in property <int> monitor_page: 0;
+    in property <int> monitor_pages: 1;
+    in property <int> monitor_total: 0;
+    in property <bool> monitor_rotate: false;
+    in property <int> monitor_rotate_secs: 10;
+    in property <bool> monitor_all: true;
+    in property <bool> monitor_relay_ok: true;
 
     // ---- Dialogs (UI-owned) ----
     in-out property <bool> show_settings: false;
@@ -94,6 +109,16 @@ export component MainWindow inherits Window {
     callback session_shortcut(string, string);
     callback session_set_resolution(string, int);
     callback session_set_audio_quality(string, int);
+
+    // ---- Monitor wall ----
+    callback open_monitor();
+    callback close_monitor();
+    callback monitor_step_page(int);
+    callback monitor_set_grid(int);
+    // (on, seconds)
+    callback monitor_set_rotation(bool, int);
+    callback monitor_set_all(bool);
+    callback monitor_toggle_host(string);
 
     VerticalLayout {
         padding: 0px;
@@ -179,13 +204,40 @@ export component MainWindow inherits Window {
             }
         }
 
-        // Body while no viewer session is open: the dashboard, or the hosting panel.
+        // Body while no viewer session is open: the monitor wall, the dashboard, or the hosting panel.
         if sessions.length == 0: Rectangle {
             vertical-stretch: 1;
             background: #09090b;
             clip: true;
 
-            if !hosting: DashboardView {
+            if is_admin && monitor_open: MonitorWallView {
+                tiles: root.monitor_tiles;
+                picks: root.monitor_picks;
+                grid: root.monitor_grid;
+                page: root.monitor_page;
+                pages: root.monitor_pages;
+                total: root.monitor_total;
+                rotate: root.monitor_rotate;
+                rotate_secs: root.monitor_rotate_secs;
+                all: root.monitor_all;
+                relay_ok: root.monitor_relay_ok;
+                close => {
+                    root.monitor_open = false;
+                    root.close_monitor();
+                }
+                connect(id) => {
+                    root.monitor_open = false;
+                    root.close_monitor();
+                    root.request_connect(id);
+                }
+                step_page(d) => { root.monitor_step_page(d); }
+                set_grid(g) => { root.monitor_set_grid(g); }
+                set_rotation(on, secs) => { root.monitor_set_rotation(on, secs); }
+                set_all(all) => { root.monitor_set_all(all); }
+                toggle_host(id) => { root.monitor_toggle_host(id); }
+            }
+
+            if !(is_admin && monitor_open) && !hosting: DashboardView {
                 local_desk_id: root.local_desk_id;
                 is_relay_online: root.is_relay_online;
                 is_admin: root.is_admin;
@@ -202,9 +254,13 @@ export component MainWindow inherits Window {
                     root.show_delete_modal = true;
                 }
                 refresh_hosts => { root.refresh_hosts(); }
+                open_monitor => {
+                    root.monitor_open = true;
+                    root.open_monitor();
+                }
             }
 
-            if hosting: HostActiveView {
+            if !(is_admin && monitor_open) && hosting: HostActiveView {
                 active_partner_id: root.hosting_partner;
                 is_mic_muted: root.hosting_mic_muted;
                 toggle_mic => { root.hosting_toggle_mic(); }

@@ -1,0 +1,103 @@
+// Side panel of the monitor wall: which devices it shows (every online device, or a hand-picked list).
+
+import { MonitorPick } from "../../types.slint";
+import { Theme } from "../../theme.slint";
+import { Segment } from "../../components/segment.slint";
+
+export component MonitorPicker inherits Rectangle {
+    in property <[MonitorPick]> picks;
+    in property <bool> all;
+    callback set_all(bool);
+    callback toggle_host(string);
+
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 8px;
+
+        Text {
+            text: "Devices on the wall";
+            color: Theme.text;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        HorizontalLayout {
+            spacing: 0px;
+            Segment {
+                label: "All online";
+                selected: root.all;
+                clicked => { root.set_all(true); }
+            }
+            Segment {
+                label: "Selected";
+                selected: !root.all;
+                clicked => { root.set_all(false); }
+            }
+        }
+        Text {
+            text: root.all ? "Every online device is shown. Pick devices to show only those." : "Only the ticked devices are shown, offline ones too.";
+            color: Theme.text-3;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+
+        Flickable {
+            vertical-stretch: 1;
+            content-height: list.preferred-height;
+            list := VerticalLayout {
+                width: parent.width;
+                spacing: 2px;
+                alignment: start;
+                if root.picks.length == 0: Text {
+                    text: "No devices registered on the relay yet.";
+                    color: Theme.text-3;
+                    font-size: 11px;
+                }
+                for p in root.picks: Rectangle {
+                    height: 28px;
+                    background: row-ta.has-hover ? Theme.hover : transparent;
+                    row-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            // Picking a device switches to the hand-picked list.
+                            if (root.all) {
+                                root.set_all(false);
+                            }
+                            root.toggle_host(p.id);
+                        }
+                    }
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        spacing: 8px;
+                        Rectangle {
+                            width: 12px;
+                            height: 12px;
+                            y: (parent.height - self.height) / 2;
+                            border-width: 1px;
+                            border-color: p.selected && !root.all ? Theme.accent : Theme.text-3;
+                            background: p.selected && !root.all ? Theme.accent : transparent;
+                        }
+                        Rectangle {
+                            width: 6px;
+                            height: 6px;
+                            y: (parent.height - self.height) / 2;
+                            background: p.online ? Theme.ok : #52525b;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: p.name;
+                            color: p.online ? Theme.text : Theme.text-2;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

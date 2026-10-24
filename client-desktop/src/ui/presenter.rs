@@ -22,6 +22,8 @@ impl SlintUi {
     /// Must be created on the UI thread, before the window runs.
     pub fn new(window: &MainWindow) -> Self {
         session_model::install(window);
+        #[cfg(feature = "admin")]
+        super::monitor_wall_model::install(window);
         Self { window: window.as_weak() }
     }
 
@@ -196,5 +198,27 @@ impl UiPort for SlintUi {
 
     fn layout_changed(&self, layout: i32) {
         self.apply(move |w| w.set_view_layout(layout));
+    }
+
+    #[cfg(feature = "admin")]
+    fn wall_changed(&self, view: crate::service::ui_port::WallView) {
+        use super::monitor_wall_model;
+        self.apply(move |w| {
+            monitor_wall_model::set_tiles(view.tiles);
+            w.set_monitor_picks(monitor_wall_model::picks(view.picks));
+            w.set_monitor_grid(view.settings.grid as i32);
+            w.set_monitor_page(view.page as i32);
+            w.set_monitor_pages(view.pages as i32);
+            w.set_monitor_total(view.total as i32);
+            w.set_monitor_rotate(view.settings.rotate);
+            w.set_monitor_rotate_secs(view.settings.rotate_secs as i32);
+            w.set_monitor_all(view.settings.all);
+            w.set_monitor_relay_ok(view.relay_supported);
+        });
+    }
+
+    #[cfg(feature = "admin")]
+    fn wall_frames(&self, frames: Vec<(String, slint::SharedPixelBuffer<slint::Rgba8Pixel>)>) {
+        self.apply(move |_| super::monitor_wall_model::set_frames(frames));
     }
 }

@@ -2,6 +2,8 @@
 //! events to it, the tray icon and drag-and-drop. Nothing here decides behavior; callbacks call services.
 
 mod callbacks;
+#[cfg(feature = "admin")]
+mod monitor_wall_model;
 mod presenter;
 mod session_model;
 mod view_model;

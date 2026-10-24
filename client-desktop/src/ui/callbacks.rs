@@ -45,6 +45,21 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {
     bind_dashboard(win, ctx, history);
     bind_hosting(win, ctx);
     bind_sessions(win, ctx);
+    #[cfg(feature = "admin")]
+    bind_monitor_wall(win, ctx);
+}
+
+/// Admin edition only: other editions leave these callbacks unbound and never show the wall.
+#[cfg(feature = "admin")]
+fn bind_monitor_wall(win: &MainWindow, ctx: &Ctx) {
+    use crate::service::monitor_wall as wall;
+    on!(win, ctx, on_open_monitor, |_w, c| wall::open(c));
+    on!(win, ctx, on_close_monitor, |_w, c| wall::close(c));
+    on!(win, ctx, on_monitor_step_page, |_w, c, delta| wall::step_page(c, delta));
+    on!(win, ctx, on_monitor_set_grid, |_w, c, grid| wall::set_grid(c, grid));
+    on!(win, ctx, on_monitor_set_rotation, |_w, c, on, secs| wall::set_rotation(c, on, secs));
+    on!(win, ctx, on_monitor_set_all, |_w, c, all| wall::set_all(c, all));
+    on!(win, ctx, on_monitor_toggle_host, |_w, c, id| wall::toggle_host(c, &id));
 }
 
 fn bind_dashboard(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {

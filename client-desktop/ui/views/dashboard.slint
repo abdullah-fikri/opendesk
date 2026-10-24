@@ -23,6 +23,8 @@ export component DashboardView inherits VerticalLayout {
     callback open_rename(string, string);
     callback prompt_delete_history(string, string);
     callback refresh_hosts();
+    // Admin edition: show the monitor wall.
+    callback open_monitor();
 
     // "+" page while viewer sessions are open (multi-session workspace).
     in property <bool> as_new_session_page: false;
@@ -342,6 +344,29 @@ export component DashboardView inherits VerticalLayout {
                                     Text {
                                         text: "Session History (" + history_items.length + ")";
                                         color: active_tab == 0 ? #ffffff : #a1a1aa;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Monitor wall: view-only grid of many hosts (not from the "+" page: sessions are open).
+                            if !as_new_session_page: Rectangle {
+                                height: 26px;
+                                background: ta-mon.has-hover ? #27272a : #1c1c21;
+                                border-width: 1px;
+                                border-color: #27272a;
+                                ta-mon := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { open_monitor(); }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+                                    Text {
+                                        text: "Monitor Wall";
+                                        color: #a1a1aa;
                                         font-size: 11px;
                                         font-weight: 600;
                                         vertical-alignment: center;

@@ -45,3 +45,21 @@ export struct SessionView {
     monitors: [MonitorItem],
     active_monitor: int,    // index into the host's monitor list
 }
+
+// ---- Monitor wall, admin edition (see docs/features/monitor-wall.md at the repository root) ----
+
+export struct MonitorTile {
+    id: string,             // host clean desk ID
+    title: string,          // device name
+    subtitle: string,       // formatted desk ID
+    state: int,             // 0 waiting, 1 live, 2 offline, 3 unsupported, 4 denied
+    has_frame: bool,
+    frame: image,
+}
+
+export struct MonitorPick {
+    id: string,             // host clean desk ID
+    name: string,
+    online: bool,
+    selected: bool,
+}
