@@ -264,7 +264,10 @@ mod tests {
         assert_eq!(modifier_vk("\u{0016}"), Some(VK_CONTROL)); // ControlR, not Ctrl+V
         assert_eq!(modifier_vk("\u{0015}"), Some(VK_SHIFT));
         assert_eq!(modifier_vk("\u{0012}"), Some(VK_MENU));
+        #[cfg(windows)]
         assert_eq!(modifier_vk("\u{0017}"), None); // Meta goes through the low-level hook
+        #[cfg(not(windows))]
+        assert_eq!(modifier_vk("\u{0017}"), Some(VK_LWIN)); // no hook: Meta is an ordinary key
         assert_eq!(special_vk("\u{f702}"), Some(0x25));
         assert_eq!(special_vk("\n"), Some(0x0D));
         assert_eq!(special_vk("\u{0019}"), Some(0x09));
