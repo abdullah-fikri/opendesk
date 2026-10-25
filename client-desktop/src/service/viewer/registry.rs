@@ -278,7 +278,7 @@ impl Registry {
     pub fn clear(&self) -> Vec<Arc<Session>> {
         let mut inner = self.inner.lock().unwrap();
         inner.focused.clear();
-        let all: Vec<Arc<Session>> = inner.sessions.drain(..).collect();
+        let all: Vec<Arc<Session>> = std::mem::take(&mut inner.sessions);
         for s in &all {
             s.alive.store(false, Ordering::SeqCst);
             s.visible.store(false, Ordering::SeqCst);

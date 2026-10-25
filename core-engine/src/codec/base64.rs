@@ -4,8 +4,7 @@
 pub fn to_base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    let chunks = bytes.chunks_exact(3);
-    let rem = chunks.remainder();
+    let (chunks, rem) = bytes.as_chunks::<3>();
 
     for chunk in chunks {
         let b0 = chunk[0] as usize;

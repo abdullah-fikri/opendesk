@@ -329,8 +329,7 @@ impl DesktopCapturer {
             unsafe { std::slice::from_raw_parts(shm.addr as *const u32, (shm.len / 4).min(sw * sh)) }
         } else {
             let reply = conn.get_image(ImageFormat::Z_PIXMAP, self.root, x, y, w, h, !0)?.reply()?;
-            owned =
-                reply.data.chunks_exact(4).map(|p| u32::from_le_bytes([p[0], p[1], p[2], p[3]])).collect::<Vec<_>>();
+            owned = reply.data.as_chunks::<4>().0.iter().map(|p| u32::from_le_bytes(*p)).collect::<Vec<_>>();
             &owned
         };
         if native.len() < sw * sh {

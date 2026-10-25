@@ -57,10 +57,12 @@ pub fn nv12_to_rgba(yp: &[u8], uv: &[u8], pitch: usize, w: usize, h: usize, out:
         let yrow = &yp[y * pitch..y * pitch + w];
         let crow = &uv[(y / 2) * pitch..(y / 2) * pitch + w];
         // Two pixels share one chroma pair: compute its contribution once.
-        for ((px, ys), c) in orow.chunks_exact_mut(8).zip(yrow.chunks_exact(2)).zip(crow.chunks_exact(2)) {
+        for ((px, ys), c) in
+            orow.as_chunks_mut::<8>().0.iter_mut().zip(yrow.as_chunks::<2>().0).zip(crow.as_chunks::<2>().0)
+        {
             let (u, v) = (c[0] as i32 - 128, c[1] as i32 - 128);
             let (rv, guv, bu) = (459 * v + 128, -55 * u - 136 * v + 128, 541 * u + 128);
-            for (o, &yv) in px.chunks_exact_mut(4).zip(ys) {
+            for (o, &yv) in px.as_chunks_mut::<4>().0.iter_mut().zip(ys) {
                 let l = 298 * (yv as i32 - 16);
                 o[0] = ((l + rv) >> 8).clamp(0, 255) as u8;
                 o[1] = ((l + guv) >> 8).clamp(0, 255) as u8;
@@ -89,10 +91,10 @@ pub fn i420_to_rgba(
         let yrow = &yp[y * y_stride..y * y_stride + w];
         let urow = &up[(y / 2) * uv_stride..];
         let vrow = &vp[(y / 2) * uv_stride..];
-        for (i, (px, ys)) in orow.chunks_exact_mut(8).zip(yrow.chunks_exact(2)).enumerate() {
+        for (i, (px, ys)) in orow.as_chunks_mut::<8>().0.iter_mut().zip(yrow.as_chunks::<2>().0).enumerate() {
             let (u, v) = (urow[i] as i32 - 128, vrow[i] as i32 - 128);
             let (rv, guv, bu) = (459 * v + 128, -55 * u - 136 * v + 128, 541 * u + 128);
-            for (o, &yv) in px.chunks_exact_mut(4).zip(ys) {
+            for (o, &yv) in px.as_chunks_mut::<4>().0.iter_mut().zip(ys) {
                 let l = 298 * (yv as i32 - 16);
                 o[0] = ((l + rv) >> 8).clamp(0, 255) as u8;
                 o[1] = ((l + guv) >> 8).clamp(0, 255) as u8;

@@ -211,7 +211,7 @@ impl VoiceEngine {
                         if stream.is_some()
                             && let Ok(mut p) = ring.lock()
                         {
-                            p.queue.extend(pcm.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])));
+                            p.queue.extend(pcm.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)));
                             // Never fall more than 400 ms behind.
                             let cap = rate as usize * 2 / 5;
                             if p.queue.len() > cap {
