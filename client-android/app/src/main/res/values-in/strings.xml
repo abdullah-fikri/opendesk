@@ -30,11 +30,10 @@
     <string name="session_closed">Sesi ditutup</string>
     <string name="error_generic">Kesalahan</string>
     <string name="relay_settings_title">Pengaturan Relay</string>
-    <string name="relay_settings_message">Masukkan alamat relay dan, bila relay memintanya, token perangkat ini:</string>
-    <string name="device_token_hint">Token perangkat (opsional, minimal 32 karakter)</string>
+    <string name="relay_settings_message">Masukkan alamat relay:</string>
     <string name="save_and_connect">Simpan &amp; Sambungkan</string>
     <string name="cancel">Batal</string>
-    <string name="relay_settings_invalid">Isi alamat relay; token minimal 32 karakter</string>
+    <string name="relay_settings_invalid">Isi alamat relay</string>
     <string name="relay_updated">Relay diperbarui</string>
     <string name="file_receiving">Menerima berkas: %1$s...</string>
     <string name="file_saved">Berkas tersimpan: %1$s</string>

@@ -33,12 +33,11 @@
     <string name="session_closed">Session closed</string>
     <string name="error_generic">Error</string>
     <string name="relay_settings_title">Relay Settings</string>
-    <string name="relay_settings_message">Enter the relay address and, if the relay requires one, this device\'s token:</string>
+    <string name="relay_settings_message">Enter the relay address:</string>
     <string name="relay_url_hint" translatable="false">wss://relay.example.com</string>
-    <string name="device_token_hint">Device token (optional, at least 32 characters)</string>
     <string name="save_and_connect">Save &amp; Connect</string>
     <string name="cancel">Cancel</string>
-    <string name="relay_settings_invalid">Enter the relay address; a token must be at least 32 characters</string>
+    <string name="relay_settings_invalid">Enter the relay address</string>
     <string name="relay_updated">Relay updated</string>
     <string name="file_receiving">Receiving %1$s...</string>
     <string name="file_saved">File saved: %1$s</string>

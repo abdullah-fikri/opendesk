@@ -143,17 +143,11 @@ class MainActivity : AppCompatActivity(), RelayConnection.Listener {
             hint = getString(R.string.relay_url_hint)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
-        val tokenInput = EditText(this).apply {
-            hint = getString(R.string.device_token_hint)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            setText(settings.deviceToken)
-        }
         val fields = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val padding = resources.getDimensionPixelSize(R.dimen.dialog_padding)
             setPadding(padding, padding, padding, 0)
             addView(urlInput)
-            addView(tokenInput)
         }
         AlertDialog.Builder(this)
             .setTitle(R.string.relay_settings_title)
@@ -161,9 +155,8 @@ class MainActivity : AppCompatActivity(), RelayConnection.Listener {
             .setView(fields)
             .setPositiveButton(R.string.save_and_connect) { _, _ ->
                 val url = GatewayUrl.normalize(urlInput.text.toString())
-                val token = tokenInput.text.toString().trim()
-                // The token is optional (open relays need none); a provisioned one is at least 32 characters.
-                if (url.isEmpty() || (token.isNotEmpty() && token.length < MIN_TOKEN_LENGTH)) {
+                // Nothing else to enter: a relay that requires tokens issues this phone's own on first connect.
+                if (url.isEmpty()) {
                     toast(R.string.relay_settings_invalid)
                     return@setPositiveButton
                 }
@@ -172,7 +165,6 @@ class MainActivity : AppCompatActivity(), RelayConnection.Listener {
                     return@setPositiveButton
                 }
                 settings.gatewayUrl = url
-                settings.deviceToken = token
                 connectRelay()
                 toast(R.string.relay_updated)
             }
@@ -220,6 +212,5 @@ class MainActivity : AppCompatActivity(), RelayConnection.Listener {
     private fun toast(resId: Int) = Toast.makeText(this, resId, Toast.LENGTH_SHORT).show()
 
     private companion object {
-        const val MIN_TOKEN_LENGTH = 32
     }
 }

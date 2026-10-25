@@ -187,6 +187,8 @@ object RelayConnection : GatewayClient.Listener {
             MessageType.INPUT_COMMAND -> message.event?.let { onControl(gson.fromJson(it, RemoteEvent::class.java)) }
             MessageType.SESSION_CLOSED -> endSession(message.message, notify = true, fromRelay = true)
             MessageType.ERROR -> listener?.onError(message.message)
+            // The relay enrolled this phone: zero configuration besides the relay address.
+            MessageType.DEVICE_CREDENTIAL -> message.token?.takeIf { it.isNotEmpty() }?.let { settings?.storeIssuedToken(it) }
         }
     }
 
@@ -234,7 +236,7 @@ object RelayConnection : GatewayClient.Listener {
         connecting = true
         val registration = RegisterRequest(
             deskId = settings.deskId,
-            deviceToken = settings.deviceToken,
+            deviceToken = settings.tokenForGateway,
             deviceName = "Android (${settings.deskId})",
             caps = Capabilities.advertised,
         )

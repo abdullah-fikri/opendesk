@@ -24,6 +24,7 @@ object MessageType {
     const val FILE_TRANSFER = "file-transfer"
     const val SESSION_CLOSED = "session-closed"
     const val ERROR = "error"
+    const val DEVICE_CREDENTIAL = "device-credential"
 }
 
 /** First message on every connection. */
@@ -77,6 +78,8 @@ data class ServerMessage(
     val message: String? = null,
     val event: JsonObject? = null,
     val payload: FilePayload? = null,
+    /** `device-credential`: the token the relay issued when it enrolled this device. */
+    val token: String? = null,
 )
 
 /** Received control event (`input-command.event`). A viewer only acts on `set-mic`. */
