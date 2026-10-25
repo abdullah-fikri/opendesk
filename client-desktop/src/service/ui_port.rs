@@ -26,10 +26,32 @@ pub enum RelayStatus {
 pub struct RemoteHost {
     pub desk_id: String,
     pub device_name: String,
+    /// Name an administrator gave the device on the relay; empty when none.
+    pub alias: String,
     pub platform: String,
     pub online: bool,
     /// RFC 3339 timestamp from the relay.
     pub last_seen: String,
+}
+
+impl RemoteHost {
+    /// The administrator's name for the device, else the name it reports.
+    #[cfg(feature = "admin")]
+    pub fn display_name(&self) -> &str {
+        if self.alias.is_empty() { &self.device_name } else { &self.alias }
+    }
+}
+
+/// The relay's device allowlist (admin edition).
+#[cfg(feature = "admin")]
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SecurityView {
+    /// The relay supports the allowlist.
+    pub supported: bool,
+    pub enabled: bool,
+    /// The relay also has OPENDESK_DEVICE_CREDENTIALS configured.
+    pub managed_by_env: bool,
+    pub devices: Vec<crate::protocol::SecurityDevice>,
 }
 
 /// A decoded frame ready for display. The pixel buffer is shared, not copied, on its way to the UI.
@@ -154,6 +176,12 @@ pub trait UiPort: Send + Sync {
     /// New pictures for monitor-wall tiles, at most a few times per second, all in one batch.
     #[cfg(feature = "admin")]
     fn wall_frames(&self, _frames: Vec<(String, SharedPixelBuffer<Rgba8Pixel>)>) {}
+    /// The relay's device allowlist changed or was fetched (admin edition).
+    #[cfg(feature = "admin")]
+    fn security_changed(&self, _view: SecurityView) {}
+    /// What the relay supports for administrators, known after each registration (admin edition).
+    #[cfg(feature = "admin")]
+    fn relay_admin_caps(&self, _device_security: bool, _host_alias: bool) {}
 }
 
 /// Headless mode: nothing to show.

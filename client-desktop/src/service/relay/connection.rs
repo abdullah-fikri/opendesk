@@ -17,7 +17,7 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
 use crate::domain::capability;
-use crate::domain::settings::normalize_gateway_url;
+use crate::domain::settings::{self, normalize_gateway_url};
 use crate::infra::p2p::{self, P2p};
 use crate::infra::{device, logger, storage, virtual_clipboard};
 use crate::protocol::{ClientMessage, InputEvent, Outgoing, ServerMessage, binary};
@@ -190,8 +190,9 @@ impl Connection {
         }
         #[cfg(feature = "admin")]
         caps.push(capability::MONITOR_VIEW);
-        let device_token =
-            std::env::var("OPENDESK_DEVICE_TOKEN").unwrap_or_else(|_| storage::load_settings().device_token);
+        let gateway = self.ctx.relay.gateway_url.lock().unwrap().clone();
+        let device_token = std::env::var("OPENDESK_DEVICE_TOKEN")
+            .unwrap_or_else(|_| settings::token_for(&storage::load_settings(), &gateway));
         ClientMessage::Register {
             desk_id: self.ctx.local_id.clone(),
             platform: edition.platform_tag().into(),

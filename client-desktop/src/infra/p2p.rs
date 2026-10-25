@@ -29,6 +29,9 @@ const MAX_CANDIDATES: usize = 8;
 const REPLAY_WINDOW: u64 = 1024;
 const PATH_TIMEOUT: Duration = Duration::from_secs(3);
 const FRAME_ACK_TIMEOUT: Duration = Duration::from_millis(200);
+/// Video frames sent but not acknowledged yet. Two keep 60 FPS through a round trip of up to about one frame
+/// interval; one would halve the rate as soon as the round trip plus encoding exceeds 16 ms.
+const MAX_FRAMES_IN_FLIGHT: usize = 2;
 const INPUT_RETRANSMIT: Duration = Duration::from_millis(80);
 const MAX_UNACKED: usize = 256;
 
@@ -270,7 +273,8 @@ struct State {
     last_probe: Instant,
     last_keepalive: Instant,
     frame_id: u32,
-    frame_wait: Option<(u32, Instant)>,
+    /// Frames awaiting their acknowledgement, oldest first (at most `MAX_FRAMES_IN_FLIGHT`).
+    frame_wait: VecDeque<(u32, Instant)>,
     reasm: Option<Reasm>,
     next_seq: u32,
     unacked: VecDeque<(u32, Vec<u8>, Instant)>,
@@ -331,7 +335,7 @@ impl P2p {
                 last_probe: now,
                 last_keepalive: now,
                 frame_id: 0,
-                frame_wait: None,
+                frame_wait: VecDeque::new(),
                 reasm: None,
                 next_seq: 0,
                 unacked: VecDeque::new(),
@@ -519,8 +523,9 @@ impl P2p {
             }
             K_FRAME_ACK if self.is_host && body.len() == 4 => {
                 let id = u32::from_be_bytes(body.try_into().unwrap());
-                if st.frame_wait.is_some_and(|(w, _)| w == id) {
-                    st.frame_wait = None;
+                // An acknowledgement also covers every older frame (their acks may have been lost).
+                if st.frame_wait.iter().any(|(w, _)| *w == id) {
+                    st.frame_wait.retain(|(w, _)| (w.wrapping_sub(id) as i32) > 0);
                     self.can_send_frame.store(true, Ordering::Release);
                 }
             }
@@ -571,7 +576,7 @@ impl P2p {
             );
             if !alive {
                 st.probe_started = Some(now);
-                st.frame_wait = None;
+                st.frame_wait.clear();
                 // shortcut: unacked input is dropped, not replayed on the relay, to avoid double clicks.
                 st.unacked.clear();
                 self.can_send_frame.store(true, Ordering::Release);
@@ -582,8 +587,9 @@ impl P2p {
                 st.last_keepalive = now;
                 self.send_to_peer(&mut st, &[K_KEEPALIVE]);
             }
-            if st.frame_wait.is_some_and(|(_, t)| now.duration_since(t) >= FRAME_ACK_TIMEOUT) {
-                st.frame_wait = None;
+            let waiting = st.frame_wait.len();
+            st.frame_wait.retain(|(_, t)| now.duration_since(*t) < FRAME_ACK_TIMEOUT);
+            if st.frame_wait.len() < waiting {
                 self.can_send_frame.store(true, Ordering::Release);
             }
             let resend: Vec<(u32, Vec<u8>)> = st
@@ -642,8 +648,12 @@ impl P2p {
             pkt.extend_from_slice(chunk);
             self.send_to_peer(&mut st, &pkt);
         }
-        // One frame in flight; the viewer's frame-ack (or a timeout) releases the capture loop.
-        st.frame_wait = Some((id, Instant::now()));
+        // Up to MAX_FRAMES_IN_FLIGHT frames in flight; past that the viewer's frame-ack (or a timeout) releases the
+        // capture loop.
+        st.frame_wait.push_back((id, Instant::now()));
+        if st.frame_wait.len() < MAX_FRAMES_IN_FLIGHT {
+            self.can_send_frame.store(true, Ordering::Release);
+        }
         true
     }
 

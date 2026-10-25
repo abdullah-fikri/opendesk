@@ -44,6 +44,18 @@ impl Connection {
                 host::monitor_stream::start(&self.ctx, host::monitor_stream::Profile::clamped(max_width, fps))
             }
             ServerMessage::MonitorStop => host::monitor_stream::stop(&self.ctx),
+            ServerMessage::DeviceCredential { token } => {
+                crate::service::settings::store_device_token(&self.ctx, &token)
+            }
+            #[cfg(feature = "admin")]
+            ServerMessage::SecurityState { enabled, managed_by_env, devices } => {
+                self.ctx.ui.security_changed(crate::service::ui_port::SecurityView {
+                    supported: true,
+                    enabled,
+                    managed_by_env,
+                    devices,
+                })
+            }
             #[cfg(feature = "admin")]
             ServerMessage::MonitorState { target_clean, state } => {
                 crate::service::monitor_wall::on_state(&self.ctx, &target_clean, &state)
@@ -62,7 +74,13 @@ impl Connection {
         logger::info("relay", &format!("Registered. Viewer sessions: {}", if multi { "up to 4" } else { "one" }));
         ctx.ui.relay_status(RelayStatus::Online);
         #[cfg(feature = "admin")]
-        crate::service::monitor_wall::relay_registered(ctx, relay.monitor);
+        {
+            crate::service::monitor_wall::relay_registered(ctx, relay.monitor);
+            ctx.ui.relay_admin_caps(relay.device_security, relay.host_alias);
+            if relay.device_security {
+                ctx.send(ClientMessage::SecurityGet);
+            }
+        }
     }
 
     fn on_host_list(&self, hosts: Vec<HostEntry>) {
@@ -73,6 +91,7 @@ impl Connection {
             .map(|h| RemoteHost {
                 desk_id: h.desk_id,
                 device_name: if h.device_name.is_empty() { "Device".into() } else { h.device_name },
+                alias: h.alias,
                 platform: h.platform,
                 online: h.online,
                 last_seen: h.last_seen,

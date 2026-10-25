@@ -20,6 +20,18 @@ pub fn set_gateway(ctx: &AppContext, raw_url: &str) {
     apply_gateway(ctx, url);
 }
 
+/// Stores the token the relay issued when it enrolled this device; it is presented to that relay only.
+pub fn store_device_token(ctx: &AppContext, token: &str) {
+    if token.is_empty() {
+        return;
+    }
+    let mut settings = storage::load_settings();
+    settings.device_token = token.to_string();
+    settings.device_token_relay = ctx.relay.gateway_url.lock().unwrap().clone();
+    storage::save_settings(&settings);
+    logger::info("settings", "The relay enrolled this device; its token is stored.");
+}
+
 fn apply_gateway(ctx: &AppContext, url: String) {
     *ctx.relay.gateway_url.lock().unwrap() = url.clone();
     ctx.ui.gateway_changed(url);

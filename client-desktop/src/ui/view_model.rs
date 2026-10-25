@@ -31,6 +31,7 @@ pub fn host_items(hosts: Vec<RemoteHost>) -> ModelRc<HostItem> {
         .map(|h| HostItem {
             desk_id: h.desk_id.into(),
             device_name: h.device_name.into(),
+            alias: h.alias.into(),
             platform: h.platform.into(),
             online: h.online,
             last_seen: clock::local_short(&h.last_seen).into(),
@@ -49,6 +50,27 @@ pub fn monitor_items(monitors: Vec<Monitor>) -> ModelRc<MonitorItem> {
             width: m.width,
             height: m.height,
             primary: m.primary,
+        })
+        .collect();
+    ModelRc::from(Rc::new(VecModel::from(items)))
+}
+
+/// Allowlist rows of the client-token page, with local enrollment times.
+#[cfg(feature = "admin")]
+pub fn security_items(devices: Vec<crate::protocol::SecurityDevice>) -> ModelRc<super::SecurityItem> {
+    let items: Vec<super::SecurityItem> = devices
+        .into_iter()
+        .map(|d| super::SecurityItem {
+            desk_id: d.desk_id.into(),
+            name: d.name.into(),
+            admin: d.admin,
+            enrolled: d.enrolled,
+            enrolled_at: if d.enrolled_at.is_empty() {
+                Default::default()
+            } else {
+                clock::local_short(&d.enrolled_at).into()
+            },
+            online: d.online,
         })
         .collect();
     ModelRc::from(Rc::new(VecModel::from(items)))

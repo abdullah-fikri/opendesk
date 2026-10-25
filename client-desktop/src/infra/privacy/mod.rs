@@ -10,3 +10,7 @@ pub use win::*;
 mod unix;
 #[cfg(not(windows))]
 pub use unix::*;
+
+/// True when the viewer forwards system keys (Win, Alt+Tab, Ctrl+Shift+Esc, ...) through a keyboard hook
+/// (Windows). Elsewhere the local desktop keeps them and the toolbar offers a shortcut menu.
+pub const SYSTEM_KEY_HOOK: bool = cfg!(windows);

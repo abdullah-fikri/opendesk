@@ -35,6 +35,27 @@ pub enum ClientMessage {
     /// Administrators only: replaces the hosts shown on the monitor wall (at most 16; empty stops watching).
     #[cfg(feature = "admin")]
     MonitorSet { targets: Vec<String> },
+    /// Administrators only: asks for the device allowlist (answered with `security-state`).
+    #[cfg(feature = "admin")]
+    SecurityGet,
+    /// Administrators only: turns the device allowlist on or off.
+    #[cfg(feature = "admin")]
+    SecuritySet { enabled: bool },
+    /// Administrators only: adds a device to the allowlist.
+    #[cfg(feature = "admin")]
+    SecurityAllow { target_id: String, admin: bool },
+    /// Administrators only: adds every connected device to the allowlist.
+    #[cfg(feature = "admin")]
+    SecurityAllowOnline,
+    /// Administrators only: takes a device off the allowlist.
+    #[cfg(feature = "admin")]
+    SecurityRemove { target_clean: String },
+    /// Administrators only: forgets a device's token so it enrolls again on its next connection.
+    #[cfg(feature = "admin")]
+    SecurityReset { target_clean: String },
+    /// Administrators only: names a device in the shared host list (empty clears the name).
+    #[cfg(feature = "admin")]
+    HostRename { target_clean: String, alias: String },
 }
 
 impl ClientMessage {
@@ -113,6 +134,20 @@ pub enum ServerMessage {
     },
     /// Nobody watches this machine any more.
     MonitorStop,
+    /// The relay enrolled this device: present `token` on every later registration with this relay.
+    DeviceCredential {
+        token: String,
+    },
+    /// The device allowlist (administrators only).
+    #[cfg(feature = "admin")]
+    SecurityState {
+        #[serde(default)]
+        enabled: bool,
+        #[serde(default)]
+        managed_by_env: bool,
+        #[serde(default)]
+        devices: Vec<SecurityDevice>,
+    },
     /// What one monitor-wall tile shows: `live`, `offline`, `unsupported` or `denied`.
     #[cfg(feature = "admin")]
     MonitorState {
@@ -136,9 +171,25 @@ impl ServerMessage {
 pub struct HostEntry {
     pub desk_id: String,
     pub device_name: String,
+    /// Name an administrator gave the device on the relay; empty when none.
+    pub alias: String,
     pub platform: String,
     pub online: bool,
     pub last_seen: String,
+}
+
+/// One device on the relay's allowlist. `enrolled_at` is RFC 3339, empty until the device first connected.
+#[cfg(feature = "admin")]
+#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SecurityDevice {
+    pub clean_id: String,
+    pub desk_id: String,
+    pub name: String,
+    pub admin: bool,
+    pub enrolled: bool,
+    pub enrolled_at: String,
+    pub online: bool,
 }
 
 #[cfg(test)]
@@ -188,6 +239,8 @@ mod tests {
         let start = ServerMessage::parse(r#"{"type":"monitor-start","maxWidth":640,"fps":2}"#);
         assert_eq!(start, Some(ServerMessage::MonitorStart { max_width: 640, fps: 2 }));
         assert_eq!(ServerMessage::parse(r#"{"type":"monitor-stop"}"#), Some(ServerMessage::MonitorStop));
+        let cred = ServerMessage::parse(r#"{"type":"device-credential","token":"abc"}"#);
+        assert_eq!(cred, Some(ServerMessage::DeviceCredential { token: "abc".into() }));
         let state = ServerMessage::parse(r#"{"type":"monitor-state","targetClean":"222222222","state":"live"}"#);
         #[cfg(feature = "admin")]
         assert_eq!(state, Some(ServerMessage::MonitorState { target_clean: "222222222".into(), state: "live".into() }));
@@ -199,5 +252,24 @@ mod tests {
             let set = ClientMessage::MonitorSet { targets: vec!["222222222".into()] };
             assert_eq!(set.to_json(), r#"{"type":"monitor-set","targets":["222222222"]}"#);
         }
+    }
+}
+
+#[cfg(all(test, feature = "admin"))]
+mod admin_tests {
+    use super::*;
+
+    #[test]
+    fn security_messages_use_the_relay_field_names() {
+        let allow = ClientMessage::SecurityAllow { target_id: "123 456 789".into(), admin: true };
+        assert_eq!(allow.to_json(), r#"{"type":"security-allow","targetId":"123 456 789","admin":true}"#);
+        assert_eq!(ClientMessage::SecurityAllowOnline.to_json(), r#"{"type":"security-allow-online"}"#);
+        let rename = ClientMessage::HostRename { target_clean: "1".into(), alias: "Kasir".into() };
+        assert_eq!(rename.to_json(), r#"{"type":"host-rename","targetClean":"1","alias":"Kasir"}"#);
+        let state = ServerMessage::parse(
+            r#"{"type":"security-state","enabled":true,"managedByEnv":false,"devices":[{"cleanId":"1","deskId":"1","name":"PC","admin":false,"enrolled":true,"enrolledAt":"2026-01-01T00:00:00Z","online":true}]}"#,
+        );
+        let Some(ServerMessage::SecurityState { enabled, devices, .. }) = state else { panic!("{state:?}") };
+        assert!(enabled && devices[0].enrolled && devices[0].online && devices[0].name == "PC");
     }
 }

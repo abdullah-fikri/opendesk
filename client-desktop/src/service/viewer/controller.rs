@@ -398,14 +398,10 @@ pub fn toggle_block_input(ctx: &AppContext, id: &str) {
     ctx.send_input(id, InputEvent::SetBlockInput { blocked });
 }
 
-/// System shortcut from the session toolbar ("win", "alt-tab", "task-manager", "explorer", "desktop").
+/// System shortcut from the toolbar menu of viewers without a system-key hook ("win", "alt-tab", "taskmgr",
+/// "explorer", "desktop").
 pub fn shortcut(ctx: &AppContext, id: &str, name: &str) {
-    match name {
-        // The secure attention sequence cannot be injected by a user-mode application.
-        "ctrl-alt-del" => ctx.ui.status("Ctrl+Alt+Del is not supported.".into()),
-        "task-manager" => ctx.send_input(id, InputEvent::Shortcut { name: "taskmgr".into() }),
-        other => ctx.send_input(id, InputEvent::Shortcut { name: other.into() }),
-    }
+    ctx.send_input(id, InputEvent::Shortcut { name: name.into() });
 }
 
 /// Voice quality toward host `id`: 0 = 16 kHz, 1 = 24 kHz, 2 = 48 kHz.

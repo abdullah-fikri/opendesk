@@ -9,6 +9,7 @@ export struct HistoryItem {
 export struct HostItem {
     desk_id: string,
     device_name: string,
+    alias: string,          // name an administrator gave it on the relay ("" = none)
     platform: string,
     online: bool,
     last_seen: string,
@@ -64,4 +65,15 @@ export struct MonitorPick {
     name: string,
     online: bool,
     selected: bool,
+}
+
+// ---- Settings, admin edition (see docs/features/device-security.md at the repository root) ----
+
+export struct SecurityItem {
+    desk_id: string,        // formatted desk ID; also the argument of every security callback
+    name: string,           // relay alias or reported device name ("" when it never connected)
+    admin: bool,
+    enrolled: bool,         // holds its token
+    enrolled_at: string,    // local date and time, "" while not enrolled
+    online: bool,
 }

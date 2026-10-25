@@ -19,7 +19,7 @@ use slint::ComponentHandle;
 use crate::domain::desk_id;
 use crate::domain::edition::Edition;
 use crate::infra::tray::{SystemTray, TrayAction, bring_main_window_to_front};
-use crate::infra::{autostart, logger, window};
+use crate::infra::{autostart, logger, privacy, window};
 use crate::service::context::Ctx;
 use crate::service::file_transfer::sender;
 use crate::service::history::History;
@@ -36,6 +36,8 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, gateway_url: &s
     win.set_is_admin(ctx.edition == Edition::Admin);
     win.set_active_dashboard_tab(if ctx.edition == Edition::Admin { 1 } else { 0 });
     win.set_history_items(view_model::history_items(&history.records()));
+    // Windows viewers forward system keys through a keyboard hook; elsewhere a toolbar menu sends them.
+    win.set_system_keys_menu(!privacy::SYSTEM_KEY_HOOK);
     if let HostSupport::Unsupported(reason) = core_engine::capture::host_support() {
         win.set_host_notice(reason.into());
     }

@@ -1,4 +1,6 @@
-// Toolbar of the focused session: monitors, files, mic, view, privacy, keys.
+// Toolbar of the focused session: monitors, files, mic, view, privacy. On Windows, system keys (Win, Alt+Tab,
+// Ctrl+Shift+Esc, ...) need no menu: the viewer's keyboard hook sends them to the focused host. Elsewhere the local
+// desktop keeps them, so a shortcut menu sends them instead.
 
 import { SessionView } from "../../types.slint";
 import { Theme } from "../../theme.slint";
@@ -10,12 +12,14 @@ import { MonitorPicker } from "monitor_picker.slint";
 
 export component SessionToolbar inherits Rectangle {
     in property <SessionView> s;
+    // Show the system-shortcut menu (viewers without a system-key hook).
+    in property <bool> system_keys_menu: false;
+    callback shortcut(string, string);
     callback select_monitor(string, int);
     callback send_files(string);
     callback toggle_mic(string);
     callback set_privacy(string, int);
     callback toggle_block_input(string);
-    callback shortcut(string, string);
     callback set_resolution(string, int);
     callback set_audio_quality(string, int);
     callback disconnect(string);
@@ -54,6 +58,8 @@ export component SessionToolbar inherits Rectangle {
         }
 
         kb-btn := ToolButton {
+            visible: root.system_keys_menu;
+            max-width: self.visible ? 1000px : 0px;
             y: (parent.height - self.height) / 2;
             label: "Keyboard";
             caret: true;
@@ -69,7 +75,6 @@ export component SessionToolbar inherits Rectangle {
                     MenuCaption { text: "KEYBOARD SHORTCUTS"; }
                     VerticalLayout {
                         spacing: 0px;
-                        MenuRow { radio: false; label: "Ctrl + Alt + Del"; clicked => { root.shortcut(root.s.id, "ctrl-alt-del"); } }
                         MenuRow { radio: false; label: "Windows key"; hint: "Start"; clicked => { root.shortcut(root.s.id, "win"); } }
                         MenuRow { radio: false; label: "Alt + Tab"; clicked => { root.shortcut(root.s.id, "alt-tab"); } }
                         MenuRow { radio: false; label: "Task Manager"; hint: "Ctrl+Shift+Esc"; clicked => { root.shortcut(root.s.id, "taskmgr"); } }

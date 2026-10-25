@@ -2,8 +2,8 @@
 //! - privacy overlay on the host (frozen, maintenance or black screen), excluded from capture so the viewer
 //!   still sees the real desktop;
 //! - blocking the host's physical keyboard and mouse (low-level hooks that let injected input through);
-//! - on the viewer, a low-level keyboard hook that forwards Win and Alt+Tab/Alt+F4 to the focused host
-//!   instead of acting locally.
+//! - on the viewer, a low-level keyboard hook that sends the keys Windows would act on locally (Win, Alt+Tab,
+//!   Alt+F4, Ctrl+Shift+Esc, ...) to the focused host instead, so no shortcut menu is needed.
 
 use std::ffi::c_void;
 use std::ptr;
@@ -70,6 +70,10 @@ const LLKHF_INJECTED: DWORD = 0x00000010;
 const LLMHF_INJECTED: DWORD = 0x00000001;
 
 const VK_TAB: DWORD = 0x09;
+const VK_CONTROL: i32 = 0x11;
+const VK_ESCAPE: DWORD = 0x1B;
+const VK_SPACE: DWORD = 0x20;
+const VK_SNAPSHOT: DWORD = 0x2C;
 const VK_F4: DWORD = 0x73;
 const VK_LWIN: DWORD = 0x5B;
 const VK_RWIN: DWORD = 0x5C;
@@ -86,6 +90,8 @@ static OVERLAY_HWND: AtomicUsize = AtomicUsize::new(0);
 static VIEWER_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 static VIEWER_MAIN_HWND: AtomicUsize = AtomicUsize::new(0);
 static WIN_KEY_HELD: AtomicBool = AtomicBool::new(false);
+/// Keys whose key-down went to the host through the hook, so their key-up follows it there.
+static FORWARDED: [AtomicBool; 256] = [const { AtomicBool::new(false) }; 256];
 
 struct HookContext {
     tx_out: Sender<Outgoing>,
@@ -208,6 +214,7 @@ unsafe extern "system" {
     fn PostMessageW(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> BOOL;
     fn FindWindowW(lp_class_name: *const u16, lp_window_name: *const u16) -> HWND;
     fn GetForegroundWindow() -> HWND;
+    fn GetAsyncKeyState(v_key: i32) -> i16;
     fn SetWindowsHookExW(
         id_hook: i32,
         lpfn: unsafe extern "system" fn(i32, usize, isize) -> isize,
@@ -420,48 +427,38 @@ unsafe extern "system" fn ll_keyboard_proc(n_code: i32, wparam: usize, lparam: i
                 return 1;
             }
 
-            // 2. Viewer Mode: Forward Windows key, Win+Key, Alt+Tab, Alt+F4 directly to remote PC!
+            // 2. Viewer mode: keys Windows would act on locally go to the focused host as real key-down/up, so
+            //    held combinations work (Alt held while Tab cycles the host's task switcher).
             if VIEWER_SESSION_ACTIVE.load(Ordering::Relaxed) && !is_injected {
                 let main_hwnd = VIEWER_MAIN_HWND.load(Ordering::Relaxed) as HWND;
                 if !main_hwnd.is_null() && GetForegroundWindow() == main_hwnd {
                     let is_down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
                     let is_up = wparam == WM_KEYUP || wparam == WM_SYSKEYUP;
-                    let alt_down = (kb.flags & LLKHF_ALTDOWN) != 0;
+                    let alt = (kb.flags & LLKHF_ALTDOWN) != 0;
+                    let ctrl = GetAsyncKeyState(VK_CONTROL) < 0;
                     let vk = kb.vk_code;
-
-                    if vk == VK_LWIN || vk == VK_RWIN {
+                    let is_win = vk == VK_LWIN || vk == VK_RWIN;
+                    if is_win {
                         WIN_KEY_HELD.store(is_down, Ordering::Relaxed);
-                        send_hook_key_event(if is_down {
-                            InputEvent::KeyDown { key_code: 0x5B }
-                        } else {
-                            InputEvent::KeyUp { key_code: 0x5B }
-                        });
-                        return 1; // Prevent local Start Menu from popping up!
                     }
-
-                    if WIN_KEY_HELD.load(Ordering::Relaxed) && (is_down || is_up) {
-                        let key_code = vk as u8;
+                    let slot = &FORWARDED[(vk & 0xFF) as usize];
+                    if (is_down && is_system_key(vk, is_win, alt, ctrl))
+                        || (is_up && (is_win || slot.load(Ordering::Relaxed)))
+                    {
+                        slot.store(is_down, Ordering::Relaxed);
+                        // The host presses the left Win key for either one.
+                        let key_code = if is_win { VK_LWIN as u8 } else { vk as u8 };
                         send_hook_key_event(if is_down {
                             InputEvent::KeyDown { key_code }
                         } else {
                             InputEvent::KeyUp { key_code }
                         });
-                        return 1; // Prevent local Win+E / Win+R / Win+D from triggering locally!
-                    }
-
-                    if alt_down && (vk == VK_TAB || vk == VK_F4) {
-                        if is_down {
-                            send_hook_key_event(InputEvent::KeyCombo {
-                                key_code: vk as u8,
-                                ctrl: false,
-                                alt: true,
-                                shift: false,
-                            });
-                        }
-                        return 1; // Prevent local Alt+Tab or Alt+F4 closing OpenDesk!
+                        return 1; // never reaches the local shell (Start menu, Task Manager, Alt+Tab, ...)
                     }
                 } else {
+                    // Focus left the viewer: the host must not keep a forwarded key pressed.
                     WIN_KEY_HELD.store(false, Ordering::Relaxed);
+                    release_forwarded();
                 }
             }
         }
@@ -481,6 +478,24 @@ unsafe extern "system" fn ll_mouse_proc(n_code: i32, wparam: usize, lparam: isiz
             }
         }
         CallNextHookEx(ptr::null_mut(), n_code, wparam, lparam)
+    }
+}
+
+/// Keys the local shell would handle even while the viewer window has focus.
+fn is_system_key(vk: DWORD, is_win: bool, alt: bool, ctrl: bool) -> bool {
+    is_win
+        || WIN_KEY_HELD.load(Ordering::Relaxed) // Win+E, Win+R, Win+D, ...
+        || (alt && matches!(vk, VK_TAB | VK_ESCAPE | VK_F4 | VK_SPACE)) // task switcher, close, window menu
+        || (ctrl && vk == VK_ESCAPE) // Start (Ctrl+Esc) and Task Manager (Ctrl+Shift+Esc)
+        || vk == VK_SNAPSHOT // Snipping Tool
+}
+
+/// Sends a key-up for every key still held on the host through the hook.
+fn release_forwarded() {
+    for (vk, slot) in FORWARDED.iter().enumerate() {
+        if slot.swap(false, Ordering::Relaxed) {
+            send_hook_key_event(InputEvent::KeyUp { key_code: vk as u8 });
+        }
     }
 }
 
@@ -570,6 +585,7 @@ pub fn set_viewer_hook_state(active: bool, partner_clean: &str, window_title: &s
     }
     if !active {
         WIN_KEY_HELD.store(false, Ordering::SeqCst);
+        release_forwarded();
     }
     VIEWER_SESSION_ACTIVE.store(active, Ordering::SeqCst);
 }

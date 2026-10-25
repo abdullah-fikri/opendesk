@@ -17,6 +17,8 @@ use crate::service::context::Ctx;
 const MONITOR_POLL: Duration = Duration::from_secs(2);
 /// 60 FPS pacing.
 const FRAME_INTERVAL: Duration = Duration::from_micros(16_666);
+/// How often a tick re-checks the backpressure gate while the previous frame is still on its way.
+const GATE_POLL: Duration = Duration::from_millis(1);
 
 /// Turns how long the loop waited for the backpressure gate into a 0..1 congestion level:
 /// waits under ~40 ms are normal pacing, ~250 ms or more means the link cannot keep up.
@@ -193,8 +195,20 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             encoder.request_key();
         }
 
-        let can_send = host.can_send_frame.load(Ordering::Acquire);
-        encoder.set_congestion(congestion.observe(can_send, frame_start));
+        // The previous frame usually leaves within a few milliseconds: wait for it inside this tick instead of
+        // skipping the whole tick, which would halve the frame rate whenever sending takes a moment.
+        let mut can_send = host.can_send_frame.load(Ordering::Acquire);
+        let mut level = congestion.observe(can_send, frame_start);
+        if !can_send {
+            while !can_send && frame_start.elapsed() + GATE_POLL < FRAME_INTERVAL && host.is_current(generation) {
+                thread::sleep(GATE_POLL);
+                can_send = host.can_send_frame.load(Ordering::Acquire);
+            }
+            if can_send {
+                level = congestion.observe(true, Instant::now());
+            }
+        }
+        encoder.set_congestion(level);
         if can_send {
             // DXGI blocks here until the desktop changes (or the tick ends), so an idle desktop costs ~nothing.
             let budget = FRAME_INTERVAL.saturating_sub(frame_start.elapsed());

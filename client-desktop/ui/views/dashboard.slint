@@ -3,6 +3,7 @@
 import { HistoryItem, HostItem } from "../types.slint";
 import { Icons } from "../theme.slint";
 import { Icon } from "../components/icon.slint";
+import { ScrollArea } from "../components/scroll_area.slint";
 
 export component DashboardView inherits VerticalLayout {
     width: 100%;
@@ -19,10 +20,14 @@ export component DashboardView inherits VerticalLayout {
     in-out property <string> target_desk_id: "";
     in property <[HistoryItem]> history_items: [];
     in property <[HostItem]> server_hosts: [];
+    // The relay stores names for devices in its host list (admin edition).
+    in property <bool> host_alias_supported: false;
 
     callback copy_local_id();
     callback request_connect(string);
     callback open_rename(string, string);
+    // Admin edition: names a device in the relay's host list for every administrator.
+    callback open_host_rename(string, string);
     callback prompt_delete_history(string, string);
     callback refresh_hosts();
     // Admin edition: show the monitor wall.
@@ -408,220 +413,249 @@ export component DashboardView inherits VerticalLayout {
                 background: #1f1f23;
             }
 
-            // Content Area
+            // Content Area: both lists scroll (mouse wheel, drag or scrollbar).
             VerticalLayout {
                 vertical-stretch: 1;
-                padding: 12px;
-                spacing: 6px;
-                alignment: start;
+                padding-left: 12px;
+                padding-right: 4px;
+                padding-top: 12px;
+                padding-bottom: 12px;
 
-                // VIEW A: RIWAYAT SESI (Normal User OR Admin on Tab 0)
-                if !is_admin || active_tab == 0: VerticalLayout {
+                ScrollArea {
+                    vertical-stretch: 1;
                     spacing: 6px;
-                    alignment: start;
+                    reset_key: active_tab;
 
-                    if history_items.length == 0: Rectangle {
-                        height: 80px;
-                        Text {
-                            text: "No sessions yet.";
-                            color: #52525b;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                            horizontal-alignment: center;
-                        }
-                    }
+                    // VIEW A: RIWAYAT SESI (Normal User OR Admin on Tab 0)
+                    if !is_admin || active_tab == 0: VerticalLayout {
+                        spacing: 6px;
+                        alignment: start;
 
-                    for item in history_items: Rectangle {
-                        height: 44px;
-                        background: #0d0d10;
-                        border-width: 1px;
-                        border-color: #1f1f24;
-
-                        HorizontalLayout {
-                            padding-left: 14px;
-                            padding-right: 12px;
-                            spacing: 12px;
-                            alignment: space-between;
-
-                            HorizontalLayout {
-                                spacing: 10px;
-                                alignment: start;
-
-                                Rectangle {
-                                    width: 2px;
-                                    height: 18px;
-                                    background: #dc2626;
-                                    y: (parent.height - self.height) / 2;
-                                }
-
-                                VerticalLayout {
-                                    alignment: center;
-                                    Text {
-                                        text: item.alias != "" ? item.alias : item.desk_id;
-                                        color: #f4f4f5;
-                                        font-size: 13px;
-                                        font-weight: 600;
-                                    }
-                                    if item.alias != "": Text {
-                                        text: item.desk_id;
-                                        color: #71717a;
-                                        font-size: 11px;
-                                    }
-                                }
+                        if history_items.length == 0: Rectangle {
+                            height: 80px;
+                            Text {
+                                text: "No sessions yet.";
+                                color: #52525b;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
                             }
+                        }
+
+                        for item in history_items: Rectangle {
+                            height: 44px;
+                            background: #0d0d10;
+                            border-width: 1px;
+                            border-color: #1f1f24;
 
                             HorizontalLayout {
-                                spacing: 6px;
-                                y: (parent.height - 26px) / 2;
+                                padding-left: 14px;
+                                padding-right: 12px;
+                                spacing: 12px;
+                                alignment: space-between;
 
-                                Rectangle {
-                                    height: 26px;
-                                    background: ta-ren.has-hover ? #27272a : #18181c;
-                                    border-width: 1px;
-                                    border-color: #27272a;
-                                    ta-ren := TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => { open_rename(item.desk_id, item.alias); }
-                                    }
-                                    HorizontalLayout {
-                                        padding-left: 10px;
-                                        padding-right: 10px;
-                                        Text {
-                                            text: "Name";
-                                            color: #a1a1aa;
-                                            font-size: 11px;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-                                }
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    alignment: start;
 
-                                Rectangle {
-                                    height: 26px;
-                                    background: ta-hconn.has-hover ? #e11d48 : #dc2626;
-                                    ta-hconn := TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => { request_connect(item.desk_id); }
+                                    Rectangle {
+                                        width: 2px;
+                                        height: 18px;
+                                        background: #dc2626;
+                                        y: (parent.height - self.height) / 2;
                                     }
-                                    HorizontalLayout {
-                                        padding-left: 12px;
-                                        padding-right: 12px;
+
+                                    VerticalLayout {
+                                        alignment: center;
                                         Text {
-                                            text: "Connect";
-                                            color: #ffffff;
-                                            font-size: 11px;
+                                            text: item.alias != "" ? item.alias : item.desk_id;
+                                            color: #f4f4f5;
+                                            font-size: 13px;
                                             font-weight: 600;
-                                            vertical-alignment: center;
+                                        }
+                                        if item.alias != "": Text {
+                                            text: item.desk_id;
+                                            color: #71717a;
+                                            font-size: 11px;
                                         }
                                     }
                                 }
 
-                                Rectangle {
-                                    width: 26px;
-                                    height: 26px;
-                                    background: ta-del.has-hover ? #27272a : #18181c;
-                                    border-width: 1px;
-                                    border-color: #27272a;
-                                    ta-del := TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => {
-                                            prompt_delete_history(
-                                                item.desk_id,
-                                                item.alias != "" ? item.alias + " (" + item.desk_id + ")" : item.desk_id
-                                            );
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    y: (parent.height - 26px) / 2;
+
+                                    Rectangle {
+                                        height: 26px;
+                                        background: ta-ren.has-hover ? #27272a : #18181c;
+                                        border-width: 1px;
+                                        border-color: #27272a;
+                                        ta-ren := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { open_rename(item.desk_id, item.alias); }
                                         }
-                                    }
-                                    Icon {
-                                        size: 10px;
-                                        commands: Icons.close;
-                                        tint: #71717a;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // VIEW B: DAFTAR HOST SERVER (Admin Only on Tab 1)
-                if is_admin && active_tab == 1: VerticalLayout {
-                    spacing: 6px;
-                    alignment: start;
-
-                    if server_hosts.length == 0: Rectangle {
-                        height: 80px;
-                        Text {
-                            text: "No hosts are registered on the relay yet.";
-                            color: #52525b;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                            horizontal-alignment: center;
-                        }
-                    }
-
-                    for host in server_hosts: Rectangle {
-                        height: 44px;
-                        background: #0d0d10;
-                        border-width: 1px;
-                        border-color: host.online ? #27272a : #18181c;
-
-                        HorizontalLayout {
-                            padding-left: 14px;
-                            padding-right: 12px;
-                            spacing: 12px;
-                            alignment: space-between;
-
-                            HorizontalLayout {
-                                spacing: 10px;
-                                alignment: start;
-
-                                Rectangle {
-                                    width: 7px;
-                                    height: 7px;
-                                    background: host.online ? #22c55e : #52525b;
-                                    y: (parent.height - self.height) / 2;
-                                }
-
-                                VerticalLayout {
-                                    alignment: center;
-                                    Text {
-                                        text: host.device_name + "  •  " + host.desk_id;
-                                        color: host.online ? #f4f4f5 : #a1a1aa;
-                                        font-size: 13px;
-                                        font-weight: 600;
-                                    }
-                                    Text {
-                                        text: host.online ? ("Online • " + host.platform) : ("Offline (" + host.last_seen + ") • " + host.platform);
-                                        color: host.online ? #22c55e : #71717a;
-                                        font-size: 11px;
-                                    }
-                                }
-                            }
-
-                            HorizontalLayout {
-                                spacing: 6px;
-                                y: (parent.height - 26px) / 2;
-
-                                Rectangle {
-                                    height: 26px;
-                                    background: host.online ? (ta-srvconn.has-hover ? #e11d48 : #dc2626) : #18181c;
-                                    border-width: 1px;
-                                    border-color: host.online ? #dc2626 : #27272a;
-                                    ta-srvconn := TouchArea {
-                                        mouse-cursor: host.online ? pointer : default;
-                                        clicked => {
-                                            if (host.online) {
-                                                request_connect(host.desk_id);
+                                        HorizontalLayout {
+                                            padding-left: 10px;
+                                            padding-right: 10px;
+                                            Text {
+                                                text: "Name";
+                                                color: #a1a1aa;
+                                                font-size: 11px;
+                                                vertical-alignment: center;
                                             }
                                         }
                                     }
-                                    HorizontalLayout {
-                                        padding-left: 12px;
-                                        padding-right: 12px;
+
+                                    Rectangle {
+                                        height: 26px;
+                                        background: ta-hconn.has-hover ? #e11d48 : #dc2626;
+                                        ta-hconn := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { request_connect(item.desk_id); }
+                                        }
+                                        HorizontalLayout {
+                                            padding-left: 12px;
+                                            padding-right: 12px;
+                                            Text {
+                                                text: "Connect";
+                                                color: #ffffff;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        width: 26px;
+                                        height: 26px;
+                                        background: ta-del.has-hover ? #27272a : #18181c;
+                                        border-width: 1px;
+                                        border-color: #27272a;
+                                        ta-del := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                prompt_delete_history(
+                                                    item.desk_id,
+                                                    item.alias != "" ? item.alias + " (" + item.desk_id + ")" : item.desk_id
+                                                );
+                                            }
+                                        }
+                                        Icon {
+                                            size: 10px;
+                                            commands: Icons.close;
+                                            tint: #71717a;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // VIEW B: DAFTAR HOST SERVER (Admin Only on Tab 1)
+                    if is_admin && active_tab == 1: VerticalLayout {
+                        spacing: 6px;
+                        alignment: start;
+
+                        if server_hosts.length == 0: Rectangle {
+                            height: 80px;
+                            Text {
+                                text: "No hosts are registered on the relay yet.";
+                                color: #52525b;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                        for host in server_hosts: Rectangle {
+                            height: 44px;
+                            background: #0d0d10;
+                            border-width: 1px;
+                            border-color: host.online ? #27272a : #18181c;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 12px;
+                                spacing: 12px;
+                                alignment: space-between;
+
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    alignment: start;
+
+                                    Rectangle {
+                                        width: 7px;
+                                        height: 7px;
+                                        background: host.online ? #22c55e : #52525b;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+
+                                    VerticalLayout {
+                                        alignment: center;
                                         Text {
-                                            text: host.online ? "Connect" : "Offline";
-                                            color: host.online ? #ffffff : #52525b;
-                                            font-size: 11px;
+                                            text: (host.alias != "" ? host.alias : host.device_name) + "  •  " + host.desk_id;
+                                            color: host.online ? #f4f4f5 : #a1a1aa;
+                                            font-size: 13px;
                                             font-weight: 600;
-                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: (host.online ? ("Online • " + host.platform) : ("Offline (" + host.last_seen + ") • " + host.platform))
+                                                + (host.alias != "" ? " • " + host.device_name : "");
+                                            color: host.online ? #22c55e : #71717a;
+                                            font-size: 11px;
+                                        }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    y: (parent.height - 26px) / 2;
+
+                                    if host_alias_supported: Rectangle {
+                                        height: 26px;
+                                        background: ta-hren.has-hover ? #27272a : #18181c;
+                                        border-width: 1px;
+                                        border-color: #27272a;
+                                        ta-hren := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { open_host_rename(host.desk_id, host.alias); }
+                                        }
+                                        HorizontalLayout {
+                                            padding-left: 10px;
+                                            padding-right: 10px;
+                                            Text {
+                                                text: "Name";
+                                                color: #a1a1aa;
+                                                font-size: 11px;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        height: 26px;
+                                        background: host.online ? (ta-srvconn.has-hover ? #e11d48 : #dc2626) : #18181c;
+                                        border-width: 1px;
+                                        border-color: host.online ? #dc2626 : #27272a;
+                                        ta-srvconn := TouchArea {
+                                            mouse-cursor: host.online ? pointer : default;
+                                            clicked => {
+                                                if (host.online) {
+                                                    request_connect(host.desk_id);
+                                                }
+                                            }
+                                        }
+                                        HorizontalLayout {
+                                            padding-left: 12px;
+                                            padding-right: 12px;
+                                            Text {
+                                                text: host.online ? "Connect" : "Offline";
+                                                color: host.online ? #ffffff : #52525b;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
                                         }
                                     }
                                 }

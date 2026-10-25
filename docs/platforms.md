@@ -31,7 +31,7 @@ XWayland and PipeWire/PulseAudio/ALSA should work.
 | Following UAC / lock screen | Yes (when running as SYSTEM) | n/a | |
 | Privacy screen (frozen, maintenance, black) | Yes | **No** | Needs a capture-excluded overlay, which X11 has no equivalent for. Linux hosts advertise `host-features` without `privacy-screen`, so viewers hide the option. |
 | Block the host's physical input | Yes | **No** | Would need exclusive grabs that also block XTEST. Hidden the same way (`block-input`). |
-| Viewer: forward Win key / Alt+Tab | Yes (low-level keyboard hook) | No | The local desktop keeps these keys; use the toolbar's shortcut menu |
+| Viewer: forward Win key / Alt+Tab | Yes (low-level keyboard hook: Win, Win+key, Alt+Tab/Esc/F4/Space, Ctrl+Esc, Ctrl+Shift+Esc, PrintScreen; no shortcut menu) | No | The local desktop keeps these keys; use the toolbar's shortcut menu |
 | Voice (16/24/48 kHz) | waveIn/waveOut | cpal on ALSA (PipeWire and PulseAudio serve it) | |
 | Clipboard text sync | Yes | Yes (X11; Wayland compositors with data-control) | |
 | Copy files, paste on the other side (pull on paste) | Yes (Explorer virtual files) | No: `file-offer` is not advertised | Partners send copied files as normal transfers |

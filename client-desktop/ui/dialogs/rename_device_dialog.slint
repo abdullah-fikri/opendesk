@@ -1,4 +1,4 @@
-// Rename a history entry.
+// Rename a history entry (local) or a device in the relay's host list (shared with every administrator).
 
 export component RenameDeviceModal inherits Rectangle {
     background: #000000bb;
@@ -8,11 +8,13 @@ export component RenameDeviceModal inherits Rectangle {
     in property <string> rename_target_id: "";
     in-out property <string> rename_input_val: "";
     in-out property <bool> show_rename_modal: false;
+    // The name is stored on the relay and seen by every administrator; empty restores the device's own name.
+    in property <bool> shared: false;
     callback save_rename(string, string);
 
     Rectangle {
         width: 360px;
-        height: 176px;
+        height: shared ? 196px : 176px;
         background: #111114;
         border-width: 1px;
         border-color: #27272a;
@@ -41,6 +43,12 @@ export component RenameDeviceModal inherits Rectangle {
                     font-weight: 700;
                 }
 
+                if shared: Text {
+                    text: "Shown to every administrator. Leave empty to use the device's own name.";
+                    color: #71717a;
+                    font-size: 11px;
+                }
+
                 Rectangle {
                     height: 38px;
                     background: #0a0a0c;
@@ -56,6 +64,10 @@ export component RenameDeviceModal inherits Rectangle {
                             font-size: 13px;
                             vertical-alignment: center;
                             single-line: true;
+                            accepted => {
+                                save_rename(rename_target_id, self.text);
+                                show_rename_modal = false;
+                            }
                         }
                     }
                 }

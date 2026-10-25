@@ -4,6 +4,11 @@ The admin edition can watch many machines at once, like a CCTV wall: a grid of 2
 thumbnails, paged when there are more devices, with optional automatic page rotation. It is **view only**: no
 input, clipboard, files, voice, privacy screen or monitor switching, for anyone, enforced by the relay.
 
+The wall's toolbar keeps only navigation (Back, pages, Full screen, Settings). **Settings** opens a side panel with
+the layout (2x2, 3x3, 4x4), automatic page rotation and the devices on the wall. **Full screen** hides every
+control, the app header included, and shows only the screens; Esc or the faint corner button leaves it, and the
+arrow keys turn pages. Tiles use the names administrators gave devices on the relay.
+
 Implemented in:
 
 - Relay: `server-relay/internal/usecase/monitor.go` (watches, fan-out), `handler/websocket_handler.go`

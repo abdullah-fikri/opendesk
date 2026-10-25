@@ -66,7 +66,9 @@ Feature differences between platforms are listed in [docs/platforms.md](docs/pla
 **Host control** (Windows hosts; viewers hide what a host cannot do)
 - Privacy screen on the host (frozen, maintenance or black), invisible to the viewer's stream.
 - Block the host's physical keyboard and mouse during a session.
-- System shortcuts (Win, Alt+Tab, Task Manager, Explorer, Show desktop).
+- System keys straight from your keyboard on Windows (Win, Alt+Tab, Ctrl+Shift+Esc, ...); a shortcut menu on Linux.
+- Client token (admin edition): only devices an administrator lists may connect; each receives its token
+  automatically, so devices need only the relay address.
 
 **Operations**
 - Unattended hosts: start at logon (Windows: elevated, so admin windows can be controlled, with a watchdog in

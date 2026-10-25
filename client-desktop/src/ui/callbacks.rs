@@ -47,6 +47,33 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {
     bind_sessions(win, ctx);
     #[cfg(feature = "admin")]
     bind_monitor_wall(win, ctx);
+    #[cfg(feature = "admin")]
+    bind_settings(win, ctx);
+}
+
+/// Admin edition only: Settings › Security › Client token and device names, all kept by the relay.
+#[cfg(feature = "admin")]
+fn bind_settings(win: &MainWindow, ctx: &Ctx) {
+    on!(win, ctx, on_security_refresh, |_w, c| c.send(ClientMessage::SecurityGet));
+    on!(win, ctx, on_security_set_enabled, |_w, c, enabled| c.send(ClientMessage::SecuritySet { enabled }));
+    on!(win, ctx, on_security_add, |w, c, id, admin| {
+        let clean = desk_id::clean(&id);
+        if desk_id::is_valid(&clean) {
+            c.send(ClientMessage::SecurityAllow { target_id: clean, admin });
+        } else {
+            w.set_status_text("Enter a valid 9-digit device ID.".into());
+        }
+    });
+    on!(win, ctx, on_security_add_online, |_w, c| c.send(ClientMessage::SecurityAllowOnline));
+    on!(win, ctx, on_security_remove, |_w, c, id| {
+        c.send(ClientMessage::SecurityRemove { target_clean: desk_id::clean(&id) })
+    });
+    on!(win, ctx, on_security_reset, |_w, c, id| {
+        c.send(ClientMessage::SecurityReset { target_clean: desk_id::clean(&id) })
+    });
+    on!(win, ctx, on_save_host_alias, |_w, c, id, alias| {
+        c.send(ClientMessage::HostRename { target_clean: desk_id::clean(&id), alias: alias.trim().to_string() })
+    });
 }
 
 /// Admin edition only: other editions leave these callbacks unbound and never show the wall.

@@ -222,6 +222,24 @@ impl UiPort for SlintUi {
     }
 
     #[cfg(feature = "admin")]
+    fn security_changed(&self, view: crate::service::ui_port::SecurityView) {
+        self.apply(move |w| {
+            w.set_security_supported(view.supported);
+            w.set_security_enabled(view.enabled);
+            w.set_security_managed_by_env(view.managed_by_env);
+            w.set_security_items(view_model::security_items(view.devices));
+        });
+    }
+
+    #[cfg(feature = "admin")]
+    fn relay_admin_caps(&self, device_security: bool, host_alias: bool) {
+        self.apply(move |w| {
+            w.set_security_supported(device_security);
+            w.set_host_alias_supported(host_alias);
+        });
+    }
+
+    #[cfg(feature = "admin")]
     fn wall_frames(&self, frames: Vec<(String, slint::SharedPixelBuffer<slint::Rgba8Pixel>)>) {
         self.apply(move |_| super::monitor_wall_model::set_frames(frames));
     }

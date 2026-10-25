@@ -25,6 +25,10 @@ pub const MONITOR_HOST: &str = "monitor-host";
 pub const MONITOR_VIEW: &str = "monitor-view";
 /// The relay runs the monitor wall.
 pub const RELAY_MONITOR: &str = "monitor";
+/// The relay keeps an administrator-managed device allowlist with automatic enrollment tokens.
+pub const RELAY_DEVICE_SECURITY: &str = "device-security";
+/// Administrators can name devices in the relay's host list.
+pub const RELAY_HOST_ALIAS: &str = "host-alias";
 /// This device only views; it can never be controlled (Android, Linux in a Wayland session). The relay refuses
 /// connect requests to it.
 pub const VIEWER_ONLY: &str = "viewer-only";
@@ -79,6 +83,8 @@ pub struct RelayCaps {
     pub file_offer: bool,
     pub multi_session: bool,
     pub monitor: bool,
+    pub device_security: bool,
+    pub host_alias: bool,
 }
 
 impl RelayCaps {
@@ -90,6 +96,8 @@ impl RelayCaps {
             file_offer: has(FILE_OFFER),
             multi_session: has(MULTI_SESSION),
             monitor: has(RELAY_MONITOR),
+            device_security: has(RELAY_DEVICE_SECURITY),
+            host_alias: has(RELAY_HOST_ALIAS),
         }
     }
 }

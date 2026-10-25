@@ -254,6 +254,11 @@ mod tests {
         assert_eq!(from, host_id);
         let (_, w, h) = crate::service::viewer::decoder::decode_jpeg_rgba(jpeg).expect("plain JPEG");
         assert!(w <= 640 && h > 0, "tile-sized: {w}x{h}");
+        // The retry loop above may still have a stop/start pair in flight to the host.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ctx.host.monitored.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert!(ctx.host.monitored.load(Ordering::SeqCst));
 
         // Watched, the host still takes an interactive session, and the administrator still controls nothing.
@@ -347,6 +352,7 @@ mod tests {
         let listed = [RemoteHost {
             desk_id: crate::domain::desk_id::format(&host_id),
             device_name: "e2e-host".into(),
+            alias: String::new(),
             platform: "windows-pc".into(),
             online: true,
             last_seen: String::new(),

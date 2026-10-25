@@ -16,6 +16,10 @@ pub struct Settings {
     /// overrides it.
     #[serde(default)]
     pub device_token: String,
+    /// Relay that issued `device_token` (the token goes to that relay only). Empty for a token set by hand,
+    /// which is sent to every relay as before.
+    #[serde(default)]
+    pub device_token_relay: String,
     /// Monitor wall (admin edition). Stored by every edition so switching editions never loses it.
     #[serde(default)]
     pub monitor: MonitorSettings,
@@ -49,6 +53,7 @@ impl Settings {
             gateway_url: DEFAULT_GATEWAY_URL.to_string(),
             desk_id,
             device_token: String::new(),
+            device_token_relay: String::new(),
             monitor: MonitorSettings::default(),
         }
     }
@@ -67,6 +72,16 @@ impl Settings {
             changed = true;
         }
         changed
+    }
+}
+
+/// The token to present to `gateway_url`: one the relay issued is only sent back to that relay.
+pub fn token_for(settings: &Settings, gateway_url: &str) -> String {
+    let relay = &settings.device_token_relay;
+    if relay.is_empty() || normalize_gateway_url(relay) == normalize_gateway_url(gateway_url) {
+        settings.device_token.clone()
+    } else {
+        String::new()
     }
 }
 
@@ -108,6 +123,16 @@ mod tests {
         assert!(s.repair(|| "123456789".into()));
         assert_eq!((s.desk_id.as_str(), s.gateway_url.as_str()), ("123456789", "wss://relay.example.com"));
         assert!(!s.repair(|| unreachable!()));
+    }
+
+    #[test]
+    fn issued_tokens_go_back_to_their_relay_only() {
+        let mut s = Settings::new("123456789".into());
+        s.device_token = "t".into();
+        assert_eq!(token_for(&s, "wss://a.example"), "t", "a hand-set token goes everywhere");
+        s.device_token_relay = "wss://a.example".into();
+        assert_eq!(token_for(&s, "a.example"), "t");
+        assert_eq!(token_for(&s, "wss://b.example"), "");
     }
 
     #[test]

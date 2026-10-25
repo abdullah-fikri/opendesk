@@ -11,5 +11,7 @@ pub mod outgoing;
 
 pub use file_payload::{FileAction, FilePayload, OfferEntry};
 pub use input_event::{InputEvent, MonitorInfo};
+#[cfg(feature = "admin")]
+pub use message::SecurityDevice;
 pub use message::{ClientMessage, HostEntry, ServerMessage};
 pub use outgoing::Outgoing;

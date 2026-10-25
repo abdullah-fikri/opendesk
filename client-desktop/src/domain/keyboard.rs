@@ -16,9 +16,13 @@ unsafe extern "system" {
     fn VkKeyScanW(ch: u16) -> i16;
 }
 
+/// Win32 virtual-key code of the (left) Windows key.
+#[cfg(not(windows))]
+pub const VK_LWIN: u8 = 0x5B;
+
 /// Slint modifier key codes (i_slint_common::key_codes) mapped to the generic Win32 VK.
-/// Meta is left out on purpose: the viewer's low-level hook already forwards the Win key
-/// (and swallows it), AltGr/CapsLock are left out because typed text already carries their effect.
+/// On Windows, Meta is left out on purpose: the viewer's low-level hook already forwards the Win key
+/// (and swallows it). AltGr/CapsLock are left out because typed text already carries their effect.
 pub fn modifier_vk(text: &str) -> Option<u8> {
     let mut it = text.chars();
     let ch = it.next()?;
@@ -29,6 +33,8 @@ pub fn modifier_vk(text: &str) -> Option<u8> {
         '\u{0010}' | '\u{0015}' => Some(VK_SHIFT),   // Shift, ShiftR
         '\u{0011}' | '\u{0016}' => Some(VK_CONTROL), // Control, ControlR
         '\u{0012}' => Some(VK_MENU),                 // Alt
+        #[cfg(not(windows))]
+        '\u{0017}' | '\u{0018}' => Some(VK_LWIN), // Meta, MetaR: no system-key hook outside Windows
         _ => None,
     }
 }

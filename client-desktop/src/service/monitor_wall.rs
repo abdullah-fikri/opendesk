@@ -136,7 +136,7 @@ pub fn close(ctx: &AppContext) {
 pub fn set_hosts(ctx: &AppContext, hosts: &[RemoteHost]) {
     let hosts = hosts
         .iter()
-        .map(|h| WallHost { id: desk_id::clean(&h.desk_id), name: h.device_name.clone(), online: h.online })
+        .map(|h| WallHost { id: desk_id::clean(&h.desk_id), name: h.display_name().to_string(), online: h.online })
         .collect();
     let open = {
         let mut st = ctx.wall.state.lock().unwrap();
@@ -377,6 +377,7 @@ mod tests {
             .map(|i| RemoteHost {
                 desk_id: desk_id::format(&(200_000_000 + i).to_string()),
                 device_name: format!("pc-{i:02}"),
+                alias: String::new(),
                 platform: "windows-pc".into(),
                 online: true,
                 last_seen: String::new(),

@@ -13,7 +13,10 @@ export component HeaderBar inherits Rectangle {
     in-out property <bool> show_settings: false;
     // Window full-screen state, so full-screen can always be left from the header.
     in-out property <bool> fullscreen: false;
+    // Admin edition: the settings page is open.
+    in property <bool> settings_open: false;
 
+    callback open_admin_settings();
     callback open_file_picker();
     callback toggle_mic();
     callback disconnect_session();
@@ -78,6 +81,28 @@ export component HeaderBar inherits Rectangle {
                     Text {
                         text: "Exit full screen";
                         color: #d4d4d8;
+                        font-size: 11px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            if is_admin: Rectangle {
+                height: 28px;
+                background: settings_open ? #dc262628 : (ta-set.has-hover ? #1c1c21 : #141418);
+                border-width: 1px;
+                border-color: settings_open ? #dc2626 : #27272a;
+                ta-set := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { open_admin_settings(); }
+                }
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    Text {
+                        text: "Settings";
+                        color: settings_open ? #f87171 : #d4d4d8;
                         font-size: 11px;
                         font-weight: 600;
                         vertical-alignment: center;
