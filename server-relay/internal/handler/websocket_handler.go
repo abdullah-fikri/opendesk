@@ -146,6 +146,11 @@ func (c *connection) onText(msg []byte) bool {
 		c.onP2PSignal(msg)
 	case dto.TypeMonitorSet:
 		c.onMonitorSet(msg)
+	case dto.TypeSecurityGet, dto.TypeSecuritySet, dto.TypeSecurityAllow, dto.TypeSecurityAllowOnline,
+		dto.TypeSecurityRemove, dto.TypeSecurityReset:
+		c.onSecurity(env.Type, msg)
+	case dto.TypeHostRename:
+		c.onHostRename(msg)
 	}
 	return true
 }
@@ -170,7 +175,7 @@ func (c *connection) onRegister(msg []byte) bool {
 		return true
 	case errors.Is(err, usecase.ErrUnauthorized):
 		// Unprovisioned devices are the usual "it connects but nothing happens" cause; name them for the operator.
-		c.h.log.Warn("registration rejected: not in OPENDESK_DEVICE_CREDENTIALS or wrong token",
+		c.h.log.Warn("registration rejected: not on the device allowlist or wrong token",
 			"id", model.FormatDeskID(info.CleanID), "addr", c.remoteAddr)
 		_ = c.ws.WriteJSON(dto.Error{Type: dto.TypeError, Message: msgInvalidCredentials})
 		return false
@@ -185,6 +190,11 @@ func (c *connection) onRegister(msg []byte) bool {
 	c.h.log.Info("client registered", "id", peer.DeskID, "name", peer.DeviceName, "platform", peer.Platform,
 		"admin", peer.IsAdmin, "addr", c.remoteAddr, "active_peers", c.h.relay.PeerCount())
 	_ = peer.Send(dto.RegisteredAck{Type: dto.TypeRegisteredAck, DeskID: peer.DeskID, Caps: c.h.relay.Capabilities()})
+	if peer.EnrollToken != "" {
+		// First connection of an allowlisted device: from now on it must present this token.
+		_ = peer.Send(dto.DeviceCredential{Type: dto.TypeDeviceCredential, Token: peer.EnrollToken})
+		c.h.broadcastSecurityState()
+	}
 	// Administrators already watching this ID see it go live, and it starts streaming thumbnails.
 	sendMonitorUpdate(c.h.relay.MonitorAttach(peer))
 	c.h.broadcastHostList()
@@ -423,7 +433,8 @@ func ingressKind(msgType string) string {
 	case dto.TypeP2PSignal:
 		return metrics.KindSignal
 	case dto.TypeRegister, dto.TypeGetHosts, dto.TypeConnectRequest, dto.TypeApprovalResponse, dto.TypeSessionDisconnect,
-		dto.TypeMonitorSet:
+		dto.TypeMonitorSet, dto.TypeSecurityGet, dto.TypeSecuritySet, dto.TypeSecurityAllow, dto.TypeSecurityAllowOnline,
+		dto.TypeSecurityRemove, dto.TypeSecurityReset, dto.TypeHostRename:
 		return metrics.KindControl
 	}
 	return metrics.KindOther

@@ -16,6 +16,14 @@ const (
 	TypeSessionDisconnect = "session-disconnect"
 	TypeP2PSignal         = "p2p-signal"
 	TypeMonitorSet        = "monitor-set"
+	// Administrator-only device security and naming (see docs/features/device-security.md).
+	TypeSecurityGet         = "security-get"
+	TypeSecuritySet         = "security-set"
+	TypeSecurityAllow       = "security-allow"
+	TypeSecurityAllowOnline = "security-allow-online"
+	TypeSecurityRemove      = "security-remove"
+	TypeSecurityReset       = "security-reset"
+	TypeHostRename          = "host-rename"
 )
 
 // Envelope is decoded first from every text message; Type selects the concrete request type.
@@ -103,4 +111,26 @@ type P2PSignal struct {
 // An empty list stops watching.
 type MonitorSet struct {
 	Targets []string `json:"targets"`
+}
+
+// SecuritySet turns the device allowlist on or off.
+type SecuritySet struct {
+	Enabled bool `json:"enabled"`
+}
+
+// SecurityAllow adds TargetID (any formatting) to the allowlist, as an administrator when Admin is set.
+type SecurityAllow struct {
+	TargetID string `json:"targetId"`
+	Admin    bool   `json:"admin"`
+}
+
+// SecurityTarget names one allowlisted device for security-remove and security-reset.
+type SecurityTarget struct {
+	TargetClean string `json:"targetClean"`
+}
+
+// HostRename names a device in the shared host list; an empty Alias clears the name.
+type HostRename struct {
+	TargetClean string `json:"targetClean"`
+	Alias       string `json:"alias"`
 }

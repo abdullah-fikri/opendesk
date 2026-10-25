@@ -60,7 +60,7 @@ func (r *HostRepository) MarkAllOffline(ctx context.Context, at time.Time) error
 // List returns every host, online first, then by device name.
 func (r *HostRepository) List(ctx context.Context) ([]model.Host, error) {
 	const query = `
-	SELECT clean_id, desk_id, device_name, platform, is_admin, online, remote_addr, last_seen
+	SELECT clean_id, desk_id, device_name, alias, platform, is_admin, online, remote_addr, last_seen
 	FROM hosts_registry
 	ORDER BY online DESC, device_name ASC`
 	rows, err := r.db.QueryContext(ctx, query)
@@ -72,10 +72,19 @@ func (r *HostRepository) List(ctx context.Context) ([]model.Host, error) {
 	hosts := make([]model.Host, 0)
 	for rows.Next() {
 		var h model.Host
-		if err := rows.Scan(&h.CleanID, &h.DeskID, &h.DeviceName, &h.Platform, &h.IsAdmin, &h.Online, &h.RemoteAddr, &h.LastSeen); err != nil {
+		if err := rows.Scan(&h.CleanID, &h.DeskID, &h.DeviceName, &h.Alias, &h.Platform, &h.IsAdmin, &h.Online, &h.RemoteAddr, &h.LastSeen); err != nil {
 			return nil, fmt.Errorf("scan host: %w", err)
 		}
 		hosts = append(hosts, h)
 	}
 	return hosts, rows.Err()
+}
+
+// SetAlias stores the administrator-given name of a registered device.
+func (r *HostRepository) SetAlias(ctx context.Context, cleanID, alias string) error {
+	const query = `UPDATE hosts_registry SET alias = $2, updated_at = NOW() WHERE clean_id = $1`
+	if _, err := r.db.ExecContext(ctx, query, cleanID, alias); err != nil {
+		return fmt.Errorf("set alias of %s: %w", cleanID, err)
+	}
+	return nil
 }

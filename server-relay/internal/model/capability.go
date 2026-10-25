@@ -9,6 +9,10 @@ const (
 	CapMultiSession = "multi-session"
 	// CapMonitor: the relay runs the read-only monitor wall (see docs/features/monitor-wall.md at the repository root).
 	CapMonitor = "monitor"
+	// CapDeviceSecurity: administrators manage the device allowlist and enrollment tokens from their client.
+	CapDeviceSecurity = "device-security"
+	// CapHostAlias: administrators can name devices in the shared host list.
+	CapHostAlias = "host-alias"
 )
 
 // Client capabilities the relay acts on for the monitor wall.

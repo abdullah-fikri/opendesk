@@ -33,7 +33,7 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 
 | `type` | Fields | Meaning |
 | --- | --- | --- |
-| `register` | `deskId`, `deviceToken`, `platform`, `deviceName`, `isAdmin`, `caps[]` | Announce this device. `deviceToken` is checked only when the relay has credentials configured; then `isAdmin` is ignored in favor of the relay's own flag. |
+| `register` | `deskId`, `deviceToken`, `platform`, `deviceName`, `isAdmin`, `caps[]` | Announce this device. `deviceToken` is checked only when the relay has credentials configured or its device allowlist on; then `isAdmin` is ignored in favor of the relay's own flag (see [Device security](#device-security)). |
 | `get-hosts` | | Administrators only: request the device registry. |
 | `connect-request` | `targetId` | Open a viewer session to a device. |
 | `approval-response` | `fromClean`, `accept` | Legacy: an Android host (app before the viewer-only release) answers an `incoming-request`. |
@@ -43,13 +43,20 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 | `session-disconnect` | `targetClean` | End this client's session with that partner. |
 | `p2p-signal` | `targetClean`, `candidate` | Noise handshake and UDP candidates for a direct path (max 4096 bytes, 10 per second per partner). |
 | `monitor-set` | `targets[]` | Administrators with `monitor-view` only: replace the hosts on the monitor wall (at most 16; empty stops). See [Monitor wall](#monitor-wall). |
+| `security-get` | | Administrators only: request the device allowlist (`security-state`). |
+| `security-set` | `enabled` | Administrators only: turn the device allowlist on or off. |
+| `security-allow` | `targetId`, `admin` | Administrators only: list a device (replacing its role if listed). |
+| `security-allow-online` | | Administrators only: list every connected device, keeping administrators' role. |
+| `security-remove` | `targetClean` | Administrators only: take a device off the list. |
+| `security-reset` | `targetClean` | Administrators only: forget a device's token; its next connection enrolls again. |
+| `host-rename` | `targetClean`, `alias` | Administrators only: name a device in the host list (at most 64 characters; empty clears it). |
 
 ## Relay to client
 
 | `type` | Fields | Meaning |
 | --- | --- | --- |
 | `registered-ack` | `deskId`, `caps[]` | Registration accepted; `caps` lists relay features. |
-| `host-list` | `hosts[]`: `clean_id`, `desk_id`, `device_name`, `platform`, `online`, `last_seen` (RFC 3339) | Device registry (administrators). |
+| `host-list` | `hosts[]`: `clean_id`, `desk_id`, `device_name`, `alias`, `platform`, `online`, `last_seen` (RFC 3339) | Device registry (administrators). `alias` is the name an administrator gave the device, empty when none. |
 | `incoming-request` | `fromId`, `fromClean`, `deviceName` | Sent to Android peers only: a viewer asks to connect. Current apps are `viewer-only` and never get one; older apps still answer it. |
 | `session-connected` | `targetId`, `targetClean`, `role` (`viewer`/`host`), `peerCaps[]` | The session is live; `role` is the receiver's role. |
 | `input-command` | `event`, `fromClean`* | A relayed `relay-input`. |
@@ -61,6 +68,8 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 | `monitor-state` | `targetClean`, `state` (`live`, `offline`, `unsupported`, `denied`) | Monitor wall: what one tile shows (administrators with `monitor-view`). |
 | `monitor-start` | `maxWidth`, `fps` | Monitor wall: an administrator watches this host; stream thumbnails (hosts with `monitor-host`). |
 | `monitor-stop` | | Monitor wall: nobody watches this host any more. |
+| `device-credential` | `token` | The relay enrolled this device: present `token` as `deviceToken` to this relay from now on. |
+| `security-state` | `enabled`, `managedByEnv`, `devices[]`: `cleanId`, `deskId`, `name`, `admin`, `enrolled`, `enrolledAt` (RFC 3339 or empty), `online` | The device allowlist (administrators), after `security-get` and after every change. |
 
 \* Only for multi-session viewers (see [docs/features/multi-session.md](features/multi-session.md)).
 
@@ -96,7 +105,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `host-features` | client | The host lists its optional host controls below. Without it the host is a legacy Windows host that has all of them. |
 | `privacy-screen` | client, with `host-features` | `set-privacy` works on this host. |
 | `block-input` | client, with `host-features` | `set-block-input` works on this host. |
-| `p2p-signal`, `file-grant`, `file-offer`, `caps`, `monitor` | relay | Relay features in `registered-ack`. |
+| `p2p-signal`, `file-grant`, `file-offer`, `caps`, `monitor`, `device-security`, `host-alias` | relay | Relay features in `registered-ack`. |
 
 Per platform (see [platforms.md](platforms.md)):
 
@@ -198,6 +207,20 @@ and does not make a host busy.
   to every watcher, through one bounded queue per tile, and shows the newest one to a new watcher at once.
 - When the last watcher leaves (new `monitor-set`, or its connection drops) the host receives `monitor-stop`. When
   the host drops, watchers receive `offline` and keep watching; it goes `live` again when it registers.
+
+## Device security
+
+Administrator-managed allowlist with automatic enrollment (details in
+[docs/features/device-security.md](features/device-security.md)).
+
+- Off by default: every device is admitted with its claimed role.
+- On (or `OPENDESK_DEVICE_CREDENTIALS` set): a device listed in `OPENDESK_DEVICE_CREDENTIALS` needs that token.
+  Otherwise an unlisted device receives `error` and the connection closes; a listed device without a token is
+  admitted and receives `device-credential` right after `registered-ack`; a listed device with a token must
+  present it.
+- `security-set {enabled: true}` lists the administrator who sent it. Every change applies to connected devices
+  at once: listed devices without a token receive `device-credential`, unlisted ones receive `error` and are
+  disconnected.
 
 ## Compatibility
 

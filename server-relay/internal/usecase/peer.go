@@ -32,6 +32,8 @@ type Peer struct {
 	// MonitorHost and MonitorView are set from the monitor-host and monitor-view capabilities.
 	MonitorHost bool
 	MonitorView bool
+	// EnrollToken is the token issued at this registration (the device just enrolled); the caller sends it once.
+	EnrollToken string
 
 	// Single-session state: hosts, legacy viewers and Android peers (guarded by Relay.mu).
 	sessionWith   string
@@ -135,6 +137,9 @@ func (p *Peer) sendTagged(marker byte, hostClean string, data []byte) error {
 	copy(hdr[1:], hostClean)
 	return p.write(func() error { return p.conn.WriteBinary(hdr[:], data) }, sessionTagLen+len(data))
 }
+
+// Disconnect closes the connection; its read loop ends and the normal disconnect cleanup runs.
+func (p *Peer) Disconnect() error { return p.conn.Close() }
 
 // Ping sends a keep-alive; safe to call concurrently with other writes.
 func (p *Peer) Ping() error { return p.conn.Ping() }

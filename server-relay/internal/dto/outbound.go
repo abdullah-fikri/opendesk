@@ -16,6 +16,8 @@ const (
 	TypeMonitorState     = "monitor-state"
 	TypeMonitorStart     = "monitor-start"
 	TypeMonitorStop      = "monitor-stop"
+	TypeDeviceCredential = "device-credential"
+	TypeSecurityState    = "security-state"
 )
 
 // RegisteredAck confirms registration and lists the relay's capabilities.
@@ -36,6 +38,7 @@ type Host struct {
 	CleanID    string `json:"clean_id"`
 	DeskID     string `json:"desk_id"`
 	DeviceName string `json:"device_name"`
+	Alias      string `json:"alias"`
 	Platform   string `json:"platform"`
 	Online     bool   `json:"online"`
 	LastSeen   string `json:"last_seen"`
@@ -118,4 +121,29 @@ type MonitorStart struct {
 // MonitorStop tells a host that nobody watches it any more.
 type MonitorStop struct {
 	Type string `json:"type"`
+}
+
+// DeviceCredential hands a device the token it must present from now on. Clients store it for this relay.
+type DeviceCredential struct {
+	Type  string `json:"type"`
+	Token string `json:"token"`
+}
+
+// SecurityState is the device allowlist shown to administrators.
+type SecurityState struct {
+	Type         string           `json:"type"`
+	Enabled      bool             `json:"enabled"`
+	ManagedByEnv bool             `json:"managedByEnv"`
+	Devices      []SecurityDevice `json:"devices"`
+}
+
+// SecurityDevice is one allowlist entry. EnrolledAt is RFC 3339, empty until the device first connects.
+type SecurityDevice struct {
+	CleanID    string `json:"cleanId"`
+	DeskID     string `json:"deskId"`
+	Name       string `json:"name"`
+	Admin      bool   `json:"admin"`
+	Enrolled   bool   `json:"enrolled"`
+	EnrolledAt string `json:"enrolledAt"`
+	Online     bool   `json:"online"`
 }

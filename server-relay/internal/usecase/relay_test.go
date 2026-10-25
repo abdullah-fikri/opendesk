@@ -17,6 +17,7 @@ func (nopStore) Upsert(context.Context, model.Host) error                       
 func (nopStore) MarkOffline(context.Context, string, time.Time) error                    { return nil }
 func (nopStore) MarkAllOffline(context.Context, time.Time) error                         { return nil }
 func (nopStore) List(context.Context) ([]model.Host, error)                              { return nil, nil }
+func (nopStore) SetAlias(context.Context, string, string) error                          { return nil }
 func (nopStore) Start(context.Context, model.SessionRecord, bool) error                  { return nil }
 func (nopStore) UpdateStatus(context.Context, string, string, model.SessionStatus) error { return nil }
 func (nopStore) CloseForPeer(context.Context, string) error                              { return nil }
@@ -58,17 +59,17 @@ func BenchmarkActivePartner(b *testing.B) {
 
 func TestDeviceAuthentication(t *testing.T) {
 	r := newTestRelay(Options{})
-	if ok, admin := r.authenticate("123456789", "", true); !ok || !admin {
+	if a := r.authenticate("123456789", "", true); !a.allowed || !a.admin {
 		t.Fatal("open relay (no credentials configured) must admit devices with their claimed role")
 	}
 	token := "0123456789abcdef0123456789abcdef"
 	r = newTestRelay(Options{Credentials: map[string]model.DeviceCredential{"123456789": {Token: token, Admin: true}}})
 	for _, in := range []struct{ id, token string }{{"123456789", ""}, {"123456789", "wrong"}, {"987654321", token}} {
-		if ok, _ := r.authenticate(in.id, in.token, true); ok {
+		if r.authenticate(in.id, in.token, true).allowed {
 			t.Fatalf("accepted invalid credential for %s", in.id)
 		}
 	}
-	if ok, admin := r.authenticate("123456789", token, false); !ok || !admin {
+	if a := r.authenticate("123456789", token, false); !a.allowed || !a.admin {
 		t.Fatal("rejected provisioned administrator")
 	}
 }

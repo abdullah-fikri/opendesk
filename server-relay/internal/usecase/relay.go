@@ -2,7 +2,6 @@ package usecase
 
 import (
 	"context"
-	"crypto/subtle"
 	"log/slog"
 	"slices"
 	"sync"
@@ -20,6 +19,8 @@ type Options struct {
 	Credentials map[string]model.DeviceCredential
 	// P2PDisabled withdraws the p2p-signal capability and drops P2P signaling.
 	P2PDisabled bool
+	// Security persists the administrator-managed device allowlist; nil keeps it in memory only.
+	Security SecurityRepository
 }
 
 // Relay is the in-memory session broker. All exported methods are safe for concurrent use.
@@ -34,14 +35,18 @@ type Relay struct {
 	sessions    SessionRepository
 	metrics     FrameMetrics
 	credentials map[string]model.DeviceCredential
-	caps        []string
-	p2pDisabled bool
-	log         *slog.Logger
+	// sec is the device allowlist (see security.go); securityRepo may be nil.
+	sec          security
+	securityRepo SecurityRepository
+	caps         []string
+	p2pDisabled  bool
+	log          *slog.Logger
 }
 
 // New builds a Relay on top of the given storage.
 func New(hosts HostRepository, sessions SessionRepository, m FrameMetrics, opts Options, log *slog.Logger) *Relay {
-	caps := []string{model.CapFileGrant, model.CapFileOffer, model.CapP2PSignal, model.CapCaps, model.CapMultiSession, model.CapMonitor}
+	caps := []string{model.CapFileGrant, model.CapFileOffer, model.CapP2PSignal, model.CapCaps, model.CapMultiSession, model.CapMonitor,
+		model.CapDeviceSecurity, model.CapHostAlias}
 	if opts.P2PDisabled {
 		caps = slices.DeleteFunc(caps, func(c string) bool { return c == model.CapP2PSignal })
 	}
@@ -50,16 +55,18 @@ func New(hosts HostRepository, sessions SessionRepository, m FrameMetrics, opts 
 		creds = map[string]model.DeviceCredential{}
 	}
 	return &Relay{
-		peers:       make(map[string]*Peer),
-		grants:      make(map[string]*fileGrant),
-		monitors:    make(map[string]*monitorFeed),
-		hosts:       hosts,
-		sessions:    sessions,
-		metrics:     m,
-		credentials: creds,
-		caps:        caps,
-		p2pDisabled: opts.P2PDisabled,
-		log:         log.With("component", "relay"),
+		peers:        make(map[string]*Peer),
+		grants:       make(map[string]*fileGrant),
+		monitors:     make(map[string]*monitorFeed),
+		hosts:        hosts,
+		sessions:     sessions,
+		metrics:      m,
+		credentials:  creds,
+		sec:          security{devices: make(map[string]model.AllowedDevice)},
+		securityRepo: opts.Security,
+		caps:         caps,
+		p2pDisabled:  opts.P2PDisabled,
+		log:          log.With("component", "relay"),
 	}
 }
 
@@ -77,33 +84,20 @@ func (r *Relay) ResetStaleState(ctx context.Context) error {
 	return r.sessions.CloseAllOpen(ctx)
 }
 
-// authenticate admits every device when no credentials are configured (the default) and trusts its claimed
-// role. With credentials configured, only a matching token is admitted and only the stored admin flag counts.
-func (r *Relay) authenticate(clean, token string, claimedAdmin bool) (allowed, admin bool) {
-	if len(r.credentials) == 0 {
-		return true, claimedAdmin
-	}
-	cred, ok := r.credentials[clean]
-	if !ok || len(cred.Token) < model.MinDeviceTokenLength || len(token) != len(cred.Token) ||
-		subtle.ConstantTimeCompare([]byte(token), []byte(cred.Token)) != 1 {
-		return false, false
-	}
-	return true, cred.Admin
-}
-
 // Register admits a new connection. It returns the new peer and, when it replaced an older connection with the
 // same ID, the session partners of that connection, which the caller must notify.
 func (r *Relay) Register(conn Conn, info PeerInfo, token string) (*Peer, []*Peer, error) {
 	if !model.IsValidDeskID(info.CleanID) {
 		return nil, nil, ErrInvalidDeskID
 	}
-	allowed, admin := r.authenticate(info.CleanID, token, info.IsAdmin)
-	if !allowed {
+	auth := r.authenticate(info.CleanID, token, info.IsAdmin)
+	if !auth.allowed {
 		return nil, nil, ErrUnauthorized
 	}
-	info.IsAdmin = admin
+	info.IsAdmin = auth.admin
 	info.Caps = model.SanitizeCapabilities(info.Caps)
 	peer := newPeer(info, model.FormatDeskID(info.CleanID), slices.Contains(info.Caps, model.CapMultiSession), conn, r.metrics)
+	peer.EnrollToken = auth.token
 
 	r.mu.Lock()
 	var orphans []*Peer

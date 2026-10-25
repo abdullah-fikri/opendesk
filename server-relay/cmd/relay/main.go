@@ -59,10 +59,15 @@ func run(configPath string, log *slog.Logger) error {
 		postgres.NewHostRepository(db),
 		postgres.NewSessionRepository(db),
 		collector,
-		usecase.Options{Credentials: cfg.DeviceCredentials, P2PDisabled: cfg.P2PDisabled},
+		usecase.Options{
+			Credentials: cfg.DeviceCredentials, P2PDisabled: cfg.P2PDisabled, Security: postgres.NewSecurityRepository(db),
+		},
 		log,
 	)
 	if err := relay.ResetStaleState(ctx); err != nil {
+		return err
+	}
+	if err := relay.LoadSecurity(ctx); err != nil {
 		return err
 	}
 

@@ -29,6 +29,17 @@ type HostRepository interface {
 	MarkOffline(ctx context.Context, cleanID string, at time.Time) error
 	MarkAllOffline(ctx context.Context, at time.Time) error
 	List(ctx context.Context) ([]model.Host, error)
+	// SetAlias stores the administrator-given name of a device; an empty alias clears it.
+	SetAlias(ctx context.Context, cleanID, alias string) error
+}
+
+// SecurityRepository persists the device allowlist and whether it is enforced.
+type SecurityRepository interface {
+	LoadSecurity(ctx context.Context) (model.SecurityState, error)
+	SetEnforced(ctx context.Context, enforced bool) error
+	// PutAllowedDevice inserts or replaces one allowlist entry.
+	PutAllowedDevice(ctx context.Context, device model.AllowedDevice) error
+	DeleteAllowedDevice(ctx context.Context, cleanID string) error
 }
 
 // SessionRepository records session history.

@@ -24,6 +24,7 @@ func (nopStore) Upsert(context.Context, model.Host) error                       
 func (nopStore) MarkOffline(context.Context, string, time.Time) error                    { return nil }
 func (nopStore) MarkAllOffline(context.Context, time.Time) error                         { return nil }
 func (nopStore) List(context.Context) ([]model.Host, error)                              { return nil, nil }
+func (nopStore) SetAlias(context.Context, string, string) error                          { return nil }
 func (nopStore) Start(context.Context, model.SessionRecord, bool) error                  { return nil }
 func (nopStore) UpdateStatus(context.Context, string, string, model.SessionStatus) error { return nil }
 func (nopStore) CloseForPeer(context.Context, string) error                              { return nil }
