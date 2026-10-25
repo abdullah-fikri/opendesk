@@ -70,3 +70,6 @@ graphify-out/
 .continue/
 .agents/
 .claude/
+# Personal notes (never pushed)
+/fiki.md
+/planning-implementation.md

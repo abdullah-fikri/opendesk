@@ -184,6 +184,16 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+      - name: Release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          # The section of this version, without the link definitions at the end of the file.
+          awk -v h="## [$VERSION]" 'index($0, h) == 1 {on = 1; next} /^## \[/ {on = 0} /^\[[^]]*\]: / {next} on' \
+            CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md" || { echo "::error::CHANGELOG.md has no section for $VERSION"; exit 1; }
+          echo "Relay image: \`$IMAGE:$VERSION\`" >> "$RUNNER_TEMP/notes.md"
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -193,7 +203,6 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           name: OpenDesk ${{ needs.verify.outputs.version }}
+          body_path: ${{ runner.temp }}/notes.md
           generate_release_notes: true
-          body: |
-            Relay image: `${{ env.IMAGE }}:${{ needs.verify.outputs.version }}`
           files: dist/*
