@@ -19,7 +19,7 @@ jobs:
     name: Version consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Every manifest matches VERSION
         run: scripts/check-version.sh
 
@@ -30,7 +30,7 @@ jobs:
       run:
         working-directory: server-relay
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version-file: server-relay/go.mod
@@ -48,7 +48,7 @@ jobs:
     name: Desktop + core engine (Rust)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -80,7 +80,7 @@ jobs:
     # The oldest supported Ubuntu, so the glibc baseline of what we build stays low.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build and test dependencies
         run: |
           sudo apt-get update
@@ -135,7 +135,7 @@ jobs:
         options: >-
           --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version-file: server-relay/go.mod
@@ -163,7 +163,7 @@ jobs:
       run:
         working-directory: client-android
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
