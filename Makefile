@@ -10,14 +10,22 @@ ifeq ($(OS),Windows_NT)
 SHELL := cmd.exe
 
 # Inno Setup compiler: per-user install, machine-wide install, or PATH.
-ISCC := $(firstword $(wildcard $(LOCALAPPDATA)/Programs/Inno\ Setup\ 6/ISCC.exe) $(wildcard C:/Program\ Files\ (x86)/Inno\ Setup\ 6/ISCC.exe) ISCC.exe)
+ifeq ($(wildcard $(subst \,/,$(LOCALAPPDATA))/Programs/Inno?Setup?6/ISCC.exe),)
+  ifeq ($(wildcard C:/Program?Files?(x86)/Inno?Setup?6/ISCC.exe),)
+    ISCC := ISCC.exe
+  else
+    ISCC := C:\Program Files (x86)\Inno Setup 6\ISCC.exe
+  endif
+else
+  ISCC := $(LOCALAPPDATA)\Programs\Inno Setup 6\ISCC.exe
+endif
 # Gradle needs a JDK; fall back to the one bundled with Android Studio.
 ifeq ($(JAVA_HOME),)
   export JAVA_HOME := C:\Program Files\Android\Android Studio\jbr
 endif
 
 .PHONY: help all windows windows-admin windows-host setup setup-admin setup-host relay run-relay android \
-	docker-build docker-up docker-down test lint clean
+	docker-build docker-up docker-down test e2e lint clean
 
 help:
 	@echo OpenDesk $(VERSION)
@@ -35,6 +43,7 @@ help:
 	@echo   make docker-up      Start the relay with Docker Compose
 	@echo   make docker-down    Stop it
 	@echo   make test           All unit tests
+	@echo   make e2e            End-to-end tests: throwaway relay + PostgreSQL (needs Docker, Git Bash)
 	@echo   make lint           Formatters and linters (clippy, go vet, gofmt)
 	@echo   make clean          Remove build output
 
@@ -108,6 +117,9 @@ test:
 	cd server-relay && go test -race ./...
 	cd client-android && gradlew.bat testDebugUnitTest
 
+e2e:
+	bash scripts/e2e.sh
+
 lint:
 	cd core-engine && cargo fmt --check && cargo clippy --release --all-targets -- -D warnings
 	cd client-desktop && cargo fmt --check && cargo clippy --release --all-targets -- -D warnings
@@ -130,7 +142,7 @@ LINUX_OUT := builds/linux
 LINUX_BIN := $(or $(CARGO_TARGET_DIR),$(DESKTOP)/target)/release/opendesk-client
 
 .PHONY: help all linux linux-admin linux-host linux-deb linux-tar relay run-relay android \
-	docker-build docker-up docker-down test lint clean
+	docker-build docker-up docker-down test e2e lint clean
 
 help:
 	@echo "OpenDesk $(VERSION)"
@@ -147,6 +159,7 @@ help:
 	@echo "  make docker-up      Start the relay with Docker Compose"
 	@echo "  make docker-down    Stop it"
 	@echo "  make test           All unit tests"
+	@echo "  make e2e            End-to-end tests: throwaway relay + PostgreSQL (needs Docker)"
 	@echo "  make lint           Formatters and linters (clippy, go vet, gofmt)"
 	@echo "  make clean          Remove build output"
 
@@ -218,6 +231,9 @@ test:
 	cd $(DESKTOP) && cargo test --release
 	cd server-relay && go test -race ./...
 	cd client-android && ./gradlew testDebugUnitTest
+
+e2e:
+	scripts/e2e.sh
 
 lint:
 	cd core-engine && cargo fmt --check && cargo clippy --release --all-targets -- -D warnings

@@ -13,9 +13,12 @@ Runs on every pull request, on pushes to `main`, and on demand.
 | Relay (Go) | Ubuntu | `gofmt`, `go vet`, `go test -race`, build, Docker image build |
 | Desktop + core engine (Rust) | Windows | `cargo fmt --check`, `cargo clippy -D warnings`, tests, build of all three editions |
 | Desktop + core engine (Rust, Linux) | Ubuntu 22.04 | `cargo fmt --check`, `cargo clippy -D warnings` for every edition, tests under Xvfb including the live X11 capture, XTEST input, clipboard and OpenH264 tests, the three `.deb` packages |
+| End to end | Ubuntu 22.04 + PostgreSQL service | `scripts/e2e.sh` under Xvfb: relay repositories against PostgreSQL, the relay binary over WebSocket (sessions, client token and device names across restarts), the desktop client (standard and admin) against a running relay |
 | Android (Kotlin) | Ubuntu, JDK 17 | unit tests, Android lint (report uploaded as an artifact), debug APK |
 
-Run the same checks locally with `make lint` and `make test`.
+Run the same checks locally with `make lint`, `make test` and `make e2e`. `make e2e` starts a throwaway
+PostgreSQL in Docker (port 55432) and a relay on port 18088 (`E2E_RELAY_PORT`), never the production relay on
+8088, and keeps the client's settings in a temporary directory.
 
 ## Releases (`release.yml`)
 

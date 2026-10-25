@@ -100,7 +100,8 @@ gofmt -w . && go vet ./...                                          # in server-
 - Domain and use-case code gets unit tests next to the code (`#[cfg(test)] mod tests`, `*_test.go`,
   `src/test/...`).
 - Tests that need a desktop session, a clipboard owner or a running relay are `#[ignore]`d and say how to run
-  them, for example `cargo test --release relay_e2e -- --ignored` against `make run-relay`. On Linux the live
+  them. `make e2e` (`scripts/e2e.sh`) runs every end-to-end test against a throwaway relay and PostgreSQL
+  (Docker); new relay or client flows that cross the network belong in `server-relay/e2e/` or `relay_e2e.rs`. On Linux the live
   X11 tests run headless: `xvfb-run -a cargo test --release -- --include-ignored` in `core-engine/`.
 - Platform code: keep one public API per module and add a backend per OS (see
   [docs/architecture.md](docs/architecture.md#platform-code)). Run clippy for Linux too (CI does); from Windows,

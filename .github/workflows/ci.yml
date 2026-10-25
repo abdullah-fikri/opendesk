@@ -123,6 +123,39 @@ jobs:
           cargo deb --locked --variant host --output ../dist/
           dpkg-deb -I ../dist/opendesk_*.deb
 
+  e2e:
+    name: End to end (relay + PostgreSQL + desktop client)
+    runs-on: ubuntu-22.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server-relay/go.mod
+          cache-dependency-path: server-relay/go.sum
+      - name: Build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev libasound2-dev libfontconfig1-dev libxkbcommon-dev postgresql-client \
+            xvfb xauth dbus-x11 \
+            libx11-6 libx11-xcb1 libxcursor1 libxrandr2 libxi6 libxkbcommon-x11-0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client-desktop
+      - name: scripts/e2e.sh (the monitor-wall test captures the Xvfb screen)
+        env:
+          OPENDESK_TEST_PG_PORT: "55432"
+        run: dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24 -noreset' scripts/e2e.sh
+
   android:
     name: Android (Kotlin)
     runs-on: ubuntu-latest
