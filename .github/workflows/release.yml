@@ -198,15 +198,15 @@ jobs:
           grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md" || { echo "::error::CHANGELOG.md has no section for $VERSION"; exit 1; }
           echo "Relay image: \`$IMAGE:$VERSION\`" >> "$RUNNER_TEMP/notes.md"
       # By name: the run also holds a Docker build record (*.dockerbuild) that is not a release file.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: windows
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: linux
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: android
           path: dist
