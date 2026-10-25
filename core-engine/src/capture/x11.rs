@@ -298,6 +298,11 @@ impl DesktopCapturer {
         }
     }
 
+    /// Captures a frame now (the GDI capturer's name for it; see `ThumbnailCapturer`).
+    pub fn capture_frame(&mut self) {
+        self.grab(0);
+    }
+
     /// The last captured image as BGRX pixels, `width()` per row.
     pub fn pixels(&self) -> &[u32] {
         &self.frame
@@ -455,8 +460,10 @@ mod tests {
     #[ignore]
     fn captures_the_root_window_live() {
         use x11rb::protocol::xproto::{ChangeWindowAttributesAux, ConnectionExt as _};
-        assert_eq!(host_support(), HostSupport::Supported);
+        // Connect first and stay connected: a bare Xvfb resets when its last client leaves, and a connection
+        // made during the reset fails (desktop sessions always have clients; CI also passes -noreset).
         let (conn, root) = connect().unwrap();
+        assert_eq!(host_support(), HostSupport::Supported);
         let aux = ChangeWindowAttributesAux::new().background_pixel(0x00FF_8000);
         conn.change_window_attributes(root, &aux).unwrap();
         conn.clear_area(false, root, 0, 0, 0, 0).unwrap();
@@ -466,8 +473,15 @@ mod tests {
         cap.grab(0);
         assert_ne!(cap.backend(), "none");
         assert_eq!(cap.pixels().len(), (cap.width() * cap.height()) as usize);
-        // A corner far from the cursor is the painted background.
-        assert_eq!(cap.pixels()[0], 0x00FF_8000, "backend {}", cap.backend());
+        // The bottom-right corner is the painted background: the pointer (and its drawn cursor) never goes there,
+        // even while the input test moves it.
+        assert_eq!(*cap.pixels().last().unwrap(), 0x00FF_8000, "backend {}", cap.backend());
         assert!((1..=13).contains(&cursor_shape()) || cursor_shape() == 0);
+
+        // The thumbnail path (monitor wall) uses the same capturer through `ThumbnailCapturer`.
+        let mut thumb = crate::capture::ThumbnailCapturer::new_for_monitor(mon, 320);
+        thumb.capture_frame();
+        assert_eq!((thumb.width, thumb.pixels().len()), (320, (320 * thumb.height) as usize));
+        assert_eq!(*thumb.pixels().last().unwrap(), 0x00FF_8000);
     }
 }

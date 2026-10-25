@@ -110,9 +110,9 @@ jobs:
         run: packaging/linux/install-openh264.sh || echo "::warning::OpenH264 download failed; H.264 tests are skipped"
       - name: test (live X11 capture, XTEST input and clipboard under Xvfb)
         run: |
-          dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24' \
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24 -noreset' \
             cargo test --manifest-path core-engine/Cargo.toml --release --locked -- --include-ignored
-          dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24' \
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24 -noreset' \
             cargo test --manifest-path client-desktop/Cargo.toml --release --locked
       - name: Debian packages (every edition)
         run: |

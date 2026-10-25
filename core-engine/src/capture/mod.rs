@@ -11,6 +11,17 @@ mod x11;
 #[cfg(not(windows))]
 pub use x11::*;
 
+/// Full-frame capturer for small periodic snapshots (thumbnails): GDI on Windows, so it never takes one of the
+/// few DXGI duplication slots a live session needs; the X11 capturer elsewhere. Both offer `new_for_monitor`,
+/// `capture_frame`, `pixels` and the `width`/`height` fields.
+#[cfg(windows)]
+pub type ThumbnailCapturer = GdiScreenCapturer;
+/// Full-frame capturer for small periodic snapshots (thumbnails): GDI on Windows, so it never takes one of the
+/// few DXGI duplication slots a live session needs; the X11 capturer elsewhere. Both offer `new_for_monitor`,
+/// `capture_frame`, `pixels` and the `width`/`height` fields.
+#[cfg(not(windows))]
+pub type ThumbnailCapturer = DesktopCapturer;
+
 /// A monitor in physical pixels, positioned in virtual-desktop coordinates.
 #[derive(Clone, Copy, Debug)]
 pub struct MonitorBounds {

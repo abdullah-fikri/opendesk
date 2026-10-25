@@ -246,17 +246,26 @@ mod tests {
     #[test]
     #[ignore]
     fn moves_the_pointer_and_types_live() {
-        let inj = InputInjector::new();
-        inj.set_cursor_pos(123, 45);
         let (conn, screen) = x11rb::connect(None).unwrap();
         let root = conn.setup().roots[screen].root;
-        let p = conn.query_pointer(root).unwrap().reply().unwrap();
-        assert_eq!((p.root_x, p.root_y), (123, 45));
+        // The injector uses its own connection, so the server may answer this query before applying the move.
+        let pointer_reaches = |want: (i16, i16)| {
+            (0..100).any(|_| {
+                let p = conn.query_pointer(root).unwrap().reply().unwrap();
+                let ok = (p.root_x, p.root_y) == want;
+                if !ok {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                ok
+            })
+        };
+        let inj = InputInjector::new();
+        inj.set_cursor_pos(123, 45);
+        assert!(pointer_reaches((123, 45)));
         // Keys and text (including a character no layout key produces) must not fail or wedge the connection.
         inj.send_key_combo(true, false, true, 0x1B);
-        inj.send_unicode_text("aB€\n");
+        inj.send_unicode_text("aB\u{20ac}\n");
         inj.set_cursor_pos(7, 8);
-        let p = conn.query_pointer(root).unwrap().reply().unwrap();
-        assert_eq!((p.root_x, p.root_y), (7, 8));
+        assert!(pointer_reaches((7, 8)));
     }
 }
