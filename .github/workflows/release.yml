@@ -53,6 +53,9 @@ jobs:
             org.opencontainers.image.title=OpenDesk Relay
             org.opencontainers.image.description=WebSocket relay and session broker for OpenDesk
       - uses: docker/build-push-action@v6
+        env:
+          # No build-record artifact next to the release files.
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: server-relay
           platforms: linux/amd64,linux/arm64
@@ -194,10 +197,19 @@ jobs:
             CHANGELOG.md > "$RUNNER_TEMP/notes.md"
           grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md" || { echo "::error::CHANGELOG.md has no section for $VERSION"; exit 1; }
           echo "Relay image: \`$IMAGE:$VERSION\`" >> "$RUNNER_TEMP/notes.md"
+      # By name: the run also holds a Docker build record (*.dockerbuild) that is not a release file.
       - uses: actions/download-artifact@v4
         with:
+          name: windows
           path: dist
-          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: android
+          path: dist
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2

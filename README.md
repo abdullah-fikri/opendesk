@@ -16,6 +16,7 @@
   </p>
 
   <p>
+    <a href="https://github.com/abdullah-fikri/opendesk/releases/latest"><b>Download</b></a> ·
     <a href="#features"><b>Features</b></a> ·
     <a href="#editions"><b>Editions</b></a> ·
     <a href="#quick-start"><b>Quick start</b></a> ·
