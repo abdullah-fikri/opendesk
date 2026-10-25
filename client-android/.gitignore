@@ -1,0 +1,4 @@
+# Release signing material: never commit it (see README.md#release-signing).
+*.jks
+*.keystore
+keystore.properties

@@ -1,121 +1,100 @@
-# OpenDesk Build Automation Makefile
-# Target platforms: Windows (Rust), Android (Gradle), Server (Go + Docker), Setup (Inno Setup)
+# OpenDesk developer tasks. Windows uses cmd.exe, Linux (and other POSIX systems) uses sh; the targets differ
+# per OS (`make windows` / `make linux`), the shared ones (test, lint, relay, android, docker-*) exist on both.
+# CI runs the same commands; see .github/workflows. Run `make help` for the list.
 
-.PHONY: all help build-windows build-windows-admin build-windows-host build-setup build-setup-admin build-setup-host build-server build-android docker-build docker-up docker-down clean
+VERSION := $(file < VERSION)
+
+ifeq ($(OS),Windows_NT)
+# ---- Windows (cmd.exe) ---------------------------------------------------------------------
 
 SHELL := cmd.exe
 
-# Auto-detect Inno Setup Compiler
-ISCC_PATH := $(wildcard C:\Users\$(USERNAME)\AppData\Local\Programs\Inno Setup 6\ISCC.exe)
-ifeq ($(ISCC_PATH),)
-  ISCC_PATH := $(wildcard C:\Program Files (x86)\Inno Setup 6\ISCC.exe)
-endif
-ifeq ($(ISCC_PATH),)
-  ISCC_CMD := ISCC.exe
-else
-  ISCC_CMD := "$(ISCC_PATH)"
-endif
-
-# Auto-detect JAVA_HOME if not present in environment
-ifeq ($(JAVA_HOME),)
-  STUDIO_JBR := $(wildcard C:\Program Files\Android\Android Studio\jbr)
-  ifneq ($(STUDIO_JBR),)
-    JAVA_HOME_CMD := set "JAVA_HOME=$(STUDIO_JBR)" &&
+# Inno Setup compiler: per-user install, machine-wide install, or PATH.
+ifeq ($(wildcard $(subst \,/,$(LOCALAPPDATA))/Programs/Inno?Setup?6/ISCC.exe),)
+  ifeq ($(wildcard C:/Program?Files?(x86)/Inno?Setup?6/ISCC.exe),)
+    ISCC := ISCC.exe
   else
-    JAVA_HOME_CMD :=
+    ISCC := C:\Program Files (x86)\Inno Setup 6\ISCC.exe
   endif
 else
-  JAVA_HOME_CMD :=
+  ISCC := $(LOCALAPPDATA)\Programs\Inno Setup 6\ISCC.exe
+endif
+# Gradle needs a JDK; fall back to the one bundled with Android Studio.
+ifeq ($(JAVA_HOME),)
+  export JAVA_HOME := C:\Program Files\Android\Android Studio\jbr
 endif
 
-all: build-server build-windows build-setup
+.PHONY: help all windows windows-admin windows-host setup setup-admin setup-host relay run-relay android \
+	docker-build docker-up docker-down test e2e lint clean
 
 help:
-	@echo ====================================================================
-	@echo                      OPENDESK BUILD SYSTEM
-	@echo ====================================================================
-	@echo   make build-windows       - Standard User GUI client (OpenDesk.exe)
-	@echo   make build-windows-admin - Admin GUI client with Server Host List (OpenDesk-Admin.exe)
-	@echo   make build-windows-host  - Zero-GUI Headless Host daemon (OpenDesk-Host.exe)
-	@echo   make build-setup         - Standard User Installer (OpenDesk-Setup.exe)
-	@echo   make build-setup-admin   - Admin Installer (OpenDesk-Setup.exe)
-	@echo   make build-setup-host    - Headless Host Installer (OpenDesk-Setup.exe)
-	@echo   make build-server        - Compile Go relay gateway (server-relay.exe)
-	@echo   make build-android       - Assemble Android APK (OpenDesk.apk)
-	@echo   make docker-build        - Build Docker image for Relay Server
-	@echo   make docker-up           - Start Relay Server with Docker Compose
-	@echo   make docker-down         - Stop Relay Server container
-	@echo   make all                 - Build Windows client + Setup + Server
-	@echo   make clean               - Clean build artifacts & cargo caches
-	@echo ====================================================================
+	@echo OpenDesk $(VERSION)
+	@echo.
+	@echo   make windows        Desktop client, standard edition   -^> builds\windows\OpenDesk.exe
+	@echo   make windows-admin  Desktop client, admin edition      -^> builds\windows\OpenDesk-Admin.exe
+	@echo   make windows-host   Desktop client, headless host      -^> builds\windows\OpenDesk-Host.exe
+	@echo   make setup          Installer for the standard edition -^> builds\windows\OpenDesk-Setup.exe
+	@echo   make setup-admin    Installer for the admin edition
+	@echo   make setup-host     Installer for the headless host
+	@echo   make relay          Relay server binary                -^> builds\relay\opendesk-relay.exe
+	@echo   make run-relay      Run the relay from source (needs PostgreSQL, see server-relay\README.md)
+	@echo   make android        Android debug APK                  -^> builds\android\OpenDesk.apk
+	@echo   make docker-build   Relay Docker image opendesk-relay:$(VERSION)
+	@echo   make docker-up      Start the relay with Docker Compose
+	@echo   make docker-down    Stop it
+	@echo   make test           All unit tests
+	@echo   make e2e            End-to-end tests: throwaway relay + PostgreSQL (needs Docker, Git Bash)
+	@echo   make lint           Formatters and linters (clippy, go vet, gofmt)
+	@echo   make clean          Remove build output
 
-build-windows:
-	@echo [1/3] Building core-engine...
-	cd core-engine && cargo build --release
-	@echo [2/3] Building client-desktop (Standard User)...
-	cd client-desktop && cargo build --release
-	@if not exist "builds\windows" mkdir builds\windows
-	copy /Y client-desktop\target\release\opendesk-client.exe builds\windows\OpenDesk.exe
-	@echo [3/3] Standard User build complete: builds\windows\OpenDesk.exe
+all: relay windows setup
 
-build-windows-admin:
-	@echo [1/3] Building core-engine...
-	cd core-engine && cargo build --release
-	@echo [2/3] Building client-desktop (Admin Role - Server Host List enabled)...
-	cd client-desktop && cargo build --release --features admin
-	@if not exist "builds\windows" mkdir builds\windows
-	copy /Y client-desktop\target\release\opendesk-client.exe builds\windows\OpenDesk-Admin.exe
-	copy /Y client-desktop\target\release\opendesk-client.exe builds\windows\OpenDesk.exe
-	@echo [3/3] Admin build complete: builds\windows\OpenDesk-Admin.exe (and OpenDesk.exe)
+# ---- Desktop -------------------------------------------------------------------------------
 
-build-windows-host:
-	@echo [1/3] Building core-engine...
-	cd core-engine && cargo build --release
-	@echo [2/3] Building client-desktop (Headless Zero-GUI Host Only)...
-	cd client-desktop && cargo build --release --features headless
-	@if not exist "builds\windows" mkdir builds\windows
-	copy /Y client-desktop\target\release\opendesk-client.exe builds\windows\OpenDesk-Host.exe
-	copy /Y client-desktop\target\release\opendesk-client.exe builds\windows\OpenDesk.exe
-	@echo [3/3] Headless Host build complete: builds\windows\OpenDesk-Host.exe (and OpenDesk.exe)
+# $(1) = Cargo features ("" for the standard edition), $(2) = output file name.
+define build_windows
+	cd client-desktop && cargo build --release --locked $(1)
+	@if not exist builds\windows mkdir builds\windows
+	copy /Y client-desktop\target\release\opendesk-client.exe builds\windows\$(2)
+endef
 
-build-setup: build-windows
-	@echo [1/1] Compiling Windows Installer (Standard Userx`)...
-	@if not exist "builds\windows" mkdir builds\windows
-	@if exist "C:\Users\$(USERNAME)\AppData\Local\Programs\Inno Setup 6\ISCC.exe" ( "C:\Users\$(USERNAME)\AppData\Local\Programs\Inno Setup 6\ISCC.exe" installer\opendesk.iss ) else if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" ( "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\opendesk.iss ) else ( ISCC.exe installer\opendesk.iss )
-	@echo Setup build complete: builds\windows\OpenDesk-Setup.exe
+windows:
+	$(call build_windows,,OpenDesk.exe)
 
-build-setup-admin: build-windows-admin
-	@echo [1/1] Compiling Windows Installer (Admin Edition)...
-	@if not exist "builds\windows" mkdir builds\windows
-	@if exist "C:\Users\$(USERNAME)\AppData\Local\Programs\Inno Setup 6\ISCC.exe" ( "C:\Users\$(USERNAME)\AppData\Local\Programs\Inno Setup 6\ISCC.exe" installer\opendesk.iss ) else if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" ( "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\opendesk.iss ) else ( ISCC.exe installer\opendesk.iss )
-	copy /Y builds\windows\OpenDesk-Setup.exe builds\windows\OpenDesk-Admin-Setup.exe
-	@echo Admin Setup build complete: builds\windows\OpenDesk-Admin-Setup.exe
+windows-admin:
+	$(call build_windows,--features admin,OpenDesk-Admin.exe)
+	copy /Y builds\windows\OpenDesk-Admin.exe builds\windows\OpenDesk.exe
 
-build-setup-host: build-windows-host
-	@echo [1/1] Compiling Windows Installer (Headless Host Edition)...
-	@if not exist "builds\windows" mkdir builds\windows
-	@if exist "C:\Users\$(USERNAME)\AppData\Local\Programs\Inno Setup 6\ISCC.exe" ( "C:\Users\$(USERNAME)\AppData\Local\Programs\Inno Setup 6\ISCC.exe" installer\opendesk.iss ) else if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" ( "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\opendesk.iss ) else ( ISCC.exe installer\opendesk.iss )
-	copy /Y builds\windows\OpenDesk-Setup.exe builds\windows\OpenDesk-Host-Setup.exe
-	@echo Headless Host Setup build complete: builds\windows\OpenDesk-Host-Setup.exe
+windows-host:
+	$(call build_windows,--features headless,OpenDesk-Host.exe)
+	copy /Y builds\windows\OpenDesk-Host.exe builds\windows\OpenDesk.exe
 
-build-server:
-	@echo [1/2] Compiling Go server-relay...
-	cd server-relay && go build -ldflags="-s -w" -o server-relay.exe .
-	@if not exist "builds\other" mkdir builds\other
-	copy /Y server-relay\server-relay.exe builds\other\server-relay.exe
-	@echo [2/2] Server build complete: builds\other\server-relay.exe
+# The installer always packages builds\windows\OpenDesk.exe; $(1) = name of the produced setup.
+define build_setup
+	"$(ISCC)" /DMyAppVersion=$(VERSION) installer\opendesk.iss
+	@if not "$(1)"=="OpenDesk-Setup.exe" copy /Y builds\windows\OpenDesk-Setup.exe builds\windows\$(1)
+endef
 
-build-android:
-	@echo [1/2] Assembling Android Debug APK...
-	@if not defined JAVA_HOME if exist "C:\Program Files\Android\Android Studio\jbr" set "JAVA_HOME=C:\Program Files\Android\Android Studio\jbr"
-	cd client-android && (if not defined JAVA_HOME if exist "C:\Program Files\Android\Android Studio\jbr" set "JAVA_HOME=C:\Program Files\Android\Android Studio\jbr") && gradlew.bat assembleDebug
-	@if not exist "builds\android" mkdir builds\android
-	copy /Y client-android\app\build\outputs\apk\debug\app-debug.apk builds\android\OpenDesk.apk
-	@echo [2/2] Android build complete: builds\android\OpenDesk.apk
+setup: windows
+	$(call build_setup,OpenDesk-Setup.exe)
+
+setup-admin: windows-admin
+	$(call build_setup,OpenDesk-Admin-Setup.exe)
+
+setup-host: windows-host
+	$(call build_setup,OpenDesk-Host-Setup.exe)
+
+# ---- Relay ---------------------------------------------------------------------------------
+
+relay:
+	@if not exist builds\relay mkdir builds\relay
+	cd server-relay && go build -trimpath -ldflags="-s -w -X opendesk/server-relay/internal/version.Version=$(VERSION)" -o ..\builds\relay\opendesk-relay.exe ./cmd/relay
+
+run-relay:
+	cd server-relay && go run ./cmd/relay -config config.json
 
 docker-build:
-	@echo Building Docker image opendesk-relay:latest...
-	docker build -t opendesk-relay:latest -f server-relay/Dockerfile server-relay/
+	docker build --build-arg VERSION=$(VERSION) -t opendesk-relay:$(VERSION) server-relay
 
 docker-up:
 	docker compose up -d
@@ -123,8 +102,147 @@ docker-up:
 docker-down:
 	docker compose down
 
+# ---- Android -------------------------------------------------------------------------------
+
+android:
+	cd client-android && gradlew.bat assembleDebug
+	@if not exist builds\android mkdir builds\android
+	copy /Y client-android\app\build\outputs\apk\debug\app-debug.apk builds\android\OpenDesk.apk
+
+# ---- Quality -------------------------------------------------------------------------------
+
+test:
+	cd core-engine && cargo test --release
+	cd client-desktop && cargo test --release
+	cd server-relay && go test -race ./...
+	cd client-android && gradlew.bat testDebugUnitTest
+
+e2e:
+	bash scripts/e2e.sh
+
+lint:
+	cd core-engine && cargo fmt --check && cargo clippy --release --all-targets -- -D warnings
+	cd client-desktop && cargo fmt --check && cargo clippy --release --all-targets -- -D warnings
+	cd server-relay && gofmt -l . && go vet ./...
+
 clean:
-	@echo Cleaning cargo and go build files...
 	cd core-engine && cargo clean
 	cd client-desktop && cargo clean
-	del /Q server-relay\server-relay.exe 2>nul
+	cd client-android && gradlew.bat clean
+	@if exist builds rmdir /S /Q builds
+
+else
+# ---- Linux (and other POSIX systems) ------------------------------------------------------------
+# Prerequisites: CONTRIBUTING.md#linux. Packages need `cargo install cargo-deb`.
+
+SHELL := /bin/sh
+DESKTOP := client-desktop
+LINUX_OUT := builds/linux
+# Honours CARGO_TARGET_DIR (absolute) like cargo does.
+LINUX_BIN := $(or $(CARGO_TARGET_DIR),$(DESKTOP)/target)/release/opendesk-client
+
+.PHONY: help all linux linux-admin linux-host linux-deb linux-tar relay run-relay android \
+	docker-build docker-up docker-down test e2e lint clean
+
+help:
+	@echo "OpenDesk $(VERSION)"
+	@echo ""
+	@echo "  make linux          Desktop client, standard edition   -> $(LINUX_OUT)/opendesk"
+	@echo "  make linux-admin    Desktop client, admin edition      -> $(LINUX_OUT)/opendesk-admin"
+	@echo "  make linux-host     Desktop client, headless host      -> $(LINUX_OUT)/opendesk-host"
+	@echo "  make linux-deb      Debian/Ubuntu packages, all editions -> $(LINUX_OUT)/*.deb (needs cargo-deb)"
+	@echo "  make linux-tar      Portable archive of the standard edition -> $(LINUX_OUT)/opendesk-$(VERSION)-linux-x86_64.tar.gz"
+	@echo "  make relay          Relay server binary                -> builds/relay/opendesk-relay"
+	@echo "  make run-relay      Run the relay from source (needs PostgreSQL, see server-relay/README.md)"
+	@echo "  make android        Android debug APK                  -> builds/android/OpenDesk.apk"
+	@echo "  make docker-build   Relay Docker image opendesk-relay:$(VERSION)"
+	@echo "  make docker-up      Start the relay with Docker Compose"
+	@echo "  make docker-down    Stop it"
+	@echo "  make test           All unit tests"
+	@echo "  make e2e            End-to-end tests: throwaway relay + PostgreSQL (needs Docker)"
+	@echo "  make lint           Formatters and linters (clippy, go vet, gofmt)"
+	@echo "  make clean          Remove build output"
+
+all: relay linux
+
+# ---- Desktop -------------------------------------------------------------------------------
+
+# $(1) = Cargo features ("" for the standard edition), $(2) = output file name.
+define build_linux
+	cd $(DESKTOP) && cargo build --release --locked $(1)
+	mkdir -p $(LINUX_OUT)
+	cp $(LINUX_BIN) $(LINUX_OUT)/$(2)
+endef
+
+linux:
+	$(call build_linux,,opendesk)
+
+linux-admin:
+	$(call build_linux,--features admin,opendesk-admin)
+
+linux-host:
+	$(call build_linux,--features headless,opendesk-host)
+
+# cargo-deb builds each edition itself (features per variant in client-desktop/Cargo.toml).
+linux-deb:
+	mkdir -p $(LINUX_OUT)
+	cd $(DESKTOP) && cargo deb --locked --output ../$(LINUX_OUT)/
+	cd $(DESKTOP) && cargo deb --locked --variant admin --output ../$(LINUX_OUT)/
+	cd $(DESKTOP) && cargo deb --locked --variant host --output ../$(LINUX_OUT)/
+
+linux-tar: linux
+	rm -rf $(LINUX_OUT)/opendesk-$(VERSION)
+	mkdir -p $(LINUX_OUT)/opendesk-$(VERSION)
+	cp $(LINUX_OUT)/opendesk $(DESKTOP)/icon.png packaging/linux/opendesk.desktop packaging/linux/install-openh264.sh \
+		LICENSE $(LINUX_OUT)/opendesk-$(VERSION)/
+	strip $(LINUX_OUT)/opendesk-$(VERSION)/opendesk
+	tar -C $(LINUX_OUT) -czf $(LINUX_OUT)/opendesk-$(VERSION)-linux-$(shell uname -m).tar.gz opendesk-$(VERSION)
+	rm -rf $(LINUX_OUT)/opendesk-$(VERSION)
+
+# ---- Relay ---------------------------------------------------------------------------------
+
+relay:
+	mkdir -p builds/relay
+	cd server-relay && go build -trimpath -ldflags="-s -w -X opendesk/server-relay/internal/version.Version=$(VERSION)" -o ../builds/relay/opendesk-relay ./cmd/relay
+
+run-relay:
+	cd server-relay && go run ./cmd/relay -config config.json
+
+docker-build:
+	docker build --build-arg VERSION=$(VERSION) -t opendesk-relay:$(VERSION) server-relay
+
+docker-up:
+	docker compose up -d
+
+docker-down:
+	docker compose down
+
+# ---- Android -------------------------------------------------------------------------------
+
+android:
+	cd client-android && ./gradlew assembleDebug
+	mkdir -p builds/android
+	cp client-android/app/build/outputs/apk/debug/app-debug.apk builds/android/OpenDesk.apk
+
+# ---- Quality -------------------------------------------------------------------------------
+
+test:
+	cd core-engine && cargo test --release
+	cd $(DESKTOP) && cargo test --release
+	cd server-relay && go test -race ./...
+	cd client-android && ./gradlew testDebugUnitTest
+
+e2e:
+	scripts/e2e.sh
+
+lint:
+	cd core-engine && cargo fmt --check && cargo clippy --release --all-targets -- -D warnings
+	cd $(DESKTOP) && cargo fmt --check && cargo clippy --release --all-targets -- -D warnings
+	cd server-relay && test -z "$$(gofmt -l .)" && go vet ./...
+
+clean:
+	cd core-engine && cargo clean
+	cd $(DESKTOP) && cargo clean
+	cd client-android && ./gradlew clean
+	rm -rf builds
+endif

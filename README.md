@@ -1,160 +1,182 @@
 <div align="center">
 
-  <img src="./assets/icon.png" alt="OpenDesk Logo" width="150" />
+  <img src="./assets/icon.png" alt="OpenDesk logo" width="150" />
 
   <h1>OpenDesk</h1>
 
-  <h3>High-Performance, Lightweight, and Resilient Remote Desktop</h3>
+  <h3>Self-hosted remote desktop for Windows, Linux and Android</h3>
+
+  <p>Native clients, your own relay, no third-party cloud.</p>
 
   <p>
-    Native performance for modern fleets — <b>Zero Electron, Zero Web-Wrappers</b>
-  </p>
-
-  <p>
+    <a href="https://github.com/abdullah-fikri/opendesk/actions/workflows/ci.yml"><img src="https://github.com/abdullah-fikri/opendesk/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/License-AGPLv3%20%2F%20Commercial-blue.svg" alt="License: AGPLv3 / Commercial" /></a>
-    <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Android%20%7C%20Linux%20(Server)-green.svg" alt="Platform" />
+    <img src="https://img.shields.io/badge/version-1.0.0-informational.svg" alt="Version 1.0.0" />
     <img src="https://img.shields.io/badge/Stack-Rust%20%7C%20Go%20%7C%20Kotlin-orange.svg" alt="Stack" />
-    <a href="#-support--donate"><img src="https://img.shields.io/badge/Support-Donate-ff69b4.svg" alt="Donate" /></a>
   </p>
 
   <p>
-    | <a href="#-about-opendesk"><b>About</b></a> |
-    <a href="#-key-features"><b>Features</b></a> |
-    <a href="#-application-editions"><b>Editions</b></a> |
-    <a href="#️-monorepo-architecture"><b>Architecture</b></a> |
-    <a href="#-quick-start"><b>Quick Start</b></a> |
-    <a href="./CONTRIBUTING.md"><b>Contributing</b></a> |
-    <a href="#-support--donate"><b>Donate</b></a> |
+    <a href="#features"><b>Features</b></a> ·
+    <a href="#editions"><b>Editions</b></a> ·
+    <a href="#quick-start"><b>Quick start</b></a> ·
+    <a href="#security"><b>Security</b></a> ·
+    <a href="#repository"><b>Repository</b></a> ·
+    <a href="./CONTRIBUTING.md"><b>Contributing</b></a>
   </p>
 
 </div>
 
 ---
 
-## 📖 About OpenDesk
+## About
 
-**OpenDesk** is a modern, high-performance remote desktop and device management solution engineered to deliver fluid, low-latency remote control without relying on proprietary cloud intermediaries.
+OpenDesk lets you control Windows and Linux computers from other computers or from an Android phone, through a
+relay server you run yourself. Clients are native (Rust with Slint on Windows and Linux, Kotlin on Android); the
+relay is a single Go binary backed by PostgreSQL. No screen, keystroke or file passes through anyone else's servers.
 
-Built from the ground up for speed, reliability, and security, OpenDesk combines a pure **Rust** client with direct **Windows DXGI Desktop Duplication** and an ultra-fast **Go** relay server.
+| | View other devices | Can be controlled |
+| --- | --- | --- |
+| Windows | Yes | Yes |
+| Linux (X11 session) | Yes | Yes |
+| Linux (Wayland session) | Yes | No (shows how to switch to X11) |
+| Android | Yes | Never: the app is a viewer only |
 
-### Why OpenDesk?
-- **Pure Native Speed**: Most modern remote tools bundle heavy web engines (Electron/Chromium) that consume 300MB+ of RAM and introduce input lag. OpenDesk runs on native Rust and Slint UI, consuming only **~30MB of RAM** while maintaining **60+ FPS** hardware-accelerated capture.
-- **Complete Data Sovereignty**: Never route sensitive desktop data or internal company screens through third-party servers. OpenDesk's lightweight Go relay server can be self-hosted on any private VPS, cloud container, or local network in seconds.
-- **Fleet & Server Isolation**: Ideal for businesses and IT support teams. Clients communicate strictly within their assigned private relay, guaranteeing zero cross-tenant visibility or external data leakage.
-- **Battle-Tested Resilience**: Built for real-world network conditions—featuring chunk-based file transfers that automatically resume through drops, multi-tier adaptive video/audio scaling, and an unattended host daemon with a 10-second watchdog self-healing mechanism.
+Feature differences between platforms are listed in [docs/platforms.md](docs/platforms.md).
 
----
+## Features
 
-## 🌟 Key Features
+**Remote control**
+- Up to four hosts at once from one desktop viewer, as tabs or a split grid; Android views one at a time with
+  touch gestures, zoom and a soft keyboard.
+- Windows: DXGI Desktop Duplication capture with GDI fallback. Linux: X11 (MIT-SHM). Only changed regions are sent
+  (JPEG atlases), with H.264 for sustained motion (hardware encoder on Windows, Cisco OpenH264 on Linux when
+  installed).
+- Stream resolution follows the viewer window automatically, or native, 1080p, 720p, 480p.
+- Multi-monitor hosts with a monitor picker; cursor shape mirrored on the viewer.
+- Direct encrypted UDP path between desktops (Noise protocol) when the network allows it, with automatic fallback
+  to the relay.
 
-### 🚀 Performance & Native Architecture
-- **Ultra-Low Latency & High FPS**: Native screen capture via Windows DXGI Desktop Duplication API with dirty-rect differential detection executed at hardware speed.
-- **Ultra-Light Memory Footprint (~30MB RAM)**: Written in pure Rust and Slint UI; eliminates heavy browser engines and web runtimes.
+**Collaboration**
+- Two-way voice (16, 24 or 48 kHz) with noise gating; either side can mute the other.
+- File transfer by drag-and-drop, file picker or Ctrl+V, including folders, verified with SHA-256 and pasted
+  straight into the remote Explorer window (Windows).
+- Copy files on one Windows machine and paste on the other: files are pulled only when pasted.
+- Clipboard text sync that follows the focused session.
 
-### 🎥 Adaptive Display & Audio Streaming
-- **Dynamic Capture Scaling**: Adapt display streaming to your bandwidth and network latency. Toggle between native **1:1** pixel-perfect capture or scale dynamically to **1080p**, **720p**, and **480p** for uninterrupted smoothness.
-- **Multi-Tier Real-Time Audio**: Low-latency system audio streaming with selectable quality profiles tailored to current network stability.
+**Host control** (Windows hosts; viewers hide what a host cannot do)
+- Privacy screen on the host (frozen, maintenance or black), invisible to the viewer's stream.
+- Block the host's physical keyboard and mouse during a session.
+- System keys straight from your keyboard on Windows (Win, Alt+Tab, Ctrl+Shift+Esc, ...); a shortcut menu on Linux.
+- Client token (admin edition): only devices an administrator lists may connect; each receives its token
+  automatically, so devices need only the relay address.
 
-### 📁 Resilient File Transfer & Clipboard
-- **Interruption-Proof File Transfers**: Chunk-based file transfers continue seamlessly even across transient network drops, avoiding painful re-transfers of large files.
-- **Bidirectional Clipboard**: Instant text and clipboard synchronization between host and viewer.
+**Operations**
+- Unattended hosts: start at logon (Windows: elevated, so admin windows can be controlled, with a watchdog in
+  portable installs; Linux: XDG autostart), stay in the tray.
+- `opendesk` CLI on Windows and Linux to set the relay, show the device ID, stop or prepare uninstall.
+- Admin edition with a live list of every device on the relay and a read-only monitor wall (up to 16 live
+  thumbnails per page, paged and optionally auto-rotating).
+- Relay with per-device credentials, metrics, health endpoint, versioned database migrations and a published
+  container image.
 
-### 🏢 Server-Level Isolation (Enterprise Ready)
-- **Dedicated Multi-Tenant & Fleet Isolation**: Clients communicate strictly within their assigned relay server. Hosts on one relay are completely isolated and invisible to clients on another.
-- **Zero Third-Party Dependency**: Complete data sovereignty—ideal for corporate internal networks, private clouds, and regulated industries.
+## Editions
 
-### 🛡️ High-Availability Daemon & Watchdog
-- **Auto-Start on Boot**: Host daemon initializes silently on system startup.
-- **10-Second Watchdog Self-Healing**: Monitored by a background supervisor. If the host process is terminated via End Task or unexpected crash, the watchdog automatically respawns the host service within **10 seconds**, guaranteeing continuous unattended access.
+| Edition | File | For |
+| --- | --- | --- |
+| Standard | Windows: `OpenDesk-Setup-<version>.exe` / `OpenDesk-<version>.exe`; Linux: `opendesk_<version>-1_amd64.deb` / `opendesk-<version>-linux-x86_64.tar.gz` | Desktops: view other machines and be controlled |
+| Admin | `OpenDesk-Admin-Setup-<version>.exe`; `opendesk-admin_<version>-1_amd64.deb` | Administrators: Standard plus the relay's device list |
+| Headless host | `OpenDesk-Host-Setup-<version>.exe`; `opendesk-host_<version>-1_amd64.deb` | Servers, VMs and kiosks: no window or tray, incoming sessions only |
+| Android | `OpenDesk-<version>.apk` (`.aab` for Google Play) | Phones: view and control a computer (viewer only) |
+| Relay | `ghcr.io/abdullah-fikri/opendesk-relay` | Your server |
 
----
+Download them from [GitHub Releases](https://github.com/abdullah-fikri/opendesk/releases).
 
-## 📦 Application Editions
+## Quick start
 
-OpenDesk is distributed in four specialized editions tailored to different operational roles:
+**1. Run a relay** (Linux server with Docker and PostgreSQL):
 
-| Edition | Target File | Interface | Description |
-| :--- | :--- | :--- | :--- |
-| **OpenDesk Standard** | `OpenDesk-Setup.exe` | Standard GUI | Full-featured installer package for regular desktop users, featuring connection manager and address book. |
-| **OpenDesk Portable** | `OpenDesk.exe` | Standard GUI | Single standalone binary with zero installation wizard required. Runs directly from USB drives or temp folders. |
-| **OpenDesk Admin** | `OpenDesk-Admin.exe` | Admin GUI | Dedicated administrator console featuring an integrated **Server Host List** to view, monitor, and connect to all active endpoints on the relay. |
-| **OpenDesk Host** | `OpenDesk-Host.exe` | Headless (CLI) | Silent, zero-GUI daemon designed for servers, unattended cloud VMs, and kiosk terminals. Minimum resource consumption. |
-| **OpenDesk Android** | `OpenDesk.apk` | Mobile GUI | Native mobile remote control client using `MediaProjection` (screen capture) and `AccessibilityService` (touch/gestures). |
-
----
-
-## 🏗️ Monorepo Architecture
-
-```
-opendesk/
-├── core-engine/       # Native Rust engine (DXGI capture, dirty-rect diff, input injection)
-├── client-desktop/    # Windows Desktop GUI (Rust + Slint UI + System Tray + Watchdog)
-├── client-android/    # Android Client (Kotlin + MediaProjection + Accessibility)
-├── server-relay/      # Relay Gateway Server (Go + WebSocket + Protobuf + PostgreSQL)
-├── protocol/          # Wire Protocol Definitions (Protocol Buffers v3)
-├── installer/         # Windows Installer Scripts (Inno Setup 6)
-├── tools/             # Automation, testing, launcher & daemon management scripts
-├── builds/            # Production binaries destination (git ignored)
-└── Makefile           # Master build automation
-```
-
----
-
-## 🚀 Quick Start
-
-### 1. Pre-Built Binaries
-Output binaries can be compiled locally via `make all` or retrieved from [builds/](./builds/):
-- **Standard Installer**: `builds/windows/OpenDesk-Setup.exe`
-- **Admin Edition**: `builds/windows/OpenDesk-Admin-Setup.exe`
-- **Portable Binary**: `builds/windows/OpenDesk.exe`
-- **Headless Host**: `builds/windows/OpenDesk-Host.exe`
-- **Android APK**: `builds/android/OpenDesk.apk`
-- **Relay Server**: `builds/other/server-relay.exe`
-
-### 2. Run Self-Hosted Relay (Docker Compose)
-Start your private relay server in seconds:
 ```bash
+git clone https://github.com/abdullah-fikri/opendesk.git && cd opendesk
+cp .env.example .env            # set DB_PASSWORD
 docker compose up -d
 ```
-The relay service listens on TCP port `8088`.
 
-### 3. Connect Two Computers
-1. Launch `OpenDesk.exe` on both machines.
-2. Read the **Desk ID** from the host computer.
-3. On the viewer computer, enter the host's Desk ID and click **Connect**.
-4. The host displays a consent modal; click **Accept** to initiate the session.
+Put a TLS terminator in front of `127.0.0.1:8088` (for example a Cloudflare Tunnel) so clients can reach
+`wss://relay.example.com`. Details: [server-relay/docs/deployment.md](server-relay/docs/deployment.md).
 
-### 4. Windows Host CLI Utility
-```cmd
-# Check current Desk ID, connection status, and relay URL
-opendesk status
+**2. Install the clients** and point them at the relay: in the app's relay settings, or with
+`opendesk server wss://relay.example.com` on Windows and Linux.
 
-# Print Desk ID only (ideal for automated IT enrollment scripts)
-opendesk id
+- Windows: run the installer (or the portable `.exe`).
+- Debian/Ubuntu: `sudo apt install ./opendesk_<version>-1_amd64.deb`. For H.264 video, also run
+  `/usr/share/opendesk/install-openh264.sh` (downloads Cisco's OpenH264; without it video uses JPEG only).
+- Android: install the APK; see [client-android/README.md](client-android/README.md) for signing and Play Protect.
 
-# Switch relay server endpoint on the fly
-opendesk server --wss://relay.your-company.com/ws
+**3. Connect.** Each device shows its 9-digit ID. Enter the other device's ID and press Connect. Desktop hosts
+accept immediately.
+
+## Security
+
+Read this before exposing a relay:
+
+- **The relay is open by default.** Anyone who can reach it can register. Provision per-device tokens with
+  `OPENDESK_DEVICE_CREDENTIALS` ([guide](server-relay/docs/provisioning.md)) and keep the address private.
+- **Desktop hosts are unattended.** Windows and Linux hosts accept every session the relay grants, without a
+  prompt. Combined with an open relay, knowing a device ID is enough to control it. Android phones can never be
+  controlled.
+- **Encryption:** use `wss://` (the relay refuses plaintext from remote addresses); the direct path uses Noise
+  (`Noise_NN_25519_ChaChaPoly_BLAKE2s`) bound to the relay-approved pair.
+- **Files from a peer** are validated, staged, checksum-verified and never overwrite existing files.
+
+More: [docs/architecture.md](docs/architecture.md#security-model).
+
+## Repository
+
+```text
+opendesk/
+├── client-desktop/   Windows and Linux client (Rust + Slint) docs: client-desktop/docs
+├── core-engine/      Capture, codecs, input (Rust library)   docs: core-engine/README.md
+├── client-android/   Android viewer (Kotlin)                 docs: client-android/docs
+├── server-relay/     Relay (Go + PostgreSQL)                 docs: server-relay/docs
+├── installer/        Inno Setup script (Windows)
+├── packaging/        Linux desktop entries and the OpenH264 installer
+├── docs/             Architecture, wire protocol, CI/CD, cross-component features
+├── scripts/          Repository tooling (version check)
+├── .github/          CI, release and Dependabot configuration
+├── Makefile          Developer tasks (make help)
+├── VERSION           Release version, checked against every component
+└── docker-compose.yml
 ```
 
+- [Architecture](docs/architecture.md) · [Platforms](docs/platforms.md) · [Wire protocol](docs/protocol.md) ·
+  [CI/CD and releases](docs/ci-cd.md)
+- [Contributing](CONTRIBUTING.md): build, test, layering rules and code conventions
+
+## Building from source
+
+`make` works on Windows (cmd.exe) and Linux (sh); `make help` lists the targets for the OS you are on.
+
+```bash
+make help        # all targets
+make test        # every unit test
+make relay       # builds/relay/opendesk-relay(.exe)
+make android     # builds/android/OpenDesk.apk
+
+# Windows
+make windows     # builds\windows\OpenDesk.exe
+make setup       # installer (needs Inno Setup 6)
+
+# Linux
+make linux       # builds/linux/opendesk
+make linux-deb   # builds/linux/opendesk*.deb (needs `cargo install cargo-deb`)
+make linux-tar   # builds/linux/opendesk-<version>-linux-<arch>.tar.gz
+```
+
+Prerequisites per component are listed in [CONTRIBUTING.md](CONTRIBUTING.md#prerequisites).
+
 ---
 
-## 🔒 Security & Privacy
-
-- **Encrypted Channels**: All screen frames, audio, and inputs travel over TLS/WSS-encrypted tunnels.
-- **Consent Confirmation**: Incoming remote sessions require explicit user acceptance unless unattended credentials are pre-configured.
-- **Privacy Screen**: Blank the physical host display during active sessions to protect sensitive data from on-site shoulder surfing.
-
----
-
-## 🤝 Contributing & Development
-
-Looking to build from source, set up local testing environments, or contribute to code?  
-Read our technical contributor guide:  
-👉 **[CONTRIBUTING.md](./CONTRIBUTING.md)**
-
----
-
-## 💖 Support & Donate
+## Support
 
 If you find OpenDesk useful and want to support its ongoing development, server costs, or new hardware testing, consider buying us a coffee or donating!
 
@@ -170,7 +192,7 @@ If you find OpenDesk useful and want to support its ongoing development, server 
 
 ---
 
-## 📄 License
+## License
 
 OpenDesk is distributed under a **Dual-Licensing Model**:
 - **Community & Open-Source**: Free under the [GNU Affero General Public License v3.0 (AGPLv3)](./LICENSE).

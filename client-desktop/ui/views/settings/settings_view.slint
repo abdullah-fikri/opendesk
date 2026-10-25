@@ -1,0 +1,583 @@
+// Settings (admin edition): Settings › Security › Client token. The client-token page manages the relay's device
+// allowlist (docs/features/device-security.md at the repository root): listed devices receive their token
+// automatically on their first connection, so clients only need the relay address.
+
+import { SecurityItem } from "../../types.slint";
+import { Theme } from "../../theme.slint";
+import { Segment } from "../../components/segment.slint";
+import { ScrollArea } from "../../components/scroll_area.slint";
+
+// One entry of a settings list: title, description and a status on the right.
+component NavRow inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <string> status;
+    in property <bool> status_on: false;
+    callback clicked();
+
+    height: 58px;
+    background: ta.has-hover ? Theme.hover : Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 12px;
+        Rectangle {
+            width: 2px;
+            height: 22px;
+            y: (parent.height - self.height) / 2;
+            background: Theme.accent;
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 3px;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            Text {
+                text: root.subtitle;
+                color: Theme.text-3;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+        if root.status != "": Text {
+            text: root.status;
+            color: root.status_on ? Theme.ok : Theme.text-3;
+            font-size: 11px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+        Text {
+            text: "›";
+            color: Theme.text-3;
+            font-size: 18px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Small on/off switch.
+component Switch inherits Rectangle {
+    in property <bool> on: false;
+    in property <bool> enabled: true;
+    callback toggled();
+
+    width: 38px;
+    height: 20px;
+    background: root.on ? Theme.accent : Theme.surface-2;
+    border-width: 1px;
+    border-color: root.on ? Theme.accent : Theme.border;
+    opacity: root.enabled ? 1.0 : 0.5;
+
+    Rectangle {
+        x: root.on ? parent.width - self.width - 3px : 3px;
+        y: 3px;
+        width: 14px;
+        height: 14px;
+        background: root.on ? #ffffff : Theme.text-3;
+        animate x { duration: 120ms; }
+    }
+    TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.toggled();
+            }
+        }
+    }
+}
+
+// Text button in the settings pages.
+component ActionButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 28px;
+    min-width: txt.preferred-width + 22px;
+    horizontal-stretch: 0;
+    background: !root.enabled ? Theme.surface-2
+        : root.primary ? (ta.has-hover ? Theme.accent-hover : Theme.accent)
+        : ta.has-hover ? Theme.hover : Theme.surface-2;
+    border-width: 1px;
+    border-color: root.primary && root.enabled ? Theme.accent : Theme.border;
+
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+    txt := Text {
+        text: root.label;
+        color: !root.enabled ? Theme.text-3 : root.primary ? #ffffff : root.danger ? #f87171 : #d4d4d8;
+        font-size: 11px;
+        font-weight: 600;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+}
+
+export component SettingsView inherits Rectangle {
+    // 0 = Settings, 1 = Security, 2 = Client token.
+    in-out property <int> page: 0;
+    // The relay supports the device allowlist (known once registered).
+    in property <bool> relay_online: false;
+    in property <bool> security_supported: false;
+    in property <bool> security_enabled: false;
+    in property <bool> security_managed_by_env: false;
+    in property <[SecurityItem]> security_items;
+
+    callback close();
+    callback refresh();
+    callback set_enabled(bool);
+    // (desk ID as typed, administrator)
+    callback add_device(string, bool);
+    callback add_online();
+    callback remove_device(string);
+    callback reset_device(string);
+
+    property <bool> confirm_enable: false;
+    property <string> confirm_remove: "";
+    property <bool> add_admin: false;
+
+    background: Theme.bg;
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+
+        // ---- Toolbar: back and breadcrumb
+        Rectangle {
+            height: 38px;
+            background: #0c0c0f;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                padding-top: 6px;
+                padding-bottom: 6px;
+                spacing: 10px;
+                Segment {
+                    width: 60px;
+                    horizontal-stretch: 0;
+                    label: "Back";
+                    clicked => {
+                        root.confirm_enable = false;
+                        root.confirm_remove = "";
+                        if (root.page == 0) {
+                            root.close();
+                        } else {
+                            root.page -= 1;
+                        }
+                    }
+                }
+                Text {
+                    text: root.page == 0 ? "Settings" : root.page == 1 ? "Settings  ›  Security" : "Settings  ›  Security  ›  Client token";
+                    color: Theme.text-2;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+
+        // ---- Settings: categories
+        if root.page == 0: VerticalLayout {
+            vertical-stretch: 1;
+            padding: 20px;
+            spacing: 8px;
+            alignment: start;
+            Text {
+                text: "Settings";
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            Text {
+                text: "Relay-wide settings for every device. Only administrators see this page.";
+                color: Theme.text-3;
+                font-size: 11px;
+            }
+            Rectangle { height: 6px; }
+            NavRow {
+                title: "Security";
+                subtitle: "Who may connect to this relay";
+                clicked => {
+                    root.page = 1;
+                    root.refresh();
+                }
+            }
+        }
+
+        // ---- Security: items
+        if root.page == 1: VerticalLayout {
+            vertical-stretch: 1;
+            padding: 20px;
+            spacing: 8px;
+            alignment: start;
+            Text {
+                text: "Security";
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            Rectangle { height: 6px; }
+            NavRow {
+                title: "Client token";
+                subtitle: "Only devices you list can connect; each receives its token automatically";
+                status: !root.security_supported ? "" : root.security_enabled ? "ON" : "OFF";
+                status_on: root.security_enabled;
+                clicked => {
+                    root.page = 2;
+                    root.refresh();
+                }
+            }
+        }
+
+        // ---- Client token
+        if root.page == 2: VerticalLayout {
+            vertical-stretch: 1;
+            padding: 20px;
+            spacing: 12px;
+
+            Text {
+                text: "Client token";
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            Text {
+                text: "List the devices that may use this relay. A listed device receives its own token automatically the first time it connects and must present it from then on, so nothing has to be set up on the device besides the relay address.";
+                color: Theme.text-3;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+
+            if !root.security_supported: Rectangle {
+                height: 40px;
+                background: Theme.accent-soft;
+                border-width: 1px;
+                border-color: Theme.accent;
+                Text {
+                    text: !root.relay_online ? "Waiting for the relay…" : "This relay does not support client tokens. Update the relay to use them.";
+                    color: #fca5a5;
+                    font-size: 11px;
+                }
+            }
+
+            // On/off
+            if root.security_supported: Rectangle {
+                height: root.confirm_enable ? 92px : 56px;
+                background: Theme.surface;
+                border-width: 1px;
+                border-color: root.security_enabled ? Theme.accent : Theme.border;
+                VerticalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 12px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 3px;
+                            Text {
+                                text: "Require a client token";
+                                color: Theme.text;
+                                font-size: 12px;
+                                font-weight: 600;
+                            }
+                            Text {
+                                text: root.security_enabled
+                                    ? "On: only the devices below can connect. Others are refused."
+                                    : "Off: any device that knows the relay address can connect.";
+                                color: root.security_enabled ? Theme.ok : Theme.text-3;
+                                font-size: 11px;
+                                overflow: elide;
+                            }
+                        }
+                        Switch {
+                            y: (parent.height - self.height) / 2;
+                            on: root.security_enabled;
+                            enabled: root.relay_online;
+                            toggled => {
+                                if (root.security_enabled) {
+                                    root.set_enabled(false);
+                                } else {
+                                    root.confirm_enable = true;
+                                }
+                            }
+                        }
+                    }
+                    if root.confirm_enable: HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            horizontal-stretch: 1;
+                            text: "Devices that are not on the list are disconnected right away. This device is added as an administrator.";
+                            color: Theme.wait;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        ActionButton {
+                            label: "Cancel";
+                            clicked => { root.confirm_enable = false; }
+                        }
+                        ActionButton {
+                            label: "Turn on";
+                            primary: true;
+                            clicked => {
+                                root.confirm_enable = false;
+                                root.set_enabled(true);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.security_supported && root.security_managed_by_env: Text {
+                text: "The relay also has OPENDESK_DEVICE_CREDENTIALS set: those devices always need the token configured there, and the list below applies to every other device.";
+                color: Theme.wait;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+
+            // Add a device
+            if root.security_supported: HorizontalLayout {
+                spacing: 8px;
+                height: 32px;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    background: #0a0a0c;
+                    border-width: 1px;
+                    border-color: id-input.has-focus ? Theme.accent : Theme.border;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        Rectangle {
+                            if id-input.text == "": Text {
+                                width: parent.width;
+                                height: parent.height;
+                                text: "Device ID, e.g. 123 456 789";
+                                color: #52525b;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            id-input := TextInput {
+                                color: Theme.text;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                                single-line: true;
+                                accepted => {
+                                    if (self.text != "") {
+                                        root.add_device(self.text, root.add_admin);
+                                        self.text = "";
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    width: admin-row.preferred-width + 16px;
+                    background: admin-ta.has-hover ? Theme.hover : transparent;
+                    admin-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.add_admin = !root.add_admin; }
+                    }
+                    admin-row := HorizontalLayout {
+                        x: 8px;
+                        spacing: 6px;
+                        Rectangle {
+                            width: 12px;
+                            height: 12px;
+                            y: (parent.height - self.height) / 2;
+                            border-width: 1px;
+                            border-color: root.add_admin ? Theme.accent : Theme.text-3;
+                            background: root.add_admin ? Theme.accent : transparent;
+                        }
+                        Text {
+                            text: "Administrator";
+                            color: Theme.text-2;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                ActionButton {
+                    y: 2px;
+                    label: "Add";
+                    primary: true;
+                    enabled: id-input.text != "" && root.relay_online;
+                    clicked => {
+                        root.add_device(id-input.text, root.add_admin);
+                        id-input.text = "";
+                    }
+                }
+                ActionButton {
+                    y: 2px;
+                    label: "Add all online devices";
+                    enabled: root.relay_online;
+                    clicked => { root.add_online(); }
+                }
+            }
+
+            // Allowed devices
+            if root.security_supported: Rectangle {
+                vertical-stretch: 1;
+                background: Theme.surface;
+                border-width: 1px;
+                border-color: Theme.border;
+                VerticalLayout {
+                    padding: 0px;
+                    spacing: 0px;
+                    Rectangle {
+                        height: 34px;
+                        background: Theme.raised;
+                        HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 14px;
+                            Text {
+                                text: "Allowed devices (" + root.security_items.length + ")";
+                                color: #d4d4d8;
+                                font-size: 12px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Rectangle {
+                        height: 1px;
+                        background: Theme.divider;
+                    }
+                    ScrollArea {
+                        vertical-stretch: 1;
+                        spacing: 4px;
+
+                        Rectangle { height: 4px; }
+                        if root.security_items.length == 0: Text {
+                            height: 60px;
+                            text: "No device is listed yet. Add device IDs above, or add every device that is online now.";
+                            color: Theme.text-3;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        for d in root.security_items: Rectangle {
+                            height: 44px;
+                            x: 8px;
+                            width: parent.width - 8px;
+                            background: #0d0d10;
+                            border-width: 1px;
+                            border-color: root.confirm_remove == d.desk_id ? Theme.accent : #1f1f24;
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 10px;
+                                spacing: 10px;
+                                Rectangle {
+                                    width: 7px;
+                                    height: 7px;
+                                    y: (parent.height - self.height) / 2;
+                                    background: d.online ? Theme.ok : #52525b;
+                                }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    spacing: 2px;
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: d.name != "" ? d.name + "  •  " + d.desk_id : d.desk_id;
+                                            color: Theme.text;
+                                            font-size: 12px;
+                                            font-weight: 600;
+                                            overflow: elide;
+                                        }
+                                        if d.admin: Rectangle {
+                                            width: adm-txt.preferred-width + 10px;
+                                            height: 15px;
+                                            background: Theme.accent-soft;
+                                            adm-txt := Text {
+                                                text: "ADMIN";
+                                                color: #fca5a5;
+                                                font-size: 9px;
+                                                font-weight: 700;
+                                            }
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                    }
+                                    Text {
+                                        text: root.confirm_remove == d.desk_id
+                                            ? (root.security_enabled ? "Remove this device? It is disconnected and can no longer connect." : "Remove this device from the list?")
+                                            : d.enrolled ? "Token issued " + d.enrolled_at
+                                            : "Waiting for its first connection; it receives its token then";
+                                        color: root.confirm_remove == d.desk_id ? Theme.wait : d.enrolled ? Theme.text-3 : Theme.wait;
+                                        font-size: 10px;
+                                        overflow: elide;
+                                    }
+                                }
+                                if root.confirm_remove != d.desk_id && d.enrolled: ActionButton {
+                                    y: (parent.height - self.height) / 2;
+                                    label: "Reset token";
+                                    enabled: root.relay_online;
+                                    clicked => { root.reset_device(d.desk_id); }
+                                }
+                                if root.confirm_remove != d.desk_id: ActionButton {
+                                    y: (parent.height - self.height) / 2;
+                                    label: "Remove";
+                                    danger: true;
+                                    enabled: root.relay_online;
+                                    clicked => { root.confirm_remove = d.desk_id; }
+                                }
+                                if root.confirm_remove == d.desk_id: ActionButton {
+                                    y: (parent.height - self.height) / 2;
+                                    label: "Cancel";
+                                    clicked => { root.confirm_remove = ""; }
+                                }
+                                if root.confirm_remove == d.desk_id: ActionButton {
+                                    y: (parent.height - self.height) / 2;
+                                    label: "Remove";
+                                    primary: true;
+                                    clicked => {
+                                        root.confirm_remove = "";
+                                        root.remove_device(d.desk_id);
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle { height: 4px; }
+                    }
+                }
+            }
+
+            if root.security_supported: Text {
+                text: "Reset token: use it when a device was reinstalled and lost its token; its next connection receives a new one.";
+                color: Theme.text-3;
+                font-size: 10px;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

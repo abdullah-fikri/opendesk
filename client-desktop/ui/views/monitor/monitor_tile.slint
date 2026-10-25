@@ -1,0 +1,85 @@
+// One host on the monitor wall: its latest thumbnail, name and state. View only: no input reaches the host;
+// a double click opens a normal (interactive) session instead.
+
+import { MonitorTile } from "../../types.slint";
+import { Theme } from "../../theme.slint";
+
+export component MonitorTileView inherits Rectangle {
+    in property <MonitorTile> tile;
+    callback connect(string);
+
+    property <bool> live: tile.state == 1;
+
+    background: Theme.canvas;
+    border-width: 1px;
+    border-color: ta.has-hover && live ? Theme.text-3 : Theme.border;
+    clip: true;
+
+    if tile.has_frame: Image {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 2px;
+        height: parent.height - 26px;
+        source: tile.frame;
+        image-fit: contain;
+        // Thumbnails stay where they are when the host goes away, dimmed.
+        opacity: root.live ? 1.0 : 0.35;
+    }
+
+    if !root.live || !tile.has_frame: Text {
+        y: (parent.height - 24px - self.height) / 2;
+        width: parent.width;
+        text: tile.state <= 1 ? "Waiting for the first picture…"
+            : tile.state == 2 ? "Offline"
+            : tile.state == 3 ? "This device cannot be monitored (Android or an older OpenDesk)"
+            : "This device is not an administrator on the relay";
+        color: tile.state == 2 || tile.state == 3 || tile.state == 4 ? Theme.text-3 : Theme.text-2;
+        font-size: 11px;
+        horizontal-alignment: center;
+        wrap: word-wrap;
+    }
+
+    // Caption
+    Rectangle {
+        y: parent.height - 25px;
+        height: 24px;
+        x: 1px;
+        width: parent.width - 2px;
+        background: Theme.surface;
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 8px;
+            Rectangle {
+                width: 6px;
+                height: 6px;
+                y: (parent.height - self.height) / 2;
+                background: tile.state == 1 ? Theme.ok : tile.state == 0 ? Theme.wait : tile.state == 2 ? #52525b : Theme.accent;
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: tile.title;
+                color: Theme.text;
+                font-size: 11px;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Text {
+                text: tile.subtitle;
+                color: Theme.text-3;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: root.live ? pointer : default;
+        double-clicked => {
+            if (root.live) {
+                root.connect(tile.id);
+            }
+        }
+    }
+}

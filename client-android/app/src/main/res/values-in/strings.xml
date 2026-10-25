@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Indonesian translations of values/strings.xml. -->
+<resources>
+    <string name="status_connecting">Menghubungkan...</string>
+    <string name="status_connected">Terhubung</string>
+    <string name="status_disconnected">Terputus</string>
+    <string name="relay_button">Relay</string>
+    <string name="mode_trackpad">Trackpad</string>
+    <string name="relay_label">Relay: %1$s</string>
+    <string name="relay_not_configured">belum diatur</string>
+    <string name="this_device_id">ID Perangkat Ini</string>
+    <string name="copy">Salin</string>
+    <string name="control_another_device">Kontrol Komputer</string>
+    <string name="enter_target_id">Masukkan ID tujuan</string>
+    <string name="connect_to_pc">Hubungkan</string>
+    <string name="connecting">Menghubungkan...</string>
+    <string name="mic_on">Mic: Aktif</string>
+    <string name="mic_off">Mic: Mati</string>
+    <string name="screen">Layar</string>
+    <string name="disconnect">Putuskan</string>
+    <string name="mode_touch">Sentuh</string>
+    <string name="left">Kiri</string>
+    <string name="double_click">2x Klik</string>
+    <string name="right">Kanan</string>
+    <string name="hold">Tahan</string>
+    <string name="hold_active">Tahan (Aktif)</string>
+    <string name="right_click">Klik Kanan</string>
+    <string name="switching_monitor">Mengganti layar monitor...</string>
+    <string name="id_copied">ID disalin ke clipboard</string>
+    <string name="session_closed">Sesi ditutup</string>
+    <string name="error_generic">Kesalahan</string>
+    <string name="relay_settings_title">Pengaturan Relay</string>
+    <string name="relay_settings_message">Masukkan alamat relay:</string>
+    <string name="save_and_connect">Simpan &amp; Sambungkan</string>
+    <string name="cancel">Batal</string>
+    <string name="relay_settings_invalid">Isi alamat relay</string>
+    <string name="relay_updated">Relay diperbarui</string>
+    <string name="file_receiving">Menerima berkas: %1$s...</string>
+    <string name="file_saved">Berkas tersimpan: %1$s</string>
+    <string name="file_failed">Gagal menerima berkas</string>
+    <string name="status_reconnecting">Menyambung ulang...</string>
+    <string name="connection_lost">Koneksi ke relay terputus</string>
+    <string name="relay_offline">Relay belum terhubung. Periksa alamat dan jaringan.</string>
+    <string name="viewer_only_note">HP ini untuk mengontrol komputer lain. HP ini tidak bisa dikontrol dari jarak jauh.</string>
+    <string name="relay_plaintext_refused">Gunakan alamat wss://. ws:// biasa hanya diizinkan ke perangkat ini (localhost).</string>
+    <string name="keyboard">Keyboard</string>
+    <string name="fit_screen">Pas</string>
+    <string name="incoming_input_label">Input keyboard remote</string>
+</resources>

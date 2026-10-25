@@ -1,0 +1,374 @@
+// Main window. Rust drives it through the properties and callbacks below (see docs/ui.md for the contract):
+// properties are written by Rust and read by the UI unless noted; callbacks are invoked by the UI and
+// implemented in src/ui/callbacks.rs.
+
+import { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem } from "types.slint";
+import { HeaderBar } from "views/header_bar.slint";
+import { DashboardView } from "views/dashboard.slint";
+import { HostActiveView } from "views/host_panel.slint";
+import { SessionWorkspace } from "views/workspace/session_workspace.slint";
+import { MonitorWallView } from "views/monitor/monitor_wall.slint";
+import { SettingsView } from "views/settings/settings_view.slint";
+import { ServerSettingsModal } from "dialogs/server_settings_dialog.slint";
+import { RenameDeviceModal } from "dialogs/rename_device_dialog.slint";
+import { DeleteConfirmModal } from "dialogs/delete_confirm_dialog.slint";
+
+export { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem }
+
+export component MainWindow inherits Window {
+    title: "OpenDesk - " + local_desk_id;
+    icon: @image-url("icon.png");
+    min-width: 880px;
+    min-height: 560px;
+    preferred-width: 920px;
+    preferred-height: 600px;
+    background: #09090b;
+
+    // ---- Device and relay ----
+    in property <string> local_desk_id;
+    in-out property <string> gateway_url;
+    in property <string> status_text: "Connecting...";
+    in property <bool> is_relay_online: false;
+    in property <bool> is_admin: false;
+    in property <string> host_notice: "";
+    in-out property <int> active_dashboard_tab: 0;
+    in-out property <string> target_desk_id: "";
+    in property <[HistoryItem]> history_items: [];
+    in property <[HostItem]> server_hosts: [];
+
+    // ---- Host role: a remote viewer controls this machine ----
+    in property <bool> hosting: false;
+    in property <string> hosting_partner: "";
+    in property <bool> hosting_mic_muted: true;
+
+    // ---- Viewer sessions (up to 4) ----
+    in property <[SessionView]> sessions: [];
+    // Session that receives keyboard, mouse and clipboard. The UI may set it and then calls focus_session.
+    in-out property <string> focused_session: "";
+    // 0 = tabs (one session fills the body), 1 = split grid.
+    in-out property <int> view_layout: 0;
+    // Shows the dashboard as the "+" page while sessions exist.
+    in-out property <bool> show_new_session: false;
+
+    // ---- Monitor wall (admin edition; never shown while is_admin is false) ----
+    // Set by the UI when the wall opens or closes; it then calls open_monitor / close_monitor.
+    in-out property <bool> monitor_open: false;
+    in property <[MonitorTile]> monitor_tiles: [];
+    in property <[MonitorPick]> monitor_picks: [];
+    in property <int> monitor_grid: 3;
+    in property <int> monitor_page: 0;
+    in property <int> monitor_pages: 1;
+    in property <int> monitor_total: 0;
+    in property <bool> monitor_rotate: false;
+    in property <int> monitor_rotate_secs: 10;
+    in property <bool> monitor_all: true;
+    in property <bool> monitor_relay_ok: true;
+
+    // ---- Settings (admin edition; never shown while is_admin is false) ----
+    in-out property <bool> settings_open: false;
+    in-out property <int> settings_page: 0;
+    in property <bool> security_supported: false;
+    in property <bool> security_enabled: false;
+    in property <bool> security_managed_by_env: false;
+    in property <[SecurityItem]> security_items: [];
+    // The relay stores names given to devices in the host list.
+    in property <bool> host_alias_supported: false;
+
+    // ---- Dialogs (UI-owned) ----
+    in-out property <bool> show_settings: false;
+    in-out property <bool> show_rename_modal: false;
+    in-out property <string> rename_target_id: "";
+    in-out property <string> rename_input_val: "";
+    // 0 = local history entry, 1 = relay host list (shared with every administrator).
+    in-out property <int> rename_scope: 0;
+    in-out property <bool> show_delete_modal: false;
+    in-out property <string> delete_target_id: "";
+    in-out property <string> delete_target_label: "";
+
+    // ---- Dashboard ----
+    callback request_connect(string);
+    callback copy_local_id();
+    callback refresh_hosts();
+    callback save_gateway_url(string);
+    callback open_rename(string, string);
+    callback save_rename(string, string);
+    callback delete_history(string);
+    // Admin edition: names a device in the relay's host list (desk ID, name; empty clears it).
+    callback save_host_alias(string, string);
+
+    // ---- Host role ----
+    callback hosting_send_files();
+    callback hosting_toggle_mic();
+    callback end_hosting();
+
+    // ---- Viewer sessions; the first argument is always the session (host) ID ----
+    callback focus_session(string);
+    callback close_session(string);
+    callback set_view_layout(int);
+    callback new_session_page();
+    // Pointer coordinates are normalized to 0..10000 of the remote screen.
+    callback session_mouse_move(string, int, int);
+    callback session_mouse_down(string, int, int, int);
+    callback session_mouse_up(string, int, int, int);
+    callback session_mouse_wheel(string, int, int, int);
+    // (id, text, pressed, repeat, ctrl, alt, shift)
+    callback session_key_event(string, string, bool, bool, bool, bool, bool);
+    callback session_release_keys(string);
+    // Physical pixels of the session's canvas or tile.
+    callback session_viewport_resized(string, int, int);
+    callback select_monitor(string, int);
+    callback session_send_files(string);
+    callback session_toggle_mic(string);
+    callback session_set_privacy(string, int);
+    callback session_toggle_block_input(string);
+    callback session_set_resolution(string, int);
+    callback session_set_audio_quality(string, int);
+    // Outside Windows there is no system-key hook: the toolbar offers a shortcut menu instead.
+    in property <bool> system_keys_menu: false;
+    // "win", "alt-tab", "taskmgr", "explorer", "desktop"
+    callback session_shortcut(string, string);
+
+    // ---- Monitor wall ----
+    callback open_monitor();
+    callback close_monitor();
+    callback monitor_step_page(int);
+    callback monitor_set_grid(int);
+    // (on, seconds)
+    callback monitor_set_rotation(bool, int);
+    callback monitor_set_all(bool);
+    callback monitor_toggle_host(string);
+
+    // ---- Settings › Security › Client token ----
+    callback security_refresh();
+    callback security_set_enabled(bool);
+    // (desk ID as typed, administrator)
+    callback security_add(string, bool);
+    callback security_add_online();
+    callback security_remove(string);
+    callback security_reset(string);
+
+    // The monitor wall in full screen shows nothing but the screens.
+    property <bool> wall_fullscreen: is_admin && monitor_open && !settings_open && sessions.length == 0 && root.full-screen;
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+
+        // Accent line
+        if !wall_fullscreen: Rectangle {
+            height: 2px;
+            background: #dc2626;
+        }
+
+        if sessions.length == 0 && !wall_fullscreen: HeaderBar {
+            fullscreen <=> root.full-screen;
+            is_relay_online: root.is_relay_online;
+            status_text: root.status_text;
+            is_admin: root.is_admin;
+            hosting: root.hosting;
+            is_mic_muted: root.hosting_mic_muted;
+            show_settings <=> root.show_settings;
+            settings_open: root.settings_open;
+            open_admin_settings => {
+                root.monitor_open = false;
+                root.close_monitor();
+                root.settings_page = 0;
+                root.settings_open = !root.settings_open;
+                if (root.settings_open) {
+                    root.security_refresh();
+                }
+            }
+            open_file_picker => { root.hosting_send_files(); }
+            toggle_mic => { root.hosting_toggle_mic(); }
+            disconnect_session => { root.end_hosting(); }
+        }
+
+        if sessions.length == 0 && !wall_fullscreen: Rectangle {
+            height: 1px;
+            background: #1f1f23;
+        }
+
+        if sessions.length > 0: SessionWorkspace {
+            vertical-stretch: 1;
+            sessions: root.sessions;
+            focused_session <=> root.focused_session;
+            view_layout <=> root.view_layout;
+            show_new_session <=> root.show_new_session;
+            fullscreen <=> root.full-screen;
+            show_settings <=> root.show_settings;
+            is_relay_online: root.is_relay_online;
+            status_text: root.status_text;
+            host_active: root.hosting;
+            host_partner: root.hosting_partner;
+            end_host_session => { root.end_hosting(); }
+            focus_session(id) => { root.focus_session(id); }
+            close_session(id) => { root.close_session(id); }
+            set_view_layout(n) => { root.set_view_layout(n); }
+            new_session_page => { root.new_session_page(); }
+            session_mouse_move(id, x, y) => { root.session_mouse_move(id, x, y); }
+            session_mouse_down(id, x, y, b) => { root.session_mouse_down(id, x, y, b); }
+            session_mouse_up(id, x, y, b) => { root.session_mouse_up(id, x, y, b); }
+            session_mouse_wheel(id, x, y, d) => { root.session_mouse_wheel(id, x, y, d); }
+            session_key_event(id, t, p, r, c, a, sh) => { root.session_key_event(id, t, p, r, c, a, sh); }
+            session_release_keys(id) => { root.session_release_keys(id); }
+            session_viewport_resized(id, w, h) => { root.session_viewport_resized(id, w, h); }
+            select_monitor(id, i) => { root.select_monitor(id, i); }
+            session_send_files(id) => { root.session_send_files(id); }
+            session_toggle_mic(id) => { root.session_toggle_mic(id); }
+            session_set_privacy(id, m) => { root.session_set_privacy(id, m); }
+            session_toggle_block_input(id) => { root.session_toggle_block_input(id); }
+            session_set_resolution(id, m) => { root.session_set_resolution(id, m); }
+            session_set_audio_quality(id, q) => { root.session_set_audio_quality(id, q); }
+            system_keys_menu: root.system_keys_menu;
+            session_shortcut(id, sc) => { root.session_shortcut(id, sc); }
+
+            if root.show_new_session: DashboardView {
+                local_desk_id: root.local_desk_id;
+                host_notice: root.host_notice;
+                is_relay_online: root.is_relay_online;
+                is_admin: root.is_admin;
+                as_new_session_page: true;
+                open_sessions: root.sessions.length;
+                active_tab <=> root.active_dashboard_tab;
+                target_desk_id <=> root.target_desk_id;
+                history_items: root.history_items;
+                server_hosts: root.server_hosts;
+                copy_local_id => { root.copy_local_id(); }
+                request_connect(id) => { root.request_connect(id); }
+                host_alias_supported: root.host_alias_supported;
+                open_rename(id, alias) => {
+                    root.rename_scope = 0;
+                    root.open_rename(id, alias);
+                }
+                open_host_rename(id, alias) => {
+                    root.rename_scope = 1;
+                    root.open_rename(id, alias);
+                }
+                prompt_delete_history(id, label) => {
+                    root.delete_target_id = id;
+                    root.delete_target_label = label;
+                    root.show_delete_modal = true;
+                }
+                refresh_hosts => { root.refresh_hosts(); }
+                back_to_sessions => { root.show_new_session = false; }
+            }
+        }
+
+        // Body while no viewer session is open: the monitor wall, the dashboard, or the hosting panel.
+        if sessions.length == 0: Rectangle {
+            vertical-stretch: 1;
+            background: #09090b;
+            clip: true;
+
+            if is_admin && settings_open: SettingsView {
+                page <=> root.settings_page;
+                relay_online: root.is_relay_online;
+                security_supported: root.security_supported;
+                security_enabled: root.security_enabled;
+                security_managed_by_env: root.security_managed_by_env;
+                security_items: root.security_items;
+                close => { root.settings_open = false; }
+                refresh => { root.security_refresh(); }
+                set_enabled(on) => { root.security_set_enabled(on); }
+                add_device(id, admin) => { root.security_add(id, admin); }
+                add_online => { root.security_add_online(); }
+                remove_device(id) => { root.security_remove(id); }
+                reset_device(id) => { root.security_reset(id); }
+            }
+
+            if is_admin && monitor_open && !settings_open: MonitorWallView {
+                tiles: root.monitor_tiles;
+                picks: root.monitor_picks;
+                grid: root.monitor_grid;
+                page: root.monitor_page;
+                pages: root.monitor_pages;
+                total: root.monitor_total;
+                rotate: root.monitor_rotate;
+                rotate_secs: root.monitor_rotate_secs;
+                all: root.monitor_all;
+                relay_ok: root.monitor_relay_ok;
+                fullscreen <=> root.full-screen;
+                close => {
+                    root.monitor_open = false;
+                    root.close_monitor();
+                }
+                connect(id) => {
+                    root.monitor_open = false;
+                    root.close_monitor();
+                    root.request_connect(id);
+                }
+                step_page(d) => { root.monitor_step_page(d); }
+                set_grid(g) => { root.monitor_set_grid(g); }
+                set_rotation(on, secs) => { root.monitor_set_rotation(on, secs); }
+                set_all(all) => { root.monitor_set_all(all); }
+                toggle_host(id) => { root.monitor_toggle_host(id); }
+            }
+
+            if !(is_admin && (monitor_open || settings_open)) && !hosting: DashboardView {
+                local_desk_id: root.local_desk_id;
+                host_notice: root.host_notice;
+                is_relay_online: root.is_relay_online;
+                is_admin: root.is_admin;
+                active_tab <=> root.active_dashboard_tab;
+                target_desk_id <=> root.target_desk_id;
+                history_items: root.history_items;
+                server_hosts: root.server_hosts;
+                host_alias_supported: root.host_alias_supported;
+                copy_local_id => { root.copy_local_id(); }
+                request_connect(id) => { root.request_connect(id); }
+                open_rename(id, alias) => {
+                    root.rename_scope = 0;
+                    root.open_rename(id, alias);
+                }
+                open_host_rename(id, alias) => {
+                    root.rename_scope = 1;
+                    root.open_rename(id, alias);
+                }
+                prompt_delete_history(id, label) => {
+                    root.delete_target_id = id;
+                    root.delete_target_label = label;
+                    root.show_delete_modal = true;
+                }
+                refresh_hosts => { root.refresh_hosts(); }
+                open_monitor => {
+                    root.monitor_open = true;
+                    root.open_monitor();
+                }
+            }
+
+            if !(is_admin && (monitor_open || settings_open)) && hosting: HostActiveView {
+                active_partner_id: root.hosting_partner;
+                is_mic_muted: root.hosting_mic_muted;
+                toggle_mic => { root.hosting_toggle_mic(); }
+                disconnect_session => { root.end_hosting(); }
+            }
+        }
+    }
+
+    if show_settings: ServerSettingsModal {
+        gateway_url <=> root.gateway_url;
+        show_settings <=> root.show_settings;
+        save_gateway_url(url) => { root.save_gateway_url(url); }
+    }
+
+    if show_rename_modal: RenameDeviceModal {
+        rename_target_id: root.rename_target_id;
+        rename_input_val <=> root.rename_input_val;
+        show_rename_modal <=> root.show_rename_modal;
+        shared: root.rename_scope == 1;
+        save_rename(id, alias) => {
+            if (root.rename_scope == 1) {
+                root.save_host_alias(id, alias);
+            } else {
+                root.save_rename(id, alias);
+            }
+        }
+    }
+
+    if show_delete_modal: DeleteConfirmModal {
+        delete_target_id: root.delete_target_id;
+        delete_target_label: root.delete_target_label;
+        show_delete_modal <=> root.show_delete_modal;
+        confirm_delete(id) => { root.delete_history(id); }
+    }
+}

@@ -1,0 +1,49 @@
+// Numbered picker for the host's monitors.
+
+import { MonitorItem } from "../../types.slint";
+import { Theme } from "../../theme.slint";
+import { Segment } from "../../components/segment.slint";
+
+export component MonitorPicker inherits HorizontalLayout {
+    in property <[MonitorItem]> monitors;
+    in property <int> active;
+    callback select(int);
+
+    spacing: 0px;
+    alignment: start;
+    horizontal-stretch: 0;
+
+    Text {
+        text: "Screen";
+        color: Theme.text-3;
+        font-size: 11px;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+    Rectangle { width: 8px; }
+
+    for m in root.monitors: Segment {
+        y: (parent.height - self.height) / 2;
+        width: 28px;
+        horizontal-stretch: 0;
+        label: m.label;
+        selected: m.index == root.active;
+        clicked => { root.select(m.index); }
+
+        // Primary monitor: small mark in the top-right corner.
+        if m.primary: Rectangle {
+            x: parent.width - 6px;
+            y: 2px;
+            width: 4px;
+            height: 4px;
+            background: m.index == root.active ? #ffffff : Theme.text-2;
+        }
+        Rectangle {
+            Tooltip {
+                text: @markdown("\{"Monitor " + m.label + (m.primary ? " (utama)" : "") + " · " + m.width + "×" + m.height}");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Toolbar (focused session)

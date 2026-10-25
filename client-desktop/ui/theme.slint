@@ -1,0 +1,43 @@
+// Colors, sizes and stroke icons shared by every view. Square corners everywhere.
+
+export global Theme {
+    out property <color> bg: #09090b;
+    out property <color> canvas: #050507;
+    out property <color> surface: #111114;
+    out property <color> surface-2: #18181b;
+    out property <color> raised: #141418;
+    out property <color> hover: #1f1f23;
+    out property <color> divider: #1f1f23;
+    out property <color> border: #27272a;
+    out property <color> text: #f4f4f5;
+    out property <color> text-2: #a1a1aa;
+    out property <color> text-3: #71717a;
+    out property <color> accent: #dc2626;
+    out property <color> accent-hover: #b91c1c;
+    out property <color> accent-soft: #dc262628;
+    out property <color> ok: #22c55e;
+    out property <color> relay: #38bdf8;
+    out property <color> wait: #f59e0b;
+    // Shared sizes
+    out property <length> control-h: 28px;
+    out property <length> font-ui: 11px;
+
+    // Status colour for a session: amber while connecting, green on P2P, blue through the relay.
+    public pure function session-dot(connecting: bool, path: string) -> color {
+        if (connecting) {
+            return self.wait;
+        }
+        return path == "P2P" ? self.ok : self.relay;
+    }
+}
+
+// Stroke icons (12x12 viewbox) drawn with Path so they never depend on font glyph coverage.
+export global Icons {
+    out property <string> close: "M2.5 2.5 L9.5 9.5 M9.5 2.5 L2.5 9.5";
+    out property <string> caret: "M3 4.5 L6 7.5 L9 4.5";
+    out property <string> chevron-up: "M2 8 L6 4 L10 8";
+    out property <string> chevron-down: "M2 4 L6 8 L10 4";
+    out property <string> plus: "M6 1 L6 11 M1 6 L11 6";
+    out property <string> fullscreen: "M1 4.5 L1 1 L4.5 1 M7.5 1 L11 1 L11 4.5 M11 7.5 L11 11 L7.5 11 M4.5 11 L1 11 L1 7.5";
+    out property <string> fullscreen-exit: "M4.5 1 L4.5 4.5 L1 4.5 M7.5 1 L7.5 4.5 L11 4.5 M11 7.5 L7.5 7.5 L7.5 11 M1 7.5 L4.5 7.5 L4.5 11";
+}

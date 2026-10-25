@@ -16,45 +16,71 @@
 //!    payload to the end of the message
 //! ```
 
+/// First four bytes of every framed message.
 pub const MAGIC: [u8; 4] = [0xFF, 0xD8, 0x00, 0x4F];
+/// Format version written and accepted.
 pub const VERSION: u8 = 1;
 const FIXED: usize = 20;
 
+/// Kind: full frame; the payload is one JPEG.
 pub const KIND_KEY: u8 = 1;
+/// Kind: changed regions; the payload is one JPEG atlas.
 pub const KIND_DELTA: u8 = 2;
+/// Kind: one H.264 access unit.
 pub const KIND_H264: u8 = 3;
+/// Flag: the H.264 access unit is an IDR (a decoder may start here).
 pub const FLAG_IDR: u8 = 1;
 
 /// Region copied inside the viewer framebuffer (DXGI move rects, e.g. scrolling).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MoveRect {
+    /// Source left edge.
     pub src_x: u16,
+    /// Source top edge.
     pub src_y: u16,
+    /// Destination left edge.
     pub dst_x: u16,
+    /// Destination top edge.
     pub dst_y: u16,
+    /// Width.
     pub w: u16,
+    /// Height.
     pub h: u16,
 }
 
 /// Region of the decoded payload image placed at (dst_x, dst_y).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Patch {
+    /// Destination left edge in the framebuffer.
     pub dst_x: u16,
+    /// Destination top edge in the framebuffer.
     pub dst_y: u16,
+    /// Width.
     pub w: u16,
+    /// Height.
     pub h: u16,
+    /// Left edge in the payload atlas.
     pub atlas_x: u16,
+    /// Top edge in the payload atlas.
     pub atlas_y: u16,
 }
 
+/// Header of a framed message (see the module docs for the byte layout).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameHeader {
+    /// `KIND_KEY`, `KIND_DELTA` or `KIND_H264`.
     pub kind: u8,
+    /// Bit flags (`FLAG_IDR`).
     pub flags: u8,
+    /// Sequence number; a delta applies only on top of `seq - 1`.
     pub seq: u32,
+    /// Frame width.
     pub width: u16,
+    /// Frame height.
     pub height: u16,
+    /// Regions to move inside the framebuffer before patching.
     pub moves: Vec<MoveRect>,
+    /// Regions to copy from the payload.
     pub patches: Vec<Patch>,
 }
 
@@ -72,6 +98,7 @@ fn get16(b: &[u8], at: usize) -> u16 {
 }
 
 impl FrameHeader {
+    /// Serializes the header followed by `payload`.
     pub fn encode(&self, payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(FIXED + (self.moves.len() + self.patches.len()) * 12 + payload.len());
         out.extend_from_slice(&MAGIC);
@@ -108,10 +135,24 @@ impl FrameHeader {
         }
         let field = |i: usize, k: usize| get16(bytes, FIXED + i * 12 + k * 2);
         let moves = (0..n_moves)
-            .map(|i| MoveRect { src_x: field(i, 0), src_y: field(i, 1), dst_x: field(i, 2), dst_y: field(i, 3), w: field(i, 4), h: field(i, 5) })
+            .map(|i| MoveRect {
+                src_x: field(i, 0),
+                src_y: field(i, 1),
+                dst_x: field(i, 2),
+                dst_y: field(i, 3),
+                w: field(i, 4),
+                h: field(i, 5),
+            })
             .collect();
         let patches = (n_moves..n_moves + n_patches)
-            .map(|i| Patch { dst_x: field(i, 0), dst_y: field(i, 1), w: field(i, 2), h: field(i, 3), atlas_x: field(i, 4), atlas_y: field(i, 5) })
+            .map(|i| Patch {
+                dst_x: field(i, 0),
+                dst_y: field(i, 1),
+                w: field(i, 2),
+                h: field(i, 3),
+                atlas_x: field(i, 4),
+                atlas_y: field(i, 5),
+            })
             .collect();
         let header = FrameHeader {
             kind: bytes[5],
@@ -156,7 +197,15 @@ mod tests {
         let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0, 16, b'J', b'F', b'I', b'F', 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xFF, 0xD9];
         assert!(!is_framed(&jpeg));
         assert!(FrameHeader::parse(&jpeg).is_none());
-        let h = FrameHeader { kind: KIND_KEY, flags: 0, seq: 1, width: 2, height: 2, moves: vec![], patches: vec![Patch { dst_x: 0, dst_y: 0, w: 2, h: 2, atlas_x: 0, atlas_y: 0 }] };
+        let h = FrameHeader {
+            kind: KIND_KEY,
+            flags: 0,
+            seq: 1,
+            width: 2,
+            height: 2,
+            moves: vec![],
+            patches: vec![Patch { dst_x: 0, dst_y: 0, w: 2, h: 2, atlas_x: 0, atlas_y: 0 }],
+        };
         let msg = h.encode(&[]);
         assert!(FrameHeader::parse(&msg[..msg.len() - 1]).is_none(), "truncated rect list");
         let mut future = msg.clone();

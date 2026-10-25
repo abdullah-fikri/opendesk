@@ -1,0 +1,10 @@
+# Normalize line endings in the repository; Windows-only files keep CRLF in the working tree.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.iss text eol=crlf
+*.rc text eol=crlf
+
+*.png binary
+*.ico binary
+*.jar binary

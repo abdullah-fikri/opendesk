@@ -1,0 +1,63 @@
+// Vertical list that scrolls with the mouse wheel, by dragging, or with its scrollbar.
+
+import { Theme } from "../theme.slint";
+
+export component ScrollArea inherits Rectangle {
+    in property <length> spacing: 6px;
+    // Scrolls back to the top when it changes (e.g. switching tabs).
+    in property <int> reset_key: 0;
+
+    clip: true;
+
+    changed reset_key => { fl.content-y = 0; }
+
+    fl := Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-width: self.width;
+        content-height: max(self.height, body.preferred-height);
+
+        body := VerticalLayout {
+            // Room for the scrollbar so it never covers a row's buttons.
+            width: fl.width - 10px;
+            spacing: root.spacing;
+            alignment: start;
+            @children
+        }
+    }
+
+    // Scrollbar: shown only when the content is taller than the area; the thumb can be dragged.
+    if fl.content-height > fl.height + 1px: bar := Rectangle {
+        property <length> track: fl.height;
+        property <length> thumb: max(28px, self.track * fl.height / fl.content-height);
+        property <length> range: fl.content-height - fl.height;
+        x: parent.width - 6px;
+        width: 4px;
+        height: self.track;
+        background: #ffffff08;
+
+        Rectangle {
+            y: self.range-pos;
+            property <length> range-pos: bar.range > 0 ? (-fl.content-y) * (bar.track - bar.thumb) / bar.range : 0;
+            width: bar.width;
+            height: bar.thumb;
+            background: thumb-ta.pressed || thumb-ta.has-hover ? #71717a : #3f3f46;
+
+            thumb-ta := TouchArea {
+                property <length> start-y;
+                mouse-cursor: pointer;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        self.start-y = fl.content-y;
+                    }
+                }
+                moved => {
+                    if (self.pressed && bar.track > bar.thumb) {
+                        fl.content-y = max(-bar.range, min(0px,
+                            self.start-y - (self.mouse-y - self.pressed-y) * bar.range / (bar.track - bar.thumb)));
+                    }
+                }
+            }
+        }
+    }
+}

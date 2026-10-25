@@ -1,0 +1,130 @@
+// Relay address dialog.
+
+import { Icons } from "../theme.slint";
+import { Icon } from "../components/icon.slint";
+
+export component ServerSettingsModal inherits Rectangle {
+    background: #000000bb;
+    width: 100%;
+    height: 100%;
+
+    in-out property <string> gateway_url: "";
+    in-out property <bool> show_settings: false;
+    callback save_gateway_url(string);
+
+    Rectangle {
+        width: 420px;
+        height: 190px;
+        background: #111114;
+        border-width: 1px;
+        border-color: #27272a;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        clip: true;
+
+        VerticalLayout {
+            padding: 0px;
+            spacing: 0px;
+
+            Rectangle {
+                height: 2px;
+                background: #dc2626;
+            }
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 14px;
+                alignment: space-between;
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: "Relay Server";
+                        color: #f4f4f5;
+                        font-size: 13px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 24px;
+                        height: 24px;
+                        background: #18181c;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { show_settings = false; }
+                        }
+                        Icon {
+                            size: 10px;
+                            commands: Icons.close;
+                            tint: #a1a1aa;
+                        }
+                    }
+                }
+
+                Rectangle {
+                    height: 38px;
+                    background: #0a0a0c;
+                    border-width: 1px;
+                    border-color: input-gw.has-focus ? #dc2626 : #27272a;
+
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        input-gw := TextInput {
+                            text <=> gateway_url;
+                            color: #f4f4f5;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            single-line: true;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+
+                    Rectangle {
+                        width: 72px;
+                        height: 32px;
+                        background: #18181c;
+                        border-width: 1px;
+                        border-color: #27272a;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { show_settings = false; }
+                        }
+                        Text {
+                            text: "Cancel";
+                            color: #d4d4d8;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    Rectangle {
+                        width: 96px;
+                        height: 32px;
+                        background: #dc2626;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                save_gateway_url(input-gw.text);
+                                show_settings = false;
+                            }
+                        }
+                        Text {
+                            text: "Save";
+                            color: #ffffff;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

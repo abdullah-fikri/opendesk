@@ -1,31 +1,31 @@
-# Multi-stage image for OpenDesk Relay Gateway
-FROM golang:alpine AS builder
+# syntax=docker/dockerfile:1
+# Multi-stage build for the OpenDesk relay.
 
-WORKDIR /app
+FROM golang:1.26-alpine AS builder
+WORKDIR /src
 
-# Install git/certs if needed
-RUN apk add --no-cache ca-certificates
-
-# Cache dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
-COPY . .
+COPY cmd ./cmd
+COPY internal ./internal
 
-# Build statically linked binary without debug symbols
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o server-relay .
+ARG VERSION=1.0.0
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags="-s -w -X opendesk/server-relay/internal/version.Version=${VERSION}" \
+    -o /out/relay ./cmd/relay
 
-# Minimal scratch runtime
 FROM alpine:3.20
-
+RUN apk add --no-cache ca-certificates tzdata \
+    && addgroup -S opendesk && adduser -S -G opendesk opendesk
 WORKDIR /app
 
-RUN apk add --no-cache ca-certificates tzdata
+COPY --from=builder /out/relay /app/relay
+COPY config.json /app/config.json
 
-COPY --from=builder /app/server-relay /app/server-relay
-COPY --from=builder /app/config.json /app/config.json
-
+USER opendesk
 EXPOSE 8088
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD wget -qO- http://127.0.0.1:8088/healthz || exit 1
 
-ENTRYPOINT ["/app/server-relay"]
+ENTRYPOINT ["/app/relay", "-config", "/app/config.json"]

@@ -4,7 +4,8 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/bg_main"
-    android:fillViewport="true">
+    android:fillViewport="true"
+    android:fitsSystemWindows="true">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -36,7 +37,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginStart="10dp"
                 android:layout_weight="1"
-                android:text="OpenDesk"
+                android:text="@string/app_name"
                 android:textColor="@color/text_main"
                 android:textSize="15sp"
                 android:textStyle="bold" />
@@ -46,7 +47,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginEnd="12dp"
-                android:text="Menghubungkan..."
+                android:text="@string/status_connecting"
                 android:textColor="@color/text_muted"
                 android:textSize="12sp" />
 
@@ -59,7 +60,7 @@
                 android:insetBottom="0dp"
                 android:minWidth="0dp"
                 android:paddingHorizontal="10dp"
-                android:text="Server"
+                android:text="@string/relay_button"
                 android:textAllCaps="false"
                 android:textColor="@color/text_main"
                 android:textSize="11sp"
@@ -84,98 +85,11 @@
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="12dp"
                 android:fontFamily="monospace"
-                android:text="Server: -"
+                android:text="@string/relay_not_configured"
                 android:textColor="@color/text_muted"
                 android:textSize="11sp" />
 
-            <!-- Active Host Session Banner -->
-            <com.google.android.material.card.MaterialCardView
-                android:id="@+id/card_active_host_session"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="14dp"
-                android:visibility="gone"
-                app:cardBackgroundColor="@color/bg_card"
-                app:cardCornerRadius="2dp"
-                app:cardElevation="0dp"
-                app:strokeColor="@color/accent_red"
-                app:strokeWidth="1dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical">
-
-                    <View
-                        android:layout_width="match_parent"
-                        android:layout_height="2dp"
-                        android:background="@color/accent_red" />
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:padding="14dp">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="Sesi Remote Aktif"
-                            android:textColor="@color/accent_red"
-                            android:textSize="12sp"
-                            android:textStyle="bold" />
-
-                        <TextView
-                            android:id="@+id/tv_active_host_partner"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
-                            android:text="-"
-                            android:textColor="@color/text_main"
-                            android:textSize="14sp"
-                            android:textStyle="bold" />
-
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="10dp"
-                            android:orientation="horizontal">
-
-                            <Button
-                                android:id="@+id/btn_host_toggle_mic"
-                                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                                android:layout_width="0dp"
-                                android:layout_height="38dp"
-                                android:layout_marginEnd="8dp"
-                                android:layout_weight="1"
-                                android:insetTop="0dp"
-                                android:insetBottom="0dp"
-                                android:text="Mic: Mati"
-                                android:textAllCaps="false"
-                                android:textColor="@color/text_main"
-                                android:textSize="12sp"
-                                app:cornerRadius="2dp"
-                                app:strokeColor="@color/border" />
-
-                            <Button
-                                android:id="@+id/btn_stop_host_session"
-                                android:layout_width="0dp"
-                                android:layout_height="38dp"
-                                android:layout_weight="1"
-                                android:backgroundTint="@color/accent_red"
-                                android:insetTop="0dp"
-                                android:insetBottom="0dp"
-                                android:text="Akhiri Sesi"
-                                android:textAllCaps="false"
-                                android:textColor="@color/text_main"
-                                android:textSize="12sp"
-                                app:cornerRadius="2dp" />
-                        </LinearLayout>
-                    </LinearLayout>
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
-
-            <!-- Card: ID Perangkat Ini -->
+            <!-- Card: control a computer -->
             <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -205,7 +119,76 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="ID Perangkat Ini"
+                            android:layout_marginBottom="10dp"
+                            android:text="@string/control_another_device"
+                            android:textColor="@color/text_muted"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+
+                        <EditText
+                            android:id="@+id/et_target_id"
+                            android:layout_width="match_parent"
+                            android:layout_height="44dp"
+                            android:background="@color/bg_input"
+                            android:hint="@string/enter_target_id"
+                            android:imeOptions="actionGo"
+                            android:importantForAutofill="no"
+                            android:inputType="number"
+                            android:maxLength="11"
+                            android:paddingHorizontal="12dp"
+                            android:textColor="@color/text_main"
+                            android:textColorHint="@color/text_muted"
+                            android:textSize="15sp" />
+
+                        <Button
+                            android:id="@+id/btn_connect"
+                            android:layout_width="match_parent"
+                            android:layout_height="40dp"
+                            android:layout_marginTop="10dp"
+                            android:backgroundTint="@color/accent_red"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:text="@string/connect_to_pc"
+                            android:textAllCaps="false"
+                            android:textColor="@color/text_main"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            app:cornerRadius="2dp" />
+                    </LinearLayout>
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <!-- Card: this device's ID -->
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="14dp"
+                app:cardBackgroundColor="@color/bg_card"
+                app:cardCornerRadius="2dp"
+                app:cardElevation="0dp"
+                app:strokeColor="@color/border"
+                app:strokeWidth="1dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="2dp"
+                        android:background="@color/accent_red" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="16dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/this_device_id"
                             android:textColor="@color/text_muted"
                             android:textSize="12sp"
                             android:textStyle="bold" />
@@ -245,7 +228,7 @@
                                 android:insetBottom="0dp"
                                 android:minWidth="0dp"
                                 android:paddingHorizontal="10dp"
-                                android:text="Salin"
+                                android:text="@string/copy"
                                 android:textAllCaps="false"
                                 android:textColor="@color/accent_red"
                                 android:textSize="12sp" />
@@ -254,157 +237,13 @@
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
-            <!-- Card: Remote Perangkat Lain -->
-            <com.google.android.material.card.MaterialCardView
+            <TextView
+                android:id="@+id/tv_viewer_only_note"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="14dp"
-                app:cardBackgroundColor="@color/bg_card"
-                app:cardCornerRadius="2dp"
-                app:cardElevation="0dp"
-                app:strokeColor="@color/border"
-                app:strokeWidth="1dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical">
-
-                    <View
-                        android:layout_width="match_parent"
-                        android:layout_height="2dp"
-                        android:background="@color/accent_red" />
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:padding="16dp">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginBottom="10dp"
-                            android:text="Remote Perangkat Lain"
-                            android:textColor="@color/text_muted"
-                            android:textSize="12sp"
-                            android:textStyle="bold" />
-
-                        <EditText
-                            android:id="@+id/et_target_id"
-                            android:layout_width="match_parent"
-                            android:layout_height="44dp"
-                            android:background="@color/bg_input"
-                            android:hint="Masukkan ID tujuan"
-                            android:inputType="number"
-                            android:paddingHorizontal="12dp"
-                            android:textColor="@color/text_main"
-                            android:textColorHint="@color/text_muted"
-                            android:textSize="15sp" />
-
-                        <Button
-                            android:id="@+id/btn_connect"
-                            android:layout_width="match_parent"
-                            android:layout_height="40dp"
-                            android:layout_marginTop="10dp"
-                            android:backgroundTint="@color/accent_red"
-                            android:insetTop="0dp"
-                            android:insetBottom="0dp"
-                            android:text="Hubungkan"
-                            android:textAllCaps="false"
-                            android:textColor="@color/text_main"
-                            android:textSize="13sp"
-                            android:textStyle="bold"
-                            app:cornerRadius="2dp" />
-                    </LinearLayout>
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
-
-            <!-- Card: Izin Sistem -->
-            <com.google.android.material.card.MaterialCardView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                app:cardBackgroundColor="@color/bg_card"
-                app:cardCornerRadius="2dp"
-                app:cardElevation="0dp"
-                app:strokeColor="@color/border"
-                app:strokeWidth="1dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="16dp">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Izin Sistem"
-                        android:textColor="@color/text_muted"
-                        android:textSize="12sp"
-                        android:textStyle="bold" />
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:gravity="center_vertical">
-
-                        <TextView
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="Aksesibilitas Kontrol"
-                            android:textColor="@color/text_main"
-                            android:textSize="13sp" />
-
-                        <Button
-                            android:id="@+id/btn_accessibility_status"
-                            android:layout_width="wrap_content"
-                            android:layout_height="32dp"
-                            android:backgroundTint="@color/accent_red"
-                            android:insetTop="0dp"
-                            android:insetBottom="0dp"
-                            android:minWidth="0dp"
-                            android:paddingHorizontal="12dp"
-                            android:text="Aktifkan"
-                            android:textAllCaps="false"
-                            android:textColor="@color/text_main"
-                            android:textSize="11sp"
-                            app:cornerRadius="2dp" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:gravity="center_vertical">
-
-                        <TextView
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="Tampil di Atas Aplikasi"
-                            android:textColor="@color/text_main"
-                            android:textSize="13sp" />
-
-                        <Button
-                            android:id="@+id/btn_overlay_status"
-                            android:layout_width="wrap_content"
-                            android:layout_height="32dp"
-                            android:backgroundTint="@color/accent_red"
-                            android:insetTop="0dp"
-                            android:insetBottom="0dp"
-                            android:minWidth="0dp"
-                            android:paddingHorizontal="12dp"
-                            android:text="Aktifkan"
-                            android:textAllCaps="false"
-                            android:textColor="@color/text_main"
-                            android:textSize="11sp"
-                            app:cornerRadius="2dp" />
-                    </LinearLayout>
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
+                android:text="@string/viewer_only_note"
+                android:textColor="@color/text_muted"
+                android:textSize="12sp" />
         </LinearLayout>
     </LinearLayout>
 </ScrollView>

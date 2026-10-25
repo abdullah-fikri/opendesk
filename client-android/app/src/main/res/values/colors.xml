@@ -9,4 +9,8 @@
     <color name="text_main">#F4F4F5</color>
     <color name="text_muted">#71717A</color>
     <color name="border">#222227</color>
+    <!-- Referenced from code. -->
+    <color name="accent">#DC2626</color>
+    <color name="status_online">#22C55E</color>
+    <color name="status_offline">#64748B</color>
 </resources>

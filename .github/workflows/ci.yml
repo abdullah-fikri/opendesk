@@ -1,0 +1,178 @@
+# Continuous integration: every push and pull request is formatted, linted, tested and built.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  version:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every manifest matches VERSION
+        run: scripts/check-version.sh
+
+  relay:
+    name: Relay (Go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server-relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server-relay/go.mod
+          cache-dependency-path: server-relay/go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go build ./cmd/relay
+      - name: Docker image builds
+        working-directory: .
+        run: docker build --build-arg VERSION="$(cat VERSION)" -t opendesk-relay:ci server-relay
+
+  desktop:
+    name: Desktop + core engine (Rust)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core-engine
+            client-desktop
+      - name: rustfmt
+        run: |
+          cargo fmt --manifest-path core-engine/Cargo.toml --check
+          cargo fmt --manifest-path client-desktop/Cargo.toml --check
+      - name: clippy
+        run: |
+          cargo clippy --manifest-path core-engine/Cargo.toml --release --all-targets --locked -- -D warnings
+          cargo clippy --manifest-path client-desktop/Cargo.toml --release --all-targets --locked -- -D warnings
+      - name: test
+        run: |
+          cargo test --manifest-path core-engine/Cargo.toml --release --locked
+          cargo test --manifest-path client-desktop/Cargo.toml --release --locked
+      - name: build editions
+        run: |
+          cargo build --manifest-path client-desktop/Cargo.toml --release --locked
+          cargo build --manifest-path client-desktop/Cargo.toml --release --locked --features admin
+          cargo build --manifest-path client-desktop/Cargo.toml --release --locked --features headless
+
+  desktop-linux:
+    name: Desktop + core engine (Rust, Linux)
+    # The oldest supported Ubuntu, so the glibc baseline of what we build stays low.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev libasound2-dev libfontconfig1-dev libxkbcommon-dev \
+            xvfb xauth dbus-x11 bzip2 \
+            libx11-6 libx11-xcb1 libxcursor1 libxrandr2 libxi6 libxkbcommon-x11-0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core-engine
+            client-desktop
+      - name: rustfmt
+        run: |
+          cargo fmt --manifest-path core-engine/Cargo.toml --check
+          cargo fmt --manifest-path client-desktop/Cargo.toml --check
+      - name: clippy (every edition)
+        run: |
+          cargo clippy --manifest-path core-engine/Cargo.toml --release --all-targets --locked -- -D warnings
+          for f in "" admin headless; do
+            cargo clippy --manifest-path client-desktop/Cargo.toml --release --all-targets --locked --features "$f" -- -D warnings
+          done
+      - name: Cisco OpenH264 (for the H.264 round-trip test; skipped when unavailable)
+        run: packaging/linux/install-openh264.sh || echo "::warning::OpenH264 download failed; H.264 tests are skipped"
+      - name: test (live X11 capture, XTEST input and clipboard under Xvfb)
+        run: |
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24 -noreset' \
+            cargo test --manifest-path core-engine/Cargo.toml --release --locked -- --include-ignored
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24 -noreset' \
+            cargo test --manifest-path client-desktop/Cargo.toml --release --locked
+      - name: Debian packages (every edition)
+        run: |
+          cargo install cargo-deb --locked
+          cd client-desktop
+          cargo deb --locked --output ../dist/
+          cargo deb --locked --variant admin --output ../dist/
+          cargo deb --locked --variant host --output ../dist/
+          dpkg-deb -I ../dist/opendesk_*.deb
+
+  e2e:
+    name: End to end (relay + PostgreSQL + desktop client)
+    runs-on: ubuntu-22.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server-relay/go.mod
+          cache-dependency-path: server-relay/go.sum
+      - name: Build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev libasound2-dev libfontconfig1-dev libxkbcommon-dev postgresql-client \
+            xvfb xauth dbus-x11 \
+            libx11-6 libx11-xcb1 libxcursor1 libxrandr2 libxi6 libxkbcommon-x11-0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client-desktop
+      - name: scripts/e2e.sh (the monitor-wall test captures the Xvfb screen)
+        env:
+          OPENDESK_TEST_PG_PORT: "55432"
+        run: dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24 -noreset' scripts/e2e.sh
+
+  android:
+    name: Android (Kotlin)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-lint-report
+          path: client-android/app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore

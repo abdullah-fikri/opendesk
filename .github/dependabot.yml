@@ -1,0 +1,27 @@
+# Weekly dependency updates for every ecosystem in the repository.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod
+    directory: /server-relay
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /server-relay
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /client-desktop
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /core-engine
+    schedule:
+      interval: weekly
+  - package-ecosystem: gradle
+    directory: /client-android
+    schedule:
+      interval: weekly

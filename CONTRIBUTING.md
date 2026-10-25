@@ -1,208 +1,121 @@
-# Contributor & Developer Guide (CONTRIBUTING.md) 🛠️
+# Contributing to OpenDesk
 
-Welcome to the **OpenDesk** developer guide! This document provides technical instructions for cloning, setting up the local environment, building components, running local tests, and contributing to the project.
+Read [docs/architecture.md](docs/architecture.md) first: it explains the components and the layering every
+change must respect.
 
----
+## Prerequisites
 
-## 📋 System Prerequisites
+| Component | Tools |
+| --- | --- |
+| Desktop client, core engine | Rust stable 1.92+ (edition 2024) on Windows 10/11 or Linux (see below) |
+| Relay | Go 1.26, PostgreSQL 13+ (or Docker) |
+| Android | JDK 17+, Android SDK platform 36 |
+| Windows installer | Inno Setup 6 |
+| Linux packages | `cargo install cargo-deb` |
+| Everything via `make` | GNU Make (the Makefile uses `cmd.exe` on Windows and `sh` elsewhere) |
 
-Ensure your development environment meets the following minimum requirements:
+### Windows
 
-| Component | Target Modules | Minimum Version | Notes |
-| :--- | :--- | :--- | :--- |
-| **Rust Toolchain** | `core-engine`, `client-desktop` | Stable 1.75+ (`x86_64-pc-windows-msvc`) | Includes `cargo` and `rustc` |
-| **Go** | `server-relay` | Go 1.21+ | For the high-concurrency relay gateway |
-| **JDK & Android SDK** | `client-android` | JDK 17+ & Android Studio Iguana+ | Gradle 8.x, Android SDK API 34 |
-| **Inno Setup** *(Optional)* | `installer` | Inno Setup 6.x | Required to compile `.iss` installer bundles |
-| **Docker** *(Optional)* | `server-relay` | Docker & Docker Compose | For local PostgreSQL + Relay container testing |
-| **GNU Make** *(Optional)* | Root Automation | GNU Make (via MinGW, Chocolatey, or Scoop) | For unified `make` targets |
+Rust (MSVC or GNU toolchain). Optional: `windres` (MinGW) to embed the icon and version resource.
 
----
+### Linux
 
-## 🚀 Workspace Setup
-
-### 1. Clone the Repository
-```bash
-git clone https://github.com/your-org/opendesk.git
-cd opendesk
-```
-
-### 2. Module Responsibilities
-- **`core-engine/`**: Pure Rust core crate. Implements screen capture (Windows DXGI Desktop Duplication API), dirty-rect differential detection, and hardware input injection (`SendInput`).
-- **`client-desktop/`**: Windows Desktop binary crate (Rust + Slint UI). Handles WebSocket communication, wire protocol serializing, audio streaming, system tray daemon, and user interface.
-- **`client-android/`**: Native Kotlin Android application. Implements `ScreenCaptureService` (MediaProjection) and `OpenDeskAccessibilityService` (touch/gesture simulation).
-- **`server-relay/`**: Go-based high-throughput relay server. Manages Desk ID registration, peer signaling, and binary data relaying.
-- **`protocol/`**: Protobuf definitions (`messages.proto`) for inter-component wire communication.
-- **`tools/`**: Development scripts for automated testing, local relays, and single-device dual-instance simulations.
-
----
-
-## 🔨 Build Guide
-
-### Master Makefile (Recommended)
-
-Run `make help` to inspect available automation targets:
+Debian/Ubuntu packages for building and testing the desktop client:
 
 ```bash
-# Print help menu and all build targets
-make help
-
-# 1. Build Windows Client (Standard GUI)
-make build-windows
-
-# 2. Build Windows Client (Admin Edition with Server Host List)
-make build-windows-admin
-
-# 3. Build Windows Client (Headless Zero-GUI Host Daemon)
-make build-windows-host
-
-# 4. Build Relay Gateway Server (Go)
-make build-server
-
-# 5. Build Android Debug APK
-make build-android
-
-# 6. Build Windows Setup Installer (.exe)
-make build-setup
-
-# 7. Build All Components (Windows + Server + Installer)
-make all
-
-# 8. Clean build artifacts and compiler caches
-make clean
+sudo apt install build-essential pkg-config libssl-dev libasound2-dev libfontconfig1-dev libxkbcommon-dev
+# Running it needs an X11 or XWayland session and these libraries, which the UI toolkit loads at runtime:
+sudo apt install libx11-6 libx11-xcb1 libxcursor1 libxrandr2 libxi6 libxkbcommon-x11-0 libgl1
+# Live tests without a desktop (as CI runs them):
+sudo apt install xvfb xauth dbus-x11 bzip2
 ```
 
-All compiled output binaries are automatically placed into the `builds/` directory (`builds/windows/`, `builds/android/`, `builds/other/`).
+Fedora: `dnf install gcc pkgconf openssl-devel alsa-lib-devel fontconfig-devel libxkbcommon-devel`. Hosting needs an
+X11 session; under Wayland the client is a viewer only ([docs/platforms.md](docs/platforms.md)). H.264 needs
+Cisco's OpenH264: `packaging/linux/install-openh264.sh`.
 
----
+## Everyday commands
 
-### Per-Component Manual Compilation
-
-If you are focusing on an individual component:
-
-#### A. Core Engine (Rust)
 ```bash
-cd core-engine
-cargo check
-cargo test
-cargo build --release
+make help          # every target
+make test          # all unit tests
+make lint          # rustfmt, clippy, gofmt, go vet
+make windows       # Windows: desktop client -> builds\windows\OpenDesk.exe
+make linux         # Linux: desktop client -> builds/linux/opendesk (linux-deb, linux-tar for packages)
+make run-relay     # relay from source on :8088
+make android       # debug APK
 ```
 
-#### B. Client Desktop (Rust + Slint)
+Per component: see the README in `client-desktop/`, `server-relay/`, `client-android/` and `core-engine/`.
+
+## Architecture rules
+
+1. **Respect the layers.** Entry points and presentation call use cases; use cases call domain code and the
+   interfaces they declare; adapters implement those interfaces. Never import upward (a service must not touch
+   Slint widgets, a Go usecase must not import `handler` or `postgres`).
+2. **DTOs are data.** Wire types live in `protocol/` (Rust), `internal/dto` (Go) and `data/dto` (Kotlin), with no
+   logic. Validate and decide in the use-case layer.
+3. **Domain code performs no I/O** and gets unit tests.
+4. **No dead code.** Remove what nothing calls; do not keep commented-out code or "legacy" branches without a
+   live producer. Compatibility paths stay only while a shipped client still uses them, and say which one.
+5. **Protocol changes start in [docs/protocol.md](docs/protocol.md)** and follow its compatibility rules
+   (new behavior behind a capability, old message shapes unchanged).
+
+## Code conventions
+
+**Language.** Everything in the code is English: identifiers, comments, log lines, error messages and user-facing
+strings. Android user-facing strings live in `res/values/strings.xml` with translations in `values-<lang>/`.
+
+**File and identifier naming.** Follow each language's convention:
+
+| Language | Files | Types | Functions and variables | Constants |
+| --- | --- | --- | --- | --- |
+| Rust | `snake_case.rs`, `mod.rs` only for modules with submodules | `PascalCase` | `snake_case` | `SCREAMING_SNAKE_CASE` |
+| Go | `snake_case.go`, package names short lowercase | `PascalCase` (exported), `camelCase` | `camelCase` | `camelCase` / `PascalCase` |
+| Kotlin | `PascalCase.kt`, one top-level class per file | `PascalCase` | `camelCase` | `SCREAMING_SNAKE_CASE` |
+| Slint | `snake_case.slint`, one component per file | `PascalCase` | `snake_case` properties and callbacks | |
+| Android resources, SQL migrations | `snake_case`, migrations `000N_description.sql` | | | |
+| Markdown docs | `kebab-case.md` | | | |
+
+**Comments and docs.**
+
+- Every module/file starts with a short comment saying what it is for.
+- Every public function, type and constant has a doc comment saying what it does and anything a caller must
+  know (units, threads, locks it needs, what it returns on failure).
+- Mark code that needs care: `SECURITY:` for anything that validates data from a remote peer, `SAFETY:` above
+  every Rust `unsafe` block that is not obvious, and a plain comment for concurrency or protocol subtleties.
+- Explain *why*, not *what*. Do not narrate the change history in comments; that belongs in commits.
+- Every feature has a page under its component's `docs/features/`. Update it in the same pull request.
+
+**Formatting and linting.** CI rejects pull requests that are not clean:
+
 ```bash
-cd client-desktop
-# Run debug GUI locally
-cargo run
-
-# Build release binary with Admin features
-cargo build --release --features admin
-
-# Build release binary as a Headless Host daemon
-cargo build --release --features headless
+cargo fmt && cargo clippy --release --all-targets -- -D warnings     # in core-engine/ and client-desktop/
+gofmt -w . && go vet ./...                                          # in server-relay/
+./gradlew lintDebug                                                 # in client-android/
 ```
 
-#### C. Relay Server (Go)
-```bash
-cd server-relay
-go mod download
+## Tests
 
-# Run directly in development
-go run main.go
+- Domain and use-case code gets unit tests next to the code (`#[cfg(test)] mod tests`, `*_test.go`,
+  `src/test/...`).
+- Tests that need a desktop session, a clipboard owner or a running relay are `#[ignore]`d and say how to run
+  them. `make e2e` (`scripts/e2e.sh`) runs every end-to-end test against a throwaway relay and PostgreSQL
+  (Docker); new relay or client flows that cross the network belong in `server-relay/e2e/` or `relay_e2e.rs`. On Linux the live
+  X11 tests run headless: `xvfb-run -a cargo test --release -- --include-ignored` in `core-engine/`.
+- Platform code: keep one public API per module and add a backend per OS (see
+  [docs/architecture.md](docs/architecture.md#platform-code)). Run clippy for Linux too (CI does); from Windows,
+  Docker with the packages above is the quickest way.
 
-# Compile optimized release binary
-go build -ldflags="-s -w" -o server-relay.exe .
+## Commits and pull requests
+
+Use [Conventional Commits](https://www.conventionalcommits.org) with the component as scope:
+
+```text
+feat(desktop): add audio device selector
+fix(relay): reject file chunks for an expired grant
+docs(android): describe the trackpad gestures
 ```
 
-#### D. Android Client (Gradle)
-```bash
-cd client-android
-# Windows CMD / PowerShell
-gradlew.bat assembleDebug
-
-# Linux / macOS
-./gradlew assembleDebug
-```
-The output APK is generated at `client-android/app/build/outputs/apk/debug/app-debug.apk`.
-
----
-
-## 🧪 Local Testing & Debugging Workflow
-
-To verify remote desktop behavior on a single development machine:
-
-### 1. Launch Local Relay Server
-Using Docker:
-```bash
-docker compose up -d
-```
-Or run directly using the provided batch script:
-```cmd
-tools\start-relay.bat
-```
-
-### 2. Dual-Client Simulation on Single PC
-Run the test script:
-```cmd
-tools\uji-coba-1-device.bat
-```
-This script will:
-1. Launch a **Host instance** snapped to the left side of your screen.
-2. Launch a **Viewer instance** snapped to the right side of your screen.
-3. Both instances automatically connect to the local relay (`ws://127.0.0.1:8088/ws`).
-4. Copy the Host's Desk ID into the Viewer and click **Connect** to verify video frames and input streaming.
-
-### 3. Configuration & Log Paths
-- **Windows User Config & Address Book**: `%APPDATA%\OpenDesk\`
-  - `history.json` (recent connections and address book)
-  - `opendesk_config.json` (relay URL and preferences)
-
----
-
-## 🔄 Protocol Changes (`protocol/messages.proto`)
-
-When modifying message definitions in `protocol/messages.proto`:
-
-1. Ensure the `protoc` compiler is installed.
-2. Regenerate Go bindings:
-   ```bash
-   protoc --proto_path=protocol --go_out=server-relay/protocol --go_opt=paths=source_relative protocol/messages.proto
-   ```
-3. Update deserializers in `client-desktop/src/protocol.rs` and `core-engine`.
-4. Update message handlers in `client-android/app/src/main/java/com/opendesk/app/GatewayClient.kt`.
-
----
-
-## 📐 Code Style & Conventions
-
-Before submitting pull requests, ensure your code adheres to standard linters:
-
-### Rust
-```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-```
-
-### Go
-```bash
-gofmt -s -w .
-go vet ./...
-```
-
-### Git Commit Conventions
-Follow **Conventional Commits**:
-- `feat(desktop): add audio device selector modal`
-- `fix(core): resolve DXGI memory leak on display re-enumeration`
-- `perf(relay): optimize WebSocket buffer allocation`
-- `docs: update setup instructions in CONTRIBUTING.md`
-
----
-
-## 📬 Submitting a Pull Request (PR)
-
-1. Fork the repository and create a feature branch (`git checkout -b feature/hardware-h264`).
-2. Make atomic, well-formatted commits.
-3. Ensure affected modules compile without errors or warnings.
-4. Open a Pull Request detailing:
-   - Summary of the problem and proposed solution.
-   - Any architectural or protocol modifications.
-   - Exact steps taken to verify functionality.
+A pull request explains the problem, the change, any protocol or storage impact, and how it was verified. Keep
+the version in `VERSION` unchanged; releases bump it (see [docs/ci-cd.md](docs/ci-cd.md)).

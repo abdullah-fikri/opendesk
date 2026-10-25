@@ -1,4 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Default (English) strings. Indonesian translations live in values-in/strings.xml. -->
 <resources>
-    <string name="app_name">OpenDesk</string>
-    <string name="accessibility_desc">Layanan Aksesibilitas OpenDesk memungkinkan perangkat PC/laptop yang Anda izinkan untuk mengontrol sentuhan layar dan tombol navigasi HP ini secara jarak jauh.</string>
+    <string name="app_name" translatable="false">OpenDesk</string>
+    <string name="status_connecting">Connecting...</string>
+    <string name="status_connected">Connected</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="relay_button">Relay</string>
+    <string name="relay_label">Relay: %1$s</string>
+    <string name="relay_not_configured">not configured</string>
+    <string name="this_device_id">This Device\'s ID</string>
+    <string name="copy">Copy</string>
+    <string name="control_another_device">Control a Computer</string>
+    <string name="enter_target_id">Enter a device ID</string>
+    <string name="connect_to_pc">Connect</string>
+    <string name="connecting">Connecting...</string>
+    <string name="mic_on">Mic: On</string>
+    <string name="mic_off">Mic: Off</string>
+    <string name="screen">Screen</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="mode_trackpad">Trackpad</string>
+    <string name="mode_touch">Touch</string>
+    <string name="left">Left</string>
+    <string name="double_click">Double</string>
+    <string name="right">Right</string>
+    <string name="hold">Hold</string>
+    <string name="hold_active">Hold (on)</string>
+    <string name="right_click">Right click</string>
+    <string name="switching_monitor">Switching monitor...</string>
+    <string name="viewer_status" translatable="false">%1$s%2$d FPS • %3$s</string>
+    <string name="clip_label_id" translatable="false">OpenDesk ID</string>
+    <string name="id_copied">ID copied to the clipboard</string>
+    <string name="session_closed">Session closed</string>
+    <string name="error_generic">Error</string>
+    <string name="relay_settings_title">Relay Settings</string>
+    <string name="relay_settings_message">Enter the relay address:</string>
+    <string name="relay_url_hint" translatable="false">wss://relay.example.com</string>
+    <string name="save_and_connect">Save &amp; Connect</string>
+    <string name="cancel">Cancel</string>
+    <string name="relay_settings_invalid">Enter the relay address</string>
+    <string name="relay_updated">Relay updated</string>
+    <string name="file_receiving">Receiving %1$s...</string>
+    <string name="file_saved">File saved: %1$s</string>
+    <string name="file_failed">Could not receive the file</string>
+    <string name="status_reconnecting">Reconnecting...</string>
+    <string name="connection_lost">Connection to the relay lost</string>
+    <string name="relay_offline">The relay is not connected yet. Check the address and network.</string>
+    <string name="viewer_only_note">This phone controls other computers. It cannot be controlled remotely.</string>
+    <string name="relay_plaintext_refused">Use a wss:// address. Plain ws:// is only allowed to this device (localhost).</string>
+    <string name="keyboard">Keyboard</string>
+    <string name="key_esc" translatable="false">Esc</string>
+    <string name="key_tab" translatable="false">Tab</string>
+    <string name="key_win" translatable="false">Win</string>
+    <string name="scroll_up" translatable="false">▲</string>
+    <string name="scroll_down" translatable="false">▼</string>
+    <string name="fit_screen">Fit</string>
+    <string name="incoming_input_label">Remote keyboard input</string>
 </resources>
