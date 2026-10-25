@@ -1,7 +1,10 @@
-//! Append-only trace log: `%APPDATA%\OpenDesk\opendesk.trace` and stderr. Entries carry IDs, sizes and file
-//! names for diagnosis; callers must not log clipboard text, file contents or credentials.
+//! Append-only trace log: `opendesk.trace` in the app directory (`%APPDATA%\OpenDesk`, `~/.config/opendesk`)
+//! and stderr. Entries carry IDs, sizes and file names for diagnosis; callers must not log clipboard text, file
+//! contents or credentials.
 
-use std::fs::{self, OpenOptions};
+#[cfg(windows)]
+use std::fs;
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process;
@@ -37,6 +40,12 @@ fn format_timestamp() -> String {
     format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}", year, m, d, hour, min, sec, millis)
 }
 
+#[cfg(not(windows))]
+fn trace_path() -> PathBuf {
+    crate::infra::storage::app_dir().join("opendesk.trace")
+}
+
+#[cfg(windows)]
 fn trace_path() -> PathBuf {
     if let Ok(appdata) = std::env::var("APPDATA") {
         let dir = PathBuf::from(appdata).join("OpenDesk");

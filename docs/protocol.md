@@ -36,7 +36,7 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 | `register` | `deskId`, `deviceToken`, `platform`, `deviceName`, `isAdmin`, `caps[]` | Announce this device. `deviceToken` is checked only when the relay has credentials configured; then `isAdmin` is ignored in favor of the relay's own flag. |
 | `get-hosts` | | Administrators only: request the device registry. |
 | `connect-request` | `targetId` | Open a viewer session to a device. |
-| `approval-response` | `fromClean`, `accept` | An Android host answers an `incoming-request`. |
+| `approval-response` | `fromClean`, `accept` | Legacy: an Android host (app before the viewer-only release) answers an `incoming-request`. |
 | `relay-input` | `targetClean`, `event` | Input or control event for the partner (see [Input events](#input-events)). |
 | `relay-clipboard` | `targetClean`, `text` | Clipboard text for the partner. |
 | `relay-file` | `targetClean`, `payload` | One file-transfer message (see [File transfer](#file-transfer)). |
@@ -50,7 +50,7 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 | --- | --- | --- |
 | `registered-ack` | `deskId`, `caps[]` | Registration accepted; `caps` lists relay features. |
 | `host-list` | `hosts[]`: `clean_id`, `desk_id`, `device_name`, `platform`, `online`, `last_seen` (RFC 3339) | Device registry (administrators). |
-| `incoming-request` | `fromId`, `fromClean`, `deviceName` | Sent to Android hosts only: a viewer asks to connect. |
+| `incoming-request` | `fromId`, `fromClean`, `deviceName` | Sent to Android peers only: a viewer asks to connect. Current apps are `viewer-only` and never get one; older apps still answer it. |
 | `session-connected` | `targetId`, `targetClean`, `role` (`viewer`/`host`), `peerCaps[]` | The session is live; `role` is the receiver's role. |
 | `input-command` | `event`, `fromClean`* | A relayed `relay-input`. |
 | `clipboard-sync` | `text`, `fromClean`* | A relayed `relay-clipboard`. |
@@ -66,8 +66,11 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 
 ## Sessions
 
-- A Windows host accepts every `connect-request` immediately (unattended access). An Android host receives
-  `incoming-request` and the session stays pending until it answers.
+- A desktop host (Windows, Linux) accepts every `connect-request` immediately (unattended access).
+- A target that registered with `viewer-only` (the Android app, Linux desktops in a Wayland session) is never a
+  host: the relay answers the `connect-request` with `error` ("can only view other devices").
+- Legacy Android apps without `viewer-only` receive `incoming-request` and the session stays pending until they
+  answer.
 - A peer that hosts or views cannot be taken as a host by someone else.
 - Every relayed message is authorized: the relay forwards only between the two connections of an active
   session, checked from both sides.
@@ -89,9 +92,23 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `multi-session` | client + relay | Up to four viewer sessions per connection. |
 | `monitor-host` | client | Streams monitor-wall thumbnails on `monitor-start` (every desktop edition). |
 | `monitor-view` | client | Shows the monitor wall: `monitor-state` and the `0x11` tag (admin edition). |
+| `viewer-only` | client | This device never hosts; the relay refuses connect requests to it. |
+| `host-features` | client | The host lists its optional host controls below. Without it the host is a legacy Windows host that has all of them. |
+| `privacy-screen` | client, with `host-features` | `set-privacy` works on this host. |
+| `block-input` | client, with `host-features` | `set-block-input` works on this host. |
 | `p2p-signal`, `file-grant`, `file-offer`, `caps`, `monitor` | relay | Relay features in `registered-ack`. |
 
-Android advertises no capabilities, so it always receives plain JPEGs and single-session message shapes.
+Per platform (see [platforms.md](platforms.md)):
+
+- Windows: `file-ack`, `file-offer`, `file-folder`, `cursor-shape`, `video-delta`, `video-h264` (when the
+  Media Foundation decoder exists), `p2p.v1`, `multi-session`. No `host-features`: Windows hosts have every
+  host control.
+- Linux: the same without `file-offer`, with `video-h264` only when Cisco's OpenH264 is installed, plus
+  `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
+- Android: only `viewer-only`, so it receives plain JPEGs and single-session message shapes.
+
+`register.platform` is `windows-pc`, `windows-admin`, `windows-host`, `linux-pc`, `linux-admin`, `linux-host` or
+`android`; it is informational except for `android`.
 
 ## Input events
 

@@ -3,8 +3,9 @@
 use std::ffi::c_void;
 use std::ptr;
 
-use super::monitor::{MonitorBounds, enable_per_monitor_dpi_awareness};
+use super::monitor::enable_per_monitor_dpi_awareness;
 use super::win32::*;
+use crate::capture::MonitorBounds;
 
 /// Screen capture with GDI `BitBlt`/`StretchBlt` into a DIB section. Slower than DXGI but works everywhere.
 pub struct GdiScreenCapturer {

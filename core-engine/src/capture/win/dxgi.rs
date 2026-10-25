@@ -20,7 +20,7 @@ use windows::Win32::Graphics::Dxgi::{
 };
 use windows::core::Interface;
 
-use super::MonitorBounds;
+use crate::capture::MonitorBounds;
 use crate::codec::frame::MoveRect;
 use crate::diff::Rect;
 

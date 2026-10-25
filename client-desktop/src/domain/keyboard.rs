@@ -10,6 +10,7 @@ pub const VK_CONTROL: u8 = 0x11;
 pub const VK_MENU: u8 = 0x12;
 const VK_V: u8 = 0x56;
 
+#[cfg(windows)]
 #[link(name = "user32")]
 unsafe extern "system" {
     fn VkKeyScanW(ch: u16) -> i16;
@@ -76,6 +77,11 @@ fn char_vk(ch: char) -> Option<u8> {
     if let Some(vk) = ascii_vk(ch) {
         return Some(vk);
     }
+    layout_vk(ch)
+}
+
+#[cfg(windows)]
+fn layout_vk(ch: char) -> Option<u8> {
     let mut buf = [0u16; 2];
     if ch.encode_utf16(&mut buf).len() != 1 {
         return None;
@@ -83,6 +89,25 @@ fn char_vk(ch: char) -> Option<u8> {
     let r = unsafe { VkKeyScanW(buf[0]) };
     let vk = (r & 0xFF) as u8;
     (r != -1 && vk != 0 && vk != 0xFF).then_some(vk)
+}
+
+/// Without a layout API, punctuation maps to the US-layout OEM keys (what Windows hosts expect most often).
+#[cfg(not(windows))]
+fn layout_vk(ch: char) -> Option<u8> {
+    Some(match ch {
+        ';' | ':' => 0xBA,
+        '=' | '+' => 0xBB,
+        ',' | '<' => 0xBC,
+        '-' | '_' => 0xBD,
+        '.' | '>' => 0xBE,
+        '/' | '?' => 0xBF,
+        '`' | '~' => 0xC0,
+        '[' | '{' => 0xDB,
+        '\\' | '|' => 0xDC,
+        ']' | '}' => 0xDD,
+        '\'' | '"' => 0xDE,
+        _ => return None,
+    })
 }
 
 /// Modifier state Slint reports with the event.

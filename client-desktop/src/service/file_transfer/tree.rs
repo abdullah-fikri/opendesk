@@ -123,10 +123,10 @@ pub(super) mod tests {
     /// Creates a small folder tree for tests and returns its root.
     pub fn temp_tree(tag: &str) -> PathBuf {
         let root = env::temp_dir().join(format!("opendesk-walk-{}-{}-{}", tag, std::process::id(), now_ms()));
-        fs::create_dir_all(root.join(r"Project\src\deep")).unwrap();
-        fs::create_dir_all(root.join(r"Project\empty")).unwrap();
-        fs::write(root.join(r"Project\src\main.rs"), b"fn main() {}").unwrap();
-        fs::write(root.join(r"Project\src\deep\x.txt"), b"x").unwrap();
+        fs::create_dir_all(root.join("Project/src/deep")).unwrap();
+        fs::create_dir_all(root.join("Project/empty")).unwrap();
+        fs::write(root.join("Project/src/main.rs"), b"fn main() {}").unwrap();
+        fs::write(root.join("Project/src/deep/x.txt"), b"x").unwrap();
         fs::write(root.join("loose.txt"), b"12345").unwrap();
         root
     }

@@ -121,7 +121,10 @@ export component SessionToolbar inherits Rectangle {
             }
         }
 
+        // Hosts that cannot hide their screen or lock their input (Linux) do not offer these controls.
         priv-btn := ToolButton {
+            visible: !root.s.privacy_unavailable || !root.s.block_input_unavailable;
+            max-width: self.visible ? 1000px : 0px;
             y: (parent.height - self.height) / 2;
             label: "Privacy";
             caret: true;
@@ -135,16 +138,16 @@ export component SessionToolbar inherits Rectangle {
                 width: 260px;
                 close-policy: close-on-click-outside;
                 PopoverFrame {
-                    MenuCaption { text: "DEVICE SCREEN"; }
-                    VerticalLayout {
+                    if !root.s.privacy_unavailable: MenuCaption { text: "DEVICE SCREEN"; }
+                    if !root.s.privacy_unavailable: VerticalLayout {
                         spacing: 0px;
                         MenuRow { label: "Normal"; selected: root.s.privacy_mode == 0; clicked => { root.set_privacy(root.s.id, 0); } }
                         MenuRow { label: "Freeze screen"; selected: root.s.privacy_mode == 1; clicked => { root.set_privacy(root.s.id, 1); } }
                         MenuRow { label: "Maintenance screen"; selected: root.s.privacy_mode == 2; clicked => { root.set_privacy(root.s.id, 2); } }
                         MenuRow { label: "Black screen"; selected: root.s.privacy_mode == 3; clicked => { root.set_privacy(root.s.id, 3); } }
                     }
-                    Rectangle { height: 1px; background: Theme.divider; }
-                    Rectangle {
+                    if !root.s.privacy_unavailable && !root.s.block_input_unavailable: Rectangle { height: 1px; background: Theme.divider; }
+                    if !root.s.block_input_unavailable: Rectangle {
                         height: 32px;
                         background: block-ta.has-hover ? Theme.hover : transparent;
                         block-ta := TouchArea {

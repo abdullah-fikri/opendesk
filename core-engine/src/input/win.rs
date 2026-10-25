@@ -1,14 +1,8 @@
 //! Mouse and keyboard injection (SendInput / mouse_event).
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::Ordering;
 
-/// Screen position the remote viewer last moved the cursor to; lets capture tell viewer moves from local host moves.
-pub static LAST_INJECTED_POS: AtomicI64 = AtomicI64::new(i64::MIN);
-
-/// Packs a screen position into one atomic value (see `LAST_INJECTED_POS`).
-pub fn pack_pos(x: i32, y: i32) -> i64 {
-    ((x as i64) << 32) | (y as u32 as i64)
-}
+use super::{LAST_INJECTED_POS, pack_pos};
 
 type BOOL = i32;
 type DWORD = u32;

@@ -13,6 +13,8 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Variant::{VARIANT, VT_BOOL, VT_UI4};
 use windows::core::{GUID, Interface};
 
+use super::{bgra_to_nv12, nal_types, nv12_to_rgba};
+
 type Result<T> = windows::core::Result<T>;
 
 fn fail() -> windows::core::Error {
@@ -119,64 +121,6 @@ fn process_output(mft: &IMFTransform) -> Result<IMFSample> {
         drop(std::mem::ManuallyDrop::take(&mut out[0].pEvents));
         r?;
         sample.ok_or_else(fail)
-    }
-}
-
-/// NAL unit types present in an Annex-B access unit.
-pub fn nal_types(au: &[u8]) -> Vec<u8> {
-    let mut types = Vec::new();
-    let mut i = 0;
-    while i + 3 < au.len() {
-        if au[i] == 0 && au[i + 1] == 0 && au[i + 2] == 1 {
-            types.push(au[i + 3] & 0x1F);
-            i += 3;
-        } else {
-            i += 1;
-        }
-    }
-    types
-}
-
-/// BT.709 limited-range BGRX -> NV12 (2x2 chroma average). `w`, `h` must be even.
-pub fn bgra_to_nv12(src: &[u32], stride: usize, w: usize, h: usize, dst: &mut Vec<u8>) {
-    dst.resize(w * h * 3 / 2, 0);
-    let (ys, uv) = dst.split_at_mut(w * h);
-    for y in (0..h).step_by(2) {
-        for x in (0..w).step_by(2) {
-            let (mut rs, mut gs, mut bs) = (0i32, 0i32, 0i32);
-            for (dy, dx) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
-                let p = src[(y + dy) * stride + x + dx];
-                let (r, g, b) = (((p >> 16) & 0xFF) as i32, ((p >> 8) & 0xFF) as i32, (p & 0xFF) as i32);
-                ys[(y + dy) * w + x + dx] = ((47 * r + 157 * g + 16 * b + 128) >> 8).wrapping_add(16) as u8;
-                rs += r;
-                gs += g;
-                bs += b;
-            }
-            let (r, g, b) = (rs / 4, gs / 4, bs / 4);
-            uv[(y / 2) * w + x] = (((-26 * r - 87 * g + 112 * b + 128) >> 8) + 128) as u8;
-            uv[(y / 2) * w + x + 1] = (((112 * r - 102 * g - 10 * b + 128) >> 8) + 128) as u8;
-        }
-    }
-}
-
-/// BT.709 limited-range NV12 -> RGBA, cropping to `w` x `h`. `uv` starts the chroma plane; both use `pitch`.
-pub fn nv12_to_rgba(yp: &[u8], uv: &[u8], pitch: usize, w: usize, h: usize, out: &mut Vec<u8>) {
-    out.resize(w * h * 4, 0);
-    for (y, orow) in out.chunks_exact_mut(w * 4).enumerate() {
-        let yrow = &yp[y * pitch..y * pitch + w];
-        let crow = &uv[(y / 2) * pitch..(y / 2) * pitch + w];
-        // Two pixels share one chroma pair: compute its contribution once.
-        for ((px, ys), c) in orow.chunks_exact_mut(8).zip(yrow.chunks_exact(2)).zip(crow.chunks_exact(2)) {
-            let (u, v) = (c[0] as i32 - 128, c[1] as i32 - 128);
-            let (rv, guv, bu) = (459 * v + 128, -55 * u - 136 * v + 128, 541 * u + 128);
-            for (o, &yv) in px.chunks_exact_mut(4).zip(ys) {
-                let l = 298 * (yv as i32 - 16);
-                o[0] = ((l + rv) >> 8).clamp(0, 255) as u8;
-                o[1] = ((l + guv) >> 8).clamp(0, 255) as u8;
-                o[2] = ((l + bu) >> 8).clamp(0, 255) as u8;
-                o[3] = 255;
-            }
-        }
     }
 }
 
@@ -553,32 +497,7 @@ impl H264Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn pattern(w: usize, h: usize, t: usize) -> Vec<u32> {
-        (0..w * h)
-            .map(|i| {
-                let (x, y) = ((i % w + t * 4) % w, i / w);
-                (((x * 255 / w) as u32) << 16) | (((y * 255 / h) as u32) << 8) | (((x ^ y) & 0xFF) as u32)
-            })
-            .collect()
-    }
-
-    #[test]
-    fn nv12_roundtrip_is_close() {
-        let (w, h) = (64, 32);
-        let src = pattern(w, h, 0);
-        let mut nv12 = Vec::new();
-        bgra_to_nv12(&src, w, w, h, &mut nv12);
-        let mut rgba = Vec::new();
-        nv12_to_rgba(&nv12[..w * h], &nv12[w * h..], w, w, h, &mut rgba);
-        // Flat 2x2 blocks survive exactly enough; chroma subsampling bounds the error elsewhere.
-        let flat = vec![0x00C0_4010u32; w * h];
-        bgra_to_nv12(&flat, w, w, h, &mut nv12);
-        nv12_to_rgba(&nv12[..w * h], &nv12[w * h..], w, w, h, &mut rgba);
-        for (c, want) in [0xC0u8, 0x40, 0x10].iter().enumerate() {
-            assert!((rgba[c] as i32 - *want as i32).abs() <= 2, "channel {c}: {} vs {want}", rgba[c]);
-        }
-    }
+    use crate::codec::h264::test_pattern as pattern;
 
     #[test]
     fn software_encode_decode_roundtrip() {

@@ -19,6 +19,10 @@ const (
 	CapMonitorView = "monitor-view"
 )
 
+// CapViewerOnly is a client capability: the device only views others and can never be taken as a host
+// (Android, Linux desktops in a Wayland session). Connect requests to it are refused.
+const CapViewerOnly = "viewer-only"
+
 // PlatformAndroid identifies Android peers. Android hosts must approve each session before it becomes active.
 const PlatformAndroid = "android"
 

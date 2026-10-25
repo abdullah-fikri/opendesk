@@ -1,7 +1,12 @@
 package com.opendesk.app.session
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.os.Handler
+import android.os.Looper
 import com.google.gson.Gson
+import com.opendesk.app.R
 import com.opendesk.app.data.dto.ApprovalResponse
 import com.opendesk.app.data.dto.ConnectRequest
 import com.opendesk.app.data.dto.InputEvent
@@ -13,31 +18,27 @@ import com.opendesk.app.data.dto.ServerMessage
 import com.opendesk.app.data.dto.SessionDisconnect
 import com.opendesk.app.data.network.GatewayClient
 import com.opendesk.app.data.settings.SettingsRepository
+import com.opendesk.app.domain.Capabilities
 import com.opendesk.app.domain.DeskId
 import com.opendesk.app.platform.audio.VoiceCallManager
 
 /**
- * The app's single relay connection and its message routing. Activities observe it through [Listener];
- * the viewer screen and the capture service plug into it for video.
+ * The app's single relay connection and its message routing. Activities observe it through [Listener] and
+ * [ViewerListener].
  *
- * Android is a single-session client: at most one session as host (a PC controls this phone) or as viewer
- * (this phone controls a PC).
+ * Android is a viewer only: at most one session, in which this phone controls a PC. It registers with the
+ * `viewer-only` capability and declines every `incoming-request` a relay might still send. A dropped connection
+ * is retried with exponential backoff, and at once when the network comes back.
  */
 object RelayConnection : GatewayClient.Listener {
 
     /** What the main screen shows. All calls arrive on the main thread. */
     interface Listener {
-        /** The relay registered this phone (`true`) or the connection is gone (`false`). */
+        /** The relay registered this phone (`true`) or the connection is gone and being retried (`false`). */
         fun onRelayStatus(online: Boolean)
-
-        /** A PC asks to control this phone; answer with [respondToRequest] after asking for screen capture. */
-        fun onIncomingRequest()
 
         /** This phone controls `partnerClean` now: open the viewer screen. */
         fun onViewerConnected(partnerClean: String)
-
-        /** A PC controls this phone now; `partnerId` is its display ID. */
-        fun onHostingStarted(partnerId: String)
 
         /** The session ended; `message` comes from the relay when it gave one. */
         fun onSessionClosed(message: String?)
@@ -45,15 +46,24 @@ object RelayConnection : GatewayClient.Listener {
         /** The relay refused a request. */
         fun onError(message: String?)
 
-        /** The remote side muted this phone's microphone. */
-        fun onMicMuted()
-
         /** A short notice for the user (file transfer progress and results). */
         fun onNotice(text: String)
     }
 
+    /** What the viewer screen needs. Main thread. */
+    interface ViewerListener {
+        /** The session is over (closed by either side, or the relay connection dropped). */
+        fun onViewerSessionEnded(message: String?)
+
+        /** The remote side muted this phone's microphone. */
+        fun onMicMuted()
+    }
+
     /** Status listener; normally the main activity. */
     var listener: Listener? = null
+
+    /** The open viewer screen, if any. */
+    var viewerListener: ViewerListener? = null
 
     /** Receives every video frame while the viewer screen is open (socket thread). */
     @Volatile
@@ -64,58 +74,72 @@ object RelayConnection : GatewayClient.Listener {
     var viewerPartner: String = ""
         private set
 
-    /** Viewer that controls this phone, or empty. */
-    @Volatile
-    var hostPartner: String = ""
+    /** Whether [start] ran and [stop] did not since: the connection is up or being retried. */
+    val isStarted: Boolean
+        get() = settings != null
+
+    /** Whether the relay has registered this phone. */
+    var online: Boolean = false
         private set
 
-    private var client: GatewayClient? = null
-    private var pendingCaller: String? = null
-    private var fileReceiver: FileReceiver? = null
-    private var inputHandler: RemoteInputHandler? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val gson = Gson()
+    private var client: GatewayClient? = null
+    private var appContext: Context? = null
+    private var settings: SettingsRepository? = null
+    private var fileReceiver: FileReceiver? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var retryDelayMs = RETRY_MIN_MS
+
+    /** A connection attempt is in flight (between [reconnect] and its first status report). */
+    private var connecting = false
+    private val retry = Runnable { reconnect() }
 
     /** (Re)connects with the stored settings. Returns false when no relay is configured. */
     fun start(context: Context, settings: SettingsRepository): Boolean {
-        client?.disconnect()
-        client = null
-        fileReceiver?.close()
-        fileReceiver = FileReceiver(context.applicationContext) { listener?.onNotice(it) }
-        inputHandler = RemoteInputHandler(context.applicationContext)
-        val url = settings.gatewayUrl
-        if (url.isEmpty()) return false
-        val registration = RegisterRequest(
-            deskId = settings.deskId,
-            deviceToken = settings.deviceToken,
-            deviceName = "Android (${settings.deskId})",
-        )
-        client = GatewayClient(registration, this).also { it.connect(url) }
-        return true
+        val app = context.applicationContext
+        appContext = app
+        this.settings = settings
+        if (fileReceiver == null) fileReceiver = FileReceiver(app) { listener?.onNotice(it) }
+        registerNetworkCallback(app)
+        retryDelayMs = RETRY_MIN_MS
+        return reconnect()
     }
 
-    /** Closes the connection and every transfer (activity destroyed). */
+    /** Closes the connection, every transfer and the retry machinery (the app is leaving). */
     fun stop() {
-        VoiceCallManager.stopSession()
+        mainHandler.removeCallbacks(retry)
+        unregisterNetworkCallback()
+        endSession(null, notify = false, fromRelay = false)
         fileReceiver?.close()
+        fileReceiver = null
         client?.disconnect()
         client = null
+        online = false
+        connecting = false
+        settings = null
+        appContext = null
     }
 
-    /** Sends voice or video to the relay. */
+    /** Reconnects now if the connection is down (for example when the app comes back to the foreground). */
+    fun retryNowIfOffline() {
+        if (!online && !connecting && settings != null) {
+            retryDelayMs = RETRY_MIN_MS
+            reconnect()
+        }
+    }
+
+    /** Sends voice to the relay. */
     fun sendBinary(bytes: ByteArray) {
         client?.sendBinary(bytes)
     }
 
-    /** Asks to view `targetId` (any formatting). */
-    fun connectTo(targetId: String) {
-        client?.send(ConnectRequest(targetId))
-    }
-
-    /** Answers the pending incoming request. */
-    fun respondToRequest(accept: Boolean) {
-        val caller = pendingCaller ?: return
-        pendingCaller = null
-        client?.send(ApprovalResponse(caller, accept))
+    /** Asks to view `targetId` (any formatting). Returns false while the relay is unreachable. */
+    fun connectTo(targetId: String): Boolean {
+        val c = client
+        if (!online || c == null) return false
+        c.send(ConnectRequest(targetId))
+        return true
     }
 
     /** Sends an input event to the viewed host. */
@@ -130,16 +154,19 @@ object RelayConnection : GatewayClient.Listener {
         VoiceCallManager.stopSession()
     }
 
-    /** Ends the hosted session. */
-    fun endHosting() {
-        if (hostPartner.isNotEmpty()) client?.send(SessionDisconnect(hostPartner))
-        hostPartner = ""
-        VoiceCallManager.stopSession()
-    }
-
     // ---- GatewayClient.Listener ----
 
     override fun onConnectionChanged(online: Boolean) {
+        this.online = online
+        connecting = false
+        if (online) {
+            retryDelayMs = RETRY_MIN_MS
+        } else {
+            // The relay ends every session of a dropped connection and file grants are bound to it.
+            endSession(appContext?.getString(R.string.connection_lost), notify = true, fromRelay = false)
+            fileReceiver?.close()
+            scheduleRetry()
+        }
         listener?.onRelayStatus(online)
     }
 
@@ -153,53 +180,94 @@ object RelayConnection : GatewayClient.Listener {
 
     override fun onMessage(message: ServerMessage) {
         when (message.type) {
-            // Android asks for screen-capture consent before every session it hosts.
-            MessageType.INCOMING_REQUEST -> {
-                pendingCaller = message.fromClean
-                listener?.onIncomingRequest()
-            }
+            // Only a relay that ignores `viewer-only` sends this; this phone can never be controlled.
+            MessageType.INCOMING_REQUEST -> message.fromClean?.let { client?.send(ApprovalResponse(it, accept = false)) }
             MessageType.SESSION_CONNECTED -> onSessionConnected(message)
             MessageType.FILE_TRANSFER -> message.payload?.let { fileReceiver?.handle(it) }
-            MessageType.INPUT_COMMAND -> message.event?.let { onInput(gson.fromJson(it, RemoteEvent::class.java)) }
-            MessageType.SESSION_CLOSED -> {
-                viewerPartner = ""
-                hostPartner = ""
-                VoiceCallManager.stopSession()
-                listener?.onSessionClosed(message.message)
-            }
+            MessageType.INPUT_COMMAND -> message.event?.let { onControl(gson.fromJson(it, RemoteEvent::class.java)) }
+            MessageType.SESSION_CLOSED -> endSession(message.message, notify = true, fromRelay = true)
             MessageType.ERROR -> listener?.onError(message.message)
         }
     }
 
     private fun onSessionConnected(message: ServerMessage) {
-        val partnerId = message.targetId ?: ""
-        val partner = DeskId.clean(partnerId)
-        val sink: (ByteArray) -> Unit = ::sendBinary
-        when (message.role) {
-            "viewer" -> {
-                viewerPartner = partner
-                VoiceCallManager.startSession(partner, sink)
-                listener?.onViewerConnected(partner)
-            }
-            "host" -> {
-                hostPartner = partner
-                VoiceCallManager.startSession(partner, sink)
-                listener?.onHostingStarted(partnerId)
-            }
+        val partner = DeskId.clean(message.targetId ?: "")
+        if (message.role != "viewer" || partner.isEmpty()) {
+            // Never act as a host: end anything else the relay may have paired.
+            if (partner.isNotEmpty()) client?.send(SessionDisconnect(partner))
+            return
+        }
+        viewerPartner = partner
+        VoiceCallManager.startSession(partner, ::sendBinary)
+        listener?.onViewerConnected(partner)
+    }
+
+    /** Clears the session; the main screen hears about it when there was one or the relay said so. */
+    private fun endSession(message: String?, notify: Boolean, fromRelay: Boolean) {
+        val hadSession = viewerPartner.isNotEmpty()
+        viewerPartner = ""
+        VoiceCallManager.stopSession()
+        if (!notify) return
+        viewerListener?.onViewerSessionEnded(message)
+        if (hadSession || fromRelay) listener?.onSessionClosed(message)
+    }
+
+    private fun onControl(event: RemoteEvent) {
+        // A remote peer may silence this microphone, but only the device owner can enable it.
+        if (event.action == "set-mic" && event.muted == true) {
+            VoiceCallManager.setMicMuted(true)
+            viewerListener?.onMicMuted()
         }
     }
 
-    private fun onInput(event: RemoteEvent) {
-        // A remote peer may silence this microphone, but only the device owner can enable it.
-        if (event.action == "set-mic") {
-            if (event.muted == true) {
-                VoiceCallManager.setMicMuted(true)
-                listener?.onMicMuted()
+    // ---- Reconnection ----
+
+    private fun reconnect(): Boolean {
+        mainHandler.removeCallbacks(retry)
+        val settings = settings ?: return false
+        client?.disconnect()
+        client = null
+        online = false
+        connecting = false
+        val url = settings.gatewayUrl
+        if (url.isEmpty()) return false
+        connecting = true
+        val registration = RegisterRequest(
+            deskId = settings.deskId,
+            deviceToken = settings.deviceToken,
+            deviceName = "Android (${settings.deskId})",
+            caps = Capabilities.advertised,
+        )
+        client = GatewayClient(registration, this).also { it.connect(url) }
+        return true
+    }
+
+    private fun scheduleRetry() {
+        if (settings == null) return
+        mainHandler.removeCallbacks(retry)
+        mainHandler.postDelayed(retry, retryDelayMs)
+        retryDelayMs = (retryDelayMs * 2).coerceAtMost(RETRY_MAX_MS)
+    }
+
+    private fun registerNetworkCallback(context: Context) {
+        if (networkCallback != null) return
+        val manager = context.getSystemService(ConnectivityManager::class.java) ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                mainHandler.post { retryNowIfOffline() }
             }
-            return
         }
-        if (hostPartner.isNotEmpty()) inputHandler?.apply(event)
+        runCatching { manager.registerDefaultNetworkCallback(callback) }.onSuccess { networkCallback = callback }
+    }
+
+    private fun unregisterNetworkCallback() {
+        val callback = networkCallback ?: return
+        networkCallback = null
+        val manager = appContext?.getSystemService(ConnectivityManager::class.java) ?: return
+        runCatching { manager.unregisterNetworkCallback(callback) }
     }
 
     private const val VOICE_MARKER: Byte = 0x02
+    private const val RETRY_MIN_MS = 1_000L
+    private const val RETRY_MAX_MS = 30_000L
 }

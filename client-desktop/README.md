@@ -1,7 +1,7 @@
-# OpenDesk for Windows
+# OpenDesk for Windows and Linux
 
-Native Windows client: control up to four remote machines in tabs or a split view, or let one remote viewer
-control this machine. Rust with a [Slint](https://slint.dev) UI; screen capture and codecs come from
+Native desktop client: control up to four remote machines in tabs or a split view, or let one remote viewer
+control this machine (Linux: in an X11 session; see [docs/platforms.md](../docs/platforms.md)). Rust with a [Slint](https://slint.dev) UI; screen capture and codecs come from
 [`core-engine`](../core-engine).
 
 ## Editions
@@ -15,11 +15,14 @@ One code base, three binaries selected with Cargo features:
 | Headless host | `cargo build --release --features headless` | No window or tray: an unattended host for servers and kiosks |
 
 From the repository root, `make windows`, `make windows-admin`, `make windows-host` build into `builds\windows`
-and `make setup` builds the installer.
+and `make setup` builds the installer. On Linux, `make linux`, `make linux-admin`, `make linux-host` build into
+`builds/linux`, `make linux-deb` builds the `opendesk`, `opendesk-admin` and `opendesk-host` packages and
+`make linux-tar` a portable archive.
 
 ## Develop
 
-Requirements: Windows 10/11, Rust (stable, edition 2024). Optional: `windres` (MinGW) to embed the icon.
+Requirements: Rust (stable 1.92+, edition 2024) on Windows 10/11 (optional: `windres` from MinGW to embed the
+icon) or Linux (packages in [CONTRIBUTING.md](../CONTRIBUTING.md#linux)).
 
 ```bash
 cargo run --release          # runs the standard edition
@@ -39,7 +42,7 @@ A local relay for development: `make run-relay` (needs PostgreSQL), then set the
 | `src/ui/`, `ui/*.slint` | Presentation | Slint window, callbacks, presenter, tray, drag-and-drop |
 | `src/service/` | Use cases | Relay connection, viewer sessions, hosting, file transfer, clipboard, history |
 | `src/protocol/` | Wire DTOs | Typed relay messages, input events, file payloads, binary framing |
-| `src/infra/` | Adapters | Storage, audio, P2P transport, privacy overlay, tray, autostart, virtual clipboard |
+| `src/infra/` | Adapters | Storage, audio, P2P transport, privacy overlay, tray, autostart, virtual clipboard; OS-specific modules have `win.rs` and `unix.rs` |
 | `src/domain/` | Domain | Desk IDs, settings, history, capabilities, resolution policy, key mapping, transfer rules |
 
 See [docs/architecture.md](docs/architecture.md) for the dependency rules and threads.

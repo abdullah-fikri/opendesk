@@ -3,19 +3,7 @@
 use std::ptr;
 
 use super::win32::*;
-
-/// A monitor in physical pixels, positioned in virtual-desktop coordinates.
-#[derive(Clone, Copy, Debug)]
-pub struct MonitorBounds {
-    /// Left edge in virtual-desktop coordinates.
-    pub left: i32,
-    /// Top edge in virtual-desktop coordinates.
-    pub top: i32,
-    /// Width in physical pixels.
-    pub width: i32,
-    /// Height in physical pixels.
-    pub height: i32,
-}
+use crate::capture::MonitorBounds;
 
 /// Makes the process per-monitor DPI aware (V2, else system aware) so sizes are physical pixels.
 pub fn enable_per_monitor_dpi_awareness() {

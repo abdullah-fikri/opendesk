@@ -9,6 +9,8 @@ var (
 	ErrUnauthorized = errors.New("invalid device credentials")
 	// ErrTargetUnavailable means the target is offline, busy, or the caller cannot open another session.
 	ErrTargetUnavailable = errors.New("target device unavailable")
+	// ErrTargetViewerOnly means the target advertised model.CapViewerOnly and cannot be controlled.
+	ErrTargetViewerOnly = errors.New("target device is viewer-only")
 	// ErrSelfConnect means a device tried to view itself.
 	ErrSelfConnect = errors.New("cannot connect to own device")
 	// ErrNoPendingSession means an approval did not match a pending session.

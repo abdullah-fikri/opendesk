@@ -163,8 +163,12 @@ impl Connection {
 
     fn register_message(&self) -> ClientMessage {
         let edition = self.ctx.edition;
-        let mut caps =
-            vec![capability::FILE_ACK, capability::FILE_OFFER, capability::FILE_FOLDER, capability::CURSOR_SHAPE];
+        let mut caps = vec![capability::FILE_ACK];
+        // Clipboard file offers need Explorer's virtual files: Windows only.
+        if cfg!(windows) {
+            caps.push(capability::FILE_OFFER);
+        }
+        caps.extend([capability::FILE_FOLDER, capability::CURSOR_SHAPE]);
         caps.extend(decoder::supported_video_caps());
         if p2p::enabled() {
             caps.push(capability::P2P);
@@ -173,8 +177,17 @@ impl Connection {
         if edition.can_view() {
             caps.push(capability::MULTI_SESSION);
         }
-        // Every edition can be watched; only the admin edition watches.
-        caps.push(capability::MONITOR_HOST);
+        // Hosts list their optional controls; Windows hosts omit the marker and keep the legacy "all of them".
+        if !cfg!(windows) {
+            caps.push(capability::HOST_FEATURES);
+        }
+        // A machine that can capture its screen can also be watched on the monitor wall; only the admin edition
+        // watches.
+        if core_engine::capture::host_support() == core_engine::capture::HostSupport::Supported {
+            caps.push(capability::MONITOR_HOST);
+        } else {
+            caps.push(capability::VIEWER_ONLY);
+        }
         #[cfg(feature = "admin")]
         caps.push(capability::MONITOR_VIEW);
         let device_token =

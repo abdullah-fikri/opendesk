@@ -443,7 +443,7 @@ mod tests {
     #[ignore]
     fn bench_wall_decode() {
         let bounds = core_engine::capture::enumerate_monitors()[0];
-        let mut cap = core_engine::capture::GdiScreenCapturer::new_for_monitor(bounds, 640);
+        let mut cap = core_engine::capture::ThumbnailCapturer::new_for_monitor(bounds, 640);
         cap.capture_frame();
         let jpeg = core_engine::codec::JpegEncoder::new(50)
             .encode_bgra(cap.pixels(), cap.width, cap.height, cap.width as usize)

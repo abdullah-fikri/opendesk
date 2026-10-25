@@ -517,16 +517,25 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetCurrentThread() -> *mut std::ffi::c_void;
         fn GetThreadTimes(h: *mut std::ffi::c_void, c: *mut u64, e: *mut u64, k: *mut u64, u: *mut u64) -> i32;
     }
 
+    #[cfg(windows)]
     fn thread_cpu() -> Duration {
         let (mut c, mut e, mut k, mut u) = (0u64, 0u64, 0u64, 0u64);
         unsafe { GetThreadTimes(GetCurrentThread(), &mut c, &mut e, &mut k, &mut u) };
         Duration::from_nanos((k + u) * 100)
+    }
+
+    #[cfg(not(windows))]
+    fn thread_cpu() -> Duration {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
     }
 
     /// The real capture loop (60 Hz pacing, capture + encode on one thread) on whatever the desktop shows.
@@ -588,11 +597,18 @@ mod tests {
         let mode: usize = std::env::var("BENCH_MODE").ok().and_then(|v| v.parse().ok()).unwrap_or(1080);
         let bounds = enumerate_monitors()[0];
         let (max_w, quality) = crate::domain::resolution::capture_params(mode, bounds.width, bounds.height);
+        // Full-frame capture cost: GDI on Windows, the X11 capturer elsewhere.
+        #[cfg(windows)]
         let mut gdi = core_engine::capture::GdiScreenCapturer::new_for_monitor(bounds, max_w);
+        #[cfg(not(windows))]
+        let mut gdi = DesktopCapturer::new_for_monitor(bounds, max_w);
         let (w, h) = (gdi.width as usize, gdi.height as usize);
         let t = Instant::now();
         for _ in 0..60 {
+            #[cfg(windows)]
             gdi.capture_frame();
+            #[cfg(not(windows))]
+            gdi.grab(0);
         }
         let gdi_ms = t.elapsed().as_secs_f64() * 1000.0 / 60.0;
         let base = gdi.pixels().to_vec();

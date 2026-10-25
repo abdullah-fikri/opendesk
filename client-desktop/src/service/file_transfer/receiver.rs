@@ -112,13 +112,13 @@ fn publish(ctx: &AppContext, paths: &[PathBuf], paste: bool) {
     }
 }
 
-/// Folder that receives files (`Downloads\OpenDesk`, else `%APPDATA%\OpenDesk\Downloads`).
+/// Folder that receives files (`Downloads\OpenDesk` in the user's home, else `<app dir>/Downloads`).
 pub fn download_dir() -> PathBuf {
     #[cfg(test)]
     if let Some(dir) = tests::TEST_DOWNLOADS.lock().unwrap().clone() {
         return dir;
     }
-    if let Ok(profile) = env::var("USERPROFILE") {
+    if let Ok(profile) = env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
         let dir = PathBuf::from(profile).join("Downloads").join("OpenDesk");
         if fs::create_dir_all(&dir).is_ok() {
             return dir;
@@ -130,7 +130,11 @@ pub fn download_dir() -> PathBuf {
 }
 
 fn done_status(label: &str) -> String {
-    format!("Done: {label} (ready to paste, saved in Downloads\\OpenDesk)")
+    if cfg!(windows) {
+        format!("Done: {label} (ready to paste, saved in Downloads\\OpenDesk)")
+    } else {
+        format!("Done: {label} (saved in ~/Downloads/OpenDesk)")
+    }
 }
 
 /// Incoming transfers of one relay connection.
@@ -415,15 +419,15 @@ pub(super) mod tests {
     fn folder_group_creates_unique_top_folder_and_stays_inside() {
         let base = env::temp_dir().join(format!("opendesk-group-{}-{}", std::process::id(), now_ms()));
         fs::create_dir_all(base.join("Project")).unwrap();
-        fs::write(base.join(r"Project\old.txt"), b"old").unwrap();
+        fs::write(base.join("Project/old.txt"), b"old").unwrap();
         let mut g = FolderGroup::new();
         // Existing "Project" is never merged into: the group gets "Project (1)".
         assert_eq!(g.folder_for(&base, &["Project"], true), Some(base.join("Project (1)")));
-        assert_eq!(g.folder_for(&base, &["project", "src", "main.rs"], false), Some(base.join(r"Project (1)\src")));
-        assert!(base.join(r"Project (1)\src").is_dir());
+        assert_eq!(g.folder_for(&base, &["project", "src", "main.rs"], false), Some(base.join("Project (1)/src")));
+        assert!(base.join("Project (1)/src").is_dir());
         assert_eq!(g.folder_for(&base, &["loose.txt"], false), Some(base.clone()));
         assert_eq!(g.tops, vec![base.join("Project (1)")]);
-        assert_eq!(fs::read(base.join(r"Project\old.txt")).unwrap(), b"old");
+        assert_eq!(fs::read(base.join("Project/old.txt")).unwrap(), b"old");
         let _ = fs::remove_dir_all(base);
     }
 

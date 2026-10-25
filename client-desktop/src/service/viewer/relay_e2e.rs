@@ -370,4 +370,21 @@ mod tests {
         crate::service::monitor_wall::close(&admin);
         crate::service::monitor_wall::set_all(&admin, true);
     }
+
+    /// A device registered as `viewer-only` (Android, Linux on Wayland) is never offered as a host.
+    #[test]
+    #[ignore]
+    fn relay_e2e_viewer_only_device_is_refused() {
+        // Same block as `ids()`, last digits 8 and 9, so the other test's devices are untouched.
+        let base = &ids()[0][..8];
+        let (viewer_id, phone_id) = (format!("{base}8"), format!("{base}9"));
+        let (_phone, _) = connect(&phone_id, &[crate::domain::capability::VIEWER_ONLY]);
+        let (mut viewer, _) = connect(&viewer_id, &["video-delta"]);
+        viewer
+            .send(Message::Text(json!({ "type": "connect-request", "targetId": phone_id }).to_string().into()))
+            .unwrap();
+        let reply = wait_json(&mut viewer, |v| v["type"] == "error" || v["type"] == "session-connected");
+        assert_eq!(reply["type"], "error", "{reply}");
+        assert!(reply["message"].as_str().unwrap_or_default().contains("only view"), "{reply}");
+    }
 }

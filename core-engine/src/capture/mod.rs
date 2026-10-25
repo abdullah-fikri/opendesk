@@ -1,123 +1,90 @@
-//! Screen capture. [`DesktopCapturer`] picks DXGI Desktop Duplication and falls back to GDI.
+//! Screen capture. [`DesktopCapturer`] is the platform backend chosen at compile time: DXGI Desktop
+//! Duplication with GDI fallback on Windows, X11 (MIT-SHM) elsewhere.
 
-mod cursor;
-pub mod dxgi;
-mod gdi;
-mod monitor;
-mod win32;
+#[cfg(windows)]
+mod win;
+#[cfg(windows)]
+pub use win::*;
 
-pub use cursor::cursor_shape;
-pub use gdi::GdiScreenCapturer;
-pub use monitor::{MonitorBounds, enable_per_monitor_dpi_awareness, enumerate_monitors};
+#[cfg(not(windows))]
+mod x11;
+#[cfg(not(windows))]
+pub use x11::*;
 
-/// Primary capturer: DXGI Desktop Duplication, with the GDI capturer as fallback (rotated outputs, no
-/// D3D11 device, duplication denied, or `OPENDESK_CAPTURE=gdi`).
-// One capturer exists per hosted session, so the size difference between variants costs nothing.
-#[allow(clippy::large_enum_variant)]
-pub enum DesktopCapturer {
-    /// Desktop Duplication.
-    Dxgi(dxgi::DxgiCapturer),
-    /// GDI fallback.
-    Gdi(GdiScreenCapturer),
+/// Full-frame capturer for small periodic snapshots (thumbnails): GDI on Windows, so it never takes one of the
+/// few DXGI duplication slots a live session needs; the X11 capturer elsewhere. Both offer `new_for_monitor`,
+/// `capture_frame`, `pixels` and the `width`/`height` fields.
+#[cfg(windows)]
+pub type ThumbnailCapturer = GdiScreenCapturer;
+/// Full-frame capturer for small periodic snapshots (thumbnails): GDI on Windows, so it never takes one of the
+/// few DXGI duplication slots a live session needs; the X11 capturer elsewhere. Both offer `new_for_monitor`,
+/// `capture_frame`, `pixels` and the `width`/`height` fields.
+#[cfg(not(windows))]
+pub type ThumbnailCapturer = DesktopCapturer;
+
+/// A monitor in physical pixels, positioned in virtual-desktop coordinates.
+#[derive(Clone, Copy, Debug)]
+pub struct MonitorBounds {
+    /// Left edge in virtual-desktop coordinates.
+    pub left: i32,
+    /// Top edge in virtual-desktop coordinates.
+    pub top: i32,
+    /// Width in physical pixels.
+    pub width: i32,
+    /// Height in physical pixels.
+    pub height: i32,
 }
 
-impl DesktopCapturer {
-    /// Opens DXGI capture for `bounds` (GDI when it fails or `OPENDESK_CAPTURE=gdi`), scaled to `max_width` (0 = native).
-    pub fn new_for_monitor(bounds: MonitorBounds, max_width: i32) -> Self {
-        let force_gdi = std::env::var("OPENDESK_CAPTURE").is_ok_and(|v| v.eq_ignore_ascii_case("gdi"));
-        if !force_gdi && let Ok(mut d) = dxgi::DxgiCapturer::new_for_monitor(bounds, max_width) {
-            // The first acquired frames can be pointer-only; wait briefly for a real image so a session
-            // never starts with a black key frame. A fully static desktop may need a moment to present.
-            let start = std::time::Instant::now();
-            while !d.has_image() && start.elapsed() < std::time::Duration::from_millis(300) {
-                if d.grab(50).is_err() {
-                    break;
-                }
-            }
-            return DesktopCapturer::Dxgi(d);
-        }
-        DesktopCapturer::Gdi(GdiScreenCapturer::new_for_monitor(bounds, max_width))
-    }
+/// Whether this session can share its screen. Viewing works everywhere; hosting needs a capturable desktop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostSupport {
+    /// Capture and input injection are available.
+    Supported,
+    /// Hosting is impossible in this session; the text says why and what to do instead.
+    Unsupported(String),
+}
 
-    /// `"dxgi"` or `"gdi"`, for logs.
-    pub fn backend(&self) -> &'static str {
-        match self {
-            DesktopCapturer::Dxgi(_) => "dxgi",
-            DesktopCapturer::Gdi(_) => "gdi",
-        }
+/// Maps an X cursor name (XFixes, freedesktop cursor themes) to the portable shape codes of `cursor_shape`.
+#[cfg(any(not(windows), test))]
+pub fn shape_from_cursor_name(name: &str) -> u8 {
+    match name {
+        "xterm" | "text" | "ibeam" | "vertical-text" => 2,
+        "hand" | "hand1" | "hand2" | "pointer" | "pointing_hand" | "grab" | "openhand" => 3,
+        "watch" | "wait" => 4,
+        "left_ptr_watch" | "progress" | "half-busy" => 5,
+        "crosshair" | "cross" | "tcross" | "cell" | "plus" => 6,
+        "fleur" | "move" | "all-scroll" | "size_all" | "grabbing" | "closedhand" | "dnd-move" => 7,
+        "sb_h_double_arrow" | "h_double_arrow" | "ew-resize" | "col-resize" | "size_hor" | "left_side"
+        | "right_side" | "e-resize" | "w-resize" | "split_h" => 8,
+        "sb_v_double_arrow" | "v_double_arrow" | "ns-resize" | "row-resize" | "size_ver" | "top_side"
+        | "bottom_side" | "n-resize" | "s-resize" | "split_v" => 9,
+        "nwse-resize"
+        | "size_fdiag"
+        | "bd_double_arrow"
+        | "top_left_corner"
+        | "bottom_right_corner"
+        | "nw-resize"
+        | "se-resize" => 10,
+        "nesw-resize" | "size_bdiag" | "fd_double_arrow" | "top_right_corner" | "bottom_left_corner" | "ne-resize"
+        | "sw-resize" => 11,
+        "not-allowed" | "crossed_circle" | "forbidden" | "no-drop" | "circle" | "dnd-no-drop" => 12,
+        "help" | "question_arrow" | "whats_this" | "left_ptr_help" => 13,
+        // Arrows and application-specific cursors.
+        _ => 1,
     }
+}
 
-    /// (offset_x, offset_y, screen_width, screen_height, width, height)
-    pub fn geometry(&self) -> (i32, i32, i32, i32, i32, i32) {
-        match self {
-            DesktopCapturer::Dxgi(d) => (d.offset_x, d.offset_y, d.screen_width, d.screen_height, d.width, d.height),
-            DesktopCapturer::Gdi(g) => (g.offset_x, g.offset_y, g.screen_width, g.screen_height, g.width, g.height),
-        }
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    /// Output width in pixels.
-    pub fn width(&self) -> i32 {
-        self.geometry().4
-    }
-
-    /// Output height in pixels.
-    pub fn height(&self) -> i32 {
-        self.geometry().5
-    }
-
-    /// Stops painting the cursor into frames while the viewer draws its own.
-    pub fn set_hide_viewer_cursor(&mut self, hide: bool) {
-        match self {
-            DesktopCapturer::Dxgi(d) => d.hide_viewer_cursor = hide,
-            DesktopCapturer::Gdi(g) => g.hide_viewer_cursor = hide,
-        }
-    }
-
-    /// Captures the next frame. DXGI waits up to `timeout_ms` for a change; GDI returns at once.
-    /// A dead duplication switches this capturer to GDI permanently (same geometry).
-    pub fn grab(&mut self, timeout_ms: u32) {
-        let fallback = match self {
-            DesktopCapturer::Dxgi(d) => match d.grab(timeout_ms) {
-                Ok(_) => None,
-                Err(_) => {
-                    Some((d.offset_x, d.offset_y, d.screen_width, d.screen_height, d.width, d.hide_viewer_cursor))
-                }
-            },
-            DesktopCapturer::Gdi(g) => {
-                g.capture_frame();
-                None
-            }
-        };
-        if let Some((left, top, width, height, out_w, hide)) = fallback {
-            let max_w = if out_w < width { out_w } else { 0 };
-            let mut g = GdiScreenCapturer::new_for_monitor(MonitorBounds { left, top, width, height }, max_w);
-            g.hide_viewer_cursor = hide;
-            g.capture_frame();
-            *self = DesktopCapturer::Gdi(g);
-        }
-    }
-
-    /// The last captured image as BGRX pixels, `width()` per row.
-    pub fn pixels(&self) -> &[u32] {
-        match self {
-            DesktopCapturer::Dxgi(d) => d.pixels(),
-            DesktopCapturer::Gdi(g) => g.pixels(),
-        }
-    }
-
-    /// Changed regions of the last grab; None = unknown (GDI), compare the whole frame.
-    pub fn dirty_hint(&self) -> Option<&[crate::diff::Rect]> {
-        match self {
-            DesktopCapturer::Dxgi(d) => d.dirty_hint(),
-            DesktopCapturer::Gdi(_) => None,
-        }
-    }
-
-    /// Regions that moved (e.g. scrolling) in the last grab; empty for GDI.
-    pub fn moves(&self) -> &[crate::codec::frame::MoveRect] {
-        match self {
-            DesktopCapturer::Dxgi(d) => d.moves(),
-            DesktopCapturer::Gdi(_) => &[],
-        }
+    #[test]
+    fn cursor_names_map_to_shape_codes() {
+        assert_eq!(shape_from_cursor_name("left_ptr"), 1);
+        assert_eq!(shape_from_cursor_name("xterm"), 2);
+        assert_eq!(shape_from_cursor_name("hand2"), 3);
+        assert_eq!(shape_from_cursor_name("sb_h_double_arrow"), 8);
+        assert_eq!(shape_from_cursor_name("not-allowed"), 12);
+        assert_eq!(shape_from_cursor_name("some-app-cursor"), 1);
     }
 }

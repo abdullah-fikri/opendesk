@@ -13,6 +13,8 @@ export component DashboardView inherits VerticalLayout {
     in property <string> local_desk_id: "";
     in property <bool> is_relay_online: false;
     in property <bool> is_admin: false;
+    // Why this device cannot be controlled in this session (Linux on Wayland); empty when it can.
+    in property <string> host_notice: "";
     in-out property <int> active_tab: 0; // 0 = session history, 1 = relay hosts (admin)
     in-out property <string> target_desk_id: "";
     in property <[HistoryItem]> history_items: [];
@@ -158,9 +160,10 @@ export component DashboardView inherits VerticalLayout {
                     }
 
                     Text {
-                        text: is_relay_online ? "Ready for connections" : "Waiting for the relay";
-                        color: #71717a;
+                        text: host_notice != "" ? host_notice : is_relay_online ? "Ready for connections" : "Waiting for the relay";
+                        color: host_notice != "" ? #fbbf24 : #71717a;
                         font-size: 11px;
+                        wrap: word-wrap;
                     }
                 }
             }

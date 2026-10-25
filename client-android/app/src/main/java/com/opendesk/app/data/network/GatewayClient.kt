@@ -36,11 +36,6 @@ class GatewayClient(
         fun onBinary(bytes: ByteArray)
     }
 
-    private val http = OkHttpClient.Builder()
-        .readTimeout(0, TimeUnit.MILLISECONDS)
-        // The relay pings every 15 s; OkHttp pings too so a dead network is noticed from this side.
-        .pingInterval(PING_INTERVAL_SECONDS, TimeUnit.SECONDS)
-        .build()
     private val gson = Gson()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var webSocket: WebSocket? = null
@@ -75,6 +70,12 @@ class GatewayClient(
                 mainHandler.post { listener.onMessage(message) }
             }
 
+            // Answer the relay's close at once so the connection ends (and reconnection starts) without waiting
+            // for a socket timeout.
+            override fun onClosing(ws: WebSocket, code: Int, reason: String) {
+                ws.close(NORMAL_CLOSURE, null)
+            }
+
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
                 if (!closedByUs) mainHandler.post { listener.onConnectionChanged(false) }
             }
@@ -104,6 +105,15 @@ class GatewayClient(
 
     private companion object {
         const val PING_INTERVAL_SECONDS = 15L
+        const val CONNECT_TIMEOUT_SECONDS = 10L
         const val NORMAL_CLOSURE = 1000
+
+        /** One client for every connection, so reconnecting reuses its threads and connection pool. */
+        val http: OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            // The relay pings every 15 s; OkHttp pings too so a dead network is noticed from this side.
+            .pingInterval(PING_INTERVAL_SECONDS, TimeUnit.SECONDS)
+            .build()
     }
 }

@@ -1,4 +1,4 @@
-//! Persistence of settings and history under `%APPDATA%\OpenDesk`.
+//! Persistence of settings and history under `%APPDATA%\OpenDesk` (Windows) or `~/.config/opendesk`.
 //!
 //! Both files are small JSON documents written atomically enough for a single process (the CLI and the
 //! running app may both write `config.json`; the app polls it and picks up CLI changes).
@@ -18,6 +18,7 @@ const SETTINGS_FILE: &str = "config.json";
 const HISTORY_FILE: &str = "history.json";
 
 /// `%APPDATA%\OpenDesk`, created on first use (falls back to the working directory).
+#[cfg(windows)]
 pub fn app_dir() -> PathBuf {
     match env::var("APPDATA") {
         Ok(appdata) => {
@@ -26,6 +27,24 @@ pub fn app_dir() -> PathBuf {
             dir
         }
         Err(_) => PathBuf::from("."),
+    }
+}
+
+/// `$XDG_CONFIG_HOME/opendesk` (normally `~/.config/opendesk`), created on first use (falls back to the
+/// working directory).
+#[cfg(not(windows))]
+pub fn app_dir() -> PathBuf {
+    let base = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
+    match base {
+        Some(base) => {
+            let dir = base.join("opendesk");
+            let _ = fs::create_dir_all(&dir);
+            dir
+        }
+        None => PathBuf::from("."),
     }
 }
 

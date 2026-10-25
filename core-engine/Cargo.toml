@@ -2,12 +2,12 @@
 name = "core-engine"
 version = "1.0.0"
 edition = "2024"
-description = "Screen capture, video codecs, input and clipboard for the OpenDesk Windows client"
+description = "Screen capture, video codecs, input and clipboard for the OpenDesk desktop client (Windows and Linux)"
 license-file = "../LICENSE"
 repository = "https://github.com/abdullah-fikri/opendesk"
 publish = false
 
-[dependencies]
+[target.'cfg(windows)'.dependencies]
 # DXGI Desktop Duplication / D3D11 (capture) and Media Foundation (H.264): COM vtables by hand would be unreasonable.
 windows = { version = "=0.62.2", features = [
     "Win32_Foundation",
@@ -21,3 +21,17 @@ windows = { version = "=0.62.2", features = [
     "Win32_System_Ole",
     "Win32_System_Variant",
 ] }
+
+[target.'cfg(not(windows))'.dependencies]
+# X11 capture (MIT-SHM), monitors (RandR), cursor (XFixes) and input injection (XTEST); pure Rust, no libX11.
+x11rb = { version = "0.13.2", features = ["shm", "randr", "xfixes", "xtest"] }
+# SysV shared memory for MIT-SHM.
+libc = "0.2"
+# Clipboard text on X11 and Wayland (data-control).
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
+# Pure-Rust JPEG encoder (GDI+ on Windows).
+jpeg-encoder = { version = "0.7.1", features = ["simd"] }
+# H.264 through Cisco's prebuilt OpenH264 library, loaded at runtime and checked against Cisco's hashes. Never
+# compiled in: Cisco's binary carries the patent license, a self-built one does not. Missing = JPEG-only video.
+openh264 = { version = "0.9.8", default-features = false, features = ["libloading"] }
+openh264-sys2 = { version = "0.9.8", default-features = false, features = ["libloading"] }

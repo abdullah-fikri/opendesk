@@ -44,14 +44,7 @@ const CMD_RECONNECT_RELAY: usize = 1003;
 const CMD_RESTART_APP: usize = 1004;
 const CMD_EXIT_APP: usize = 1005;
 
-#[derive(Clone, Copy, Debug)]
-pub enum TrayAction {
-    ShowWindow,
-    DisconnectSession,
-    ReconnectRelay,
-    RestartApp,
-    ExitApp,
-}
+pub use super::TrayAction;
 
 /// Handler for tray menu choices.
 type TrayHandler = Box<dyn Fn(TrayAction) + Send + Sync>;

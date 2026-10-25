@@ -23,12 +23,15 @@ impl Edition {
         }
     }
 
-    /// `platform` value sent at registration.
+    /// `platform` value sent at registration (`windows-pc`, `linux-admin`, ...).
     pub fn platform_tag(self) -> &'static str {
-        match self {
-            Edition::Standard => "windows-pc",
-            Edition::Admin => "windows-admin",
-            Edition::Headless => "windows-host",
+        match (self, cfg!(windows)) {
+            (Edition::Standard, true) => "windows-pc",
+            (Edition::Admin, true) => "windows-admin",
+            (Edition::Headless, true) => "windows-host",
+            (Edition::Standard, false) => "linux-pc",
+            (Edition::Admin, false) => "linux-admin",
+            (Edition::Headless, false) => "linux-host",
         }
     }
 

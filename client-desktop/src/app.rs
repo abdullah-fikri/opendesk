@@ -54,6 +54,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     autostart::ensure_single_instance(opts.background || edition == Edition::Headless);
     logger::info("app", &format!("OpenDesk {} starting (edition: {}).", env!("CARGO_PKG_VERSION"), edition.name()));
     autostart::init_background_guardian();
+    if let core_engine::capture::HostSupport::Unsupported(reason) = core_engine::capture::host_support() {
+        logger::warn("app", &format!("Viewer only, this device cannot be controlled: {reason}"));
+    }
 
     let (outbox, outbox_rx) = mpsc::channel::<Outgoing>();
     let voice = VoiceEngine::new(outbox.clone());
@@ -86,7 +89,23 @@ pub fn run() -> Result<(), slint::PlatformError> {
     let _tray = ui::install_tray(&window, &ctx);
     ui::enable_file_drop(&window, &ctx, opts.background);
     start_services(&ctx, outbox_rx);
+    run_window(&window, opts.background)
+}
+
+/// Windows: the window is always "shown" for Slint and hidden natively when it goes to the tray.
+#[cfg(windows)]
+fn run_window(window: &MainWindow, _background: bool) -> Result<(), slint::PlatformError> {
     window.run()
+}
+
+/// Elsewhere the window is really hidden when it goes to the tray, so the event loop must outlive it; a
+/// background start (autostart) does not show it at all.
+#[cfg(not(windows))]
+fn run_window(window: &MainWindow, background: bool) -> Result<(), slint::PlatformError> {
+    if !background {
+        window.show()?;
+    }
+    slint::run_event_loop_until_quit()
 }
 
 fn start_services(ctx: &Ctx, outbox: mpsc::Receiver<Outgoing>) {

@@ -5,7 +5,8 @@ import com.google.gson.JsonObject
 /*
  * Wire format between the Android client and the relay (see docs/protocol.md at the repository root).
  * Outbound messages are plain data classes serialized by Gson; null fields are omitted.
- * Android does not advertise any capability, so it always uses the single-session message shapes.
+ * Android is a viewer only. It advertises `viewer-only` and no video or multi-session capability, so it always
+ * receives plain JPEG frames and the single-session message shapes.
  */
 
 /** Message `type` values. */
@@ -30,6 +31,7 @@ data class RegisterRequest(
     val deskId: String,
     val deviceToken: String,
     val deviceName: String,
+    val caps: List<String>,
     val platform: String = "android",
     val type: String = MessageType.REGISTER,
 )
@@ -37,7 +39,7 @@ data class RegisterRequest(
 /** Opens a viewer session to `targetId`. */
 data class ConnectRequest(val targetId: String, val type: String = MessageType.CONNECT_REQUEST)
 
-/** This host's answer to an `incoming-request`. */
+/** Answer to an `incoming-request`. Android never hosts, so it only ever sends `accept = false`. */
 data class ApprovalResponse(val fromClean: String, val accept: Boolean, val type: String = MessageType.APPROVAL_RESPONSE)
 
 /** Ends the session with `targetClean`. */
@@ -48,7 +50,8 @@ data class RelayInput(val targetClean: String, val event: InputEvent, val type: 
 
 /**
  * Input or control event. Coordinates are normalized to 0..1 of the remote screen.
- * Actions sent by Android: mousemove, mousedown, mouseup, click, dblclick, wheel, switch-monitor, set-mic.
+ * Actions sent by Android: mousemove, mousedown, mouseup, click, dblclick, wheel, keydown, keyup, text,
+ * shortcut, switch-monitor, set-mic.
  */
 data class InputEvent(
     val action: String,
@@ -57,6 +60,12 @@ data class InputEvent(
     val button: Int? = null,
     val deltaY: Int? = null,
     val muted: Boolean? = null,
+    /** Win32 virtual-key code for keydown/keyup. */
+    val keyCode: Int? = null,
+    /** Typed characters for `text`. */
+    val text: String? = null,
+    /** Shortcut name for `shortcut` (win, alt-tab, taskmgr, explorer, desktop). */
+    val name: String? = null,
 )
 
 /** Any message from the relay. Every field is optional; `type` selects which ones are set. */
@@ -70,13 +79,10 @@ data class ServerMessage(
     val payload: FilePayload? = null,
 )
 
-/** Received input event (`input-command.event`). */
+/** Received control event (`input-command.event`). A viewer only acts on `set-mic`. */
 data class RemoteEvent(
     val action: String? = null,
-    val normX: Float? = null,
-    val normY: Float? = null,
     val muted: Boolean? = null,
-    val keyCode: Int? = null,
 )
 
 /** File-transfer payload as Android receives it (`start`, `chunk`, `end`). */

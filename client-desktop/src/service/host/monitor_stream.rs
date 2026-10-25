@@ -1,5 +1,5 @@
 //! Monitor-wall thumbnails (see `docs/features/monitor-wall.md` at the repository root). While the relay says an
-//! administrator watches this machine, the primary monitor is captured with GDI a few times per second, scaled
+//! administrator watches this machine, the primary monitor is captured (GDI on Windows, X11 on Linux) a few times per second, scaled
 //! to tile size, and sent as a plain JPEG whenever it changed. The relay sends the newest one to every watcher,
 //! however many there are.
 //!
@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use core_engine::capture::{GdiScreenCapturer, MonitorBounds, enumerate_monitors};
+use core_engine::capture::{MonitorBounds, ThumbnailCapturer, enumerate_monitors};
 use core_engine::codec::JpegEncoder;
 
 use crate::infra::logger;
@@ -78,7 +78,7 @@ fn run(ctx: &Ctx, generation: u64, profile: Profile) {
     // Follow the secure desktop (UAC / lock screen) when running as SYSTEM; a no-op otherwise.
     core_engine::desktop::switch_to_input_desktop();
     let mut bounds = primary();
-    let mut capturer = GdiScreenCapturer::new_for_monitor(bounds, profile.max_width);
+    let mut capturer = ThumbnailCapturer::new_for_monitor(bounds, profile.max_width);
     let encoder = JpegEncoder::new(QUALITY);
     // The last image sent: an unchanged screen costs one comparison and nothing on the wire.
     let mut sent: Vec<u32> = Vec::new();
@@ -92,7 +92,7 @@ fn run(ctx: &Ctx, generation: u64, profile: Profile) {
             let fresh = primary();
             if switched || !same(fresh, bounds) {
                 bounds = fresh;
-                capturer = GdiScreenCapturer::new_for_monitor(bounds, profile.max_width);
+                capturer = ThumbnailCapturer::new_for_monitor(bounds, profile.max_width);
                 sent.clear();
             }
         }
@@ -140,16 +140,25 @@ mod tests {
         assert!(rx.try_recv().is_err(), "stream stopped");
     }
 
+    #[cfg(windows)]
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetCurrentThread() -> *mut std::ffi::c_void;
         fn GetThreadTimes(h: *mut std::ffi::c_void, c: *mut u64, e: *mut u64, k: *mut u64, u: *mut u64) -> i32;
     }
 
+    #[cfg(windows)]
     fn thread_cpu() -> Duration {
         let (mut c, mut e, mut k, mut u) = (0u64, 0u64, 0u64, 0u64);
         unsafe { GetThreadTimes(GetCurrentThread(), &mut c, &mut e, &mut k, &mut u) };
         Duration::from_nanos((k + u) * 100)
+    }
+
+    #[cfg(not(windows))]
+    fn thread_cpu() -> Duration {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
     }
 
     /// Cost of one thumbnail on this desktop (GDI's StretchBlt costs less CPU than a native BitBlt plus a box
@@ -160,7 +169,7 @@ mod tests {
     fn bench_monitor_stream() {
         let frames: u32 = std::env::var("BENCH_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
         let bounds = primary();
-        let mut capturer = GdiScreenCapturer::new_for_monitor(bounds, 640);
+        let mut capturer = ThumbnailCapturer::new_for_monitor(bounds, 640);
         let encoder = JpegEncoder::new(QUALITY);
         let (mut wall, mut cpu, mut bytes) = (Duration::ZERO, Duration::ZERO, 0usize);
         for _ in 0..frames {

@@ -1,25 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Indonesian translations of values/strings.xml. -->
 <resources>
-    <string name="accessibility_desc">Layanan Aksesibilitas OpenDesk memungkinkan perangkat PC/laptop yang Anda izinkan untuk mengontrol sentuhan layar dan tombol navigasi HP ini secara jarak jauh.</string>
     <string name="status_connecting">Menghubungkan...</string>
     <string name="status_connected">Terhubung</string>
     <string name="status_disconnected">Terputus</string>
+    <string name="relay_button">Relay</string>
+    <string name="mode_trackpad">Trackpad</string>
     <string name="relay_label">Relay: %1$s</string>
     <string name="relay_not_configured">belum diatur</string>
-    <string name="remote_session_active">Sesi Remote Aktif</string>
-    <string name="end_session">Akhiri Sesi</string>
     <string name="this_device_id">ID Perangkat Ini</string>
     <string name="copy">Salin</string>
-    <string name="control_another_device">Remote Perangkat Lain</string>
+    <string name="control_another_device">Kontrol Komputer</string>
     <string name="enter_target_id">Masukkan ID tujuan</string>
     <string name="connect_to_pc">Hubungkan</string>
     <string name="connecting">Menghubungkan...</string>
-    <string name="system_permissions">Izin Sistem</string>
-    <string name="accessibility_control">Aksesibilitas Kontrol</string>
-    <string name="display_over_apps">Tampil di Atas Aplikasi</string>
-    <string name="permission_enable">Aktifkan</string>
-    <string name="permission_active">✓ Aktif</string>
     <string name="mic_on">Mic: Aktif</string>
     <string name="mic_off">Mic: Mati</string>
     <string name="screen">Layar</string>
@@ -33,8 +27,6 @@
     <string name="right_click">Klik Kanan</string>
     <string name="switching_monitor">Mengganti layar monitor...</string>
     <string name="id_copied">ID disalin ke clipboard</string>
-    <string name="remote_session_stopped">Sesi remote dihentikan</string>
-    <string name="connected_to">Terhubung: %1$s</string>
     <string name="session_closed">Sesi ditutup</string>
     <string name="error_generic">Kesalahan</string>
     <string name="relay_settings_title">Pengaturan Relay</string>
@@ -44,16 +36,15 @@
     <string name="cancel">Batal</string>
     <string name="relay_settings_invalid">Isi alamat relay; token minimal 32 karakter</string>
     <string name="relay_updated">Relay diperbarui</string>
-    <string name="welcome_title">Selamat Datang di OpenDesk</string>
-    <string name="welcome_message">Agar PC dapat mengontrol HP ini dari jarak jauh, aktifkan Layanan Aksesibilitas \"OpenDesk\".\n\nSetelah membuka Pengaturan, pilih Aplikasi Terinstal / Downloaded apps lalu aktifkan OpenDesk.</string>
-    <string name="open_settings">Buka Pengaturan</string>
-    <string name="later">Nanti Saja</string>
-    <string name="accessibility_hint">Cari \"OpenDesk\" di daftar layanan dan aktifkan</string>
-    <string name="accessibility_manual">Buka Pengaturan &gt; Aksesibilitas secara manual</string>
     <string name="file_receiving">Menerima berkas: %1$s...</string>
     <string name="file_saved">Berkas tersimpan: %1$s</string>
     <string name="file_failed">Gagal menerima berkas</string>
-    <string name="capture_channel_name">Berbagi layar OpenDesk</string>
-    <string name="capture_notification_title">OpenDesk Aktif</string>
-    <string name="capture_notification_text">Layar HP sedang dibagikan ke PC remote.</string>
+    <string name="status_reconnecting">Menyambung ulang...</string>
+    <string name="connection_lost">Koneksi ke relay terputus</string>
+    <string name="relay_offline">Relay belum terhubung. Periksa alamat dan jaringan.</string>
+    <string name="viewer_only_note">HP ini untuk mengontrol komputer lain. HP ini tidak bisa dikontrol dari jarak jauh.</string>
+    <string name="relay_plaintext_refused">Gunakan alamat wss://. ws:// biasa hanya diizinkan ke perangkat ini (localhost).</string>
+    <string name="keyboard">Keyboard</string>
+    <string name="fit_screen">Pas</string>
+    <string name="incoming_input_label">Input keyboard remote</string>
 </resources>

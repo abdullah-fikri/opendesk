@@ -7,11 +7,32 @@ change must respect.
 
 | Component | Tools |
 | --- | --- |
-| Desktop client, core engine | Windows 10/11, Rust stable (edition 2024) |
+| Desktop client, core engine | Rust stable 1.92+ (edition 2024) on Windows 10/11 or Linux (see below) |
 | Relay | Go 1.26, PostgreSQL 13+ (or Docker) |
-| Android | JDK 17, Android SDK 34 |
-| Installer | Inno Setup 6 |
-| Everything via `make` | GNU Make on Windows (the Makefile uses `cmd.exe`) |
+| Android | JDK 17+, Android SDK platform 36 |
+| Windows installer | Inno Setup 6 |
+| Linux packages | `cargo install cargo-deb` |
+| Everything via `make` | GNU Make (the Makefile uses `cmd.exe` on Windows and `sh` elsewhere) |
+
+### Windows
+
+Rust (MSVC or GNU toolchain). Optional: `windres` (MinGW) to embed the icon and version resource.
+
+### Linux
+
+Debian/Ubuntu packages for building and testing the desktop client:
+
+```bash
+sudo apt install build-essential pkg-config libssl-dev libasound2-dev libfontconfig1-dev libxkbcommon-dev
+# Running it needs an X11 or XWayland session and these libraries, which the UI toolkit loads at runtime:
+sudo apt install libx11-6 libx11-xcb1 libxcursor1 libxrandr2 libxi6 libxkbcommon-x11-0 libgl1
+# Live tests without a desktop (as CI runs them):
+sudo apt install xvfb xauth dbus-x11 bzip2
+```
+
+Fedora: `dnf install gcc pkgconf openssl-devel alsa-lib-devel fontconfig-devel libxkbcommon-devel`. Hosting needs an
+X11 session; under Wayland the client is a viewer only ([docs/platforms.md](docs/platforms.md)). H.264 needs
+Cisco's OpenH264: `packaging/linux/install-openh264.sh`.
 
 ## Everyday commands
 
@@ -19,7 +40,8 @@ change must respect.
 make help          # every target
 make test          # all unit tests
 make lint          # rustfmt, clippy, gofmt, go vet
-make windows       # desktop client -> builds\windows\OpenDesk.exe
+make windows       # Windows: desktop client -> builds\windows\OpenDesk.exe
+make linux         # Linux: desktop client -> builds/linux/opendesk (linux-deb, linux-tar for packages)
 make run-relay     # relay from source on :8088
 make android       # debug APK
 ```
@@ -78,7 +100,11 @@ gofmt -w . && go vet ./...                                          # in server-
 - Domain and use-case code gets unit tests next to the code (`#[cfg(test)] mod tests`, `*_test.go`,
   `src/test/...`).
 - Tests that need a desktop session, a clipboard owner or a running relay are `#[ignore]`d and say how to run
-  them, for example `cargo test --release relay_e2e -- --ignored` against `make run-relay`.
+  them, for example `cargo test --release relay_e2e -- --ignored` against `make run-relay`. On Linux the live
+  X11 tests run headless: `xvfb-run -a cargo test --release -- --include-ignored` in `core-engine/`.
+- Platform code: keep one public API per module and add a backend per OS (see
+  [docs/architecture.md](docs/architecture.md#platform-code)). Run clippy for Linux too (CI does); from Windows,
+  Docker with the packages above is the quickest way.
 
 ## Commits and pull requests
 
