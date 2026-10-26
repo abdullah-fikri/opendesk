@@ -135,6 +135,9 @@ pub struct H264Encoder {
     /// True for a hardware encoder.
     pub hardware: bool,
     mft: IMFTransform,
+    /// Hardware encoders come from an activation object that must be shut down to free the driver's surfaces
+    /// and threads; dropping the transform alone keeps them alive.
+    activate: Option<IMFActivate>,
     events: Option<IMFMediaEventGenerator>,
     codec: Option<ICodecAPI>,
     /// NeedInput events not yet answered (async MFTs only).
@@ -148,6 +151,18 @@ pub struct H264Encoder {
 
 unsafe impl Send for H264Encoder {}
 
+impl Drop for H264Encoder {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
+            let _ = self.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
+            if let Some(act) = self.activate.take() {
+                let _ = act.ShutdownObject();
+            }
+        }
+    }
+}
+
 impl H264Encoder {
     /// Hardware MFT first (unless `allow_hw` is false), then the Microsoft software encoder.
     pub fn new(width: u32, height: u32, fps: u32, bitrate: u32, allow_hw: bool) -> Result<Self> {
@@ -156,17 +171,23 @@ impl H264Encoder {
             return Err(fail());
         }
         if allow_hw && let Ok(list) = Self::hardware_mfts() {
-            for (mft, name) in list {
-                if let Ok(e) = Self::configure(mft, name, true, width, height, fps, bitrate) {
-                    return Ok(e);
+            // Activated one at a time: each activation allocates driver resources, freed only by ShutdownObject.
+            for (act, name) in list {
+                let Ok(mft) = (unsafe { act.ActivateObject::<IMFTransform>() }) else { continue };
+                match Self::configure(mft, Some(act.clone()), name, true, width, height, fps, bitrate) {
+                    Ok(e) => return Ok(e),
+                    Err(_) => unsafe {
+                        let _ = act.ShutdownObject();
+                    },
                 }
             }
         }
         let mft: IMFTransform = unsafe { CoCreateInstance(&CLSID_MSH264EncoderMFT, None, CLSCTX_INPROC_SERVER)? };
-        Self::configure(mft, "Microsoft H.264 (software)".into(), false, width, height, fps, bitrate)
+        Self::configure(mft, None, "Microsoft H.264 (software)".into(), false, width, height, fps, bitrate)
     }
 
-    fn hardware_mfts() -> Result<Vec<(IMFTransform, String)>> {
+    /// Hardware H.264 encoders, best first, not activated yet.
+    fn hardware_mfts() -> Result<Vec<(IMFActivate, String)>> {
         unsafe {
             let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_NV12 };
             let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_H264 };
@@ -190,9 +211,7 @@ impl H264Encoder {
                         name = p.to_string().unwrap_or(name);
                         CoTaskMemFree(Some(p.0 as *const _));
                     }
-                    if let Ok(mft) = act.ActivateObject::<IMFTransform>() {
-                        out.push((mft, name));
-                    }
+                    out.push((act, name));
                 }
             }
             CoTaskMemFree(Some(arr as *const _));
@@ -200,8 +219,10 @@ impl H264Encoder {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn configure(
         mft: IMFTransform,
+        activate: Option<IMFActivate>,
         name: String,
         hardware: bool,
         w: u32,
@@ -252,6 +273,7 @@ impl H264Encoder {
                 name,
                 hardware,
                 mft,
+                activate,
                 events,
                 codec,
                 credits: 0,
@@ -521,5 +543,55 @@ mod tests {
             }
         }
         assert!(shown >= 8, "low-latency decode should not buffer ({shown} of 10 shown)");
+    }
+
+    /// Private bytes of this process (PROCESS_MEMORY_COUNTERS.PagefileUsage).
+    fn private_bytes() -> usize {
+        #[repr(C)]
+        #[derive(Default)]
+        struct Counters {
+            cb: u32,
+            page_fault_count: u32,
+            peak_working_set: usize,
+            working_set: usize,
+            quota_peak_paged: usize,
+            quota_paged: usize,
+            quota_peak_non_paged: usize,
+            quota_non_paged: usize,
+            pagefile_usage: usize,
+            peak_pagefile_usage: usize,
+        }
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> isize;
+            fn K32GetProcessMemoryInfo(process: isize, counters: *mut Counters, cb: u32) -> i32;
+        }
+        let mut c = Counters { cb: std::mem::size_of::<Counters>() as u32, ..Default::default() };
+        unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
+        c.pagefile_usage
+    }
+
+    /// A rebuilt pipeline (every viewer resize) must not keep the old hardware encoder's memory.
+    /// Needs a GPU encoder: `cargo test --release encoder_rebuild -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn encoder_rebuild_releases_hardware_memory() {
+        let (w, h) = (1920u32, 1080u32);
+        let frame = pattern(w as usize, h as usize, 0);
+        let build = || {
+            let mut enc = H264Encoder::new(w, h, 60, 8_000_000, true).unwrap();
+            for _ in 0..3 {
+                let _ = enc.encode(&frame, w as usize);
+            }
+            enc.name.clone()
+        };
+        let name = build();
+        let before = private_bytes();
+        for _ in 0..20 {
+            build();
+        }
+        let grown = private_bytes().saturating_sub(before) / (1024 * 1024);
+        println!("{name}: +{grown} MB private after 20 rebuilds");
+        assert!(grown < 60, "{name} leaked {grown} MB over 20 rebuilds");
     }
 }
