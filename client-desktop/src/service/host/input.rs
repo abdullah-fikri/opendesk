@@ -1,6 +1,6 @@
 //! Applies the hosted viewer's input and control events to this machine.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::domain::resolution;
 use crate::infra::{logger, privacy};
@@ -13,6 +13,9 @@ const VK_ESCAPE: u8 = 0x1B;
 const VK_LWIN: u8 = 0x5B;
 /// Highest monitor index a viewer may select.
 const MAX_MONITOR_INDEX: u64 = 63;
+/// Refused keyboard injection is logged at most this often (ms), not once per key.
+const INJECTION_WARN_EVERY_MS: u64 = 10_000;
+static LAST_INJECTION_WARN_MS: AtomicU64 = AtomicU64::new(0);
 
 /// Handles one event from the viewer this machine hosts. Events arriving while nothing is hosted are ignored:
 /// only an active session may drive this machine.
@@ -59,7 +62,12 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
             injector.set_cursor_pos(x, y);
             injector.mouse_wheel(delta_y);
         }
-        InputEvent::KeyDown { key_code } if key_code > 0 => host.key_down(injector, key_code),
+        InputEvent::KeyDown { key_code } if key_code > 0 => {
+            if key_code == VK_LWIN {
+                logger::info("host.input", "Viewer pressed the Windows key.");
+            }
+            host.key_down(injector, key_code)
+        }
         InputEvent::KeyUp { key_code } if key_code > 0 => host.key_up(injector, key_code),
         InputEvent::KeyCombo { key_code, ctrl, alt, shift } if key_code > 0 => {
             injector.send_key_combo(ctrl, alt, shift, key_code)
@@ -98,6 +106,17 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
         InputEvent::VideoKeyframe => host.keyframe_requested.store(true, Ordering::SeqCst),
         // Viewer-bound events and zero key codes have no meaning on a host.
         _ => {}
+    }
+    warn_if_refused();
+}
+
+/// Logs when Windows refused injected keys (a window of higher integrity has focus, or another desktop).
+pub fn warn_if_refused() {
+    let err = core_engine::input::take_injection_error();
+    let now = crate::service::file_transfer::now_ms();
+    if err != 0 && now.saturating_sub(LAST_INJECTION_WARN_MS.load(Ordering::Relaxed)) >= INJECTION_WARN_EVERY_MS {
+        LAST_INJECTION_WARN_MS.store(now, Ordering::Relaxed);
+        logger::warn("host.input", &format!("Windows refused injected keyboard input (error {err})."));
     }
 }
 

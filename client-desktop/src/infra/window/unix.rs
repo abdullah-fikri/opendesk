@@ -17,6 +17,11 @@ where
     false
 }
 
+/// Window class of the focused window, for diagnostics; X11 has no cheap equivalent here.
+pub fn foreground_class() -> String {
+    String::new()
+}
+
 /// Shows a multi-select "Choose Files to Send" dialog; empty when cancelled or when no dialog tool exists.
 pub fn pick_files_dialog() -> Vec<PathBuf> {
     let attempts: [(&str, &[&str]); 2] = [

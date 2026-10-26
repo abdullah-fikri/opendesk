@@ -142,6 +142,11 @@ fn delegate_to_elevated_task(start_in_background: bool) -> bool {
 /// False = no copy appeared (service stopped); the caller falls back to running this one.
 fn delegate_to_service(start_in_background: bool) -> bool {
     let _ = fs::remove_file(app_dir().join(STOP_FLAG));
+    // The headless agent has no window to wait for or to show: the service starts it on its next poll.
+    if cfg!(feature = "headless") {
+        logger::info("app.service", "Launch handed over to the OpenDesk service.");
+        return true;
+    }
     // The service polls every 2 s and waits 10 s after it first sees the logon (right after install).
     for _ in 0..100 {
         let hwnd = find_tray_window();

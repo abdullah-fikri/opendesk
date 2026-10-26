@@ -257,6 +257,7 @@ unsafe extern "system" {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetModuleHandleW(lp_module_name: *const u16) -> *mut c_void;
+    fn GetLastError() -> u32;
 }
 
 fn to_wide(s: &str) -> Vec<u16> {
@@ -446,6 +447,13 @@ unsafe extern "system" fn ll_keyboard_proc(n_code: i32, wparam: usize, lparam: i
                         || (is_up && (is_win || slot.load(Ordering::Relaxed)))
                     {
                         slot.store(is_down, Ordering::Relaxed);
+                        // Rare keys; the log shows whether the viewer side caught them.
+                        if is_down && (is_win || (alt && vk == VK_TAB)) {
+                            logger::info(
+                                "viewer.keys",
+                                if is_win { "Forwarding Win to the host." } else { "Forwarding Alt+Tab to the host." },
+                            );
+                        }
                         // The host presses the left Win key for either one.
                         let key_code = if is_win { VK_LWIN as u8 } else { vk as u8 };
                         send_hook_key_event(if is_down {
@@ -550,8 +558,14 @@ pub fn init_privacy_and_hooks(tx_out: Sender<Outgoing>) {
             OVERLAY_HWND.store(hwnd as usize, Ordering::SeqCst);
         }
 
-        let _kb_hook = SetWindowsHookExW(WH_KEYBOARD_LL, ll_keyboard_proc, hinst, 0);
+        let kb_hook = SetWindowsHookExW(WH_KEYBOARD_LL, ll_keyboard_proc, hinst, 0);
         let _ms_hook = SetWindowsHookExW(WH_MOUSE_LL, ll_mouse_proc, hinst, 0);
+        if kb_hook.is_null() {
+            logger::warn(
+                "desk_rt.privacy",
+                &format!("Keyboard hook not installed (error {}): Win and Alt+Tab stay local.", GetLastError()),
+            );
+        }
 
         logger::info(
             "desk_rt.privacy",

@@ -62,6 +62,7 @@ struct OPENFILENAMEW {
 unsafe extern "system" {
     fn FindWindowW(lp_class_name: *const u16, lp_window_name: *const u16) -> HWND;
     fn GetForegroundWindow() -> HWND;
+    fn GetClassNameW(h_wnd: HWND, lp_class_name: *mut u16, n_max_count: i32) -> i32;
     fn GetWindowThreadProcessId(h_wnd: HWND, lpdw_process_id: *mut u32) -> u32;
     fn GetWindowLongPtrW(h_wnd: HWND, n_index: i32) -> LONG_PTR;
     fn SetWindowLongPtrW(h_wnd: HWND, n_index: i32, dw_new_long: LONG_PTR) -> LONG_PTR;
@@ -191,6 +192,13 @@ where
         }
         true
     }
+}
+
+/// Window class of the focused window ("CabinetWClass" = Explorer folder, "Progman" = desktop), for diagnostics.
+pub fn foreground_class() -> String {
+    let mut buf = [0u16; 128];
+    let len = unsafe { GetClassNameW(GetForegroundWindow(), buf.as_mut_ptr(), buf.len() as i32) };
+    if len <= 0 { "(none)".into() } else { String::from_utf16_lossy(&buf[..len as usize]) }
 }
 
 /// Shows the multi-select "Choose Files to Send" dialog; empty when cancelled.

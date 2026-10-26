@@ -18,7 +18,7 @@ use super::{CHUNK_SIZE, LAST_RECEIVED_MS, MAX_CHUNK_B64, hex, now_ms, remember_r
 use crate::domain::transfer::{
     MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, is_safe_id, percent, safe_rel_path, sanitize_file_name,
 };
-use crate::infra::{logger, storage, virtual_clipboard};
+use crate::infra::{logger, storage, virtual_clipboard, window};
 use crate::protocol::{FileAction, FilePayload};
 use crate::service::context::AppContext;
 use crate::service::ui_port::{TransferState, TransferUpdate, UiPort};
@@ -107,7 +107,9 @@ fn publish(ctx: &AppContext, paths: &[PathBuf], paste: bool) {
     ctx.mark_clipboard_synced();
     if paste {
         thread::sleep(Duration::from_millis(35));
+        logger::info("file_transfer", &format!("Pasting into foreground window: {}", window::foreground_class()));
         ctx.injector.send_key_combo(true, false, false, VK_V);
+        crate::service::host::input::warn_if_refused();
         thread::sleep(Duration::from_millis(25));
         // Explorer touches the clipboard while pasting; mark that as synced too so it is never echoed back.
         ctx.mark_clipboard_synced();
