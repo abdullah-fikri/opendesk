@@ -120,6 +120,11 @@ pub fn mark_intentional_stop() {
     let _ = fs::write(app_dir().join("user_exit.flag"), "stopped");
 }
 
+/// Windows only: the SYSTEM service restarts its agent. Nothing supervises the app here.
+pub fn supervised_by_service() -> bool {
+    false
+}
+
 /// Quotes a path for a desktop entry's `Exec` key.
 fn exec_quote(path: &Path) -> String {
     let mut out = String::from("\"");

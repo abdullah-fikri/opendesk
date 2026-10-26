@@ -8,7 +8,7 @@ use std::env;
 
 use crate::domain::{desk_id, settings};
 use crate::infra::autostart::{self, StopError};
-use crate::infra::{device, logger, storage};
+use crate::infra::{device, logger, storage, window};
 
 const HELP: &str = "Commands:\r\n  opendesk server <url>   Set the relay address (e.g. wss://relay.example.com)\r\n  opendesk status         Show this device's ID and relay\r\n  opendesk stop           Stop OpenDesk and its watchdog\r\n  opendesk uninstall      Stop OpenDesk and remove autostart entries";
 
@@ -23,6 +23,10 @@ pub fn run_if_requested() {
         "stop" | "kill" => stop(),
         "uninstall" => uninstall(),
         "status" | "id" | "--status" | "help" | "--help" => status(),
+        // Internal: the Windows service entry point, and the file picker the SYSTEM agent runs as the user.
+        #[cfg(windows)]
+        "--service" => crate::infra::system_service::run(),
+        "--pick-files" => pick_files(args.get(1)),
         _ => return,
     };
     std::process::exit(code);
@@ -78,6 +82,17 @@ fn uninstall() -> i32 {
         "[OpenDesk] OpenDesk stopped and its start-at-login entry removed.\r\nRemove the package (sudo apt remove opendesk) or delete the binary."
     });
     0
+}
+
+/// Writes the picked paths, one per line, to `out`; exit code 1 when cancelled.
+fn pick_files(out: Option<&String>) -> i32 {
+    let Some(out) = out else { return 2 };
+    let paths = window::pick_files_dialog();
+    let list: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    match std::fs::write(out, list.join("\n")) {
+        Ok(()) if !list.is_empty() => 0,
+        _ => 1,
+    }
 }
 
 fn status() -> i32 {

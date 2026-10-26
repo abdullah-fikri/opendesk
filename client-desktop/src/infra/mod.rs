@@ -10,6 +10,7 @@ pub mod logger;
 pub mod p2p;
 pub mod privacy;
 pub mod storage;
+pub mod system_service;
 pub mod tray;
 pub mod virtual_clipboard;
 pub mod window;

@@ -1,5 +1,6 @@
-//! Process lifecycle on Windows: single instance, elevated logon task, HKCU Run autostart, the watchdog
-//! that restarts OpenDesk when it is killed, and the `opendesk` command shim.
+//! Process lifecycle on Windows: single instance, the SYSTEM service (`infra::system_service`), the elevated
+//! logon task of older installs, HKCU Run autostart, the watchdog that restarts OpenDesk when it is killed,
+//! and the `opendesk` command shim.
 
 use std::env;
 use std::ffi::c_void;
@@ -15,6 +16,7 @@ use std::time::Duration;
 
 use crate::infra::logger;
 use crate::infra::storage::app_dir;
+use crate::infra::system_service;
 use crate::infra::tray::WM_TRAYICON;
 
 type HANDLE = *mut c_void;
@@ -30,6 +32,8 @@ const MSGFLT_ADD: u32 = 1;
 /// Task Scheduler task registered by the installer (elevated, at logon, for the installing user).
 /// Must match `ElevatedTaskName` in installer/opendesk.iss.
 pub const ELEVATED_TASK_NAME: &str = "OpenDesk Autostart";
+/// In the app directory while the user wants OpenDesk stopped: pauses the watchdog and the service.
+pub const STOP_FLAG: &str = "user_exit.flag";
 const WM_LBUTTONUP: isize = 0x0202;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const ATTACH_PARENT_PROCESS: u32 = 0xFFFFFFFF;
@@ -133,6 +137,32 @@ fn delegate_to_elevated_task(start_in_background: bool) -> bool {
     true
 }
 
+/// Launch by the user (Start Menu, desktop icon) while the service is installed: the service runs the real
+/// copy as SYSTEM. Clears a previous "Stop & Exit" so the service starts it again, then wakes its window.
+/// False = no copy appeared (service stopped); the caller falls back to running this one.
+fn delegate_to_service(start_in_background: bool) -> bool {
+    let _ = fs::remove_file(app_dir().join(STOP_FLAG));
+    // The service polls every 2 s and waits 10 s after it first sees the logon (right after install).
+    for _ in 0..100 {
+        let hwnd = find_tray_window();
+        if !hwnd.is_null() {
+            if !start_in_background && !cfg!(feature = "headless") {
+                unsafe { PostMessageW(hwnd, WM_TRAYICON, 0, WM_LBUTTONUP) };
+            }
+            logger::info("app.service", "Launch handed over to the OpenDesk service.");
+            return true;
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    logger::warn("app.service", "OpenDesk service did not start the app; running without it.");
+    false
+}
+
+/// True when this process is the service's agent, which the service restarts when it exits.
+pub fn supervised_by_service() -> bool {
+    system_service::is_local_system() && system_service::installed()
+}
+
 /// Writes `msg` to the console of the terminal that launched this GUI-subsystem process.
 pub fn print_to_console(msg: &str) {
     let line = format!(
@@ -171,6 +201,15 @@ pub enum StopError {
 /// Stops the watchdog and every running OpenDesk process (`opendesk stop`).
 pub fn stop_running() -> Result<(), StopError> {
     mark_intentional_stop();
+    // The service's SYSTEM agent cannot be killed from a user terminal; it exits by itself on the flag.
+    if system_service::installed() {
+        for _ in 0..25 {
+            if find_tray_window().is_null() {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
     // End via Task Scheduler first so its restart-on-failure policy does not bring it back.
     let _ = run_schtasks("/End");
     let _ = taskkill("wscript.exe");
@@ -184,10 +223,13 @@ pub fn stop_running() -> Result<(), StopError> {
     Ok(())
 }
 
-/// Stops everything and removes autostart entries (`opendesk uninstall`). Removing the elevated task needs an
-/// elevated terminal; the uninstaller does it as well.
+/// Stops everything and removes autostart entries (`opendesk uninstall`). Removing the service and the elevated
+/// task needs an elevated terminal; the uninstaller does it as well.
 pub fn remove_autostart() {
     mark_intentional_stop();
+    for verb in ["stop", "delete"] {
+        let _ = Command::new("sc").args([verb, system_service::SERVICE_NAME]).creation_flags(CREATE_NO_WINDOW).output();
+    }
     let _ = run_schtasks("/End");
     let _ = Command::new("schtasks")
         .args(["/Delete", "/TN", ELEVATED_TASK_NAME, "/F"])
@@ -228,11 +270,25 @@ pub fn ensure_single_instance(start_in_background: bool) {
             std::process::exit(0);
         }
 
-        if is_elevated() {
+        let system = system_service::is_local_system();
+        if is_elevated() || system {
             // UIPI drops messages from non-elevated senders; let a second launch (shortcut click)
             // still wake our tray window. Explorer's tray callbacks use the same message.
             let _ = ChangeWindowMessageFilter(WM_TRAYICON, MSGFLT_ADD);
-        } else if elevated_task_installed() {
+        }
+        if !system && system_service::installed() {
+            // Release the lock first so the agent started by the service can take it.
+            if !handle.is_null() {
+                CloseHandle(handle);
+            }
+            if delegate_to_service(start_in_background) {
+                std::process::exit(0);
+            }
+            let retry = CreateMutexW(ptr::null(), 1, mutex_name.as_ptr());
+            if retry.is_null() || GetLastError() == ERROR_ALREADY_EXISTS {
+                std::process::exit(0);
+            }
+        } else if !is_elevated() && elevated_task_installed() {
             // Release the lock first so the elevated copy started by the task can take it.
             if !handle.is_null() {
                 CloseHandle(handle);
@@ -251,7 +307,7 @@ pub fn ensure_single_instance(start_in_background: bool) {
 
 /// Marks an intentional user stop from the System Tray ("Stop & Exit") so the watchdog pauses until next launch.
 pub fn mark_intentional_stop() {
-    let flag_path = app_dir().join("user_exit.flag");
+    let flag_path = app_dir().join(STOP_FLAG);
     let _ = fs::write(flag_path, "stopped");
 }
 
@@ -272,7 +328,7 @@ fn register_cli_shim(exe_str: &str) {
 /// and starts the 10-second background watchdog guardian (respawns OpenDesk if killed via Task Manager).
 pub fn init_background_guardian() {
     let app_dir = app_dir();
-    let stop_flag = app_dir.join("user_exit.flag");
+    let stop_flag = app_dir.join(STOP_FLAG);
     let _ = fs::remove_file(&stop_flag);
 
     let exe_path = match env::current_exe() {
@@ -289,6 +345,27 @@ pub fn init_background_guardian() {
 
     let lock_path = app_dir.join("watchdog.lock");
     let vbs_path = app_dir.join("opendesk-watchdog.vbs");
+
+    // Installed build with the service: it owns autostart and restarts. `opendesk stop` from a user terminal
+    // cannot kill a SYSTEM process, so the agent watches for the stop flag itself.
+    if system_service::installed() {
+        if system_service::is_local_system() {
+            thread::spawn(move || {
+                loop {
+                    thread::sleep(Duration::from_secs(1));
+                    if stop_flag.exists() {
+                        logger::info("app.service", "Stop requested (user_exit.flag); exiting.");
+                        std::process::exit(0);
+                    }
+                }
+            });
+        }
+        logger::info(
+            "app.service",
+            &format!("Service '{}' active; HKCU Run & watchdog skipped.", system_service::SERVICE_NAME),
+        );
+        return;
+    }
 
     // Installed build: the elevated logon task owns autostart (+ restart on failure).
     // Re-adding HKCU Run / the VBS watchdog would start a second, non-elevated copy.

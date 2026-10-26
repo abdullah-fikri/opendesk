@@ -28,7 +28,7 @@ XWayland and PipeWire/PulseAudio/ALSA should work.
 | H.264 for motion | Media Foundation, hardware encoder when present | Cisco OpenH264 2.6.0, software, **when installed** | Run `install-openh264.sh` (shipped in the packages). Without it Linux hosts and viewers use JPEG only and do not advertise `video-h264`. |
 | Mouse and keyboard injection | `SendInput` | XTEST | Characters missing from the layout are typed through a temporary keymap entry |
 | System shortcuts (Win, Alt+Tab, ...) | Yes | Sent as keys (Super, Alt+Tab, ...) | What they do depends on the desktop environment |
-| Following UAC / lock screen | Yes (when running as SYSTEM) | n/a | |
+| Following UAC / lock screen | Yes (with the `OpenDeskService` service the installer creates) | n/a | Needs a logged-on user; not the logon screen after a reboot |
 | Privacy screen (frozen, maintenance, black) | Yes | **No** | Needs a capture-excluded overlay, which X11 has no equivalent for. Linux hosts advertise `host-features` without `privacy-screen`, so viewers hide the option. |
 | Block the host's physical input | Yes | **No** | Would need exclusive grabs that also block XTEST. Hidden the same way (`block-input`). |
 | Viewer: forward Win key / Alt+Tab | Yes (low-level keyboard hook: Win, Win+key, Alt+Tab/Esc/F4/Space, Ctrl+Esc, Ctrl+Shift+Esc, PrintScreen; no shortcut menu) | No | The local desktop keeps these keys; use the toolbar's shortcut menu |
@@ -40,7 +40,7 @@ XWayland and PipeWire/PulseAudio/ALSA should work.
 | Receive files | `Downloads\OpenDesk` | `~/Downloads/OpenDesk` | Auto-paste into the focused file manager is Windows-only |
 | Direct encrypted P2P path | Yes | Yes | |
 | Tray icon | Yes | StatusNotifierItem (KDE, XFCE, Cinnamon, MATE, GNOME with the AppIndicator extension) | Without a tray host the app keeps running; launching it again shows the window |
-| Start at login | Elevated logon task (installer) or `HKCU\...\Run` + watchdog | `/etc/xdg/autostart` (packages) or `~/.config/autostart` (portable) | No watchdog |
+| Start at login | SYSTEM service (installer), elevated logon task (fallback) or `HKCU\...\Run` + watchdog | `/etc/xdg/autostart` (packages) or `~/.config/autostart` (portable) | No watchdog |
 | Single instance; a second launch shows the window | Named mutex | Lock file + Unix socket | |
 | `opendesk` CLI | Yes (`opendesk.cmd` on `PATH`) | Yes (`/usr/bin/opendesk` from the packages) | `stop` asks the running app to exit over its socket |
 | Settings and log | `%APPDATA%\OpenDesk` | `~/.config/opendesk` (`$XDG_CONFIG_HOME`) | |

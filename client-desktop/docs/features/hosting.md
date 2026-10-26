@@ -13,7 +13,8 @@ it.
 One thread per hosted session (`capture.rs`):
 
 - Captures the selected monitor with DXGI Desktop Duplication (GDI as fallback), following the secure desktop
-  (UAC, lock screen) when the process may; on Linux with X11 MIT-SHM, paced by the loop.
+  (UAC, lock screen) when the process runs as SYSTEM under the service
+  ([autostart](autostart-and-cli.md#windows-service)); on Linux with X11 MIT-SHM, paced by the loop.
 - Encodes with `core_engine::stream::StreamEncoder`: plain JPEG for viewers without `video-delta`, otherwise key
   and delta frames, plus H.264 for motion when the viewer supports it.
 - Paces at 60 FPS and encodes only while the previous frame has left the socket (or the P2P path acknowledged
@@ -24,7 +25,8 @@ One thread per hosted session (`capture.rs`):
 
 ## Input
 
-`input.rs` applies events only while a session is hosted: pointer events are mapped onto the streamed monitor,
+`input.rs` applies events only while a session is hosted, on the input desktop like the capture thread:
+pointer events are mapped onto the streamed monitor,
 keys are injected with `SendInput` (XTEST on Linux) and tracked so none stays stuck, text is typed as Unicode, and `clipboard` sets
 the local clipboard right before a forwarded Ctrl+V. A viewer may mute this machine's microphone, never unmute it.
 
