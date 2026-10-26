@@ -318,7 +318,12 @@ pub fn key_event(ctx: &AppContext, id: &str, text: &str, pressed: bool, repeat: 
         // files as virtual clipboard entries. Either way only the keystroke is forwarded.
         if !files.is_empty() && !file_transfer::is_received_clipboard(&files) && !file_transfer::caps_of(id).file_offer
         {
-            file_transfer::sender::send_files(ctx, files, id.to_string(), true);
+            // A second Ctrl+V while the first copy is still on its way would send and paste the files twice.
+            if file_transfer::sender::is_sending(id, &files) {
+                ctx.ui.status("Still sending these files; they are pasted when they arrive".into());
+            } else {
+                file_transfer::sender::send_files(ctx, files, id.to_string(), true);
+            }
             continue;
         }
         if let Some(text) = core_engine::clipboard::text().filter(|t| !t.is_empty()) {

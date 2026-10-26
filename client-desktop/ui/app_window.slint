@@ -2,18 +2,19 @@
 // properties are written by Rust and read by the UI unless noted; callbacks are invoked by the UI and
 // implemented in src/ui/callbacks.rs.
 
-import { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem } from "types.slint";
+import { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem, TransferItem } from "types.slint";
 import { HeaderBar } from "views/header_bar.slint";
 import { DashboardView } from "views/dashboard.slint";
 import { HostActiveView } from "views/host_panel.slint";
 import { SessionWorkspace } from "views/workspace/session_workspace.slint";
 import { MonitorWallView } from "views/monitor/monitor_wall.slint";
 import { SettingsView } from "views/settings/settings_view.slint";
+import { TransferPanel } from "views/transfer_panel.slint";
 import { ServerSettingsModal } from "dialogs/server_settings_dialog.slint";
 import { RenameDeviceModal } from "dialogs/rename_device_dialog.slint";
 import { DeleteConfirmModal } from "dialogs/delete_confirm_dialog.slint";
 
-export { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem }
+export { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem, TransferItem }
 
 export component MainWindow inherits Window {
     title: "OpenDesk - " + local_desk_id;
@@ -49,6 +50,10 @@ export component MainWindow inherits Window {
     in-out property <int> view_layout: 0;
     // Shows the dashboard as the "+" page while sessions exist.
     in-out property <bool> show_new_session: false;
+
+    // ---- File transfers, newest last; shown in a floating panel while any exist ----
+    in property <[TransferItem]> transfers: [];
+    callback dismiss_transfer(string);
 
     // ---- Monitor wall (admin edition; never shown while is_admin is false) ----
     // Set by the UI when the wall opens or closes; it then calls open_monitor / close_monitor.
@@ -343,6 +348,13 @@ export component MainWindow inherits Window {
                 disconnect_session => { root.end_hosting(); }
             }
         }
+    }
+
+    if transfers.length > 0 && !wall_fullscreen: TransferPanel {
+        x: root.width - self.width - 12px;
+        y: root.height - self.height - 40px;
+        items: root.transfers;
+        dismiss(id) => { root.dismiss_transfer(id); }
     }
 
     if show_settings: ServerSettingsModal {

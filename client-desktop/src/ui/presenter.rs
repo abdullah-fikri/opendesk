@@ -5,10 +5,10 @@ use std::sync::atomic::Ordering;
 
 use slint::{ComponentHandle, Image, Weak};
 
-use super::{MainWindow, session_model, view_model};
+use super::{MainWindow, session_model, transfer_model, view_model};
 use crate::domain::history::HistoryRecord;
 use crate::service::file_transfer::{self, IN_FLIGHT_CHUNKS, LAST_RECEIVED_MS};
-use crate::service::ui_port::{Frame, RelayStatus, RemoteHost, SessionChange, UiPort};
+use crate::service::ui_port::{Frame, RelayStatus, RemoteHost, SessionChange, TransferUpdate, UiPort};
 
 /// The frame-rate line in the status bar yields to file-transfer progress for this long after a transfer.
 const TRANSFER_STATUS_HOLD_MS: u64 = 2000;
@@ -22,6 +22,7 @@ impl SlintUi {
     /// Must be created on the UI thread, before the window runs.
     pub fn new(window: &MainWindow) -> Self {
         session_model::install(window);
+        transfer_model::install(window);
         #[cfg(feature = "admin")]
         super::monitor_wall_model::install(window);
         Self { window: window.as_weak() }
@@ -63,6 +64,10 @@ impl UiPort for SlintUi {
                 w.set_status_text(reason.unwrap_or_else(|| "Disconnected".into()).into());
             }
         });
+    }
+
+    fn transfer(&self, update: TransferUpdate) {
+        self.apply(move |_| transfer_model::apply(update));
     }
 
     fn gateway_changed(&self, url: String) {

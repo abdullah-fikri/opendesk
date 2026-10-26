@@ -6,6 +6,7 @@ mod callbacks;
 mod monitor_wall_model;
 mod presenter;
 mod session_model;
+mod transfer_model;
 mod view_model;
 
 use std::sync::Arc;
@@ -77,6 +78,10 @@ pub fn install_tray(win: &MainWindow, ctx: &Ctx) -> SystemTray {
         TrayAction::ReconnectRelay => ctx.relay.reconnect.store(true, Ordering::SeqCst),
         TrayAction::RestartApp => {
             logger::info("ui", "Restarting from the tray.");
+            // The service starts its agent again within seconds; a copy started here would not be watched.
+            if autostart::supervised_by_service() {
+                std::process::exit(0);
+            }
             if let Ok(exe) = std::env::current_exe() {
                 let _ = std::process::Command::new(exe).args(std::env::args().skip(1)).spawn();
             }

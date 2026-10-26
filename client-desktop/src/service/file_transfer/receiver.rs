@@ -21,6 +21,7 @@ use crate::domain::transfer::{
 use crate::infra::{logger, storage, virtual_clipboard};
 use crate::protocol::{FileAction, FilePayload};
 use crate::service::context::AppContext;
+use crate::service::ui_port::{TransferState, TransferUpdate, UiPort};
 
 /// Incoming transfers with no chunk for this long are abandoned and their staging file deleted.
 const RECEIVE_IDLE: Duration = Duration::from_secs(60);
@@ -47,6 +48,8 @@ struct Incoming {
     total: u64,
     hash: Sha256,
     last_activity: Instant,
+    /// Percentage last shown in the transfer list.
+    shown_percent: u64,
     /// Files inside a folder transfer: (target folder, file name, group key). The clipboard is only updated
     /// once the whole group has arrived.
     dest: Option<(PathBuf, String, String)>,
@@ -129,6 +132,12 @@ pub fn download_dir() -> PathBuf {
     fallback
 }
 
+/// Reports one incoming file (`key` = `sender:transfer_id`) to the transfer list.
+fn progress(ui: &dyn UiPort, key: &str, name: &str, done: u64, total: u64, state: TransferState) {
+    let id = format!("in:{key}");
+    ui.transfer(TransferUpdate { id, name: name.to_string(), outgoing: false, done, total, state });
+}
+
 fn done_status(label: &str) -> String {
     if cfg!(windows) {
         format!("Done: {label} (ready to paste, saved in Downloads\\OpenDesk)")
@@ -152,16 +161,18 @@ impl FileReceiver {
         Self { active_files: HashMap::new(), completed_ids: HashMap::new(), groups: HashMap::new() }
     }
 
-    fn discard(&mut self, key: &str) -> Option<String> {
+    /// Drops an incoming file and its staging bytes; the transfer list shows `reason`.
+    fn discard(&mut self, ui: &dyn UiPort, key: &str, reason: &str) -> Option<String> {
         let entry = self.active_files.remove(key)?;
         drop(entry.file);
         let _ = fs::remove_file(&entry.path);
+        progress(ui, key, &entry.name, entry.received, entry.total, TransferState::Failed(reason.into()));
         Some(entry.name)
     }
 
     /// Drops transfers that stopped receiving chunks and forgets old completed IDs.
     /// Returns a status line for the last abandoned transfer.
-    pub fn expire_stale(&mut self, now: Instant) -> Option<String> {
+    pub fn expire_stale(&mut self, ui: &dyn UiPort, now: Instant) -> Option<String> {
         self.completed_ids.retain(|_, done| now.duration_since(*done) < COMPLETED_TTL);
         let stale: Vec<String> = self
             .active_files
@@ -171,7 +182,7 @@ impl FileReceiver {
             .collect();
         let mut status = None;
         for key in stale {
-            if let Some(name) = self.discard(&key) {
+            if let Some(name) = self.discard(ui, &key, "The sender stopped") {
                 logger::warn("file_transfer", &format!("Incoming transfer timed out: {name}"));
                 status = Some(format!("Could not receive {name}: the sender stopped"));
             }
@@ -186,11 +197,11 @@ impl FileReceiver {
     }
 
     /// Deletes every partial file; called when the relay connection drops because grants die with it.
-    pub fn abort_all(&mut self) -> Option<String> {
+    pub fn abort_all(&mut self, ui: &dyn UiPort) -> Option<String> {
         let keys: Vec<String> = self.active_files.keys().cloned().collect();
         let mut status = None;
         for key in keys {
-            if let Some(name) = self.discard(&key) {
+            if let Some(name) = self.discard(ui, &key, "Relay connection lost") {
                 status = Some(format!("Could not receive {name}: relay connection lost"));
             }
         }
@@ -214,7 +225,7 @@ impl FileReceiver {
         }
         match payload.action {
             FileAction::Start => self.start(ctx, payload, from, key, allow_auto_paste),
-            FileAction::Chunk => self.chunk(payload, &key),
+            FileAction::Chunk => self.chunk(ctx, payload, &key),
             FileAction::End => self.end(ctx, payload, key, allow_auto_paste),
             _ => (None, None),
         }
@@ -265,6 +276,7 @@ impl FileReceiver {
             Ok(file) => {
                 logger::info("file_transfer", &format!("Receiving id={} name={name} size={total}", payload.id));
                 let status = format!("Receiving {name}...");
+                progress(ctx.ui.as_ref(), &key, &name, 0, total, TransferState::Active);
                 self.active_files.insert(
                     key,
                     Incoming {
@@ -275,6 +287,7 @@ impl FileReceiver {
                         total,
                         hash: Sha256::new(),
                         last_activity: Instant::now(),
+                        shown_percent: 0,
                         dest,
                     },
                 );
@@ -338,7 +351,7 @@ impl FileReceiver {
         Err((Some(done_status(&label)), Some(true)))
     }
 
-    fn chunk(&mut self, payload: &FilePayload, key: &str) -> Outcome {
+    fn chunk(&mut self, ctx: &AppContext, payload: &FilePayload, key: &str) -> Outcome {
         let Some(entry) = self.active_files.get_mut(key) else { return (None, None) };
         let bytes = payload.chunk.as_deref().filter(|b64| b64.len() <= MAX_CHUNK_B64).and_then(from_base64);
         let ok = match bytes {
@@ -355,8 +368,13 @@ impl FileReceiver {
             _ => false,
         };
         if !ok {
-            let name = self.discard(key).unwrap_or_default();
+            let name = self.discard(ctx.ui.as_ref(), key, "Invalid data or disk full").unwrap_or_default();
             return (Some(format!("Could not receive {name}")), Some(false));
+        }
+        let shown = percent(entry.received, entry.total);
+        if shown != entry.shown_percent {
+            entry.shown_percent = shown;
+            progress(ctx.ui.as_ref(), key, &entry.name, entry.received, entry.total, TransferState::Active);
         }
         let status = (entry.total > 0)
             .then(|| format!("Receiving {} ({}%)...", entry.name, percent(entry.received, entry.total)));
@@ -373,8 +391,12 @@ impl FileReceiver {
         let checksum_ok = payload.sha256.as_deref() == Some(hex(&hash.finalize()).as_str());
         let written = received == total && checksum_ok && file.flush().is_ok() && file.sync_all().is_ok();
         drop(file);
+        let fail = |reason: &str| {
+            progress(ctx.ui.as_ref(), &key, &name, received, total, TransferState::Failed(reason.into()))
+        };
         if !written {
             let _ = fs::remove_file(staging);
+            fail("Size or SHA-256 mismatch");
             return (Some(format!("Could not receive {name}: size or SHA-256 mismatch")), Some(false));
         }
         let base = download_dir();
@@ -385,8 +407,10 @@ impl FileReceiver {
         let saved = link_unique(&staging, &target_dir, target_name);
         let _ = fs::remove_file(&staging);
         let Some(saved) = saved else {
+            fail("Saving failed");
             return (Some(format!("Could not receive {name}: saving failed")), Some(false));
         };
+        progress(ctx.ui.as_ref(), &key, &name, total, total, TransferState::Done);
         self.completed_ids.insert(key, Instant::now());
 
         if let Some((dir, _, gkey)) = dest {

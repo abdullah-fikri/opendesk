@@ -14,6 +14,13 @@ Code: `src/service/file_transfer/` (`sender.rs`, `receiver.rs`, `offer.rs`, `tre
 | Copy files while a partner supports `file-offer` | Only names and sizes are sent; the partner's clipboard shows virtual files, and each paste pulls one file |
 | Copy files on a host without offers | Sent to the viewer's clipboard |
 
+## Progress
+
+Every sent and received file gets a row in the floating "File transfers" panel (`src/ui/transfer_model.rs`):
+name, direction, a progress bar, size and speed, then "Done" or the reason it failed. Finished rows disappear
+after 4 s, failed ones after 15 s (or with their close button). A second Ctrl+V while the same files are still
+being sent to that host only shows "Still sending these files"; they are pasted once when they arrive.
+
 ## Sending
 
 Each file is `start`, 32 KiB base64 chunks and `end` with its SHA-256. Senders wait while more than 48 chunks are
