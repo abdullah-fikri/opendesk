@@ -3,6 +3,20 @@
 All notable changes to OpenDesk. Versions follow [Semantic Versioning](https://semver.org); the single source of
 truth is `VERSION`. The release workflow copies the section of the tagged version into the GitHub Release.
 
+## [1.0.1] - 2026-10-26
+
+### Added
+- Windows: the installer sets up the `OpenDeskService` service, which runs OpenDesk as SYSTEM in the logged-on
+  user's session. Viewers can now see and click the UAC prompt and unlock the lock screen, as if they sat at the
+  machine. Settings stay in the user's profile; the elevated logon task remains as the fallback.
+- A "File transfers" panel shows every sent and received file with a progress bar, size, speed and the
+  result. Pressing Ctrl+V again while the same files are still on their way no longer sends them twice.
+
+### Known limitations
+- The logon screen after a reboot or sign-out, Remote Desktop sessions and Ctrl+Alt+Del are still not reachable.
+- With the service, the OpenDesk window on the host runs as SYSTEM: install it only where you trust the local
+  users.
+
 ## [1.0.0] - 2026-10-25
 
 First public release.
@@ -49,4 +63,5 @@ First public release.
 - Windows binaries are not code-signed yet (SmartScreen warns on first run); Linux packages are unsigned `.deb`
   files. Verify downloads against `SHA256SUMS.txt`.
 
+[1.0.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.0.1
 [1.0.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.0.0
