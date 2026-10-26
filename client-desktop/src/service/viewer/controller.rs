@@ -10,7 +10,7 @@ use std::thread;
 use crate::domain::capability::PeerCaps;
 use crate::domain::keyboard::{KeyOut, Mods};
 use crate::domain::{desk_id, resolution};
-use crate::infra::{logger, privacy, virtual_clipboard, window};
+use crate::infra::{logger, privacy, user_clipboard, virtual_clipboard, window};
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 use crate::service::context::{AppContext, Ctx};
 use crate::service::file_transfer;
@@ -39,8 +39,8 @@ pub fn apply_focus(ctx: &AppContext) {
     if !ctx.is_hosting() {
         ctx.set_partner(focused.as_ref().map(|s| s.id.as_str()).unwrap_or(""));
         match &focused {
-            Some(s) => privacy::set_viewer_hook_state(true, &s.id, &ctx.window_title),
-            None => privacy::set_viewer_hook_state(false, "", ""),
+            Some(s) => privacy::set_viewer_hook_state(true, &s.id),
+            None => privacy::set_viewer_hook_state(false, ""),
         }
     }
     if let Some(s) = focused {
@@ -74,8 +74,9 @@ fn push_clipboard(ctx: &AppContext, s: &Arc<Session>) {
     s.clip_seq.store(current, Ordering::SeqCst);
     // The clipboard watcher must not send the same copy again.
     ctx.clipboard_seq.store(current, Ordering::SeqCst);
+    let clip = user_clipboard::read();
     if file_transfer::caps_of(&s.id).file_offer {
-        let files = core_engine::clipboard::files();
+        let files = clip.files;
         if !files.is_empty() {
             // Files that came from a host are never offered back.
             if !file_transfer::is_received_clipboard(&files) {
@@ -85,7 +86,7 @@ fn push_clipboard(ctx: &AppContext, s: &Arc<Session>) {
             return;
         }
     }
-    if let Some(text) = core_engine::clipboard::text().filter(|t| !t.is_empty()) {
+    if let Some(text) = clip.text {
         ctx.send(ClientMessage::RelayClipboard { target_clean: s.id.clone(), text });
     }
 }
@@ -234,7 +235,7 @@ pub fn end_all(ctx: &AppContext) -> Vec<String> {
         file_transfer::remove_session_caps(id);
     }
     if !ids.is_empty() {
-        privacy::set_viewer_hook_state(false, "", "");
+        privacy::set_viewer_hook_state(false, "");
         ctx.ui.all_sessions_closed();
     }
     ids
@@ -314,7 +315,8 @@ pub fn key_event(ctx: &AppContext, id: &str, text: &str, pressed: bool, repeat: 
             send_key_outs(ctx, id, vec![out]);
             continue;
         }
-        let files = core_engine::clipboard::files();
+        let clip = user_clipboard::read();
+        let files = clip.files;
         // Files that just came from the host are already there, and files offered to this host in this session
         // are on its clipboard as virtual entries: only the keystroke is forwarded. Anything else (copied
         // before the session or before this host had focus) is sent and pasted, like a drop.
@@ -329,7 +331,7 @@ pub fn key_event(ctx: &AppContext, id: &str, text: &str, pressed: bool, repeat: 
             }
             continue;
         }
-        if let Some(text) = core_engine::clipboard::text().filter(|t| !t.is_empty()) {
+        if let Some(text) = clip.text {
             ctx.send_input(id, InputEvent::Clipboard { text });
         }
         // Ctrl is already held on the host, so V down pastes the text synced just above.

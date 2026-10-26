@@ -11,11 +11,16 @@ The repository's `docker-compose.yml` runs the published image and binds port 80
 only way in is through the TLS terminator on the same host:
 
 ```bash
-cp .env.example .env     # set DB_PASSWORD; pin RELAY_IMAGE to a version for production
+cp .env.example .env     # set DB_PASSWORD
 docker compose pull
 docker compose up -d
 docker compose logs -f relay
 ```
+
+The image is pinned to a release: `ghcr.io/abdullah-fikri/opendesk-relay:1.0.1`, never `latest`, so `docker ps`
+shows which version runs. To upgrade or roll back, set `RELAY_VERSION=1.0.2` in `.env` and run
+`docker compose pull && docker compose up -d`. Every release tag publishes `<version>`, `<major>.<minor>` and
+`latest`.
 
 `OPENDESK_TLS_PROXY=1` is set because connections from the terminator reach the container through the Docker
 bridge, not loopback. Do not publish 8088 on a public interface with that setting.

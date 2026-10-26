@@ -14,7 +14,7 @@ pub fn end_all(ctx: &AppContext) {
     controller::end_all(ctx);
     virtual_clipboard::clear_offer(&ctx.partner());
     host::stop(ctx);
-    privacy::set_viewer_hook_state(false, "", "");
+    privacy::set_viewer_hook_state(false, "");
     ctx.voice.is_session_active.store(false, Ordering::SeqCst);
     ctx.voice.is_mic_muted.store(true, Ordering::SeqCst);
     ctx.set_partner("");
@@ -44,7 +44,7 @@ pub fn end_hosting(ctx: &AppContext) {
         ctx.send(ClientMessage::disconnect(&partner));
     }
     if ctx.viewers.is_empty() {
-        privacy::set_viewer_hook_state(false, "", "");
+        privacy::set_viewer_hook_state(false, "");
         ctx.voice.is_session_active.store(false, Ordering::SeqCst);
         ctx.voice.is_mic_muted.store(true, Ordering::SeqCst);
         ctx.set_partner("");

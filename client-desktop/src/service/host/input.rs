@@ -74,8 +74,11 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
         }
         InputEvent::Text { text } => injector.send_unicode_text(&text),
         InputEvent::Clipboard { text } => {
-            core_engine::clipboard::set_text(&text);
-            ctx.mark_clipboard_synced();
+            if core_engine::clipboard::set_text(&text) {
+                ctx.mark_clipboard_synced();
+            } else {
+                logger::warn("host.input", "Viewer pasted text, but the clipboard stayed busy.");
+            }
         }
         InputEvent::Shortcut { name } => shortcut(ctx, &name),
         InputEvent::SwitchMonitor => {

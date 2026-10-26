@@ -61,7 +61,7 @@ pub fn text() -> Option<String> {
         if IsClipboardFormatAvailable(CF_UNICODETEXT) == 0 {
             return None;
         }
-        if OpenClipboard(ptr::null_mut()) == 0 {
+        if !open_clipboard_retrying() {
             return None;
         }
         let mut result = None;
@@ -90,7 +90,7 @@ pub fn files() -> Vec<PathBuf> {
         if IsClipboardFormatAvailable(CF_HDROP) == 0 {
             return paths;
         }
-        if OpenClipboard(ptr::null_mut()) == 0 {
+        if !open_clipboard_retrying() {
             return paths;
         }
         let h_drop = GetClipboardData(CF_HDROP);
@@ -113,10 +113,11 @@ pub fn files() -> Vec<PathBuf> {
     paths
 }
 
-/// Replaces the clipboard with `text`.
-pub fn set_text(text: &str) {
+/// Replaces the clipboard with `text`. False when the clipboard stayed busy or Windows refused the data.
+pub fn set_text(text: &str) -> bool {
+    let mut stored = false;
     unsafe {
-        if OpenClipboard(std::ptr::null_mut()) != 0 {
+        if open_clipboard_retrying() {
             EmptyClipboard();
             let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
             let bytes = wide.len() * 2;
@@ -126,12 +127,13 @@ pub fn set_text(text: &str) {
                 if !ptr.is_null() {
                     std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
                     GlobalUnlock(h_mem);
-                    SetClipboardData(CF_UNICODETEXT, h_mem);
+                    stored = !SetClipboardData(CF_UNICODETEXT, h_mem).is_null();
                 }
             }
             CloseClipboard();
         }
     }
+    stored
 }
 
 /// Opens the clipboard, retrying for up to half a second while another program (clipboard history, a

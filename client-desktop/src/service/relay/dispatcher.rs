@@ -197,10 +197,15 @@ impl Connection {
         let ctx = &self.ctx;
         let viewed = from.and_then(|id| ctx.viewers.get(id));
         if viewed.as_ref().is_some_and(|s| !ctx.viewers.is_focused(&s.id)) {
+            logger::info("clipboard", "Ignored copied text from a session in the background.");
             return;
         }
         if let Some(text) = text {
-            core_engine::clipboard::set_text(&text);
+            if !core_engine::clipboard::set_text(&text) {
+                logger::warn("clipboard", "Received copied text, but the clipboard stayed busy.");
+                return;
+            }
+            logger::info("clipboard", &format!("Received copied text ({} chars).", text.len()));
             let seq = ctx.mark_clipboard_synced();
             if let Some(s) = viewed {
                 s.clip_seq.store(seq, Ordering::SeqCst);

@@ -16,6 +16,7 @@ type UINT = u32;
 type ULONG_PTR = usize;
 type BYTE = u8;
 
+const MOUSEEVENTF_MOVE: DWORD = 0x0001;
 const MOUSEEVENTF_LEFTDOWN: DWORD = 0x0002;
 const MOUSEEVENTF_LEFTUP: DWORD = 0x0004;
 const MOUSEEVENTF_RIGHTDOWN: DWORD = 0x0008;
@@ -128,6 +129,9 @@ impl InputInjector {
         LAST_INJECTED_POS.store(pack_pos(x, y), Ordering::Relaxed);
         unsafe {
             SetCursorPos(x, y);
+            // SetCursorPos is no mouse input, so a cursor Windows hid for keyboard use (Start, search, Alt+Tab,
+            // "hide pointer while typing") stayed hidden. A zero move is mouse input that leaves it in place.
+            mouse_event(MOUSEEVENTF_MOVE, 0, 0, 0, 0);
         }
     }
 

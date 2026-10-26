@@ -7,8 +7,8 @@
 
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -90,12 +90,24 @@ static HOST_BLOCK_INPUT: AtomicBool = AtomicBool::new(false);
 static OVERLAY_HWND: AtomicUsize = AtomicUsize::new(0);
 
 static VIEWER_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
-static VIEWER_MAIN_HWND: AtomicUsize = AtomicUsize::new(0);
-/// The installed low-level keyboard hook (HHOOK), owned by the hook thread.
+/// The installed low-level keyboard hook (HHOOK), owned by the keyboard hook thread.
 static KB_HOOK: AtomicUsize = AtomicUsize::new(0);
+/// The keyboard hook thread, which receives `WM_USER_REHOOK`.
+static KB_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+/// Work the keyboard hook hands off: Windows passes a key on without a low-level hook that answers late, so the
+/// hook itself never writes the log or takes a lock.
+static HOOK_WORK: OnceLock<Sender<HookWork>> = OnceLock::new();
+
+enum HookWork {
+    Log(String),
+    Input(InputEvent),
+}
 /// Key events the keyboard hook saw since the viewer session became active; logged when it ends, so the log
 /// shows whether Windows still calls the hook.
 static HOOK_KEY_EVENTS: AtomicUsize = AtomicUsize::new(0);
+/// Win / Alt+Tab presses logged this session; the first few show whether they went to the host and why not.
+static SYSTEM_KEY_LOGS: AtomicUsize = AtomicUsize::new(0);
+const MAX_SYSTEM_KEY_LOGS: usize = 10;
 static WIN_KEY_HELD: AtomicBool = AtomicBool::new(false);
 /// Keys whose key-down went to the host through the hook, so their key-up follows it there.
 static FORWARDED: [AtomicBool; 256] = [const { AtomicBool::new(false) }; 256];
@@ -219,8 +231,9 @@ unsafe extern "system" {
     fn TranslateMessage(lp_msg: *const MSG) -> BOOL;
     fn DispatchMessageW(lp_msg: *const MSG) -> isize;
     fn PostMessageW(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> BOOL;
-    fn FindWindowW(lp_class_name: *const u16, lp_window_name: *const u16) -> HWND;
+    fn PostThreadMessageW(thread_id: DWORD, msg: u32, wparam: usize, lparam: isize) -> BOOL;
     fn GetForegroundWindow() -> HWND;
+    fn GetWindowThreadProcessId(hwnd: HWND, lpdw_process_id: *mut DWORD) -> DWORD;
     fn GetAsyncKeyState(v_key: i32) -> i16;
     fn SetWindowsHookExW(
         id_hook: i32,
@@ -266,6 +279,8 @@ unsafe extern "system" {
 unsafe extern "system" {
     fn GetModuleHandleW(lp_module_name: *const u16) -> *mut c_void;
     fn GetLastError() -> u32;
+    fn GetCurrentProcessId() -> DWORD;
+    fn GetCurrentThreadId() -> DWORD;
 }
 
 fn to_wide(s: &str) -> Vec<u16> {
@@ -315,10 +330,6 @@ unsafe fn capture_freeze_snapshot() {
 unsafe extern "system" fn overlay_wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> isize {
     unsafe {
         match msg {
-            WM_USER_REHOOK => {
-                install_keyboard_hook();
-                0
-            }
             WM_USER_UPDATE_PRIVACY => {
                 let mode = HOST_PRIVACY_MODE.load(Ordering::SeqCst);
                 if mode == 0 {
@@ -442,16 +453,21 @@ unsafe extern "system" fn ll_keyboard_proc(n_code: i32, wparam: usize, lparam: i
             }
 
             // 2. Viewer mode: keys Windows would act on locally go to the focused host as real key-down/up, so
-            //    held combinations work (Alt held while Tab cycles the host's task switcher).
-            if VIEWER_SESSION_ACTIVE.load(Ordering::Relaxed) && !is_injected {
-                let main_hwnd = VIEWER_MAIN_HWND.load(Ordering::Relaxed) as HWND;
-                if !main_hwnd.is_null() && GetForegroundWindow() == main_hwnd {
-                    let is_down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
-                    let is_up = wparam == WM_KEYUP || wparam == WM_SYSKEYUP;
-                    let alt = (kb.flags & LLKHF_ALTDOWN) != 0;
+            //    held combinations work (Alt held while Tab cycles the host's task switcher). Injected keys count
+            //    too: keyboard tools (PowerToys, AutoHotkey, laptop hotkey utilities) re-send what the user typed,
+            //    and a viewer never injects keys on its own PC.
+            if VIEWER_SESSION_ACTIVE.load(Ordering::Relaxed) {
+                let is_down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
+                let is_up = wparam == WM_KEYUP || wparam == WM_SYSKEYUP;
+                let alt = (kb.flags & LLKHF_ALTDOWN) != 0;
+                let vk = kb.vk_code;
+                let is_win = vk == VK_LWIN || vk == VK_RWIN;
+                let in_front = viewer_in_front();
+                if is_down && (is_win || (alt && vk == VK_TAB)) {
+                    log_system_key(if is_win { "Win" } else { "Alt+Tab" }, in_front, is_injected);
+                }
+                if in_front {
                     let ctrl = GetAsyncKeyState(VK_CONTROL) < 0;
-                    let vk = kb.vk_code;
-                    let is_win = vk == VK_LWIN || vk == VK_RWIN;
                     if is_win {
                         WIN_KEY_HELD.store(is_down, Ordering::Relaxed);
                     }
@@ -460,13 +476,6 @@ unsafe extern "system" fn ll_keyboard_proc(n_code: i32, wparam: usize, lparam: i
                         || (is_up && (is_win || slot.load(Ordering::Relaxed)))
                     {
                         slot.store(is_down, Ordering::Relaxed);
-                        // Rare keys; the log shows whether the viewer side caught them.
-                        if is_down && (is_win || (alt && vk == VK_TAB)) {
-                            logger::info(
-                                "viewer.keys",
-                                if is_win { "Forwarding Win to the host." } else { "Forwarding Alt+Tab to the host." },
-                            );
-                        }
                         // The host presses the left Win key for either one.
                         let key_code = if is_win { VK_LWIN as u8 } else { vk as u8 };
                         send_hook_key_event(if is_down {
@@ -484,6 +493,35 @@ unsafe extern "system" fn ll_keyboard_proc(n_code: i32, wparam: usize, lparam: i
             }
         }
         CallNextHookEx(ptr::null_mut(), n_code, wparam, lparam)
+    }
+}
+
+/// Logs where a Win / Alt+Tab press went, for the first presses of a session.
+fn log_system_key(name: &str, in_front: bool, injected: bool) {
+    if SYSTEM_KEY_LOGS.fetch_add(1, Ordering::Relaxed) >= MAX_SYSTEM_KEY_LOGS {
+        return;
+    }
+    let source = if injected { " (sent by a keyboard tool)" } else { "" };
+    let message = match in_front {
+        true => format!("{name}{source} forwarded to the host."),
+        false => format!(
+            "{name}{source} stayed on this PC: OpenDesk is not in front ({} is).",
+            crate::infra::window::foreground_class()
+        ),
+    };
+    // The worker writes the log, off the hook's time budget.
+    if let Some(work) = HOOK_WORK.get() {
+        let _ = work.send(HookWork::Log(message));
+    }
+}
+
+/// True while a window of this process (the viewer) is in front. Compared by process, not by one window handle,
+/// so a recreated, re-shown or full-screen viewer window still counts.
+fn viewer_in_front() -> bool {
+    let mut pid: DWORD = 0;
+    unsafe {
+        let fg = GetForegroundWindow();
+        !fg.is_null() && GetWindowThreadProcessId(fg, &mut pid) != 0 && pid == GetCurrentProcessId()
     }
 }
 
@@ -520,8 +558,16 @@ fn release_forwarded() {
     }
 }
 
-/// Forwards a key the viewer's keyboard hook swallowed (Win key, Alt+Tab, Alt+F4) to the focused host.
+/// Forwards a key the viewer's keyboard hook swallowed (Win key, Alt+Tab, Alt+F4) to the focused host, through
+/// the worker.
 fn send_hook_key_event(event: InputEvent) {
+    if let Some(work) = HOOK_WORK.get() {
+        let _ = work.send(HookWork::Input(event));
+    }
+}
+
+/// Sends a hooked key to the focused host. Worker thread.
+fn send_to_partner(event: InputEvent) {
     let Some(lock) = HOOK_CTX.get() else { return };
     let Ok(guard) = lock.lock() else { return };
     if let Some(ctx) = guard.as_ref().filter(|c| !c.partner_id.is_empty()) {
@@ -535,6 +581,18 @@ pub fn init_privacy_and_hooks(tx_out: Sender<Outgoing>) {
     if let Ok(mut guard) = lock.lock() {
         *guard = Some(HookContext { tx_out, partner_id: String::new() });
     }
+
+    let (work_tx, work_rx) = mpsc::channel();
+    let _ = HOOK_WORK.set(work_tx);
+    thread::spawn(move || {
+        for work in work_rx {
+            match work {
+                HookWork::Log(message) => logger::info("viewer.keys", &message),
+                HookWork::Input(event) => send_to_partner(event),
+            }
+        }
+    });
+    thread::spawn(run_keyboard_hook_thread);
 
     thread::spawn(move || unsafe {
         let hinst = GetModuleHandleW(ptr::null());
@@ -571,7 +629,6 @@ pub fn init_privacy_and_hooks(tx_out: Sender<Outgoing>) {
             OVERLAY_HWND.store(hwnd as usize, Ordering::SeqCst);
         }
 
-        install_keyboard_hook();
         let _ms_hook = SetWindowsHookExW(WH_MOUSE_LL, ll_mouse_proc, hinst, 0);
 
         logger::info(
@@ -587,8 +644,22 @@ pub fn init_privacy_and_hooks(tx_out: Sender<Outgoing>) {
     });
 }
 
-/// (Re)installs the low-level keyboard hook. Hook thread only: Windows calls the hook on the installing thread.
-/// Windows silently removes a hook that once answered too slowly, so a viewer session starts with a fresh one.
+/// Runs the low-level keyboard hook on a thread that does nothing else, so overlay painting never delays it.
+fn run_keyboard_hook_thread() {
+    unsafe {
+        KB_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
+        install_keyboard_hook();
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
+            if msg.hwnd.is_null() && msg.message == WM_USER_REHOOK {
+                install_keyboard_hook();
+            }
+        }
+    }
+}
+
+/// (Re)installs the low-level keyboard hook. Keyboard hook thread only: Windows calls the hook on the installing
+/// thread. Windows silently removes a hook that once answered too slowly, so a viewer session starts with a fresh one.
 fn install_keyboard_hook() {
     unsafe {
         let old = KB_HOOK.swap(0, Ordering::SeqCst) as HHOOK;
@@ -607,21 +678,12 @@ fn install_keyboard_hook() {
 }
 
 /// Updates the active viewer state so the Low-Level Keyboard Hook knows when to forward Win/Alt+Tab keys.
-pub fn set_viewer_hook_state(active: bool, partner_clean: &str, window_title: &str) {
+pub fn set_viewer_hook_state(active: bool, partner_clean: &str) {
     if let Some(lock) = HOOK_CTX.get()
         && let Ok(mut guard) = lock.lock()
         && let Some(ref mut ctx) = *guard
     {
         ctx.partner_id = partner_clean.to_string();
-    }
-    if active && !window_title.is_empty() {
-        unsafe {
-            let wide = to_wide(window_title);
-            let hwnd = FindWindowW(ptr::null(), wide.as_ptr());
-            if !hwnd.is_null() {
-                VIEWER_MAIN_HWND.store(hwnd as usize, Ordering::SeqCst);
-            }
-        }
     }
     if !active {
         WIN_KEY_HELD.store(false, Ordering::SeqCst);
@@ -630,9 +692,10 @@ pub fn set_viewer_hook_state(active: bool, partner_clean: &str, window_title: &s
     let was_active = VIEWER_SESSION_ACTIVE.swap(active, Ordering::SeqCst);
     if active && !was_active {
         HOOK_KEY_EVENTS.store(0, Ordering::Relaxed);
-        let overlay = OVERLAY_HWND.load(Ordering::SeqCst) as HWND;
-        if !overlay.is_null() {
-            unsafe { PostMessageW(overlay, WM_USER_REHOOK, 0, 0) };
+        SYSTEM_KEY_LOGS.store(0, Ordering::Relaxed);
+        let thread = KB_THREAD_ID.load(Ordering::SeqCst);
+        if thread != 0 {
+            unsafe { PostThreadMessageW(thread, WM_USER_REHOOK, 0, 0) };
         }
     } else if !active && was_active {
         logger::info(

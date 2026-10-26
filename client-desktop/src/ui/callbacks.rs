@@ -101,9 +101,12 @@ fn bind_dashboard(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {
         controller::request_connect(c, &clean, title, subtitle);
     });
     on!(win, ctx, on_copy_local_id, |w, c| {
-        core_engine::clipboard::set_text(&desk_id::format(&c.local_id));
-        c.mark_clipboard_synced();
-        w.set_status_text("ID copied".into());
+        if core_engine::clipboard::set_text(&desk_id::format(&c.local_id)) {
+            c.mark_clipboard_synced();
+            w.set_status_text("ID copied".into());
+        } else {
+            w.set_status_text("Clipboard is busy; try again".into());
+        }
     });
     on!(win, ctx, on_refresh_hosts, |_w, c| c.send(ClientMessage::GetHosts));
     on!(win, ctx, on_save_gateway_url, |_w, c, url| settings::set_gateway(c, &url));

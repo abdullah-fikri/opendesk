@@ -19,7 +19,7 @@ pub struct AppContext {
     pub edition: Edition,
     /// This device's clean desk ID.
     pub local_id: String,
-    /// Title of the main window (the viewer keyboard hook and drag-and-drop find the window by it).
+    /// Title of the main window (drag-and-drop and the tray find the window by it).
     pub window_title: String,
     /// Outbound queue of the relay connection.
     pub outbox: Sender<Outgoing>,
