@@ -3,7 +3,7 @@
 All notable changes to OpenDesk. Versions follow [Semantic Versioning](https://semver.org); the single source of
 truth is `VERSION`. The release workflow copies the section of the tagged version into the GitHub Release.
 
-## [Unreleased]
+## [1.0.2] - 2026-10-26
 
 ### Fixed
 - Windows hosts no longer grow by about 60 MB every time the stream is rebuilt (viewer window resized,
@@ -17,6 +17,28 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
 - Keys reach the host as a physical keyboard would send them (scan code, extended-key flag), and the viewer's
   keyboard hook is reinstalled for every session.
 - Headless edition: a Start Menu launch with the service installed no longer waits 20 s for a tray window.
+- Copy and paste from the PC being controlled to the viewer (text, files and folders) did nothing when OpenDesk
+  runs through the service: Windows lets the SYSTEM agent see that the clipboard changed but not what is on it.
+  The agent now reads the clipboard through `OpenDesk.exe --clipboard-read`, started as the logged-on user
+  (about 0.1 s per copy). The same applied to Ctrl+V of text on a viewer running through the service.
+- Win and Alt+Tab from keyboards whose keys pass through a keyboard tool (PowerToys, AutoHotkey, laptop hotkey
+  utilities) stayed on the viewer's PC; they are forwarded too now.
+- Copied text could be lost when another program (Windows clipboard history, a clipboard manager) held the
+  clipboard at that moment; reading and writing it is now retried, and a failure is logged.
+- Win, Alt+Tab and the other system shortcuts never reached the host on Windows viewers: while the OpenDesk
+  window was in front, Windows skipped every low-level keyboard hook because the UI toolkit registers the
+  keyboard for raw input. OpenDesk now drops that registration (typing is unaffected), and the hook runs on its
+  own thread and recognises OpenDesk's window by process, not by a handle looked up by title.
+- The pointer disappeared over the remote screen after Win, Alt+Tab or typing on the host: Windows hides the
+  host's cursor for keyboard use and only shows it again on mouse input, which moving the cursor did not count
+  as. The host now sends mouse input with every move, and the viewer always shows its pointer over the remote
+  screen.
+- `docker-compose.yml` pulls the relay image of a release (`opendesk-relay:1.0.1`) instead of `latest`;
+  `RELAY_VERSION` in `.env` picks another one.
+
+### Changed
+- The log shows clipboard text sent and received (length only, never the content) and why a Win / Alt+Tab
+  press stayed on the viewer's PC.
 
 ## [1.0.1] - 2026-10-26
 
@@ -78,5 +100,6 @@ First public release.
 - Windows binaries are not code-signed yet (SmartScreen warns on first run); Linux packages are unsigned `.deb`
   files. Verify downloads against `SHA256SUMS.txt`.
 
+[1.0.2]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.0.2
 [1.0.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.0.1
 [1.0.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.0.0
