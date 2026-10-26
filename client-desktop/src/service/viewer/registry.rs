@@ -39,6 +39,8 @@ pub struct Session {
     pub block_input: AtomicBool,
     /// Clipboard sequence number this host last saw (see `clipboard_push_needed`).
     pub clip_seq: AtomicU32,
+    /// Clipboard sequence number whose files were offered to this host; Ctrl+V of any other copy sends them.
+    pub offered_seq: AtomicU32,
     /// The host announced its monitors; otherwise monitor changes use `switch-monitor`.
     pub has_monitors: AtomicBool,
     /// Keys this viewer holds down on the host.
@@ -64,6 +66,7 @@ impl Session {
             privacy_mode: AtomicI32::new(0),
             block_input: AtomicBool::new(false),
             clip_seq: AtomicU32::new(0),
+            offered_seq: AtomicU32::new(0),
             has_monitors: AtomicBool::new(false),
             keys: Mutex::default(),
         }

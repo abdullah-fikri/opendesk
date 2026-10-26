@@ -79,6 +79,7 @@ fn push_clipboard(ctx: &AppContext, s: &Arc<Session>) {
         if !files.is_empty() {
             // Files that came from a host are never offered back.
             if !file_transfer::is_received_clipboard(&files) {
+                s.offered_seq.store(current, Ordering::SeqCst);
                 file_transfer::offer::offer_files(ctx, files, s.id.clone());
             }
             return;
@@ -314,10 +315,12 @@ pub fn key_event(ctx: &AppContext, id: &str, text: &str, pressed: bool, repeat: 
             continue;
         }
         let files = core_engine::clipboard::files();
-        // Files that just came from the host are already there; offer-capable hosts already have the copied
-        // files as virtual clipboard entries. Either way only the keystroke is forwarded.
-        if !files.is_empty() && !file_transfer::is_received_clipboard(&files) && !file_transfer::caps_of(id).file_offer
-        {
+        // Files that just came from the host are already there, and files offered to this host in this session
+        // are on its clipboard as virtual entries: only the keystroke is forwarded. Anything else (copied
+        // before the session or before this host had focus) is sent and pasted, like a drop.
+        let seq = core_engine::clipboard::sequence_number();
+        let offered = file_transfer::caps_of(id).file_offer && sess.offered_seq.load(Ordering::SeqCst) == seq;
+        if !files.is_empty() && !file_transfer::is_received_clipboard(&files) && !offered {
             // A second Ctrl+V while the first copy is still on its way would send and paste the files twice.
             if file_transfer::sender::is_sending(id, &files) {
                 ctx.ui.status("Still sending these files; they are pasted when they arrive".into());

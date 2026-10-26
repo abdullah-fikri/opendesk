@@ -10,7 +10,7 @@ Code: `src/service/file_transfer/` (`sender.rs`, `receiver.rs`, `offer.rs`, `tre
 | --- | --- |
 | Drop files on the window | Sent to the current partner and pasted into its focused Explorer window |
 | "Send files" button | File picker, then the same |
-| Ctrl+V in a session with files on the clipboard | Sent and pasted, unless the host supports offers |
+| Ctrl+V in a session with files on the clipboard | Sent and pasted, unless those exact files were already offered to this host in this session |
 | Copy files while a partner supports `file-offer` | Only names and sizes are sent; the partner's clipboard shows virtual files, and each paste pulls one file |
 | Copy files on a host without offers | Sent to the viewer's clipboard |
 

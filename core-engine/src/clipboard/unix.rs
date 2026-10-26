@@ -49,7 +49,9 @@ pub fn set_text(text: &str) {
 }
 
 /// Putting a file list on the clipboard is Windows-only; received files stay in the download folder.
-pub fn set_files(_file_paths: &[String]) {}
+pub fn set_files(_file_paths: &[String]) -> bool {
+    false
+}
 
 #[cfg(test)]
 mod tests {

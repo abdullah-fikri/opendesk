@@ -46,6 +46,8 @@ const SWP_SHOWWINDOW: UINT = 0x0040;
 const WM_PAINT: u32 = 0x000F;
 const WM_ERASEBKGND: u32 = 0x0014;
 const WM_USER_UPDATE_PRIVACY: u32 = 0x0400 + 220;
+/// Asks the hook thread to install the keyboard hook again (see `set_viewer_hook_state`).
+const WM_USER_REHOOK: u32 = 0x0400 + 221;
 
 const SRCCOPY: DWORD = 0x00CC0020;
 const TRANSPARENT_BK: i32 = 1;
@@ -89,6 +91,11 @@ static OVERLAY_HWND: AtomicUsize = AtomicUsize::new(0);
 
 static VIEWER_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 static VIEWER_MAIN_HWND: AtomicUsize = AtomicUsize::new(0);
+/// The installed low-level keyboard hook (HHOOK), owned by the hook thread.
+static KB_HOOK: AtomicUsize = AtomicUsize::new(0);
+/// Key events the keyboard hook saw since the viewer session became active; logged when it ends, so the log
+/// shows whether Windows still calls the hook.
+static HOOK_KEY_EVENTS: AtomicUsize = AtomicUsize::new(0);
 static WIN_KEY_HELD: AtomicBool = AtomicBool::new(false);
 /// Keys whose key-down went to the host through the hook, so their key-up follows it there.
 static FORWARDED: [AtomicBool; 256] = [const { AtomicBool::new(false) }; 256];
@@ -222,6 +229,7 @@ unsafe extern "system" {
         dw_thread_id: DWORD,
     ) -> HHOOK;
     fn CallNextHookEx(hhk: HHOOK, n_code: i32, wparam: usize, lparam: isize) -> isize;
+    fn UnhookWindowsHookEx(hhk: HHOOK) -> BOOL;
     fn BlockInput(f_block_it: BOOL) -> BOOL;
 }
 
@@ -307,6 +315,10 @@ unsafe fn capture_freeze_snapshot() {
 unsafe extern "system" fn overlay_wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> isize {
     unsafe {
         match msg {
+            WM_USER_REHOOK => {
+                install_keyboard_hook();
+                0
+            }
             WM_USER_UPDATE_PRIVACY => {
                 let mode = HOST_PRIVACY_MODE.load(Ordering::SeqCst);
                 if mode == 0 {
@@ -420,6 +432,7 @@ unsafe extern "system" fn overlay_wnd_proc(hwnd: HWND, msg: u32, wparam: usize, 
 unsafe extern "system" fn ll_keyboard_proc(n_code: i32, wparam: usize, lparam: isize) -> isize {
     unsafe {
         if n_code >= 0 && lparam != 0 {
+            HOOK_KEY_EVENTS.fetch_add(1, Ordering::Relaxed);
             let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
             let is_injected = (kb.flags & LLKHF_INJECTED) != 0;
 
@@ -558,14 +571,8 @@ pub fn init_privacy_and_hooks(tx_out: Sender<Outgoing>) {
             OVERLAY_HWND.store(hwnd as usize, Ordering::SeqCst);
         }
 
-        let kb_hook = SetWindowsHookExW(WH_KEYBOARD_LL, ll_keyboard_proc, hinst, 0);
+        install_keyboard_hook();
         let _ms_hook = SetWindowsHookExW(WH_MOUSE_LL, ll_mouse_proc, hinst, 0);
-        if kb_hook.is_null() {
-            logger::warn(
-                "desk_rt.privacy",
-                &format!("Keyboard hook not installed (error {}): Win and Alt+Tab stay local.", GetLastError()),
-            );
-        }
 
         logger::info(
             "desk_rt.privacy",
@@ -578,6 +585,25 @@ pub fn init_privacy_and_hooks(tx_out: Sender<Outgoing>) {
             DispatchMessageW(&msg);
         }
     });
+}
+
+/// (Re)installs the low-level keyboard hook. Hook thread only: Windows calls the hook on the installing thread.
+/// Windows silently removes a hook that once answered too slowly, so a viewer session starts with a fresh one.
+fn install_keyboard_hook() {
+    unsafe {
+        let old = KB_HOOK.swap(0, Ordering::SeqCst) as HHOOK;
+        if !old.is_null() {
+            UnhookWindowsHookEx(old);
+        }
+        let hook = SetWindowsHookExW(WH_KEYBOARD_LL, ll_keyboard_proc, GetModuleHandleW(ptr::null()), 0);
+        if hook.is_null() {
+            logger::warn(
+                "desk_rt.privacy",
+                &format!("Keyboard hook not installed (error {}): Win and Alt+Tab stay local.", GetLastError()),
+            );
+        }
+        KB_HOOK.store(hook as usize, Ordering::SeqCst);
+    }
 }
 
 /// Updates the active viewer state so the Low-Level Keyboard Hook knows when to forward Win/Alt+Tab keys.
@@ -601,7 +627,19 @@ pub fn set_viewer_hook_state(active: bool, partner_clean: &str, window_title: &s
         WIN_KEY_HELD.store(false, Ordering::SeqCst);
         release_forwarded();
     }
-    VIEWER_SESSION_ACTIVE.store(active, Ordering::SeqCst);
+    let was_active = VIEWER_SESSION_ACTIVE.swap(active, Ordering::SeqCst);
+    if active && !was_active {
+        HOOK_KEY_EVENTS.store(0, Ordering::Relaxed);
+        let overlay = OVERLAY_HWND.load(Ordering::SeqCst) as HWND;
+        if !overlay.is_null() {
+            unsafe { PostMessageW(overlay, WM_USER_REHOOK, 0, 0) };
+        }
+    } else if !active && was_active {
+        logger::info(
+            "viewer.keys",
+            &format!("Keyboard hook saw {} key events during the session.", HOOK_KEY_EVENTS.load(Ordering::Relaxed)),
+        );
+    }
 }
 
 /// Applies privacy mode (0=Off, 1=Freeze, 2=Maintenance, 3=Black) on the Host machine.

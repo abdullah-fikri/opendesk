@@ -3,6 +3,21 @@
 All notable changes to OpenDesk. Versions follow [Semantic Versioning](https://semver.org); the single source of
 truth is `VERSION`. The release workflow copies the section of the tagged version into the GitHub Release.
 
+## [Unreleased]
+
+### Fixed
+- Windows hosts no longer grow by about 60 MB every time the stream is rebuilt (viewer window resized,
+  resolution changed): hardware H.264 encoders are now shut down when replaced.
+- Ctrl+V of files copied before the session (or before the host had focus) did nothing; they are now sent and
+  pasted like a drop.
+- An auto-paste no longer pastes an older transfer when the host's clipboard was busy: the clipboard is retried,
+  checked, and given time to reach Explorer before Ctrl+V.
+- The service's SYSTEM agent no longer advertises clipboard file offers, which the user's Explorer could not
+  pull from; partners send copied files as normal transfers instead.
+- Keys reach the host as a physical keyboard would send them (scan code, extended-key flag), and the viewer's
+  keyboard hook is reinstalled for every session.
+- Headless edition: a Start Menu launch with the service installed no longer waits 20 s for a tray window.
+
 ## [1.0.1] - 2026-10-26
 
 ### Added

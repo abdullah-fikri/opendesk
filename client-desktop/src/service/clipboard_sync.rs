@@ -45,6 +45,9 @@ pub fn spawn(ctx: Ctx) {
                     if !file_transfer::is_received_clipboard(&files) {
                         if offers {
                             mark_seen();
+                            if let Some(s) = &viewed {
+                                s.offered_seq.store(current, Ordering::SeqCst);
+                            }
                             offer::offer_files(&ctx, files, partner);
                         } else {
                             logger::info(
