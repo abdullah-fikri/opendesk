@@ -781,7 +781,7 @@ dependencies = [
 
 [[package]]
 name = "core-engine"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "arboard",
  "jpeg-encoder",
@@ -3498,7 +3498,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "opendesk-client"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "core-engine",
  "cpal",

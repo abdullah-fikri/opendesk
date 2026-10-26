@@ -128,7 +128,7 @@ impl Connection {
             let mut status = self.pump_files(&mut socket, partner.is_empty());
             if last_expire.elapsed() >= Duration::from_secs(1) {
                 last_expire = Instant::now();
-                status = self.receiver.expire_stale(last_expire).or(status);
+                status = self.receiver.expire_stale(ctx.ui.as_ref(), last_expire).or(status);
             }
             if let Some(status) = status {
                 ctx.ui.status(status);
@@ -390,7 +390,7 @@ impl Connection {
         for _ in self.files.drain(..) {
             IN_FLIGHT_CHUNKS.fetch_sub(1, Ordering::Relaxed);
         }
-        let reason = self.receiver.abort_all();
+        let reason = self.receiver.abort_all(ctx.ui.as_ref());
         crate::service::sessions::end_all(ctx);
         ctx.ui.relay_status(RelayStatus::Offline { reason });
     }

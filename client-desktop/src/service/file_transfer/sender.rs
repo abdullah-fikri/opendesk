@@ -7,9 +7,9 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -21,7 +21,7 @@ use crate::domain::transfer::{MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, 
 use crate::infra::logger;
 use crate::protocol::{ClientMessage, FilePayload, Outgoing};
 use crate::service::context::AppContext;
-use crate::service::ui_port::UiPort;
+use crate::service::ui_port::{TransferState, TransferUpdate, UiPort};
 
 /// The sender waits this long for the receiver's verdict after queueing `end`.
 const ACK_TIMEOUT: Duration = Duration::from_secs(120);
@@ -29,6 +29,28 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_QUEUED_CHUNKS: usize = 48;
 /// Status shown when a selection contained folders the partner cannot receive.
 pub(super) const SKIPPED_FOLDERS: &str = "Folders skipped: the other device needs a newer OpenDesk to receive folders";
+
+/// Selections being sent right now, per target, so a repeated Ctrl+V does not send the same files again.
+static ACTIVE_SENDS: Mutex<Vec<(String, Vec<PathBuf>)>> = Mutex::new(Vec::new());
+
+/// True while `paths` are still being sent to `target`.
+pub fn is_sending(target: &str, paths: &[PathBuf]) -> bool {
+    ACTIVE_SENDS.lock().unwrap().iter().any(|(t, p)| t == target && p.as_slice() == paths)
+}
+
+/// Removes its selection from [`ACTIVE_SENDS`] when the send thread ends, however it ends.
+struct ActiveSend(Option<(String, Vec<PathBuf>)>);
+
+impl Drop for ActiveSend {
+    fn drop(&mut self) {
+        if let Some(entry) = self.0.take() {
+            let mut all = ACTIVE_SENDS.lock().unwrap();
+            if let Some(pos) = all.iter().position(|e| *e == entry) {
+                all.swap_remove(pos);
+            }
+        }
+    }
+}
 
 /// Folder membership of one item of a folder transfer.
 struct FolderTag {
@@ -69,6 +91,18 @@ impl Link {
     fn status(&self, text: String) {
         self.ui.status(text);
     }
+
+    /// Reports one file's progress to the transfer list.
+    fn progress(&self, id: &str, name: &str, done: u64, total: u64, state: TransferState) {
+        let id = format!("out:{}:{id}", self.target);
+        self.ui.transfer(TransferUpdate { id, name: name.to_string(), outgoing: true, done, total, state });
+    }
+
+    /// Reports a failed file to the transfer list and the status line.
+    fn fail(&self, id: &str, name: &str, total: u64, status: String) {
+        self.progress(id, name, 0, total, TransferState::Failed(status.clone()));
+        self.status(status);
+    }
 }
 
 /// Sends `paths` (files and folders) to `target` in the background. `auto_paste` asks the receiver to paste
@@ -88,8 +122,17 @@ fn run(ctx: &AppContext, job: Job, target: String, auto_paste: bool) {
     if target.is_empty() {
         return;
     }
+    let active = match &job {
+        Job::Paths(paths) => {
+            let entry = (target.clone(), paths.clone());
+            ACTIVE_SENDS.lock().unwrap().push(entry.clone());
+            ActiveSend(Some(entry))
+        }
+        Job::Pull(..) => ActiveSend(None),
+    };
     let link = Link { outbox: ctx.outbox.clone(), ui: Arc::clone(&ctx.ui), target };
     thread::spawn(move || {
+        let _active = active;
         // Folders are walked here, on the worker thread, so a big tree never stalls the UI.
         let (items, skipped_folders) = match job {
             Job::Pull(path, tid) => (vec![SendItem { path, id: Some(tid), tag: None }], false),
@@ -211,12 +254,14 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
         start.rel = Some(t.rel.clone());
     }
     link.queue(start, Some(format!("Sending {label} (0%)...")));
+    link.progress(&id, &label, 0, size, TransferState::Active);
 
     let mut buf = vec![0u8; CHUNK_SIZE];
     let mut hash = Sha256::new();
     let mut sent = 0u64;
     let mut chunks = 0usize;
     let mut aborted = false;
+    let mut shown_percent = 0;
     loop {
         // An early NACK (receiver rejected start) stops sending chunks the relay would drop anyway.
         if epoch() != started || ack_rx.try_recv() == Ok(false) {
@@ -239,6 +284,10 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
                 let status = (size > 0 && (chunks.is_multiple_of(4) || sent == size))
                     .then(|| format!("Sending {label} ({}%)...", percent(sent, size)));
                 link.queue(FilePayload::chunk(&id, to_base64(&buf[..n])), status);
+                if percent(sent, size) != shown_percent {
+                    shown_percent = percent(sent, size);
+                    link.progress(&id, &label, sent, size, TransferState::Active);
+                }
                 thread::sleep(Duration::from_millis(3));
             }
             Err(e) => {
@@ -251,7 +300,7 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
     if aborted || sent != size {
         logger::error("file_transfer", &format!("Transfer incomplete for {path:?}"));
         forget_ack(&id);
-        return link.status(format!("Could not send {label}"));
+        return link.fail(&id, &label, size, format!("Could not send {label}"));
     }
 
     link.queue(
@@ -259,16 +308,21 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
         Some(format!("Waiting for confirmation: {label}")),
     );
     if wants_ack {
+        link.progress(&id, &label, size, size, TransferState::Verifying);
         match ack_rx.recv_timeout(ACK_TIMEOUT) {
-            Ok(true) => link.status(format!("Sent: {label}")),
+            Ok(true) => {
+                logger::info("file_transfer", &format!("Sent and confirmed: {label}"));
+                link.progress(&id, &label, size, size, TransferState::Done);
+                link.status(format!("Sent: {label}"));
+            }
             Ok(false) => {
                 logger::warn("file_transfer", &format!("Transfer rejected: {label}"));
-                link.status(format!("Could not send {label}: rejected or checksum mismatch"));
+                link.fail(&id, &label, size, format!("Could not send {label}: rejected or checksum mismatch"));
             }
             Err(_) => {
                 forget_ack(&id);
                 logger::warn("file_transfer", &format!("Transfer confirmation timed out: {label}"));
-                link.status(format!("Could not send {label}: no confirmation from the receiver"));
+                link.fail(&id, &label, size, format!("Could not send {label}: no confirmation from the receiver"));
             }
         }
         return;
@@ -277,10 +331,11 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
     forget_ack(&id);
     while IN_FLIGHT_CHUNKS.load(Ordering::Relaxed) > 0 {
         if epoch() != started {
-            return link.status(format!("Could not send {label}: connection lost"));
+            return link.fail(&id, &label, size, format!("Could not send {label}: connection lost"));
         }
         thread::sleep(Duration::from_millis(50));
     }
+    link.progress(&id, &label, size, size, TransferState::Done);
     link.status(format!("Sent (not confirmed by the receiver): {label}"));
 }
 

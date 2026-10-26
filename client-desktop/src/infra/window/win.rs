@@ -1,8 +1,11 @@
 //! Win32 helpers for the main window: file drag-and-drop, hiding to the tray, and the "send files" picker.
 
 use std::ffi::c_void;
+use std::fs;
 use std::path::PathBuf;
 use std::ptr;
+
+use crate::infra::{storage, system_service};
 
 type HWND = *mut c_void;
 type HDROP = *mut c_void;
@@ -192,6 +195,27 @@ where
 
 /// Shows the multi-select "Choose Files to Send" dialog; empty when cancelled.
 pub fn pick_files_dialog() -> Vec<PathBuf> {
+    if system_service::is_local_system() {
+        return pick_files_as_session_user();
+    }
+    show_open_dialog()
+}
+
+/// The open dialog is a small Explorer: shown by a SYSTEM process it would start any program as SYSTEM. The
+/// service's agent shows it from `OpenDesk.exe --pick-files <out>` running as the logged-on user instead.
+fn pick_files_as_session_user() -> Vec<PathBuf> {
+    let out = storage::app_dir().join("picked-files.txt");
+    let _ = fs::remove_file(&out);
+    if !system_service::run_as_session_user(&format!("--pick-files \"{}\"", out.display())) {
+        return Vec::new();
+    }
+    let paths =
+        fs::read_to_string(&out).unwrap_or_default().lines().filter(|l| !l.is_empty()).map(PathBuf::from).collect();
+    let _ = fs::remove_file(&out);
+    paths
+}
+
+fn show_open_dialog() -> Vec<PathBuf> {
     unsafe {
         let mut file_buf = vec![0u16; 8192];
         let filter: Vec<u16> = "All Files (*.*)\0*.*\0\0".encode_utf16().collect();

@@ -133,6 +133,30 @@ pub struct WallView {
     pub relay_supported: bool,
 }
 
+/// Where one file transfer stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TransferState {
+    /// Bytes are moving.
+    Active,
+    /// Every byte was sent; waiting for the receiver to verify it.
+    Verifying,
+    Done,
+    Failed(String),
+}
+
+/// Progress of one file transfer, for the transfer list. Sent again whenever its percentage or state changes.
+#[derive(Clone, Debug)]
+pub struct TransferUpdate {
+    /// Unique per transfer and direction.
+    pub id: String,
+    /// File name, or the path inside a sent folder.
+    pub name: String,
+    pub outgoing: bool,
+    pub done: u64,
+    pub total: u64,
+    pub state: TransferState,
+}
+
 /// Everything services report to the user interface.
 pub trait UiPort: Send + Sync {
     /// Replaces the status line.
@@ -145,6 +169,9 @@ pub trait UiPort: Send + Sync {
     fn host_list(&self, hosts: Vec<RemoteHost>);
     /// The connection history changed.
     fn history(&self, records: Vec<HistoryRecord>);
+
+    /// A file transfer started, progressed or finished.
+    fn transfer(&self, _update: TransferUpdate) {}
 
     /// A viewer started controlling this machine; `partner` is its display ID.
     fn hosting_started(&self, partner: String);

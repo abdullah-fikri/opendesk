@@ -20,6 +20,9 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
     if !ctx.is_hosting() {
         return;
     }
+    // Inject into the desktop that receives input, like the capture thread (UAC prompt, lock screen) when
+    // running as SYSTEM; a no-op otherwise.
+    core_engine::desktop::switch_to_input_desktop();
     let host = &ctx.host;
     let injector = &ctx.injector;
     match event {

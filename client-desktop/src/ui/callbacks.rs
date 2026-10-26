@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use slint::{ComponentHandle, Timer, TimerMode};
 
-use super::MainWindow;
+use super::{MainWindow, transfer_model};
 use crate::domain::desk_id;
 use crate::domain::keyboard::Mods;
 use crate::protocol::ClientMessage;
@@ -45,6 +45,7 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {
     bind_dashboard(win, ctx, history);
     bind_hosting(win, ctx);
     bind_sessions(win, ctx);
+    win.on_dismiss_transfer(|id| transfer_model::remove_finished(&id));
     #[cfg(feature = "admin")]
     bind_monitor_wall(win, ctx);
     #[cfg(feature = "admin")]

@@ -49,6 +49,18 @@ export struct SessionView {
     active_monitor: int,    // index into the host's monitor list
 }
 
+// ---- File transfers (see client-desktop/docs/features/file-transfer.md). Rust fills these. ----
+
+export struct TransferItem {
+    id: string,             // unique per transfer and direction; argument of dismiss_transfer
+    name: string,           // file name, or the path inside a sent folder
+    outgoing: bool,         // true = sending, false = receiving
+    progress: float,        // 0..1
+    percent_text: string,   // "42%", "Done", "Failed"
+    detail: string,         // "3.2 / 10.4 MB · 1.1 MB/s", what happens next, or why it failed
+    state: int,             // 0 active, 1 done, 2 failed
+}
+
 // ---- Monitor wall, admin edition (see docs/features/monitor-wall.md at the repository root) ----
 
 export struct MonitorTile {

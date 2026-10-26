@@ -3,13 +3,15 @@
 ; Expects builds\windows\OpenDesk.exe, produced by `make windows`.
 #define MyAppName "OpenDesk"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0"
+  #define MyAppVersion "1.0.1"
 #endif
 #define MyAppPublisher "OpenDesk Team"
 #define MyAppURL "https://github.com/abdullah-fikri/opendesk"
 #define MyAppExeName "OpenDesk.exe"
 ; Must match ELEVATED_TASK_NAME in client-desktop/src/infra/autostart.rs
 #define ElevatedTaskName "OpenDesk Autostart"
+; Must match SERVICE_NAME in client-desktop/src/infra/system_service/win.rs
+#define ServiceName "OpenDeskService"
 
 [Setup]
 AppId={{C78F7A41-75A2-4D7F-8A2F-9B6C3F81254D}}
@@ -30,9 +32,9 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
-; Admin once at install: needed to register the "highest privileges" logon task, so the app
-; starts elevated at every logon without a UAC prompt (UIPI: a non-elevated app cannot
-; control elevated windows such as Task Manager).
+; Admin once at install: needed to register the SYSTEM service that runs the app in the
+; logged-on user's session, so viewers can control the UAC prompt, the lock screen and elevated
+; windows (UIPI). The "highest privileges" logon task is the fallback when the service fails.
 PrivilegesRequired=admin
 
 [Languages]
@@ -50,10 +52,13 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"
 Name: "{autoprograms}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 
-; Autostart is no longer an HKCU Run value: the elevated logon task is created in [Code]
-; (HKCU Run is only written there as a fallback if the task cannot be created).
+; Autostart is no longer an HKCU Run value: the service (or the elevated logon task) is created in
+; [Code] (HKCU Run is only written there as a fallback if neither can be created).
 
 [UninstallRun]
+; Stopping the service also ends the agent it runs.
+Filename: "{sys}\sc.exe"; Parameters: "stop {#ServiceName}"; Flags: runhidden; RunOnceId: "StopService"
+Filename: "{sys}\sc.exe"; Parameters: "delete {#ServiceName}"; Flags: runhidden; RunOnceId: "DeleteService"
 ; Delete the task first so its restart-on-failure policy cannot bring the app back after taskkill.
 Filename: "{sys}\schtasks.exe"; Parameters: "/End /TN ""{#ElevatedTaskName}"""; Flags: runhidden; RunOnceId: "EndTask"
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""{#ElevatedTaskName}"" /F"; Flags: runhidden; RunOnceId: "DeleteTask"
@@ -62,12 +67,13 @@ Filename: "{cmd}"; Parameters: "/c del /F /Q ""%APPDATA%\OpenDesk\watchdog.lock"
 Filename: "{cmd}"; Parameters: "/c reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v OpenDesk /f & reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v OpenDeskWatchdog /f"; Flags: runhidden; RunOnceId: "DelRunKeys"
 
 [Run]
-; Runs as the original (non-elevated) user; the app hands off to the elevated task itself (daemon.rs).
+; Runs as the original (non-elevated) user; the app hands off to the service (or the elevated task) itself.
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [Code]
 const
   TaskName = '{#ElevatedTaskName}';
+  ServiceName = '{#ServiceName}';
   RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
   // Same AppId as [Setup]: its closing braces are literal (only the opening pair is an escape).
   OldUserUninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{C78F7A41-75A2-4D7F-8A2F-9B6C3F81254D}}_is1';
@@ -207,6 +213,29 @@ begin
   end;
 end;
 
+{ Creates (or, on upgrade, updates) the auto-start LocalSystem service and starts it. }
+function InstallService: Boolean;
+var
+  Sc, Args: String;
+  Code: Integer;
+begin
+  Sc := ExpandConstant('{sys}\sc.exe');
+  Args := ' ' + ServiceName + ' binPath= "\"' + ExpandConstant('{app}\{#MyAppExeName}') + '\" --service" start= auto DisplayName= "OpenDesk Service"';
+  Code := RunHidden(Sc, 'create' + Args);
+  { 1073 = already exists (upgrade): point it at this install instead. }
+  if Code = 1073 then
+    Code := RunHidden(Sc, 'config' + Args);
+  Log(Format('sc create/config %s -> %d', [ServiceName, Code]));
+  Result := Code = 0;
+  if Result then
+  begin
+    RunHidden(Sc, 'description ' + ServiceName + ' "Runs OpenDesk in the logged-on user''s session so the UAC prompt and the lock screen can be controlled remotely."');
+    RunHidden(Sc, 'failure ' + ServiceName + ' reset= 86400 actions= restart/5000/restart/5000/restart/30000');
+    Code := RunHidden(Sc, 'start ' + ServiceName);
+    Log(Format('sc start %s -> %d', [ServiceName, Code]));
+  end;
+end;
+
 { Remove pre-task autostart (HKCU Run + VBS watchdog) so it never starts a second, non-elevated copy. }
 procedure RemoveLegacyAutostart;
 var
@@ -226,7 +255,10 @@ var
   Code: Integer;
 begin
   Result := '';
+  RunHidden(ExpandConstant('{sys}\sc.exe'), 'stop ' + ServiceName);
   RunHidden(ExpandConstant('{sys}\schtasks.exe'), '/End /TN "' + TaskName + '"');
+  { sc stop returns before the service has ended its agent. }
+  Sleep(1500);
 
   { An old watchdog sees this flag and exits within 10 s instead of respawning the app. }
   AppData := ExpandConstant('{userappdata}\OpenDesk');
@@ -255,7 +287,15 @@ begin
   if CurStep <> ssPostInstall then
     Exit;
 
-  if CreateElevatedTask then
+  { PrepareToInstall set the stop flag; the service would not start the app while it exists. }
+  DeleteFile(ExpandConstant('{userappdata}\OpenDesk\user_exit.flag'));
+  if InstallService then
+  begin
+    { The service replaces the elevated task of older installs. }
+    RunHidden(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "' + TaskName + '" /F');
+    RemoveLegacyAutostart;
+  end
+  else if CreateElevatedTask then
   begin
     RemoveLegacyAutostart;
     { Silent upgrades skip the [Run] entry; start the elevated copy now. }
@@ -268,9 +308,9 @@ begin
     Exe := ExpandConstant('{app}\{#MyAppExeName}');
     RegWriteStringValue(HKEY_CURRENT_USER, RunKey, 'OpenDesk', '"' + Exe + '" --background');
     if not WizardSilent then
-      MsgBox('The elevated autostart task could not be created.' + #13#10 +
+      MsgBox('The OpenDesk service and the elevated autostart task could not be created.' + #13#10 +
         'OpenDesk still starts automatically at logon, but without administrator rights ' +
-        '(Task Manager and "Run as administrator" applications cannot be controlled remotely).',
+        '(the UAC prompt, Task Manager and "Run as administrator" applications cannot be controlled remotely).',
         mbInformation, MB_OK);
   end;
 end;

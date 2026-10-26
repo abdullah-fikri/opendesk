@@ -1,0 +1,92 @@
+// File transfers in progress and just finished, floating over the bottom-right corner of the window.
+// Rust fills the rows (src/ui/transfer_model.rs) and removes finished ones after a few seconds.
+
+import { Theme, Icons } from "../theme.slint";
+import { Icon } from "../components/icon.slint";
+import { TransferItem } from "../types.slint";
+
+export component TransferPanel inherits Rectangle {
+    in property <[TransferItem]> items;
+    // Removes a finished or failed row (transfer id).
+    callback dismiss(string);
+
+    width: 300px;
+    height: col.preferred-height;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: 12px;
+    drop-shadow-color: #00000080;
+    drop-shadow-offset-y: 4px;
+
+    col := VerticalLayout {
+        padding: 10px;
+        spacing: 10px;
+
+        Text {
+            text: "File transfers";
+            color: Theme.text-2;
+            font-size: Theme.font-ui;
+            font-weight: 600;
+        }
+
+        for t in root.items: VerticalLayout {
+            spacing: 4px;
+
+            HorizontalLayout {
+                spacing: 6px;
+                Icon {
+                    y: (parent.height - self.height) / 2;
+                    size: 10px;
+                    commands: t.outgoing ? Icons.arrow-up : Icons.arrow-down;
+                    tint: t.outgoing ? Theme.relay : Theme.ok;
+                }
+                Text {
+                    text: t.name;
+                    color: Theme.text;
+                    font-size: Theme.font-ui;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: t.percent_text;
+                    color: Theme.text-2;
+                    font-size: Theme.font-ui;
+                    vertical-alignment: center;
+                }
+                if t.state != 0: Rectangle {
+                    width: 14px;
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.dismiss(t.id); }
+                    }
+                    Icon {
+                        size: 8px;
+                        commands: Icons.close;
+                        tint: Theme.text-3;
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 4px;
+                background: Theme.surface-2;
+                Rectangle {
+                    x: 0;
+                    width: parent.width * clamp(t.progress, 0, 1);
+                    height: parent.height;
+                    background: t.state == 2 ? Theme.accent : t.state == 1 ? Theme.ok : Theme.relay;
+                    animate width { duration: 150ms; }
+                }
+            }
+
+            Text {
+                text: t.detail;
+                color: t.state == 2 ? #fca5a5 : Theme.text-3;
+                font-size: 10px;
+                overflow: elide;
+            }
+        }
+    }
+}
