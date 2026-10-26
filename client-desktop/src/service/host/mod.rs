@@ -103,7 +103,7 @@ pub fn start(ctx: &Ctx, partner: &str, caps: PeerCaps) {
     ctx.set_partner(partner);
     *ctx.host.peer_caps.lock().unwrap() = caps;
     // The viewer keyboard hook belongs to viewing; this machine is being controlled now.
-    privacy::set_viewer_hook_state(false, "", "");
+    privacy::set_viewer_hook_state(false, "");
     ctx.host.monitor_index.store(0, Ordering::SeqCst);
     // An automatic size belongs to the viewer that asked for it; a new viewer starts from the default.
     if resolution::is_auto(ctx.host.resolution_mode.load(Ordering::SeqCst)) {

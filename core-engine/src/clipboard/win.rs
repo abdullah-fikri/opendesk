@@ -61,7 +61,7 @@ pub fn text() -> Option<String> {
         if IsClipboardFormatAvailable(CF_UNICODETEXT) == 0 {
             return None;
         }
-        if OpenClipboard(ptr::null_mut()) == 0 {
+        if !open_clipboard_retrying() {
             return None;
         }
         let mut result = None;
@@ -90,7 +90,7 @@ pub fn files() -> Vec<PathBuf> {
         if IsClipboardFormatAvailable(CF_HDROP) == 0 {
             return paths;
         }
-        if OpenClipboard(ptr::null_mut()) == 0 {
+        if !open_clipboard_retrying() {
             return paths;
         }
         let h_drop = GetClipboardData(CF_HDROP);
@@ -113,10 +113,11 @@ pub fn files() -> Vec<PathBuf> {
     paths
 }
 
-/// Replaces the clipboard with `text`.
-pub fn set_text(text: &str) {
+/// Replaces the clipboard with `text`. False when the clipboard stayed busy or Windows refused the data.
+pub fn set_text(text: &str) -> bool {
+    let mut stored = false;
     unsafe {
-        if OpenClipboard(std::ptr::null_mut()) != 0 {
+        if open_clipboard_retrying() {
             EmptyClipboard();
             let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
             let bytes = wide.len() * 2;
@@ -126,21 +127,36 @@ pub fn set_text(text: &str) {
                 if !ptr.is_null() {
                     std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
                     GlobalUnlock(h_mem);
-                    SetClipboardData(CF_UNICODETEXT, h_mem);
+                    stored = !SetClipboardData(CF_UNICODETEXT, h_mem).is_null();
                 }
             }
             CloseClipboard();
         }
     }
+    stored
+}
+
+/// Opens the clipboard, retrying for up to half a second while another program (clipboard history, a
+/// clipboard manager, Explorer) holds it.
+fn open_clipboard_retrying() -> bool {
+    for _ in 0..25 {
+        if unsafe { OpenClipboard(ptr::null_mut()) } != 0 {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    false
 }
 
 /// Replaces the clipboard with a file list Explorer can paste (CF_HDROP plus "Preferred DropEffect" = copy).
-pub fn set_files(file_paths: &[String]) {
+/// False when the clipboard stayed busy or Windows refused the data: it then still holds the previous content.
+pub fn set_files(file_paths: &[String]) -> bool {
     if file_paths.is_empty() {
-        return;
+        return false;
     }
+    let mut stored = false;
     unsafe {
-        if OpenClipboard(std::ptr::null_mut()) != 0 {
+        if open_clipboard_retrying() {
             EmptyClipboard();
 
             let mut wide_files: Vec<u16> = Vec::new();
@@ -166,7 +182,7 @@ pub fn set_files(file_paths: &[String]) {
                     let dest_str = ptr.add(header_size) as *mut u16;
                     std::ptr::copy_nonoverlapping(wide_files.as_ptr(), dest_str, wide_files.len());
                     GlobalUnlock(h_mem);
-                    SetClipboardData(CF_HDROP, h_mem);
+                    stored = !SetClipboardData(CF_HDROP, h_mem).is_null();
                 }
             }
 
@@ -188,4 +204,5 @@ pub fn set_files(file_paths: &[String]) {
             CloseClipboard();
         }
     }
+    stored
 }

@@ -18,7 +18,7 @@ use super::{CHUNK_SIZE, LAST_RECEIVED_MS, MAX_CHUNK_B64, hex, now_ms, remember_r
 use crate::domain::transfer::{
     MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, is_safe_id, percent, safe_rel_path, sanitize_file_name,
 };
-use crate::infra::{logger, storage, virtual_clipboard};
+use crate::infra::{logger, storage, virtual_clipboard, window};
 use crate::protocol::{FileAction, FilePayload};
 use crate::service::context::AppContext;
 use crate::service::ui_port::{TransferState, TransferUpdate, UiPort};
@@ -35,6 +35,8 @@ const MAX_ACTIVE_GROUPS: usize = 4;
 const MAX_NAME_LEN: usize = 200;
 /// Win32 virtual-key code of V.
 const VK_V: u8 = 0x56;
+/// Wait between replacing the clipboard and the auto-paste Ctrl+V.
+const PASTE_SETTLE: Duration = Duration::from_millis(150);
 
 /// What to tell the user and the sender about one payload: `(status line, ack)`.
 /// `ack` is `Some(ok)` when the sender must be told the final result.
@@ -103,11 +105,21 @@ fn publish(ctx: &AppContext, paths: &[PathBuf], paste: bool) {
     LAST_RECEIVED_MS.store(now_ms(), Ordering::SeqCst);
     let list: Vec<String> = paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
     remember_received(list.clone());
-    core_engine::clipboard::set_files(&list);
+    let stored = core_engine::clipboard::set_files(&list);
     ctx.mark_clipboard_synced();
+    if cfg!(windows) && !stored {
+        // Pasting now would paste whatever was copied before (an older transfer): leave the files in Downloads.
+        logger::warn("file_transfer", "Clipboard busy or refused; received files were not put on it.");
+        ctx.ui.status(format!("Saved in {} (could not paste: clipboard busy)", download_dir().display()));
+        return;
+    }
     if paste {
-        thread::sleep(Duration::from_millis(35));
+        // Explorer learns about the new clipboard from a notification; pasting before it arrives pastes the old
+        // content.
+        thread::sleep(PASTE_SETTLE);
+        logger::info("file_transfer", &format!("Pasting into foreground window: {}", window::foreground_class()));
         ctx.injector.send_key_combo(true, false, false, VK_V);
+        crate::service::host::input::warn_if_refused();
         thread::sleep(Duration::from_millis(25));
         // Explorer touches the clipboard while pasting; mark that as synced too so it is never echoed back.
         ctx.mark_clipboard_synced();

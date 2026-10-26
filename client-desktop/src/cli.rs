@@ -8,7 +8,7 @@ use std::env;
 
 use crate::domain::{desk_id, settings};
 use crate::infra::autostart::{self, StopError};
-use crate::infra::{device, logger, storage, window};
+use crate::infra::{device, logger, storage, user_clipboard, window};
 
 const HELP: &str = "Commands:\r\n  opendesk server <url>   Set the relay address (e.g. wss://relay.example.com)\r\n  opendesk status         Show this device's ID and relay\r\n  opendesk stop           Stop OpenDesk and its watchdog\r\n  opendesk uninstall      Stop OpenDesk and remove autostart entries";
 
@@ -23,10 +23,12 @@ pub fn run_if_requested() {
         "stop" | "kill" => stop(),
         "uninstall" => uninstall(),
         "status" | "id" | "--status" | "help" | "--help" => status(),
-        // Internal: the Windows service entry point, and the file picker the SYSTEM agent runs as the user.
+        // Internal: the Windows service entry point, and the file picker and clipboard reader the SYSTEM agent
+        // runs as the user.
         #[cfg(windows)]
         "--service" => crate::infra::system_service::run(),
         "--pick-files" => pick_files(args.get(1)),
+        "--clipboard-read" => clipboard_read(args.get(1)),
         _ => return,
     };
     std::process::exit(code);
@@ -92,6 +94,16 @@ fn pick_files(out: Option<&String>) -> i32 {
     match std::fs::write(out, list.join("\n")) {
         Ok(()) if !list.is_empty() => 0,
         _ => 1,
+    }
+}
+
+/// Writes the clipboard's text and files as JSON to `out`.
+fn clipboard_read(out: Option<&String>) -> i32 {
+    let Some(out) = out else { return 2 };
+    let json = serde_json::to_vec(&user_clipboard::read_here()).unwrap_or_default();
+    match std::fs::write(out, json) {
+        Ok(()) => 0,
+        Err(_) => 1,
     }
 }
 

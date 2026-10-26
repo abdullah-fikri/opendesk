@@ -10,7 +10,7 @@ With Docker (from the repository root):
 
 ```bash
 cp .env.example .env        # set DB_PASSWORD at least
-docker compose up -d        # pulls ghcr.io/abdullah-fikri/opendesk-relay:latest
+docker compose up -d        # pulls ghcr.io/abdullah-fikri/opendesk-relay:<release version>
 ```
 
 From source (Go 1.26, PostgreSQL reachable at `localhost:5432`):

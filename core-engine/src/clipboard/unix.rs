@@ -43,13 +43,15 @@ pub fn files() -> Vec<PathBuf> {
     Vec::new()
 }
 
-/// Replaces the clipboard with `text`.
-pub fn set_text(text: &str) {
-    with_clipboard(|c| c.set_text(text.to_owned()).ok());
+/// Replaces the clipboard with `text`. False when no clipboard is available.
+pub fn set_text(text: &str) -> bool {
+    with_clipboard(|c| c.set_text(text.to_owned()).ok()).is_some()
 }
 
 /// Putting a file list on the clipboard is Windows-only; received files stay in the download folder.
-pub fn set_files(_file_paths: &[String]) {}
+pub fn set_files(_file_paths: &[String]) -> bool {
+    false
+}
 
 #[cfg(test)]
 mod tests {

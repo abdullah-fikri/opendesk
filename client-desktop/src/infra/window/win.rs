@@ -24,6 +24,17 @@ const WS_EX_ACCEPTFILES: LONG_PTR = 0x00000010;
 const MSGFLT_ALLOW: DWORD = 1;
 const MSGFLT_ADD: DWORD = 1;
 const SW_HIDE: i32 = 0;
+const HID_USAGE_PAGE_GENERIC: u16 = 0x01;
+const HID_USAGE_GENERIC_KEYBOARD: u16 = 0x06;
+const RIDEV_REMOVE: DWORD = 0x00000001;
+
+#[repr(C)]
+struct RAWINPUTDEVICE {
+    us_usage_page: u16,
+    us_usage: u16,
+    dw_flags: DWORD,
+    hwnd_target: HWND,
+}
 
 const OFN_FILEMUSTEXIST: DWORD = 0x00001000;
 const OFN_PATHMUSTEXIST: DWORD = 0x00000800;
@@ -62,6 +73,7 @@ struct OPENFILENAMEW {
 unsafe extern "system" {
     fn FindWindowW(lp_class_name: *const u16, lp_window_name: *const u16) -> HWND;
     fn GetForegroundWindow() -> HWND;
+    fn GetClassNameW(h_wnd: HWND, lp_class_name: *mut u16, n_max_count: i32) -> i32;
     fn GetWindowThreadProcessId(h_wnd: HWND, lpdw_process_id: *mut u32) -> u32;
     fn GetWindowLongPtrW(h_wnd: HWND, n_index: i32) -> LONG_PTR;
     fn SetWindowLongPtrW(h_wnd: HWND, n_index: i32, dw_new_long: LONG_PTR) -> LONG_PTR;
@@ -74,6 +86,7 @@ unsafe extern "system" {
         p_change_filter_struct: *mut c_void,
     ) -> BOOL;
     fn ShowWindow(h_wnd: HWND, n_cmd_show: i32) -> BOOL;
+    fn RegisterRawInputDevices(devices: *const RAWINPUTDEVICE, count: UINT, size: UINT) -> BOOL;
 }
 
 #[link(name = "ole32")]
@@ -188,9 +201,33 @@ where
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_ACCEPTFILES);
             DragAcceptFiles(hwnd, 1);
             ORIG_WNDPROC = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, subclass_wndproc as *const () as LONG_PTR);
+            release_raw_keyboard();
         }
         true
     }
+}
+
+/// Drops winit's raw keyboard registration. While a window of a process registered for raw keyboard input is in
+/// front, Windows calls no low-level keyboard hook (ours included), so Win and Alt+Tab went to this PC. Slint reads
+/// keys from window messages, which raw input removal leaves alone. UI thread, once the event loop exists.
+fn release_raw_keyboard() {
+    let keyboard = RAWINPUTDEVICE {
+        us_usage_page: HID_USAGE_PAGE_GENERIC,
+        us_usage: HID_USAGE_GENERIC_KEYBOARD,
+        dw_flags: RIDEV_REMOVE,
+        hwnd_target: ptr::null_mut(),
+    };
+    let ok = unsafe { RegisterRawInputDevices(&keyboard, 1, std::mem::size_of::<RAWINPUTDEVICE>() as UINT) } != 0;
+    if !ok {
+        crate::infra::logger::warn("ui", "Raw keyboard input still registered: Win and Alt+Tab may stay local.");
+    }
+}
+
+/// Window class of the focused window ("CabinetWClass" = Explorer folder, "Progman" = desktop), for diagnostics.
+pub fn foreground_class() -> String {
+    let mut buf = [0u16; 128];
+    let len = unsafe { GetClassNameW(GetForegroundWindow(), buf.as_mut_ptr(), buf.len() as i32) };
+    if len <= 0 { "(none)".into() } else { String::from_utf16_lossy(&buf[..len as usize]) }
 }
 
 /// Shows the multi-select "Choose Files to Send" dialog; empty when cancelled.

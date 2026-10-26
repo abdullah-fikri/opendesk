@@ -23,6 +23,11 @@ const KEYSYM_SHIFT_L: u32 = 0xffe1;
 const KEYSYM_CONTROL_L: u32 = 0xffe3;
 const KEYSYM_ALT_L: u32 = 0xffe9;
 
+/// Only Windows reports refused keyboard injection; XTEST has no equivalent, so this is always 0.
+pub fn take_injection_error() -> u32 {
+    0
+}
+
 /// One XTEST connection with a copy of the keyboard mapping.
 struct Xtest {
     conn: RustConnection,

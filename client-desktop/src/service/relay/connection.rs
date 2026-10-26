@@ -19,7 +19,7 @@ use tungstenite::{Message, WebSocket};
 use crate::domain::capability;
 use crate::domain::settings::{self, normalize_gateway_url};
 use crate::infra::p2p::{self, P2p};
-use crate::infra::{device, logger, storage, virtual_clipboard};
+use crate::infra::{autostart, device, logger, storage, virtual_clipboard};
 use crate::protocol::{ClientMessage, InputEvent, Outgoing, ServerMessage, binary};
 use crate::service::context::Ctx;
 use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS};
@@ -164,8 +164,10 @@ impl Connection {
     fn register_message(&self) -> ClientMessage {
         let edition = self.ctx.edition;
         let mut caps = vec![capability::FILE_ACK];
-        // Clipboard file offers need Explorer's virtual files: Windows only.
-        if cfg!(windows) {
+        // Clipboard file offers need Explorer's virtual files: Windows only, and not from the service's SYSTEM
+        // agent, whose clipboard objects the user's Explorer cannot pull from reliably. Partners then send
+        // copied files as ordinary transfers.
+        if cfg!(windows) && !autostart::supervised_by_service() {
             caps.push(capability::FILE_OFFER);
         }
         caps.extend([capability::FILE_FOLDER, capability::CURSOR_SHAPE]);

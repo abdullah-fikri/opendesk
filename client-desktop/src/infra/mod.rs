@@ -12,5 +12,6 @@ pub mod privacy;
 pub mod storage;
 pub mod system_service;
 pub mod tray;
+pub mod user_clipboard;
 pub mod virtual_clipboard;
 pub mod window;

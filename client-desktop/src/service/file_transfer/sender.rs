@@ -275,7 +275,12 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
             aborted = true;
             break;
         }
-        match file.read(&mut buf) {
+        // Never past the announced size: a file still being written (a log) is sent as it was at the start.
+        let want = (size - sent).min(CHUNK_SIZE as u64) as usize;
+        if want == 0 {
+            break;
+        }
+        match file.read(&mut buf[..want]) {
             Ok(0) => break,
             Ok(n) => {
                 hash.update(&buf[..n]);

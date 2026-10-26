@@ -11,7 +11,7 @@ use crate::protocol::Outgoing;
 pub fn init_privacy_and_hooks(_tx_out: Sender<Outgoing>) {}
 
 /// System keys (Super, Alt+Tab) stay with the local desktop while viewing.
-pub fn set_viewer_hook_state(_active: bool, _partner_clean: &str, _window_title: &str) {}
+pub fn set_viewer_hook_state(_active: bool, _partner_clean: &str) {}
 
 /// Privacy screens are not supported here.
 pub fn set_host_privacy_mode(mode: i32) {

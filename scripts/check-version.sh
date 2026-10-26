@@ -22,6 +22,7 @@ check client-desktop/Cargo.toml "$(sed -n 's/^version = "\(.*\)"/\1/p' client-de
 check core-engine/Cargo.toml "$(sed -n 's/^version = "\(.*\)"/\1/p' core-engine/Cargo.toml | head -1)"
 check server-relay/internal/version/version.go "$(sed -n 's/^var Version = "\(.*\)"/\1/p' server-relay/internal/version/version.go)"
 check installer/opendesk.iss "$(sed -n 's/^ *#define MyAppVersion "\(.*\)"/\1/p' installer/opendesk.iss | tr -d '\r')"
+check docker-compose.yml "$(sed -n 's/.*opendesk-relay:\${RELAY_VERSION:-\([^}]*\)}.*/\1/p' docker-compose.yml)"
 # Android reads VERSION directly (app/build.gradle), so it cannot drift.
 
 exit "$status"

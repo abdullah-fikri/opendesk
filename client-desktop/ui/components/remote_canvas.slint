@@ -9,7 +9,8 @@ export component RemoteViewerCanvas inherits Rectangle {
     in property <bool> has_remote_frame: false;
     in property <image> remote_frame;
     in property <string> active_partner_id: "";
-    // Host cursor shape code (see core_engine::capture::cursor_shape); the local cursor takes this shape.
+    // Host cursor shape code (see core_engine::capture::cursor_shape); the local cursor takes this shape, except
+    // that a hidden host cursor shows as the arrow.
     in property <int> remote_cursor: 1;
 
     callback send_mouse_move(int, int);
@@ -103,8 +104,9 @@ export component RemoteViewerCanvas inherits Rectangle {
             TouchArea {
                 width: parent.width;
                 height: parent.height;
-                mouse-cursor: remote_cursor == 0 ? MouseCursor.none
-                    : remote_cursor == 2 ? MouseCursor.text
+                // A hidden host cursor (0) shows as the default arrow: the user still points with this one,
+                // and the host hides its cursor for keyboard use (Start, Alt+Tab, typing) without a mouse move.
+                mouse-cursor: remote_cursor == 2 ? MouseCursor.text
                     : remote_cursor == 3 ? MouseCursor.pointer
                     : remote_cursor == 4 ? MouseCursor.wait
                     : remote_cursor == 5 ? MouseCursor.progress
