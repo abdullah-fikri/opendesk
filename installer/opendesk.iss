@@ -49,11 +49,13 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#SourcePath}..\builds\windows\OpenDesk.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Still shipped: the tray (client-desktop/src/infra/tray/win.rs) loads icon.ico by relative path.
 Source: "{#SourcePath}icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; IconFilename: "{app}\icon.ico"
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"
+; Shortcuts use the icon embedded in the exe (client-desktop/build.rs, icon.rc).
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autoprograms}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 
 ; Autostart is no longer an HKCU Run value: the service (or the elevated logon task) is created in
