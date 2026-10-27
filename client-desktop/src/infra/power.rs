@@ -4,7 +4,9 @@
 //! agent are independent; it is armed by [`arm`] (the relay connection), so other processes never throttle.
 //! `OPENDESK_ECOQOS=0` disables it, thread priority included. A no-op on other platforms.
 
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+
+use parking_lot::Mutex;
 
 use crate::infra::logger;
 
@@ -23,7 +25,7 @@ pub struct Awake(());
 
 /// Holds the process at full speed until the guard is dropped (sessions overlap: a counter).
 pub fn awake() -> Awake {
-    let mut s = STATE.lock().unwrap();
+    let mut s = STATE.lock();
     s.awake += 1;
     apply(&mut s);
     Awake(())
@@ -31,7 +33,7 @@ pub fn awake() -> Awake {
 
 impl Drop for Awake {
     fn drop(&mut self) {
-        let mut s = STATE.lock().unwrap();
+        let mut s = STATE.lock();
         s.awake -= 1;
         apply(&mut s);
     }
@@ -39,7 +41,7 @@ impl Drop for Awake {
 
 /// Enables throttling for this process; it starts at once if nothing holds it awake.
 pub fn arm() {
-    let mut s = STATE.lock().unwrap();
+    let mut s = STATE.lock();
     s.armed = true;
     apply(&mut s);
 }

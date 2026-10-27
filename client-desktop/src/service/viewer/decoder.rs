@@ -5,14 +5,14 @@ use std::collections::VecDeque;
 use std::io::Cursor;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::thread;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use core_engine::codec::delta::{Applied, Compositor};
 use core_engine::codec::frame::{FLAG_IDR, FrameHeader, KIND_DELTA, KIND_H264, KIND_KEY, is_framed};
 use core_engine::codec::h264::H264Decoder;
 use image::ImageReader;
+use parking_lot::{Condvar, Mutex};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 use crate::domain::capability;
@@ -66,7 +66,7 @@ impl VideoInbox {
     /// Queues one video message; a full frame drops everything queued before it.
     pub fn push(&self, msg: Vec<u8>) {
         let full = !is_framed(&msg) || FrameHeader::parse(&msg).is_some_and(|(h, _)| h.kind == KIND_KEY);
-        let mut q = self.queue.lock().unwrap();
+        let mut q = self.queue.lock();
         if full {
             q.clear();
         }
@@ -80,29 +80,29 @@ impl VideoInbox {
     /// Takes every queued message in arrival order.
     #[cfg(test)]
     pub fn drain(&self) -> Vec<Vec<u8>> {
-        self.queue.lock().unwrap().drain(..).collect()
+        self.queue.lock().drain(..).collect()
     }
 
     /// Like [`VideoInbox::drain`], but waits up to `timeout` for a message when the queue is empty. Returns
     /// empty on timeout or [`VideoInbox::wake`].
     pub fn drain_wait(&self, timeout: Duration) -> Vec<Vec<u8>> {
-        let mut q = self.queue.lock().unwrap();
+        let mut q = self.queue.lock();
         if q.is_empty() {
             // A single wait, not a loop: a spurious wake-up only costs the caller one extra state check.
-            q = self.ready.wait_timeout(q, timeout).unwrap().0;
+            let _ = self.ready.wait_for(&mut q, timeout);
         }
         q.drain(..).collect()
     }
 
     /// Wakes a waiting decoder thread so it re-checks the session's `alive`/`visible` state at once.
     pub fn wake(&self) {
-        let _guard = self.queue.lock().unwrap();
+        let _guard = self.queue.lock();
         self.ready.notify_all();
     }
 
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.queue.lock().unwrap().is_empty()
+        self.queue.lock().is_empty()
     }
 }
 
@@ -293,15 +293,18 @@ fn request_key(outbox: &Sender<Outgoing>, id: &str) {
 
 /// Starts the session's decoder thread once. `show` runs for every decoded frame.
 /// Hidden sessions (background tabs) are not decoded at all: their messages are dropped together with the
-/// decoder state, and showing the session again asks the host for a key frame.
-pub fn spawn<F>(sess: Arc<Session>, outbox: Sender<Outgoing>, show: F)
+/// decoder state, and showing the session again asks the host for a key frame. `on_panic` runs if the
+/// thread panics.
+pub fn spawn<F, P>(sess: Arc<Session>, outbox: Sender<Outgoing>, show: F, on_panic: P)
 where
     F: Fn(&Arc<Session>, Frame) + Send + 'static,
+    P: FnOnce() + Send + 'static,
 {
     if sess.decoder_started.swap(true, Ordering::SeqCst) {
         return;
     }
-    thread::spawn(move || {
+    let name = format!("viewer-decoder-{}", sess.id);
+    crate::infra::thread::spawn_supervised(&name, on_panic, move || {
         let mut frame_count = 0u32;
         let mut fps_timer = Instant::now();
         let mut current_fps = 0u32;
@@ -376,6 +379,7 @@ mod tests {
     use core_engine::capture::{DesktopCapturer, enumerate_monitors};
     use core_engine::stream::{FrameInput, H264Mode, StreamEncoder};
     use std::sync::atomic::AtomicU32;
+    use std::thread;
 
     #[test]
     fn hidden_session_skips_decoding_and_resyncs_with_a_key_frame_when_shown() {
@@ -387,9 +391,10 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let shown = Arc::new(AtomicU32::new(0));
         let counter = Arc::clone(&shown);
-        spawn(Arc::clone(&b), tx, move |_, _| {
+        let show = move |_: &Arc<Session>, _| {
             counter.fetch_add(1, Ordering::SeqCst);
-        });
+        };
+        spawn(Arc::clone(&b), tx, show, || {});
         b.inbox.push(core_engine::codec::delta::key_header(4, 4, 4).encode(&[]));
         thread::sleep(Duration::from_millis(50));
         assert!(b.inbox.is_empty(), "hidden tab drains its inbox");

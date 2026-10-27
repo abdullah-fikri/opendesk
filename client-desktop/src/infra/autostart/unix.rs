@@ -8,7 +8,6 @@ use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::thread;
 use std::time::Duration;
 
 use crate::infra::logger;
@@ -94,7 +93,7 @@ pub fn ensure_single_instance(start_in_background: bool) {
     let _ = fs::remove_file(&path);
     match UnixListener::bind(&path) {
         Ok(listener) => {
-            thread::spawn(move || {
+            crate::infra::thread::spawn_named("instance-listener", move || {
                 for mut stream in listener.incoming().flatten() {
                     let mut cmd = String::new();
                     let _ = (&mut stream).take(16).read_to_string(&mut cmd);

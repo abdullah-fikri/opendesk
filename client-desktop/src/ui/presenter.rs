@@ -2,9 +2,10 @@
 //! with `upgrade_in_event_loop` and applied there.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
 
+use parking_lot::Mutex;
 use slint::{ComponentHandle, Image, Weak};
 
 use super::{MainWindow, session_model, transfer_model, view_model};
@@ -150,12 +151,12 @@ impl UiPort for SlintUi {
     }
 
     fn session_frame(&self, id: String, frame: Frame) {
-        if self.frames.lock().unwrap().insert(id.clone(), frame).is_some() {
+        if self.frames.lock().insert(id.clone(), frame).is_some() {
             return; // the queued closure shows this newer frame instead
         }
         let pending = Arc::clone(&self.frames);
         self.apply(move |w| {
-            let Some(frame) = pending.lock().unwrap().remove(&id) else { return };
+            let Some(frame) = pending.lock().remove(&id) else { return };
             let image = Image::from_rgba8(frame.pixels);
             let path = if frame.p2p { "P2P" } else { "Relay" };
             let (width, height) = (frame.width as i32, frame.height as i32);
@@ -210,7 +211,7 @@ impl UiPort for SlintUi {
     }
 
     fn session_closed(&self, id: String, status: Option<String>) {
-        self.frames.lock().unwrap().remove(&id);
+        self.frames.lock().remove(&id);
         self.apply(move |w| {
             session_model::remove(&id);
             if session_model::is_empty() {
@@ -227,7 +228,7 @@ impl UiPort for SlintUi {
     }
 
     fn all_sessions_closed(&self) {
-        self.frames.lock().unwrap().clear();
+        self.frames.lock().clear();
         self.apply(|w| {
             session_model::clear();
             w.set_focused_session("".into());
@@ -280,7 +281,7 @@ impl UiPort for SlintUi {
 
     #[cfg(feature = "admin")]
     fn wall_frames(&self, frames: Vec<(String, slint::SharedPixelBuffer<slint::Rgba8Pixel>)>) {
-        let mut pending = self.wall.lock().unwrap();
+        let mut pending = self.wall.lock();
         let idle = pending.is_empty();
         pending.extend(frames);
         if !idle {
@@ -289,7 +290,7 @@ impl UiPort for SlintUi {
         drop(pending);
         let pending = Arc::clone(&self.wall);
         self.apply(move |_| {
-            let frames: Vec<_> = pending.lock().unwrap().drain().collect();
+            let frames: Vec<_> = pending.lock().drain().collect();
             super::monitor_wall_model::set_frames(frames);
         });
     }

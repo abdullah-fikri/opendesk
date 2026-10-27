@@ -9,13 +9,14 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use core_engine::codec::to_base64;
+use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
 use super::{
@@ -40,7 +41,7 @@ static ACTIVE_SENDS: Mutex<Vec<(String, Vec<PathBuf>)>> = Mutex::new(Vec::new())
 
 /// True while `paths` are still being sent to `target`.
 pub fn is_sending(target: &str, paths: &[PathBuf]) -> bool {
-    ACTIVE_SENDS.lock().unwrap().iter().any(|(t, p)| t == target && p.as_slice() == paths)
+    ACTIVE_SENDS.lock().iter().any(|(t, p)| t == target && p.as_slice() == paths)
 }
 
 /// Removes its selection from [`ACTIVE_SENDS`] when the send thread ends, however it ends.
@@ -49,7 +50,7 @@ struct ActiveSend(Option<(String, Vec<PathBuf>)>);
 impl Drop for ActiveSend {
     fn drop(&mut self) {
         if let Some(entry) = self.0.take() {
-            let mut all = ACTIVE_SENDS.lock().unwrap();
+            let mut all = ACTIVE_SENDS.lock();
             if let Some(pos) = all.iter().position(|e| *e == entry) {
                 all.swap_remove(pos);
             }
@@ -143,14 +144,14 @@ fn run(ctx: &AppContext, job: Job, target: String, auto_paste: bool) {
     let active = match &job {
         Job::Paths(paths) => {
             let entry = (target.clone(), paths.clone());
-            ACTIVE_SENDS.lock().unwrap().push(entry.clone());
+            ACTIVE_SENDS.lock().push(entry.clone());
             ActiveSend(Some(entry))
         }
         Job::Pull(..) => ActiveSend(None),
     };
-    let relay_binary = ctx.relay.caps.lock().unwrap().file_binary;
+    let relay_binary = ctx.relay.caps.lock().file_binary;
     let link = Link { outbox: ctx.outbox.clone(), ui: Arc::clone(&ctx.ui), target, relay_binary };
-    thread::spawn(move || {
+    crate::infra::thread::spawn_named("files-send", move || {
         let _active = active;
         // Folders are walked here, on the worker thread, so a big tree never stalls the UI.
         let (items, skipped_folders) = match job {
@@ -388,7 +389,7 @@ mod tests {
         let src = temp_tree("send");
         let downloads = env::temp_dir().join(format!("opendesk-recv-{}-{}", std::process::id(), now_ms()));
         fs::create_dir_all(downloads.join("Project")).unwrap(); // existing folder: the copy must become "Project (1)"
-        *TEST_DOWNLOADS.lock().unwrap() = Some(downloads.clone());
+        *TEST_DOWNLOADS.lock() = Some(downloads.clone());
         super::super::set_partner_caps(PeerCaps { file_folder: true, ..PeerCaps::default() });
         let (ctx, rx) = test_support::context_with_outbox();
         send_files(&ctx, vec![src.join("Project"), src.join("loose.txt")], "222222222".into(), false);
@@ -414,12 +415,12 @@ mod tests {
         assert!(copy.join("empty").is_dir());
         assert_eq!(fs::read(downloads.join("loose.txt")).unwrap(), b"12345");
         assert_eq!(fs::read_dir(downloads.join("Project")).unwrap().count(), 0, "existing folder untouched");
-        let ours = RECEIVED_CLIPBOARD.lock().unwrap().clone();
+        let ours = RECEIVED_CLIPBOARD.lock().clone();
         assert_eq!(
             ours,
             vec![copy.to_string_lossy().to_string(), downloads.join("loose.txt").to_string_lossy().to_string()]
         );
-        *TEST_DOWNLOADS.lock().unwrap() = None;
+        *TEST_DOWNLOADS.lock() = None;
         let _ = fs::remove_dir_all(src);
         let _ = fs::remove_dir_all(downloads);
     }
@@ -431,7 +432,7 @@ mod tests {
         let path = dir.join("wire.bin");
         fs::write(&path, data).unwrap();
         let (ctx, rx) = test_support::context_with_outbox();
-        ctx.relay.caps.lock().unwrap().file_binary = relay_binary;
+        ctx.relay.caps.lock().file_binary = relay_binary;
         send_files(&ctx, vec![path.clone()], target.into(), false);
         let (mut wire, mut binary_chunks, mut got) = (0, 0, Vec::new());
         loop {

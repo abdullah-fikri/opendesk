@@ -125,7 +125,7 @@ pub fn warn_if_refused() {
 
 /// Maps normalized coordinates onto the streamed monitor.
 fn to_screen(ctx: &AppContext, norm_x: f64, norm_y: f64) -> (i32, i32) {
-    let mon = *ctx.host.monitor_bounds.lock().unwrap();
+    let mon = *ctx.host.monitor_bounds.lock();
     let x = mon.left + (norm_x.clamp(0.0, 1.0) * mon.width as f64).round() as i32;
     let y = mon.top + (norm_y.clamp(0.0, 1.0) * mon.height as f64).round() as i32;
     (x, y)

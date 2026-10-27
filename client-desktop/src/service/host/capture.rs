@@ -1,6 +1,7 @@
 //! Host capture loop: captures the selected monitor at up to 60 FPS, encodes it for the viewer and announces
 //! monitor and cursor changes. Runs on its own thread for one hosted session.
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,6 +14,7 @@ use crate::domain::resolution;
 use crate::infra::{logger, power};
 use crate::protocol::{InputEvent, MonitorInfo, Outgoing};
 use crate::service::context::Ctx;
+use crate::service::sessions;
 
 /// How often the loop re-enumerates monitors to notice plugged, unplugged or resized displays.
 const MONITOR_POLL: Duration = Duration::from_secs(2);
@@ -107,9 +109,18 @@ fn h264_mode(viewer_supports: bool) -> H264Mode {
     }
 }
 
-/// Starts the loop for `partner`; it runs until the hosted session's `generation` is superseded.
+/// Starts the loop for `partner`; it runs until the hosted session's `generation` is superseded. Should the
+/// loop panic, the session it served ends like a local "end hosting" (keys released, viewer told).
 pub fn spawn(ctx: Ctx, partner: String, generation: u64) {
-    thread::spawn(move || run(&ctx, &partner, generation));
+    let crashed = Arc::clone(&ctx);
+    let on_panic = move || {
+        // A stop or a newer session already replaced this loop: nothing left to end.
+        if crashed.host.is_current(generation) {
+            sessions::end_hosting(&crashed);
+            crashed.ui.status("Screen sharing stopped after an internal error.".into());
+        }
+    };
+    crate::infra::thread::spawn_supervised("host-capture", on_panic, move || run(&ctx, &partner, generation));
 }
 
 fn run(ctx: &Ctx, partner: &str, generation: u64) {
@@ -122,11 +133,11 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     let mut monitors = enumerate_monitors();
     let mut current_idx = host.monitor_index.load(Ordering::SeqCst) % monitors.len().max(1);
     let initial_bounds = monitors[current_idx];
-    *host.monitor_bounds.lock().unwrap() = initial_bounds;
+    *host.monitor_bounds.lock() = initial_bounds;
 
     let mut current_mode = host.resolution_mode.load(Ordering::SeqCst);
     let (mut max_width, mut base_quality) = params(current_mode, initial_bounds);
-    let caps = *host.peer_caps.lock().unwrap();
+    let caps = *host.peer_caps.lock();
     let local_cursor = caps.cursor_shape;
     let h264 = h264_mode(caps.video_h264);
     host.keyframe_requested.store(false, Ordering::SeqCst);
@@ -174,7 +185,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
         let req_mode = host.resolution_mode.load(Ordering::Relaxed);
         let desktop_switched = core_engine::desktop::switch_to_input_desktop();
         let mode_only = req_mode != current_mode && req_idx == current_idx && !desktop_switched;
-        if mode_only && params(req_mode, *host.monitor_bounds.lock().unwrap()) == (max_width, base_quality) {
+        if mode_only && params(req_mode, *host.monitor_bounds.lock()) == (max_width, base_quality) {
             // Same stream size and quality (e.g. a resize the aspect ratio absorbs): keep the pipeline.
             current_mode = req_mode;
         } else if req_idx != current_idx || req_mode != current_mode || desktop_switched {
@@ -185,7 +196,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             current_mode = req_mode;
             let bounds = monitors[current_idx];
             (max_width, base_quality) = params(current_mode, bounds);
-            *host.monitor_bounds.lock().unwrap() = bounds;
+            *host.monitor_bounds.lock() = bounds;
             // Drop the old duplication first: an output allows only a few duplications at once.
             drop(capturer);
             capturer = DesktopCapturer::new_for_monitor(bounds, max_width);

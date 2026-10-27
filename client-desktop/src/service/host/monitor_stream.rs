@@ -54,7 +54,7 @@ pub fn start(ctx: &Ctx, profile: Profile) {
         &format!("Monitor-wall stream started: {}px, {} fps.", profile.max_width, profile.fps),
     );
     let ctx = std::sync::Arc::clone(ctx);
-    thread::spawn(move || run(&ctx, generation, profile));
+    crate::infra::thread::spawn_named("host-monitor-stream", move || run(&ctx, generation, profile));
 }
 
 /// Stops the thumbnail stream (nobody watches, or the relay connection ended).

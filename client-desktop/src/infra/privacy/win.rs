@@ -7,11 +7,13 @@
 
 use std::ffi::c_void;
 use std::ptr;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
+
+use parking_lot::Mutex;
 
 use crate::infra::logger;
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
@@ -307,23 +309,21 @@ unsafe fn capture_freeze_snapshot() {
         BitBlt(mem_dc, 0, 0, vw, vh, screen_dc, vx, vy, SRCCOPY);
         ReleaseDC(ptr::null_mut(), screen_dc);
 
-        let lock = FROZEN_SURFACE.get_or_init(|| Mutex::new(None));
-        if let Ok(mut guard) = lock.lock() {
-            if let Some(prev) = guard.take() {
-                SelectObject(prev.mem_dc as HDC, prev.old_bmp as HGDIOBJ);
-                DeleteObject(prev.mem_bmp as HGDIOBJ);
-                DeleteDC(prev.mem_dc as HDC);
-            }
-            *guard = Some(FrozenSurface {
-                mem_dc: mem_dc as usize,
-                mem_bmp: mem_bmp as usize,
-                old_bmp: old_bmp as usize,
-                x: vx,
-                y: vy,
-                w: vw,
-                h: vh,
-            });
+        let mut guard = FROZEN_SURFACE.get_or_init(|| Mutex::new(None)).lock();
+        if let Some(prev) = guard.take() {
+            SelectObject(prev.mem_dc as HDC, prev.old_bmp as HGDIOBJ);
+            DeleteObject(prev.mem_bmp as HGDIOBJ);
+            DeleteDC(prev.mem_dc as HDC);
         }
+        *guard = Some(FrozenSurface {
+            mem_dc: mem_dc as usize,
+            mem_bmp: mem_bmp as usize,
+            old_bmp: old_bmp as usize,
+            x: vx,
+            y: vy,
+            w: vw,
+            h: vh,
+        });
     }
 }
 
@@ -373,8 +373,7 @@ unsafe extern "system" fn overlay_wnd_proc(hwnd: HWND, msg: u32, wparam: usize, 
                     // Mode 1: Freeze Screen (Paints static snapshot of desktop prior to privacy lock)
                     let mut painted = false;
                     if let Some(lock) = FROZEN_SURFACE.get()
-                        && let Ok(guard) = lock.lock()
-                        && let Some(ref surf) = *guard
+                        && let Some(ref surf) = *lock.lock()
                     {
                         BitBlt(hdc, 0, 0, surf.w, surf.h, surf.mem_dc as HDC, 0, 0, SRCCOPY);
                         painted = true;
@@ -569,7 +568,7 @@ fn send_hook_key_event(event: InputEvent) {
 /// Sends a hooked key to the focused host. Worker thread.
 fn send_to_partner(event: InputEvent) {
     let Some(lock) = HOOK_CTX.get() else { return };
-    let Ok(guard) = lock.lock() else { return };
+    let guard = lock.lock();
     if let Some(ctx) = guard.as_ref().filter(|c| !c.partner_id.is_empty()) {
         let _ = ctx.tx_out.send(Outgoing::Message(ClientMessage::input(&ctx.partner_id, event)));
     }
@@ -577,14 +576,11 @@ fn send_to_partner(event: InputEvent) {
 
 /// Initializes the background Win32 thread for Privacy Overlay + Low-Level Input Hooks.
 pub fn init_privacy_and_hooks(tx_out: Sender<Outgoing>) {
-    let lock = HOOK_CTX.get_or_init(|| Mutex::new(None));
-    if let Ok(mut guard) = lock.lock() {
-        *guard = Some(HookContext { tx_out, partner_id: String::new() });
-    }
+    *HOOK_CTX.get_or_init(|| Mutex::new(None)).lock() = Some(HookContext { tx_out, partner_id: String::new() });
 
     let (work_tx, work_rx) = mpsc::channel();
     let _ = HOOK_WORK.set(work_tx);
-    thread::spawn(move || {
+    crate::infra::thread::spawn_named("keys-hook-work", move || {
         for work in work_rx {
             match work {
                 HookWork::Log(message) => logger::info("viewer.keys", &message),
@@ -592,9 +588,9 @@ pub fn init_privacy_and_hooks(tx_out: Sender<Outgoing>) {
             }
         }
     });
-    thread::spawn(run_keyboard_hook_thread);
+    crate::infra::thread::spawn_named("keys-hook", run_keyboard_hook_thread);
 
-    thread::spawn(move || unsafe {
+    crate::infra::thread::spawn_named("privacy-overlay", move || unsafe {
         let hinst = GetModuleHandleW(ptr::null());
         let class_name = to_wide("OpenDeskPrivacyOverlayClass");
         let win_name = to_wide("OpenDeskPrivacyOverlay");
@@ -680,8 +676,7 @@ fn install_keyboard_hook() {
 /// Updates the active viewer state so the Low-Level Keyboard Hook knows when to forward Win/Alt+Tab keys.
 pub fn set_viewer_hook_state(active: bool, partner_clean: &str) {
     if let Some(lock) = HOOK_CTX.get()
-        && let Ok(mut guard) = lock.lock()
-        && let Some(ref mut ctx) = *guard
+        && let Some(ref mut ctx) = *lock.lock()
     {
         ctx.partner_id = partner_clean.to_string();
     }

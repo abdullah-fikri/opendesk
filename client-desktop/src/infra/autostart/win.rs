@@ -355,7 +355,7 @@ pub fn init_background_guardian() {
     // cannot kill a SYSTEM process, so the agent watches for the stop flag itself.
     if system_service::installed() {
         if system_service::is_local_system() {
-            thread::spawn(move || {
+            crate::infra::thread::spawn_named("stop-flag-watch", move || {
                 loop {
                     thread::sleep(Duration::from_secs(1));
                     if stop_flag.exists() {

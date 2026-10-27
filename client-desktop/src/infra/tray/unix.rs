@@ -2,11 +2,12 @@
 //! AppIndicator extension that Ubuntu enables by default). Without a tray host OpenDesk keeps running; launching
 //! it again shows the window (see `autostart::ensure_single_instance`).
 
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use ksni::blocking::{Handle, TrayMethods};
 use ksni::menu::StandardItem;
 use ksni::{Icon, MenuItem, ToolTip};
+use parking_lot::Mutex;
 
 use super::TrayAction;
 use crate::infra::logger;
@@ -17,8 +18,8 @@ type TrayHandler = Box<dyn Fn(TrayAction) + Send + Sync>;
 static HANDLER: OnceLock<Mutex<Option<TrayHandler>>> = OnceLock::new();
 
 fn dispatch(action: TrayAction) {
-    if let Some(Ok(guard)) = HANDLER.get().map(Mutex::lock)
-        && let Some(handler) = guard.as_ref()
+    if let Some(lock) = HANDLER.get()
+        && let Some(handler) = lock.lock().as_ref()
     {
         handler(action);
     }
@@ -102,9 +103,7 @@ impl SystemTray {
     where
         F: Fn(TrayAction) + Send + Sync + 'static,
     {
-        if let Ok(mut guard) = HANDLER.get_or_init(|| Mutex::new(None)).lock() {
-            *guard = Some(Box::new(on_action));
-        }
+        *HANDLER.get_or_init(|| Mutex::new(None)).lock() = Some(Box::new(on_action));
         let tray = OpenDeskTray { tooltip: tooltip.to_string(), icon: icon() };
         let handle = match tray.spawn() {
             Ok(h) => Some(h),

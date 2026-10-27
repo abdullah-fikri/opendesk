@@ -1,6 +1,6 @@
 //! Connection history use cases: remember, rename and forget devices, persisted on every change.
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use crate::domain::history::{self, HistoryRecord};
 use crate::infra::{clock, storage};
@@ -18,11 +18,11 @@ impl History {
 
     /// Current records, most recent first.
     pub fn records(&self) -> Vec<HistoryRecord> {
-        self.records.lock().unwrap().clone()
+        self.records.lock().clone()
     }
 
     fn update(&self, change: impl FnOnce(&mut Vec<HistoryRecord>)) -> Vec<HistoryRecord> {
-        let mut records = self.records.lock().unwrap();
+        let mut records = self.records.lock();
         change(&mut records);
         storage::save_history(&records);
         records.clone()
@@ -46,6 +46,6 @@ impl History {
 
     /// Alias of `clean_id`, or an empty string.
     pub fn alias_of(&self, clean_id: &str) -> String {
-        history::alias_of(&self.records.lock().unwrap(), clean_id)
+        history::alias_of(&self.records.lock(), clean_id)
     }
 }

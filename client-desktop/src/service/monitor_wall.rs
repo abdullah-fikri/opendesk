@@ -8,9 +8,10 @@
 //! clipboard, files or voice, and none of it touches viewer sessions.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 
 use crate::domain::desk_id;
 use crate::domain::monitor_wall::{self, Rotation, WallHost};
@@ -90,7 +91,7 @@ impl TileState {
 pub fn open(ctx: &Ctx) {
     let settings = storage::load_settings().monitor;
     let spawn = {
-        let mut st = ctx.wall.state.lock().unwrap();
+        let mut st = ctx.wall.state.lock();
         if st.open {
             return;
         }
@@ -106,14 +107,14 @@ pub fn open(ctx: &Ctx) {
     refresh(ctx);
     if spawn {
         let ctx = std::sync::Arc::clone(ctx);
-        thread::spawn(move || run_worker(&ctx));
+        crate::infra::thread::spawn_named("monitor-wall", move || run_worker(&ctx));
     }
 }
 
 /// Hides the wall: the relay stops every thumbnail stream it started for this machine.
 pub fn close(ctx: &AppContext) {
     {
-        let mut st = ctx.wall.state.lock().unwrap();
+        let mut st = ctx.wall.state.lock();
         if !st.open {
             return;
         }
@@ -124,7 +125,7 @@ pub fn close(ctx: &AppContext) {
             st.sent = Some(Vec::new());
         }
     }
-    let mut inbox = ctx.wall.inbox.lock().unwrap();
+    let mut inbox = ctx.wall.inbox.lock();
     inbox.visible.clear();
     inbox.latest.clear();
     logger::info("monitor", "Monitor wall closed.");
@@ -139,7 +140,7 @@ pub fn set_hosts(ctx: &AppContext, hosts: &[RemoteHost]) {
         .map(|h| WallHost { id: desk_id::clean(&h.desk_id), name: h.display_name().to_string(), online: h.online })
         .collect();
     let open = {
-        let mut st = ctx.wall.state.lock().unwrap();
+        let mut st = ctx.wall.state.lock();
         st.hosts = hosts;
         st.open
     };
@@ -151,7 +152,7 @@ pub fn set_hosts(ctx: &AppContext, hosts: &[RemoteHost]) {
 /// Registered with the relay: watches belong to the connection, so the visible page is sent again.
 pub fn relay_registered(ctx: &AppContext, supported: bool) {
     let open = {
-        let mut st = ctx.wall.state.lock().unwrap();
+        let mut st = ctx.wall.state.lock();
         (st.relay_online, st.relay_supported, st.sent) = (true, supported, None);
         st.open
     };
@@ -163,7 +164,7 @@ pub fn relay_registered(ctx: &AppContext, supported: bool) {
 /// The relay connection ended; every watch ended with it.
 pub fn relay_lost(ctx: &AppContext) {
     let open = {
-        let mut st = ctx.wall.state.lock().unwrap();
+        let mut st = ctx.wall.state.lock();
         (st.relay_online, st.sent) = (false, None);
         st.states.clear();
         st.open
@@ -176,7 +177,7 @@ pub fn relay_lost(ctx: &AppContext) {
 /// A `monitor-state` for one tile.
 pub fn on_state(ctx: &AppContext, id: &str, state: &str) {
     let shown = {
-        let mut st = ctx.wall.state.lock().unwrap();
+        let mut st = ctx.wall.state.lock();
         let shown = st.open && st.sent.as_ref().is_some_and(|s| s.iter().any(|v| v == id));
         if shown {
             st.states.insert(id.to_string(), TileState::from_wire(state));
@@ -190,7 +191,7 @@ pub fn on_state(ctx: &AppContext, id: &str, state: &str) {
 
 /// A thumbnail from `id`; only the newest per tile is kept until the worker's next tick.
 pub fn on_frame(ctx: &AppContext, id: &str, jpeg: &[u8]) {
-    let mut inbox = ctx.wall.inbox.lock().unwrap();
+    let mut inbox = ctx.wall.inbox.lock();
     if inbox.visible.contains(id) {
         inbox.latest.insert(id.to_string(), jpeg.to_vec());
     }
@@ -201,7 +202,7 @@ pub fn on_frame(ctx: &AppContext, id: &str, jpeg: &[u8]) {
 /// Previous (-1) or next (+1) page, wrapping; restarts the rotation countdown.
 pub fn step_page(ctx: &AppContext, delta: i32) {
     {
-        let mut st = ctx.wall.state.lock().unwrap();
+        let mut st = ctx.wall.state.lock();
         let pages = monitor_wall::page_count(
             monitor_wall::wall_hosts(&st.hosts, &st.settings).len(),
             monitor_wall::per_page(&st.settings),
@@ -241,7 +242,7 @@ pub fn toggle_host(ctx: &AppContext, desk_id: &str) {
 /// Changes and saves the settings, then shows the result.
 fn update_settings(ctx: &AppContext, change: impl FnOnce(&mut MonitorSettings)) {
     let monitor = {
-        let mut st = ctx.wall.state.lock().unwrap();
+        let mut st = ctx.wall.state.lock();
         change(&mut st.settings);
         st.rotation.reset(Instant::now());
         st.settings.clone()
@@ -257,7 +258,7 @@ fn update_settings(ctx: &AppContext, change: impl FnOnce(&mut MonitorSettings)) 
 /// Recomputes the visible page, tells the relay when it changed and repaints the wall.
 fn refresh(ctx: &AppContext) {
     {
-        let mut st = ctx.wall.state.lock().unwrap();
+        let mut st = ctx.wall.state.lock();
         if !st.open {
             return;
         }
@@ -304,7 +305,7 @@ fn refresh(ctx: &AppContext) {
         // Still under the state lock (lock order: state, then inbox), so concurrent refreshes reach the inbox and
         // the UI in the order they were computed. Neither call blocks.
         {
-            let mut inbox = ctx.wall.inbox.lock().unwrap();
+            let mut inbox = ctx.wall.inbox.lock();
             inbox.visible = ids.into_iter().collect();
             let Inbox { visible, latest } = &mut *inbox;
             latest.retain(|id, _| visible.contains(id));
@@ -318,7 +319,7 @@ fn run_worker(ctx: &Ctx) {
     loop {
         let tick = Instant::now();
         let rotate = {
-            let mut st = ctx.wall.state.lock().unwrap();
+            let mut st = ctx.wall.state.lock();
             if !st.open {
                 st.worker = false;
                 return;
@@ -339,7 +340,7 @@ fn run_worker(ctx: &Ctx) {
             refresh(ctx);
         }
 
-        let batch = std::mem::take(&mut ctx.wall.inbox.lock().unwrap().latest);
+        let batch = std::mem::take(&mut ctx.wall.inbox.lock().latest);
         let frames: Vec<_> = batch
             .into_iter()
             .filter_map(|(id, jpeg)| {
@@ -390,7 +391,7 @@ mod tests {
         let (ctx, rx) = context_with_outbox();
         set_hosts(&ctx, &hosts(n));
         {
-            let mut st = ctx.wall.state.lock().unwrap();
+            let mut st = ctx.wall.state.lock();
             st.open = true;
             st.settings = MonitorSettings { grid: 3, ..Default::default() };
         }
@@ -407,7 +408,7 @@ mod tests {
         assert_eq!(first[0][0], "200000000");
         // Next page: the relay is told to swap the watch list (it stops the hidden hosts).
         {
-            let mut st = ctx.wall.state.lock().unwrap();
+            let mut st = ctx.wall.state.lock();
             st.page = 2;
         }
         refresh(&ctx);
@@ -419,7 +420,7 @@ mod tests {
         // Thumbnails of hidden hosts are dropped at once.
         on_frame(&ctx, "200000000", &[1]);
         on_frame(&ctx, "200000019", &[2]);
-        assert_eq!(ctx.wall.inbox.lock().unwrap().latest.len(), 1);
+        assert_eq!(ctx.wall.inbox.lock().latest.len(), 1);
     }
 
     #[test]
@@ -431,11 +432,11 @@ mod tests {
         assert_eq!(sets(&rx).len(), 1, "a new relay connection starts without watches");
         on_state(&ctx, "200000001", "live");
         on_state(&ctx, "999999999", "live");
-        assert_eq!(ctx.wall.state.lock().unwrap().states.len(), 1, "states only for tiles on the page");
+        assert_eq!(ctx.wall.state.lock().states.len(), 1, "states only for tiles on the page");
         close(&ctx);
         assert_eq!(sets(&rx), [Vec::<String>::new()]);
         on_frame(&ctx, "200000001", &[1]);
-        assert!(ctx.wall.inbox.lock().unwrap().latest.is_empty());
+        assert!(ctx.wall.inbox.lock().latest.is_empty());
     }
 
     /// Viewer-side cost of a full 4x4 page: `cargo test --release --features admin bench_wall_decode -- --ignored
@@ -469,7 +470,7 @@ mod tests {
     #[test]
     fn a_relay_without_the_wall_is_never_asked() {
         let (ctx, rx) = context_with_outbox();
-        ctx.wall.state.lock().unwrap().open = true;
+        ctx.wall.state.lock().open = true;
         set_hosts(&ctx, &hosts(2));
         relay_registered(&ctx, false);
         assert!(sets(&rx).is_empty());

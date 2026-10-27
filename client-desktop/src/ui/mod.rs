@@ -109,7 +109,7 @@ pub fn enable_file_drop(win: &MainWindow, ctx: &Ctx, hide_after: bool) {
     }
     let weak = win.as_weak();
     let ctx = Arc::clone(ctx);
-    thread::spawn(move || {
+    crate::infra::thread::spawn_named("file-drop-register", move || {
         for _ in 0..20 {
             thread::sleep(Duration::from_millis(250));
             let registered = Arc::new(AtomicBool::new(false));

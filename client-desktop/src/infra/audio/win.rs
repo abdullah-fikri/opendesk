@@ -127,7 +127,7 @@ impl VoiceEngine {
 
         // 1. Microphone Capture Thread
         // Keeps waveIn open across mute/unmute toggles during a session so re-enabling mic never fails!
-        thread::spawn(move || unsafe {
+        crate::infra::thread::spawn_named("audio-capture", move || unsafe {
             let block_align = (CHANNELS * BITS_PER_SAMPLE) / 8;
             let mut processed_buf = [0u8; MAX_FRAME_BYTES];
 
@@ -232,7 +232,7 @@ impl VoiceEngine {
         });
 
         // 2. Speaker Playback Thread (Dynamic 16kHz / 24kHz / 48kHz waveOut with low-latency jitter prebuffer)
-        thread::spawn(move || unsafe {
+        crate::infra::thread::spawn_named("audio-playback", move || unsafe {
             let block_align = (CHANNELS * BITS_PER_SAMPLE) / 8;
             let mut h_out: HWAVEOUT = ptr::null_mut();
             let mut current_rate: u32 = 0;

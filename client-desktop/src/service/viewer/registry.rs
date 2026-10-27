@@ -5,8 +5,10 @@
 //! Threads: the registry is shared by the UI thread and the relay connection. Each connected session owns one
 //! decoder thread, so nothing runs while no session is open.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 
 use crate::domain::keyboard::KeyForwarder;
 use crate::infra::power;
@@ -182,7 +184,7 @@ impl Registry {
 
     /// True when no session is open.
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().unwrap().sessions.is_empty()
+        self.inner.lock().sessions.is_empty()
     }
 
     /// The session with host `id`.
@@ -190,28 +192,28 @@ impl Registry {
         if id.is_empty() {
             return None;
         }
-        self.inner.lock().unwrap().sessions.iter().find(|s| s.id == id).cloned()
+        self.inner.lock().sessions.iter().find(|s| s.id == id).cloned()
     }
 
     /// Every session, in tab order.
     pub fn all(&self) -> Vec<Arc<Session>> {
-        self.inner.lock().unwrap().sessions.clone()
+        self.inner.lock().sessions.clone()
     }
 
     /// The focused session.
     pub fn focused(&self) -> Option<Arc<Session>> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock();
         inner.sessions.iter().find(|s| s.id == inner.focused).cloned()
     }
 
     /// ID of the focused session (empty: none).
     pub fn focused_id(&self) -> String {
-        self.inner.lock().unwrap().focused.clone()
+        self.inner.lock().focused.clone()
     }
 
     /// True when `id` is the focused session.
     pub fn is_focused(&self, id: &str) -> bool {
-        !id.is_empty() && self.inner.lock().unwrap().focused == id
+        !id.is_empty() && self.inner.lock().focused == id
     }
 
     /// True for a session that exists and is connected.
@@ -224,13 +226,13 @@ impl Registry {
         if self.multi() {
             return None;
         }
-        self.inner.lock().unwrap().sessions.first().cloned()
+        self.inner.lock().sessions.first().cloned()
     }
 
     /// Adds a (pending) session unless it exists or the limit is reached. Focus is left to the caller.
     pub fn open(&self, id: &str, res_mode: usize, viewport: u64, audio_quality: usize) -> Open {
         let limit = self.limit();
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         if let Some(s) = inner.sessions.iter().find(|s| s.id == id) {
             return Open::Exists(Arc::clone(s));
         }
@@ -245,7 +247,7 @@ impl Registry {
 
     /// Removes a session and stops its decoder. A removed focused session hands focus to its neighbour.
     pub fn remove(&self, id: &str) -> Option<Arc<Session>> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         let pos = inner.sessions.iter().position(|s| s.id == id)?;
         let s = inner.sessions.remove(pos);
         s.alive.store(false, Ordering::SeqCst);
@@ -262,7 +264,7 @@ impl Registry {
 
     /// Moves focus; returns the previous focus, or None if `id` is unknown or already focused.
     pub fn set_focus(&self, id: &str) -> Option<String> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         if inner.focused == id || !inner.sessions.iter().any(|s| s.id == id) {
             return None;
         }
@@ -273,19 +275,19 @@ impl Registry {
 
     /// 0 = tabs, 1 = split. Returns sessions that just became visible.
     pub fn set_layout(&self, layout: i32) -> Vec<Arc<Session>> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         inner.layout = if layout == 1 { 1 } else { 0 };
         inner.refresh()
     }
 
     /// 0 = tabs, 1 = split view.
     pub fn layout(&self) -> i32 {
-        self.inner.lock().unwrap().layout
+        self.inner.lock().layout
     }
 
     /// Ends every session (relay connection lost).
     pub fn clear(&self) -> Vec<Arc<Session>> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         inner.focused.clear();
         let all: Vec<Arc<Session>> = std::mem::take(&mut inner.sessions);
         for s in &all {
@@ -294,7 +296,7 @@ impl Registry {
             s.audio_on.store(false, Ordering::SeqCst);
             s.inbox.wake();
         }
-        *self.swallowed_click.lock().unwrap() = None;
+        *self.swallowed_click.lock() = None;
         all
     }
 }

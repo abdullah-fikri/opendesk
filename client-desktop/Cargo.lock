@@ -3515,6 +3515,7 @@ dependencies = [
  "image",
  "ksni",
  "libc",
+ "parking_lot",
  "serde",
  "serde_json",
  "sha2",

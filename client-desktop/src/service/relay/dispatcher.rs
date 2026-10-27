@@ -67,7 +67,7 @@ impl Connection {
     fn on_registered(&self, caps: &[String]) {
         let ctx = &self.ctx;
         let relay = RelayCaps::from_list(caps);
-        *ctx.relay.caps.lock().unwrap() = relay;
+        *ctx.relay.caps.lock() = relay;
         // Both sides must support it: we advertised it in `register` unless this build cannot view.
         let multi = ctx.edition.can_view() && relay.multi_session;
         ctx.viewers.set_multi(multi);
@@ -104,7 +104,7 @@ impl Connection {
 
     fn on_session_connected(&mut self, target: &str, role: &str, peer_caps: &[String]) {
         let ctx = Arc::clone(&self.ctx);
-        let relay = *ctx.relay.caps.lock().unwrap();
+        let relay = *ctx.relay.caps.lock();
         let caps = PeerCaps::from_list(peer_caps, relay.file_offer);
         let is_host = role == "host";
         // A session that cannot be captured (Linux on Wayland) is ended at once; normally the relay already

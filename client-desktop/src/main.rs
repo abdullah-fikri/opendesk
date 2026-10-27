@@ -20,6 +20,7 @@ mod service;
 mod ui;
 
 fn main() -> Result<(), slint::PlatformError> {
+    infra::logger::install_panic_hook();
     cli::run_if_requested();
     app::run()
 }

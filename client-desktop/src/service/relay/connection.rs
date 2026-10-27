@@ -33,6 +33,8 @@ pub(super) type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
 const RETRY_DELAY: Duration = Duration::from_millis(2000);
 /// Pause after losing an established connection.
 const RECONNECT_DELAY: Duration = Duration::from_millis(1500);
+/// Pause before the connection loop starts over after a panic.
+const PANIC_RESTART_DELAY: Duration = Duration::from_secs(2);
 /// File messages sent per tick, in `chunk_units`, while a screen session runs (keeps video and voice latency
 /// low)...
 const FILE_BURST_IN_SESSION: usize = 8;
@@ -51,7 +53,7 @@ const WINDOW_CHECK: Duration = Duration::from_millis(500);
 
 /// Starts the connection thread. `outbox` is the receiving end of `ctx.outbox`.
 pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
-    thread::spawn(move || {
+    crate::infra::thread::spawn_named("relay-conn", move || {
         let (input_tx, input_rx) = mpsc::channel();
         let mut conn = Connection {
             ctx,
@@ -68,9 +70,15 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
         };
         // This process idles under EcoQoS until a session or traffic needs full speed.
         power::arm();
-        loop {
+        // The app is useless without this loop: after a panic, clean up like a lost socket and start over.
+        let pump = |conn: &mut Connection| loop {
             conn.run_once();
-        }
+        };
+        let recover = |conn: &mut Connection| {
+            conn.on_connection_lost();
+            conn.on_connection_ended();
+        };
+        crate::infra::thread::restart_on_panic("Relay connection loop", PANIC_RESTART_DELAY, &mut conn, pump, recover);
     });
 }
 
@@ -108,7 +116,7 @@ impl Connection {
     fn run_once(&mut self) {
         let ctx = Arc::clone(&self.ctx);
         ctx.relay.reconnect.store(false, Ordering::SeqCst);
-        let url = resolve_url(&ctx.relay.gateway_url.lock().unwrap());
+        let url = resolve_url(&ctx.relay.gateway_url.lock());
         logger::info("relay", &format!("Connecting to relay {url}"));
         ctx.ui.relay_status(RelayStatus::Connecting);
 
@@ -250,7 +258,7 @@ impl Connection {
         }
         #[cfg(feature = "admin")]
         caps.push(capability::MONITOR_VIEW);
-        let gateway = self.ctx.relay.gateway_url.lock().unwrap().clone();
+        let gateway = self.ctx.relay.gateway_url.lock().clone();
         let device_token = std::env::var("OPENDESK_DEVICE_TOKEN")
             .unwrap_or_else(|_| settings::token_for(&storage::load_settings(), &gateway));
         ClientMessage::Register {

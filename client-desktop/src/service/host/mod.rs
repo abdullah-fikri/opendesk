@@ -8,11 +8,12 @@ pub mod capture;
 pub mod input;
 pub mod monitor_stream;
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 use core_engine::capture::{MonitorBounds, enumerate_monitors};
 use core_engine::input::InputInjector;
+use parking_lot::Mutex;
 
 use crate::domain::capability::PeerCaps;
 use crate::domain::{desk_id, resolution};
@@ -77,7 +78,7 @@ impl HostState {
     /// Presses `vk` and remembers it.
     pub fn key_down(&self, injector: &InputInjector, vk: u8) {
         injector.key_down(vk);
-        let mut held = self.held_keys.lock().unwrap();
+        let mut held = self.held_keys.lock();
         if !held.contains(&vk) {
             held.push(vk);
         }
@@ -86,12 +87,12 @@ impl HostState {
     /// Releases `vk`.
     pub fn key_up(&self, injector: &InputInjector, vk: u8) {
         injector.key_up(vk);
-        self.held_keys.lock().unwrap().retain(|&k| k != vk);
+        self.held_keys.lock().retain(|&k| k != vk);
     }
 
     /// Releases every key the viewer left pressed (disconnect, lost relay, viewer crash).
     pub fn release_all_keys(&self, injector: &InputInjector) {
-        let keys = std::mem::take(&mut *self.held_keys.lock().unwrap());
+        let keys = std::mem::take(&mut *self.held_keys.lock());
         for vk in keys.into_iter().rev() {
             injector.key_up(vk);
         }
@@ -101,7 +102,7 @@ impl HostState {
 /// A viewer connected to this machine: start streaming to it.
 pub fn start(ctx: &Ctx, partner: &str, caps: PeerCaps) {
     ctx.set_partner(partner);
-    *ctx.host.peer_caps.lock().unwrap() = caps;
+    *ctx.host.peer_caps.lock() = caps;
     // The viewer keyboard hook belongs to viewing; this machine is being controlled now.
     privacy::set_viewer_hook_state(false, "");
     ctx.host.monitor_index.store(0, Ordering::SeqCst);
