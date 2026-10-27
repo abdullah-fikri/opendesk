@@ -136,13 +136,13 @@ func TestWriterPriorityAndOrder(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	view := p.startView("200000001", true)
 	key := []byte{0xFF, 0xD8, 0x00, 0x4F, 1, 1, 0}
-	_ = p.SendFile(FileChunk, "chunk1")
-	_ = p.SendFile(FileChunk, "chunk2")
+	_ = p.SendFile("200000001", FileChunk, "chunk1")
+	_ = p.SendFile("200000001", FileChunk, "chunk2")
 	p.deliverVideo(view, key)
 	p.deliverAudio(view, "200000001", []byte{audioMarker, 48, 1})
 	p.deliverAudio(nil, "", []byte{audioMarker, 48, 2})
 	_ = p.Send("c1")
-	_ = p.SendFile(FileOffer, "offer") // control class
+	_ = p.SendFile("200000001", FileOffer, "offer") // control class
 	_ = p.Send("c2")
 	close(conn.gate)
 
@@ -165,12 +165,12 @@ func TestFileBackpressure(t *testing.T) {
 	_ = p.Send("hold") // the writer waits on the gate with this one
 	time.Sleep(20 * time.Millisecond)
 	for i := range fileQueueLen {
-		if err := p.SendFile(FileChunk, i); err != nil {
+		if err := p.SendFile("200000001", FileChunk, i); err != nil {
 			t.Fatal(err)
 		}
 	}
 	sent := make(chan error, 1)
-	go func() { sent <- p.SendFile(FileEnd, "end") }()
+	go func() { sent <- p.SendFile("200000001", FileEnd, "end") }()
 	select {
 	case err := <-sent:
 		t.Fatalf("file sender not held back by a full queue: %v", err)
@@ -248,6 +248,37 @@ func TestDisconnectFlushesAndWriterExits(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	q.kill()
 	waitWriterDone(t, q)
+}
+
+// Clipboard text never overtakes file messages its sender queued before it (a late end would replace the newer
+// text on the receiver's clipboard); without such messages, or from another sender, it stays control traffic.
+func TestClipboardWaitsBehindSendersFiles(t *testing.T) {
+	conn := newGateConn(true)
+	p := newPeer(PeerInfo{CleanID: "100000001"}, "", false, conn, metrics.New())
+	defer p.close()
+	_ = p.Send("hold") // the writer waits on the gate with this one
+	time.Sleep(20 * time.Millisecond)
+	_ = p.SendFile("200000001", FileChunk, "chunk")
+	_ = p.SendFileChunk("200000001", []byte{0x12, 1, 'x', 0, 0, 0, 0, 0, 0, 0, 0})
+	_ = p.SendFile("200000001", FileEnd, "end")
+	_ = p.SendClipboard("200000001", "text-a")
+	_ = p.SendClipboard("200000002", "text-b")
+	_ = p.Send("input")
+	close(conn.gate)
+
+	got := conn.waitEntries(t, 7)
+	want := []string{
+		`t:"hold"`, `t:"text-b"`, `t:"input"`, `t:"chunk"`,
+		fmt.Sprintf("b:%q", "\x10200000001\x12\x01x\x00\x00\x00\x00\x00\x00\x00\x00"), `t:"end"`, `t:"text-a"`,
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("write order\n got %v\nwant %v", got, want)
+	}
+	// Nothing queued from the sender any more: text is control traffic again.
+	_ = p.SendClipboard("200000001", "text-c")
+	if e := conn.waitEntries(t, 8); e[7] != `t:"text-c"` {
+		t.Fatalf("late text: %v", e)
+	}
 }
 
 // The hot text path to a receiver: one relayed mouse move, encoded and handed to the receiver's socket.

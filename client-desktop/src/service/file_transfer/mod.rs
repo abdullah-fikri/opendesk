@@ -1,6 +1,7 @@
 //! File transfer between session partners over the relay (see `docs/features/file-transfer.md`).
 //!
-//! - [`sender`]: sends dropped, picked or pasted files and folders in 32 KiB base64 chunks.
+//! - [`sender`]: sends dropped, picked or pasted files and folders in 128 KiB binary chunks (`file-binary`),
+//!   else in 32 KiB base64 chunks.
 //! - [`receiver`]: stages incoming files, verifies SHA-256 and publishes them to the clipboard.
 //! - [`offer`]: clipboard file offers (copy here, paste there) and serving pulls.
 //! - [`tree`]: folder walking and collision-free file creation.
@@ -23,13 +24,18 @@ use crate::domain::capability::PeerCaps;
 
 pub use receiver::FileReceiver;
 
-/// Chunk size; also the most a receiver accepts per chunk.
+/// Chunk size of JSON (base64) chunks; also the most a receiver accepts per JSON chunk.
 pub const CHUNK_SIZE: usize = 32 * 1024;
+/// Chunk size of binary chunks (`file-binary`); also the most a receiver accepts per binary chunk. Large
+/// enough to make per-message costs negligible, small enough that one chunk holds input on the shared socket
+/// for only a moment.
+pub const BINARY_CHUNK_SIZE: usize = 128 * 1024;
 /// Largest base64 chunk a receiver accepts (32 KiB encodes to 43 692 characters).
 pub const MAX_CHUNK_B64: usize = 48_000;
 
-/// File messages queued in the relay connection but not yet written. Senders wait while it is high, so a large
-/// file applies backpressure and progress reflects the network, not the queue.
+/// File messages queued in the relay connection but not yet written, in units of [`CHUNK_SIZE`] (see
+/// [`chunk_units`]). Senders wait while it is high, so a large file applies backpressure and progress reflects
+/// the network, not the queue.
 pub static IN_FLIGHT_CHUNKS: AtomicUsize = AtomicUsize::new(0);
 /// When (epoch ms) the last file arrived; the viewer status line stays on the transfer for a moment.
 pub static LAST_RECEIVED_MS: AtomicU64 = AtomicU64::new(0);
@@ -47,6 +53,7 @@ static PARTNER_CAPS: Mutex<PeerCaps> = Mutex::new(PeerCaps {
     file_ack: false,
     file_offer: false,
     file_folder: false,
+    file_binary: false,
     cursor_shape: false,
     video_delta: false,
     video_h264: false,
@@ -54,6 +61,12 @@ static PARTNER_CAPS: Mutex<PeerCaps> = Mutex::new(PeerCaps {
     privacy_screen: false,
     block_input: false,
 });
+
+/// Weight of one queued file message of `len` bytes in [`IN_FLIGHT_CHUNKS`]: a JSON message counts 1, a binary
+/// chunk one per 32 KiB it carries, so the queue limits keep meaning the same number of bytes.
+pub fn chunk_units(len: usize) -> usize {
+    (len / CHUNK_SIZE).max(1)
+}
 
 /// Records the capabilities of viewed host `id`.
 pub fn set_session_caps(id: &str, caps: PeerCaps) {

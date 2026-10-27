@@ -10,7 +10,8 @@ import (
 // priority order: control and input text, then voice, then video (the frame queues), then file transfers.
 // Senders only enqueue, so a receiver whose TCP window is full never stalls the read loop of whoever sends to
 // it for long. Order is kept within each class. Text overtaking queued video or voice is safe: nothing a client
-// does depends on it, and a session starts (session-connected) before its host can produce a frame.
+// does depends on it, and a session starts (session-connected) before its host can produce a frame. Clipboard
+// text never overtakes its sender's queued file messages (see SendClipboard).
 //
 // A full control or file queue makes the sender wait for room while the writer is making progress (a burst to
 // a healthy receiver, or a file sent faster than the receiver's link takes it). A receiver whose current write
@@ -25,7 +26,8 @@ const (
 	controlStallLimit = 500 * time.Millisecond
 	// audioQueueLen bounds queued voice; the oldest packet goes first, since late voice is worse than a gap.
 	audioQueueLen = 16
-	// fileQueueLen and fileQueueBytes bound queued file-transfer messages (chunks are at most 32 KiB decoded).
+	// fileQueueLen and fileQueueBytes bound queued file-transfer messages (JSON chunks carry at most 32 KiB,
+	// binary chunks at most 128 KiB).
 	fileQueueLen   = 16
 	fileQueueBytes = 4 << 20
 	// fileStallLimit is the stall limit for file traffic, the same bound one socket write has
@@ -42,6 +44,8 @@ type outMsg struct {
 	bin    []byte
 	marker byte
 	tag    string
+	// from is the sender's clean ID on file traffic.
+	from string
 	// hangUp closes the connection once everything queued before it is written.
 	hangUp bool
 }
@@ -80,6 +84,16 @@ func (r *msgRing) pop() (outMsg, bool) {
 	r.n--
 	r.bytes -= m.size()
 	return m, true
+}
+
+// holdsFrom reports whether a queued message came from the given sender.
+func (r *msgRing) holdsFrom(from string) bool {
+	for i := range r.n {
+		if r.buf[(r.head+i)%len(r.buf)].from == from {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *msgRing) clear() {
@@ -122,21 +136,45 @@ func (p *Peer) Send(v any) error {
 	return p.enqueue(outMsg{text: data})
 }
 
-// SendFile queues one file-transfer message with the given payload action. Offers and pulls are control
+// SendFile queues one file-transfer message from the given sender with the given payload action. Offers and pulls are control
 // traffic: a forwarded Ctrl+V relies on the offer having arrived before it. Everything else (start, chunks,
 // end, ack) goes to the file queue in order. When that queue is full the caller (the sender's read loop) waits
 // for room, as it waited on the socket before: senders have no end-to-end flow control besides TCP, so dropping
 // or failing early would break transfers to a slower receiver.
-func (p *Peer) SendFile(action string, v any) error {
+func (p *Peer) SendFile(from, action string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	m := outMsg{text: data}
 	if action == FileOffer || action == FilePull {
-		return p.enqueue(m)
+		return p.enqueue(outMsg{text: data})
 	}
-	return p.push(&p.file, fileQueueBytes, fileStallLimit, m)
+	return p.push(&p.file, fileQueueBytes, fileStallLimit, outMsg{text: data, from: from})
+}
+
+// SendFileChunk queues a binary file chunk from the given sender, tagged with its clean ID, in order with that
+// sender's JSON file messages. It waits for room like SendFile.
+func (p *Peer) SendFileChunk(from string, chunk []byte) error {
+	return p.push(&p.file, fileQueueBytes, fileStallLimit, outMsg{bin: chunk, marker: sessionTag, tag: from, from: from})
+}
+
+// SendClipboard queues clipboard text from the given sender. It is control traffic, except while file messages
+// from the same sender are still queued: then it waits behind them in the file queue, so a transfer the sender
+// finished before copying the text cannot complete afterwards and replace the newer text on the receiver's
+// clipboard. Only the sender's own read loop queues its messages, so none can slip in between the check and
+// the push; the writer only takes messages out, which at worst leaves the text in an empty file queue.
+func (p *Peer) SendClipboard(from string, v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	p.outMu.Lock()
+	behind := p.file.holdsFrom(from)
+	p.outMu.Unlock()
+	if behind {
+		return p.push(&p.file, fileQueueBytes, fileStallLimit, outMsg{text: data, from: from})
+	}
+	return p.enqueue(outMsg{text: data})
 }
 
 // Disconnect closes the connection after everything already queued for it is written (for example the error

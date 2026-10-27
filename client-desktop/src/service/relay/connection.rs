@@ -21,9 +21,9 @@ use crate::domain::capability;
 use crate::domain::settings::{self, normalize_gateway_url};
 use crate::infra::p2p::{self, P2p};
 use crate::infra::{autostart, device, logger, power, storage, virtual_clipboard, window};
-use crate::protocol::{ClientMessage, InputEvent, Outgoing, ServerMessage, binary};
+use crate::protocol::{ClientMessage, FilePayload, InputEvent, Outgoing, ServerMessage, binary};
 use crate::service::context::Ctx;
-use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS};
+use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS, chunk_units};
 use crate::service::ui_port::RelayStatus;
 use crate::service::viewer::decoder;
 
@@ -33,7 +33,8 @@ pub(super) type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
 const RETRY_DELAY: Duration = Duration::from_millis(2000);
 /// Pause after losing an established connection.
 const RECONNECT_DELAY: Duration = Duration::from_millis(1500);
-/// File messages sent per tick while a screen session runs (keeps video and voice latency low)...
+/// File messages sent per tick, in `chunk_units`, while a screen session runs (keeps video and voice latency
+/// low)...
 const FILE_BURST_IN_SESSION: usize = 8;
 /// ...and without one (full-speed background transfer).
 const FILE_BURST_IDLE: usize = 64;
@@ -73,12 +74,20 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
     });
 }
 
+/// One file message ready for the socket: JSON text or a binary chunk (already tagged for its host).
+struct QueuedFile {
+    message: Message,
+    /// Its weight in `IN_FLIGHT_CHUNKS`.
+    units: usize,
+    status: Option<String>,
+}
+
 /// State of the relay connection thread.
 pub(super) struct Connection {
     pub(super) ctx: Ctx,
     outbox: Receiver<Outgoing>,
     /// File messages waiting their turn behind video and voice.
-    files: VecDeque<(ClientMessage, Option<String>)>,
+    files: VecDeque<QueuedFile>,
     pub(super) receiver: FileReceiver,
     /// Input that arrived over a P2P path (host side).
     pub(super) p2p_input_tx: Sender<InputEvent>,
@@ -217,7 +226,7 @@ impl Connection {
         if cfg!(windows) && !autostart::supervised_by_service() {
             caps.push(capability::FILE_OFFER);
         }
-        caps.extend([capability::FILE_FOLDER, capability::CURSOR_SHAPE]);
+        caps.extend([capability::FILE_FOLDER, capability::FILE_BINARY, capability::CURSOR_SHAPE]);
         caps.extend(decoder::supported_video_caps());
         if p2p::enabled() {
             caps.push(capability::P2P);
@@ -314,7 +323,20 @@ impl Connection {
                 Outgoing::VideoFrame(frame) => video = Some(frame),
                 Outgoing::MonitorFrame(frame) => self.monitor_pending = Some(frame),
                 Outgoing::Audio(packet) => self.send_audio(socket, partner, packet),
-                Outgoing::File { message, status } => self.files.push_back((message, status)),
+                Outgoing::File { message, status } => {
+                    let message = Message::Text(message.to_json().into());
+                    self.files.push_back(QueuedFile { message, units: 1, status });
+                }
+                Outgoing::FileChunk { target, frame, status } => {
+                    let units = chunk_units(frame.len());
+                    // Like voice: a viewer of several hosts names the host; the relay's grant decides anyway.
+                    let frame = if self.ctx.viewers.multi() && self.ctx.viewers.get(&target).is_some() {
+                        binary::tag(&target, &frame).unwrap_or(frame)
+                    } else {
+                        frame
+                    };
+                    self.files.push_back(QueuedFile { message: Message::Binary(frame.into()), units, status });
+                }
             }
         }
         for (target, norm_x, norm_y) in mouse.into_iter().filter(|m| !m.0.is_empty()) {
@@ -362,22 +384,24 @@ impl Connection {
 
     /// Sends a burst of queued file messages and returns the newest status line among them.
     fn pump_files(&mut self, socket: &mut Socket, idle: bool) -> Option<String> {
-        let burst = if idle { FILE_BURST_IDLE } else { FILE_BURST_IN_SESSION };
+        let mut budget = if idle { FILE_BURST_IDLE } else { FILE_BURST_IN_SESSION };
         let mut latest = None;
-        for _ in 0..burst {
-            let Some((msg, status)) = self.files.pop_front() else { break };
+        while budget > 0 {
+            let Some(file) = self.files.pop_front() else { break };
             // WouldBlock means tungstenite buffered the frame; any other error leaves it queued until the read
-            // loop notices the dead socket and fails the transfer.
-            match socket.send(Message::Text(msg.to_json().into())) {
+            // loop notices the dead socket and fails the transfer. Messages are reference counted: the clone
+            // copies no data.
+            match socket.send(file.message.clone()) {
                 Ok(()) => {}
                 Err(tungstenite::Error::Io(ref e)) if e.kind() == ErrorKind::WouldBlock => {}
                 Err(_) => {
-                    self.files.push_front((msg, status));
+                    self.files.push_front(file);
                     break;
                 }
             }
-            IN_FLIGHT_CHUNKS.fetch_sub(1, Ordering::Relaxed);
-            latest = status.or(latest);
+            IN_FLIGHT_CHUNKS.fetch_sub(file.units, Ordering::Relaxed);
+            budget = budget.saturating_sub(file.units);
+            latest = file.status.or(latest);
         }
         latest
     }
@@ -420,8 +444,17 @@ impl Connection {
     }
 
     /// Voice and video from the relay: tagged per host for a multi-session viewer, else the single session.
-    fn on_binary(&self, bin: &[u8]) {
+    /// File chunks are always tagged with their sender.
+    fn on_binary(&mut self, bin: &[u8]) {
+        if let Some((from, payload)) = binary::untag(bin)
+            && let Some(chunk) = binary::parse_file_chunk(payload)
+        {
+            return self.on_file_chunk(from, &chunk);
+        }
         let ctx = &self.ctx;
+        if binary::parse_file_chunk(bin).is_some() {
+            return; // an untagged chunk has no stamped sender
+        }
         if binary::is_monitor(bin) {
             // Monitor-wall thumbnails never belong to a viewer session (and reach only the admin edition).
             #[cfg(feature = "admin")]
@@ -452,14 +485,27 @@ impl Connection {
         }
     }
 
+    /// A binary file chunk; `from` is the relay's tag, like `fromClean` on `file-transfer`. A rejected chunk is
+    /// answered with a NACK so the sender stops at once.
+    fn on_file_chunk(&mut self, from: &str, chunk: &binary::FileChunk) {
+        let ctx = Arc::clone(&self.ctx);
+        let (status, ack) = self.receiver.handle_chunk(&ctx, chunk, from);
+        if let Some(ok) = ack {
+            ctx.send(ClientMessage::file(from, FilePayload::ack(chunk.id, ok)));
+        }
+        if let Some(status) = status {
+            ctx.ui.status(status);
+        }
+    }
+
     /// The socket failed: relay grants died with it, so every transfer and session on it has ended.
     fn on_connection_lost(&mut self) {
         let ctx = &self.ctx;
         file_transfer::abort_pending_sends();
         virtual_clipboard::abort_pulls();
         virtual_clipboard::clear_offer("");
-        for _ in self.files.drain(..) {
-            IN_FLIGHT_CHUNKS.fetch_sub(1, Ordering::Relaxed);
+        for file in self.files.drain(..) {
+            IN_FLIGHT_CHUNKS.fetch_sub(file.units, Ordering::Relaxed);
         }
         let reason = self.receiver.abort_all(ctx.ui.as_ref());
         crate::service::sessions::end_all(ctx);

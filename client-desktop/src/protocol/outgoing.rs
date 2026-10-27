@@ -10,6 +10,8 @@ pub enum Outgoing {
     Message(ClientMessage),
     /// A file-transfer message, rate-limited; `status` is shown when it leaves the queue.
     File { message: ClientMessage, status: Option<String> },
+    /// A binary file chunk (`binary::file_chunk`) for `target`, paced like `File`.
+    FileChunk { target: String, frame: Vec<u8>, status: Option<String> },
     /// Mouse position for a host, coalesced per host: (target clean ID, x, y), normalized.
     MouseMove(String, f64, f64),
     /// Encoded video for the hosted viewer; only the newest frame per tick is sent.

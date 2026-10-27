@@ -32,6 +32,8 @@ type Peer struct {
 	// MonitorHost and MonitorView are set from the monitor-host and monitor-view capabilities.
 	MonitorHost bool
 	MonitorView bool
+	// FileBinary is set from the file-binary capability: the client accepts binary file chunks.
+	FileBinary bool
 	// EnrollToken is the token issued at this registration (the device just enrolled); the caller sends it once.
 	EnrollToken string
 
@@ -93,6 +95,7 @@ func buildPeer(info PeerInfo, deskID string, multi bool, conn Conn, m FrameMetri
 		Multi:       multi,
 		MonitorHost: slices.Contains(info.Caps, model.CapMonitorHost),
 		MonitorView: slices.Contains(info.Caps, model.CapMonitorView),
+		FileBinary:  slices.Contains(info.Caps, model.CapFileBinary),
 		conn:        conn,
 		metrics:     m,
 		control:     newMsgRing(controlQueueLen),

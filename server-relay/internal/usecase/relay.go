@@ -46,7 +46,7 @@ type Relay struct {
 // New builds a Relay on top of the given storage.
 func New(hosts HostRepository, sessions SessionRepository, m FrameMetrics, opts Options, log *slog.Logger) *Relay {
 	caps := []string{model.CapFileGrant, model.CapFileOffer, model.CapP2PSignal, model.CapCaps, model.CapMultiSession, model.CapMonitor,
-		model.CapDeviceSecurity, model.CapHostAlias}
+		model.CapDeviceSecurity, model.CapHostAlias, model.CapFileBinary}
 	if opts.P2PDisabled {
 		caps = slices.DeleteFunc(caps, func(c string) bool { return c == model.CapP2PSignal })
 	}
