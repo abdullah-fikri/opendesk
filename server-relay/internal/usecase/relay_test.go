@@ -35,9 +35,9 @@ func newTestRelay(opts Options) *Relay {
 	return New(nopStore{}, nopStore{}, metrics.New(), opts, slog.New(slog.DiscardHandler))
 }
 
-// addPeer registers a peer directly, without frame writer goroutines, so tests can inspect its queues.
+// addPeer registers a peer directly, without its writer goroutine, so tests can inspect its queues.
 func addPeer(r *Relay, id string, multi bool) *Peer {
-	p := &Peer{CleanID: id, Multi: multi, conn: nopConn{}, frames: newFrameQueue(r.metrics), closeCh: make(chan struct{}), metrics: r.metrics}
+	p := buildPeer(PeerInfo{CleanID: id}, "", multi, nopConn{}, r.metrics)
 	r.peers[id] = p
 	return p
 }

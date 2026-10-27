@@ -11,7 +11,7 @@ import (
 )
 
 // Conn is the outbound side of one client connection.
-// Peer serializes WriteText/WriteBinary; Ping and Close may be called concurrently with them.
+// Only the peer's writer goroutine calls WriteText/WriteBinary; Ping and Close may be called concurrently with them.
 type Conn interface {
 	// WriteText sends one text message.
 	WriteText(data []byte) error
@@ -56,6 +56,8 @@ type SessionRepository interface {
 type FrameMetrics interface {
 	Egress(size int)
 	DroppedFrame()
+	DroppedAudio()
+	SlowReceiver()
 	Rejected()
 	ObservePeers(n int)
 	ObserveHostList(d time.Duration)

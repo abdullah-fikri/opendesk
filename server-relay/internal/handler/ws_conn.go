@@ -7,7 +7,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// writeTimeout bounds how long a stalled receiver can block the sender's read loop.
+// writeTimeout bounds one socket write by the peer's writer goroutine; a receiver that cannot take a message in
+// that time is closed. Senders never wait on the socket (see usecase/outbox.go).
 const writeTimeout = 10 * time.Second
 
 // wsConn adapts a gorilla WebSocket to usecase.Conn.

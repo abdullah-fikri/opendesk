@@ -231,7 +231,7 @@ func (p *Peer) endLocked(id string) {
 		return
 	}
 	if v := p.views[id]; v != nil {
-		v.stop()
+		p.removeStream(v.frames)
 		delete(p.views, id)
 	}
 }

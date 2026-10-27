@@ -35,10 +35,12 @@ func isRestartFrame(data []byte) bool {
 }
 
 // frameQueue is an ordered, bounded video queue for one receiver (or one session of a multi-session viewer).
-// Only the sending host's read loop pushes, so drain never races a producer.
+// Only the sending host's read loop pushes, so drain never races a producer; the receiver's writer consumes.
 type frameQueue struct {
 	ch      chan []byte
 	metrics FrameMetrics
+	// wake signals the receiver's writer; nil for a queue no writer serves.
+	wake chan struct{}
 }
 
 func newFrameQueue(m FrameMetrics) *frameQueue {
@@ -69,5 +71,10 @@ func (q *frameQueue) push(frame []byte) {
 	default:
 		q.drain()
 		q.metrics.DroppedFrame()
+		return
+	}
+	select {
+	case q.wake <- struct{}{}:
+	default:
 	}
 }
