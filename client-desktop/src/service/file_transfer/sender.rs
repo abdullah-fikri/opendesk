@@ -148,7 +148,7 @@ fn run(ctx: &AppContext, job: Job, target: String, auto_paste: bool) {
         }
         Job::Pull(..) => ActiveSend(None),
     };
-    let relay_binary = ctx.relay.caps.lock().unwrap().file_binary;
+    let relay_binary = ctx.relay.caps.lock().file_binary;
     let link = Link { outbox: ctx.outbox.clone(), ui: Arc::clone(&ctx.ui), target, relay_binary };
     crate::infra::thread::spawn_named("files-send", move || {
         let _active = active;
@@ -431,7 +431,7 @@ mod tests {
         let path = dir.join("wire.bin");
         fs::write(&path, data).unwrap();
         let (ctx, rx) = test_support::context_with_outbox();
-        ctx.relay.caps.lock().unwrap().file_binary = relay_binary;
+        ctx.relay.caps.lock().file_binary = relay_binary;
         send_files(&ctx, vec![path.clone()], target.into(), false);
         let (mut wire, mut binary_chunks, mut got) = (0, 0, Vec::new());
         loop {

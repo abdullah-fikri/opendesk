@@ -116,7 +116,7 @@ impl Connection {
     fn run_once(&mut self) {
         let ctx = Arc::clone(&self.ctx);
         ctx.relay.reconnect.store(false, Ordering::SeqCst);
-        let url = resolve_url(&ctx.relay.gateway_url.lock().unwrap());
+        let url = resolve_url(&ctx.relay.gateway_url.lock());
         logger::info("relay", &format!("Connecting to relay {url}"));
         ctx.ui.relay_status(RelayStatus::Connecting);
 
@@ -258,7 +258,7 @@ impl Connection {
         }
         #[cfg(feature = "admin")]
         caps.push(capability::MONITOR_VIEW);
-        let gateway = self.ctx.relay.gateway_url.lock().unwrap().clone();
+        let gateway = self.ctx.relay.gateway_url.lock().clone();
         let device_token = std::env::var("OPENDESK_DEVICE_TOKEN")
             .unwrap_or_else(|_| settings::token_for(&storage::load_settings(), &gateway));
         ClientMessage::Register {

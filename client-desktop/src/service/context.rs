@@ -1,10 +1,11 @@
 //! Shared handles of the running client, built once by the composition root (`app.rs`).
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
 
 use core_engine::input::InputInjector;
+use parking_lot::Mutex;
 
 use crate::domain::capability::RelayCaps;
 use crate::domain::edition::Edition;
@@ -98,12 +99,12 @@ impl AppContext {
 
     /// The current partner's clean ID (empty: none).
     pub fn partner(&self) -> String {
-        self.partner.lock().unwrap().clone()
+        self.partner.lock().clone()
     }
 
     /// Replaces the current partner.
     pub fn set_partner(&self, id: &str) {
-        *self.partner.lock().unwrap() = id.to_string();
+        *self.partner.lock() = id.to_string();
     }
 
     /// True while a viewer controls this machine.
