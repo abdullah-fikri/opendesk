@@ -308,7 +308,7 @@ fn send_key_outs(ctx: &AppContext, id: &str, outs: Vec<KeyOut>) {
 /// Lifts every key still held on host `id` (focus loss, window deactivation, tab switch).
 pub fn release_keys(ctx: &AppContext, id: &str) {
     if let Some(s) = ctx.viewers.get(id) {
-        let outs = s.keys.lock().unwrap().release_all();
+        let outs = s.keys.lock().release_all();
         send_key_outs(ctx, id, outs);
     }
 }
@@ -321,7 +321,7 @@ pub fn key_event(ctx: &AppContext, id: &str, text: &str, pressed: bool, repeat: 
     }
     let Some(sess) = ctx.viewers.get(id) else { return };
     let outs = {
-        let mut keys = sess.keys.lock().unwrap();
+        let mut keys = sess.keys.lock();
         if pressed { keys.on_press(text, repeat, mods) } else { keys.on_release(text, mods) }
     };
     for out in outs {
@@ -349,7 +349,7 @@ pub fn key_event(ctx: &AppContext, id: &str, text: &str, pressed: bool, repeat: 
             ctx.send_input(id, InputEvent::Clipboard { text });
         }
         // Ctrl is already held on the host, so V down pastes the text synced just above.
-        let down = sess.keys.lock().unwrap().paste_down();
+        let down = sess.keys.lock().paste_down();
         send_key_outs(ctx, id, down);
     }
 }
@@ -361,12 +361,12 @@ pub fn mouse(ctx: &AppContext, id: &str, kind: Mouse, x_10000: i32, y_10000: i32
     if !ctx.viewers.is_focused(id) {
         if let Mouse::Down(_) = kind {
             focus(ctx, id);
-            *ctx.viewers.swallowed_click.lock().unwrap() = Some(id.to_string());
+            *ctx.viewers.swallowed_click.lock() = Some(id.to_string());
         }
         return;
     }
     if let Mouse::Up(_) = kind {
-        let mut swallowed = ctx.viewers.swallowed_click.lock().unwrap();
+        let mut swallowed = ctx.viewers.swallowed_click.lock();
         if swallowed.as_deref() == Some(id) {
             *swallowed = None;
             return;
@@ -532,11 +532,11 @@ mod tests {
         let Open::Opened(b) = r.open("222222222", 1, 0, 2) else { panic!() };
         let ctrl = Mods { ctrl: true, alt: false, shift: false };
         let shift = Mods { ctrl: false, alt: false, shift: true };
-        assert_eq!(a.keys.lock().unwrap().on_press("\u{0011}", false, ctrl), vec![KeyOut::Down(VK_CONTROL)]);
-        assert_eq!(b.keys.lock().unwrap().on_press("\u{0010}", false, shift), vec![KeyOut::Down(VK_SHIFT)]);
-        assert_eq!(a.keys.lock().unwrap().release_all(), vec![KeyOut::Up(VK_CONTROL)]);
-        assert!(a.keys.lock().unwrap().release_all().is_empty(), "nothing stays stuck");
-        assert_eq!(b.keys.lock().unwrap().release_all(), vec![KeyOut::Up(VK_SHIFT)]);
+        assert_eq!(a.keys.lock().on_press("\u{0011}", false, ctrl), vec![KeyOut::Down(VK_CONTROL)]);
+        assert_eq!(b.keys.lock().on_press("\u{0010}", false, shift), vec![KeyOut::Down(VK_SHIFT)]);
+        assert_eq!(a.keys.lock().release_all(), vec![KeyOut::Up(VK_CONTROL)]);
+        assert!(a.keys.lock().release_all().is_empty(), "nothing stays stuck");
+        assert_eq!(b.keys.lock().release_all(), vec![KeyOut::Up(VK_SHIFT)]);
     }
 
     #[test]

@@ -5,13 +5,14 @@ use std::collections::VecDeque;
 use std::io::Cursor;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use core_engine::codec::delta::{Applied, Compositor};
 use core_engine::codec::frame::{FLAG_IDR, FrameHeader, KIND_DELTA, KIND_H264, KIND_KEY, is_framed};
 use core_engine::codec::h264::H264Decoder;
 use image::ImageReader;
+use parking_lot::{Condvar, Mutex};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 use crate::domain::capability;
@@ -65,7 +66,7 @@ impl VideoInbox {
     /// Queues one video message; a full frame drops everything queued before it.
     pub fn push(&self, msg: Vec<u8>) {
         let full = !is_framed(&msg) || FrameHeader::parse(&msg).is_some_and(|(h, _)| h.kind == KIND_KEY);
-        let mut q = self.queue.lock().unwrap();
+        let mut q = self.queue.lock();
         if full {
             q.clear();
         }
@@ -79,29 +80,29 @@ impl VideoInbox {
     /// Takes every queued message in arrival order.
     #[cfg(test)]
     pub fn drain(&self) -> Vec<Vec<u8>> {
-        self.queue.lock().unwrap().drain(..).collect()
+        self.queue.lock().drain(..).collect()
     }
 
     /// Like [`VideoInbox::drain`], but waits up to `timeout` for a message when the queue is empty. Returns
     /// empty on timeout or [`VideoInbox::wake`].
     pub fn drain_wait(&self, timeout: Duration) -> Vec<Vec<u8>> {
-        let mut q = self.queue.lock().unwrap();
+        let mut q = self.queue.lock();
         if q.is_empty() {
             // A single wait, not a loop: a spurious wake-up only costs the caller one extra state check.
-            q = self.ready.wait_timeout(q, timeout).unwrap().0;
+            let _ = self.ready.wait_for(&mut q, timeout);
         }
         q.drain(..).collect()
     }
 
     /// Wakes a waiting decoder thread so it re-checks the session's `alive`/`visible` state at once.
     pub fn wake(&self) {
-        let _guard = self.queue.lock().unwrap();
+        let _guard = self.queue.lock();
         self.ready.notify_all();
     }
 
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.queue.lock().unwrap().is_empty()
+        self.queue.lock().is_empty()
     }
 }
 
