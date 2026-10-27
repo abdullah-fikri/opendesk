@@ -657,10 +657,24 @@ impl P2p {
         true
     }
 
-    /// Sends a `[0x02, rate_khz, pcm...]` packet, split at even byte boundaries to fit one datagram each.
+    /// Sends a `[0x02, rate_khz, pcm...]` packet, split at even byte boundaries to fit one datagram each; an Opus
+    /// packet goes whole in one datagram.
     pub fn send_audio(&self, pkt: &[u8]) -> bool {
         let mut st = self.state.lock().unwrap();
-        if !Self::alive(&st) || pkt.len() < 4 || !pkt.len().is_multiple_of(2) || pkt[0] != 0x02 {
+        if !Self::alive(&st) {
+            return false;
+        }
+        if crate::infra::audio::opus::parse(pkt).is_some() {
+            if pkt.len() + 1 > MAX_PLAIN {
+                return false;
+            }
+            let mut plain = Vec::with_capacity(1 + pkt.len());
+            plain.push(K_AUDIO);
+            plain.extend_from_slice(pkt);
+            self.send_to_peer(&mut st, &plain);
+            return true;
+        }
+        if pkt.len() < 4 || !pkt.len().is_multiple_of(2) || pkt[0] != 0x02 {
             return false;
         }
         for chunk in pkt[2..].chunks((MAX_PLAIN - 3) & !1) {

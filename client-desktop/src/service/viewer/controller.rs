@@ -46,6 +46,10 @@ pub fn apply_focus(ctx: &AppContext) {
     if let Some(s) = focused {
         ctx.voice.is_mic_muted.store(s.mic_muted.load(Ordering::SeqCst), Ordering::SeqCst);
         ctx.voice.audio_quality.store(s.audio_quality.load(Ordering::SeqCst), Ordering::SeqCst);
+        // While hosting, voice goes to the hosted viewer, whose codec the host session chose.
+        if !ctx.is_hosting() {
+            ctx.voice.use_opus.store(file_transfer::caps_of(&s.id).audio_opus, Ordering::SeqCst);
+        }
     }
 }
 

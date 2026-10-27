@@ -15,6 +15,8 @@ pub const CURSOR_SHAPE: &str = "cursor-shape";
 pub const VIDEO_DELTA: &str = "video-delta";
 /// H.264 motion frames inside the framed format.
 pub const VIDEO_H264: &str = "video-h264";
+/// Opus voice packets (`[0x02][0x4F][seq][opus]`); without it the partner gets PCM.
+pub const AUDIO_OPUS: &str = "audio-opus";
 /// Direct encrypted UDP path.
 pub const P2P: &str = "p2p.v1";
 /// Up to four viewer sessions per connection.
@@ -55,6 +57,8 @@ pub struct PeerCaps {
     pub cursor_shape: bool,
     pub video_delta: bool,
     pub video_h264: bool,
+    /// Voice to this partner may be Opus (we always decode it, so the partner's word is enough).
+    pub audio_opus: bool,
     pub p2p: bool,
     /// The partner can show a privacy screen while hosting.
     pub privacy_screen: bool,
@@ -75,6 +79,7 @@ impl PeerCaps {
             cursor_shape: has(CURSOR_SHAPE),
             video_delta: has(VIDEO_DELTA),
             video_h264: has(VIDEO_H264),
+            audio_opus: has(AUDIO_OPUS),
             p2p: has(P2P),
             privacy_screen: legacy_host || has(PRIVACY_SCREEN),
             block_input: legacy_host || has(BLOCK_INPUT),
@@ -124,6 +129,16 @@ mod tests {
         assert!(RelayCaps::from_list(&[MULTI_SESSION.to_string()]).multi_session);
         assert!(PeerCaps::from_list(&[FILE_BINARY.to_string()], false).file_binary);
         assert!(RelayCaps::from_list(&[FILE_BINARY.to_string()]).file_binary && !RelayCaps::from_list(&[]).file_binary);
+    }
+
+    #[test]
+    fn opus_only_toward_partners_that_list_it() {
+        // Android and desktop builds before Opus never list it, so they keep receiving PCM.
+        let android = PeerCaps::from_list(&[VIEWER_ONLY.to_string()], true);
+        let old_desktop = PeerCaps::from_list(&[VIDEO_DELTA.to_string(), P2P.to_string()], true);
+        assert!(!android.audio_opus && !old_desktop.audio_opus);
+        // No relay support is needed: Opus keeps the 0x02 audio marker every relay forwards.
+        assert!(PeerCaps::from_list(&[AUDIO_OPUS.to_string()], false).audio_opus);
     }
 
     #[test]

@@ -98,6 +98,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `cursor-shape` | client | Draws its own cursor from `cursor-shape` events; the host stops painting it. |
 | `video-delta` | client | Framed key/delta video; without it the host sends plain JPEGs. |
 | `video-h264` | client | H.264 inside the framed format. |
+| `audio-opus` | client | Decodes Opus voice (`[0x02][0x4F]...`); voice to it is Opus, to everyone else PCM. |
 | `p2p.v1` | client | Direct encrypted UDP path. |
 | `multi-session` | client + relay | Up to four viewer sessions per connection. |
 | `monitor-host` | client | Streams monitor-wall thumbnails on `monitor-start` (every desktop edition). |
@@ -111,7 +112,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 Per platform (see [platforms.md](platforms.md)):
 
 - Windows: `file-ack`, `file-offer`, `file-folder`, `file-binary`, `cursor-shape`, `video-delta`, `video-h264` (when the
-  Media Foundation decoder exists), `p2p.v1`, `multi-session`. No `host-features`: Windows hosts have every
+  Media Foundation decoder exists), `audio-opus`, `p2p.v1`, `multi-session`. No `host-features`: Windows hosts have every
   host control.
 - Linux: the same without `file-offer`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
@@ -172,6 +173,7 @@ before it.
 
 ```text
 voice   [0x02][rate_khz: 16|24|48][PCM 16-bit little-endian mono ...]
+voice   [0x02][0x4F][seq u16 big-endian][Opus packet]   20 ms mono, only when both sides list audio-opus
 video   [0xFF 0xD8 ...]   a plain JPEG, or a framed message (below)
 tagged  [0x10][9 ASCII digits: host clean ID][voice or video]   multi-session viewers only
 monitor [0x11][JPEG]                                           host to relay: monitor-wall thumbnail
@@ -199,6 +201,10 @@ Framed video (`video-delta`), all integers big-endian:
     patches (dst_x, dst_y, w, h, atlas_x, atlas_y) x u16, blitted from the payload
     payload
 ```
+
+Opus voice keeps the `0x02` marker, so every relay version forwards it as audio. `0x4F` is never a rate tag;
+`seq` counts packets so the receiver can rebuild one lost frame from the next packet's in-band FEC and conceal
+short gaps. Receivers always accept PCM, and a sender uses Opus only toward a partner that listed `audio-opus`.
 
 The relay keeps at most 8 queued frames per receiver. A key frame or IDR flushes the queue; a delta that does
 not fit flushes it too, and the viewer then sends `video-keyframe`.
