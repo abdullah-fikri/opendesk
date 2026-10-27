@@ -51,7 +51,7 @@ const WINDOW_CHECK: Duration = Duration::from_millis(500);
 
 /// Starts the connection thread. `outbox` is the receiving end of `ctx.outbox`.
 pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
-    thread::spawn(move || {
+    crate::infra::thread::spawn_named("relay-conn", move || {
         let (input_tx, input_rx) = mpsc::channel();
         let mut conn = Connection {
             ctx,

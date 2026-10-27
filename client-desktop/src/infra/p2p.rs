@@ -7,7 +7,6 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use core_engine::codec::{from_base64, to_base64};
@@ -348,7 +347,7 @@ impl P2p {
             sinks,
         });
         let worker = Arc::clone(&p);
-        thread::spawn(move || worker.run());
+        crate::infra::thread::spawn_named("p2p-worker", move || worker.run());
         Some(p)
     }
 
@@ -717,6 +716,7 @@ impl P2p {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::thread;
 
     fn pair(prologue: &[u8]) -> (snow::StatelessTransportState, snow::StatelessTransportState) {
         let b = || snow::Builder::new(NOISE.parse().unwrap()).prologue(prologue).unwrap();

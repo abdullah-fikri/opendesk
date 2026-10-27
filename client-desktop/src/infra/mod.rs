@@ -12,6 +12,7 @@ pub mod power;
 pub mod privacy;
 pub mod storage;
 pub mod system_service;
+pub mod thread;
 pub mod tray;
 pub mod user_clipboard;
 pub mod virtual_clipboard;

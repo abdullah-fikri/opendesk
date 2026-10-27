@@ -109,7 +109,7 @@ fn h264_mode(viewer_supports: bool) -> H264Mode {
 
 /// Starts the loop for `partner`; it runs until the hosted session's `generation` is superseded.
 pub fn spawn(ctx: Ctx, partner: String, generation: u64) {
-    thread::spawn(move || run(&ctx, &partner, generation));
+    crate::infra::thread::spawn_named("host-capture", move || run(&ctx, &partner, generation));
 }
 
 fn run(ctx: &Ctx, partner: &str, generation: u64) {

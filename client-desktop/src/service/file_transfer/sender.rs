@@ -150,7 +150,7 @@ fn run(ctx: &AppContext, job: Job, target: String, auto_paste: bool) {
     };
     let relay_binary = ctx.relay.caps.lock().unwrap().file_binary;
     let link = Link { outbox: ctx.outbox.clone(), ui: Arc::clone(&ctx.ui), target, relay_binary };
-    thread::spawn(move || {
+    crate::infra::thread::spawn_named("files-send", move || {
         let _active = active;
         // Folders are walked here, on the worker thread, so a big tree never stalls the UI.
         let (items, skipped_folders) = match job {

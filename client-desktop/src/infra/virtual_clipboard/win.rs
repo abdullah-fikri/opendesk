@@ -9,7 +9,6 @@ use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use core_engine::codec::from_base64;
@@ -779,7 +778,7 @@ fn ole_thread() -> &'static OleThread {
     T.get_or_init(|| {
         let (tx, rx) = mpsc::channel::<Cmd>();
         let (ready_tx, ready_rx) = mpsc::channel();
-        thread::spawn(move || unsafe {
+        crate::infra::thread::spawn_named("clipboard-ole", move || unsafe {
             OleInitialize(ptr::null_mut());
             let mut msg: MSG = std::mem::zeroed();
             PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, PM_NOREMOVE); // create the queue before anyone posts
@@ -887,6 +886,7 @@ pub fn clear_offer(partner: &str) {
 mod tests {
     use super::*;
     use serde_json::{Value, json};
+    use std::thread;
 
     fn payload(v: Value) -> FilePayload {
         serde_json::from_value(v).unwrap()

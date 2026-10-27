@@ -6,7 +6,6 @@ use std::io::Cursor;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use core_engine::codec::delta::{Applied, Compositor};
@@ -301,7 +300,7 @@ where
     if sess.decoder_started.swap(true, Ordering::SeqCst) {
         return;
     }
-    thread::spawn(move || {
+    crate::infra::thread::spawn_named(&format!("viewer-decoder-{}", sess.id), move || {
         let mut frame_count = 0u32;
         let mut fps_timer = Instant::now();
         let mut current_fps = 0u32;
@@ -376,6 +375,7 @@ mod tests {
     use core_engine::capture::{DesktopCapturer, enumerate_monitors};
     use core_engine::stream::{FrameInput, H264Mode, StreamEncoder};
     use std::sync::atomic::AtomicU32;
+    use std::thread;
 
     #[test]
     fn hidden_session_skips_decoding_and_resyncs_with_a_key_frame_when_shown() {

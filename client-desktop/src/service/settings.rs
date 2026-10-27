@@ -40,7 +40,7 @@ fn apply_gateway(ctx: &AppContext, url: String) {
 
 /// Watches `config.json` so a CLI change reaches the running app within about a second.
 pub fn spawn_watcher(ctx: Ctx) {
-    thread::spawn(move || {
+    crate::infra::thread::spawn_named("settings-watch", move || {
         loop {
             thread::sleep(WATCH_INTERVAL);
             let on_disk = storage::load_settings().gateway_url;

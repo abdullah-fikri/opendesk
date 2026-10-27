@@ -584,7 +584,7 @@ pub fn init_privacy_and_hooks(tx_out: Sender<Outgoing>) {
 
     let (work_tx, work_rx) = mpsc::channel();
     let _ = HOOK_WORK.set(work_tx);
-    thread::spawn(move || {
+    crate::infra::thread::spawn_named("keys-hook-work", move || {
         for work in work_rx {
             match work {
                 HookWork::Log(message) => logger::info("viewer.keys", &message),
@@ -592,9 +592,9 @@ pub fn init_privacy_and_hooks(tx_out: Sender<Outgoing>) {
             }
         }
     });
-    thread::spawn(run_keyboard_hook_thread);
+    crate::infra::thread::spawn_named("keys-hook", run_keyboard_hook_thread);
 
-    thread::spawn(move || unsafe {
+    crate::infra::thread::spawn_named("privacy-overlay", move || unsafe {
         let hinst = GetModuleHandleW(ptr::null());
         let class_name = to_wide("OpenDeskPrivacyOverlayClass");
         let win_name = to_wide("OpenDeskPrivacyOverlay");

@@ -264,7 +264,7 @@ impl SystemTray {
         let running_clone = Arc::clone(&is_running);
         let tip_str = tooltip.to_string();
 
-        thread::spawn(move || unsafe {
+        crate::infra::thread::spawn_named("tray", move || unsafe {
             let class_name = to_wide("OpenDeskTrayMsgClass");
             let win_name = to_wide("OpenDeskTrayMessageWindow");
             let hinst = GetModuleHandleW(ptr::null());

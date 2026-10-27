@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::thread;
 
 use crate::domain::capability::PeerCaps;
 use crate::domain::keyboard::{KeyOut, Mods};
@@ -500,7 +499,7 @@ pub fn pick_and_send_files(ctx: &Ctx, target: &str) {
         return;
     }
     let (ctx, target) = (Arc::clone(ctx), target.to_string());
-    thread::spawn(move || {
+    crate::infra::thread::spawn_named("files-pick", move || {
         let paths = window::pick_files_dialog();
         if !paths.is_empty() {
             file_transfer::sender::send_files(&ctx, paths, target, true);

@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
-use std::thread;
 
 use super::sender::{SKIPPED_FOLDERS, send_pulled};
 use super::{caps_of, now_micros, tree};
@@ -65,7 +64,7 @@ pub fn offer_files(ctx: &AppContext, paths: Vec<PathBuf>, target: String) {
     }
     ctx.ui.status("Preparing folder...".into());
     let (outbox, ui) = (ctx.outbox.clone(), Arc::clone(&ctx.ui));
-    thread::spawn(move || {
+    crate::infra::thread::spawn_named("files-offer", move || {
         let status = match tree::walk(&paths, MAX_TREE_ENTRIES, MAX_TREE_BYTES) {
             Ok(entries) => {
                 let listing = entries

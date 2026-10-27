@@ -106,7 +106,7 @@ pub fn open(ctx: &Ctx) {
     refresh(ctx);
     if spawn {
         let ctx = std::sync::Arc::clone(ctx);
-        thread::spawn(move || run_worker(&ctx));
+        crate::infra::thread::spawn_named("monitor-wall", move || run_worker(&ctx));
     }
 }
 

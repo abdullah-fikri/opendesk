@@ -140,7 +140,7 @@ impl VoiceEngine {
             Arc::clone(&audio_quality),
             Arc::clone(&use_opus),
         );
-        thread::spawn(move || {
+        crate::infra::thread::spawn_named("audio-capture", move || {
             let mut warned = false;
             loop {
                 while !active.load(Ordering::Relaxed) {
@@ -189,7 +189,7 @@ impl VoiceEngine {
             }
         });
 
-        thread::spawn(move || {
+        crate::infra::thread::spawn_named("audio-playback", move || {
             let ring = Arc::new(Mutex::new(Playback { queue: VecDeque::new(), primed: false, prebuffer: 0 }));
             let mut stream: Option<(u32, Stream)> = None;
             let mut failed_rate = 0;
