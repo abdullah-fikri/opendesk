@@ -17,4 +17,8 @@ var (
 	ErrNoPendingSession = errors.New("no matching pending session")
 	// ErrNotAdmin means a request reserved for administrators came from another device.
 	ErrNotAdmin = errors.New("administrator rights required")
+	// ErrPeerClosed means a message was addressed to a connection whose writer has stopped.
+	ErrPeerClosed = errors.New("peer connection closed")
+	// ErrSlowReceiver means the receiver fell too far behind and was closed.
+	ErrSlowReceiver = errors.New("receiver too slow; connection closed")
 )

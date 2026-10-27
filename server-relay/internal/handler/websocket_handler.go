@@ -314,7 +314,7 @@ func (c *connection) onRelayFile(msg []byte) {
 		c.h.metrics.Rejected()
 		return
 	}
-	_ = rcpt.Send(dto.FileTransfer{Type: dto.TypeFileTransfer, FromClean: c.peer.CleanID, Payload: req.Payload})
+	_ = rcpt.SendFile(hdr.Action, dto.FileTransfer{Type: dto.TypeFileTransfer, FromClean: c.peer.CleanID, Payload: req.Payload})
 }
 
 func (c *connection) onSessionDisconnect(msg []byte) {
