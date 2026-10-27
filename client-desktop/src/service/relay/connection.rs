@@ -2,7 +2,8 @@
 //! up), reads incoming messages and reconnects after a failure.
 //!
 //! One thread runs this loop for the life of the process. Every tick drains the outbound queue, flushes the
-//! socket (which opens the video backpressure gate), drains all readable messages and sleeps 1 ms.
+//! socket (which opens the video backpressure gate), drains all readable messages and sleeps 1 ms; with no
+//! session and no traffic for a while the pause grows to `IDLE_MAX_SLEEP`, cut short by a new outbound message.
 
 use std::collections::VecDeque;
 use std::io::ErrorKind;
@@ -38,6 +39,12 @@ const FILE_BURST_IN_SESSION: usize = 8;
 const FILE_BURST_IDLE: usize = 64;
 /// Local relay probed when the configured relay is remote (avoids tunnel hairpinning on the relay machine).
 const LOCAL_RELAY: &str = "127.0.0.1:8088";
+/// Pause between ticks while a session runs or traffic flowed recently.
+const BUSY_SLEEP: Duration = Duration::from_millis(1);
+/// Quiet time before the pause starts to grow...
+const IDLE_AFTER: Duration = Duration::from_secs(2);
+/// ...up to this (far below the relay's 15 s ping interval).
+const IDLE_MAX_SLEEP: Duration = Duration::from_millis(20);
 
 /// Starts the connection thread. `outbox` is the receiving end of `ctx.outbox`.
 pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
@@ -53,6 +60,8 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
             links: Vec::new(),
             monitor_pending: None,
             monitor_in_flight: false,
+            stashed: None,
+            busy: false,
         };
         loop {
             conn.run_once();
@@ -75,6 +84,10 @@ pub(super) struct Connection {
     /// Newest monitor-wall thumbnail not sent yet, and whether the previous one is still in the socket.
     monitor_pending: Option<Vec<u8>>,
     monitor_in_flight: bool,
+    /// Message that ended an idle wait; `pump_outbox` sends it before the rest of the queue.
+    stashed: Option<Outgoing>,
+    /// Something was sent or received this tick.
+    busy: bool,
 }
 
 impl Connection {
@@ -107,6 +120,8 @@ impl Connection {
         let mut video_in_flight = false;
         let mut last_expire = Instant::now();
         let mut last_path_update = Instant::now();
+        let backoff = idle_backoff_enabled();
+        let mut last_traffic = Instant::now();
 
         while !ctx.relay.reconnect.load(Ordering::SeqCst) && !lost {
             let partner = ctx.partner();
@@ -143,7 +158,10 @@ impl Connection {
                     self.monitor_in_flight = false;
                 }
                 Err(tungstenite::Error::Io(ref e))
-                    if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                    if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    self.busy = true;
+                }
                 Err(_) => {
                     ctx.host.can_send_frame.store(true, Ordering::Release);
                     self.monitor_in_flight = false;
@@ -156,7 +174,20 @@ impl Connection {
                 thread::sleep(RECONNECT_DELAY);
                 break;
             }
-            thread::sleep(Duration::from_millis(1));
+            if !backoff {
+                thread::sleep(BUSY_SLEEP);
+                continue;
+            }
+            let traffic = std::mem::take(&mut self.busy)
+                || video_in_flight
+                || self.monitor_in_flight
+                || !self.files.is_empty()
+                || IN_FLIGHT_CHUNKS.load(Ordering::Relaxed) > 0;
+            if traffic {
+                last_traffic = Instant::now();
+            }
+            let session = !partner.is_empty() || ctx.is_hosting() || !ctx.viewers.is_empty();
+            self.pause(idle_sleep(last_traffic.elapsed(), session));
         }
         self.on_connection_ended();
     }
@@ -223,6 +254,20 @@ impl Connection {
         }
     }
 
+    /// Sleeps `pause`; a longer (idle) pause ends early when a message is queued, which is kept for
+    /// `pump_outbox` so the queue order holds.
+    fn pause(&mut self, pause: Duration) {
+        if pause <= BUSY_SLEEP {
+            thread::sleep(pause);
+            return;
+        }
+        match self.outbox.recv_timeout(pause) {
+            Ok(item) => self.stashed = Some(item),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => thread::sleep(pause),
+        }
+    }
+
     fn direct(&self, id: &str) -> Option<&Arc<P2p>> {
         self.links.iter().find(|p| p.partner == id && p.is_active())
     }
@@ -232,7 +277,8 @@ impl Connection {
     fn pump_outbox(&mut self, socket: &mut Socket, partner: &str) -> bool {
         let mut video: Option<Vec<u8>> = None;
         let mut mouse: Vec<(String, f64, f64)> = Vec::new();
-        while let Ok(item) = self.outbox.try_recv() {
+        while let Some(item) = self.stashed.take().or_else(|| self.outbox.try_recv().ok()) {
+            self.busy = true;
             match item {
                 Outgoing::Message(msg) => {
                     let direct = match &msg {
@@ -279,6 +325,7 @@ impl Connection {
         if let Some(frame) = self.monitor_pending.take() {
             let _ = socket.send(Message::Binary(frame.into()));
             self.monitor_in_flight = true;
+            self.busy = true;
         }
     }
 
@@ -322,10 +369,15 @@ impl Connection {
     /// Drains P2P input and every readable socket message. Returns false when the connection is gone.
     fn read_all(&mut self, socket: &mut Socket) -> bool {
         while let Ok(event) = self.p2p_input.try_recv() {
+            self.busy = true;
             crate::service::host::input::apply(&self.ctx, event);
         }
         loop {
-            match socket.read() {
+            let read = socket.read();
+            if read.is_ok() {
+                self.busy = true;
+            }
+            match read {
                 Ok(Message::Ping(payload)) => {
                     let _ = socket.send(Message::Pong(payload));
                     let _ = socket.flush();
@@ -419,6 +471,26 @@ impl Connection {
     }
 }
 
+/// Idle backoff of the connection loop: on unless `OPENDESK_IDLE_BACKOFF=0` (a fixed 1 ms tick).
+fn idle_backoff_enabled() -> bool {
+    std::env::var("OPENDESK_IDLE_BACKOFF").as_deref() != Ok("0")
+}
+
+/// Pause between ticks: 1 ms during a session and for `IDLE_AFTER` after the last traffic, then growing step
+/// by step to `IDLE_MAX_SLEEP`.
+fn idle_sleep(idle_for: Duration, session_active: bool) -> Duration {
+    if session_active || idle_for < IDLE_AFTER {
+        return BUSY_SLEEP;
+    }
+    let ms = match (idle_for - IDLE_AFTER).as_secs() {
+        0 => 2,
+        1 => 5,
+        2 => 10,
+        _ => return IDLE_MAX_SLEEP,
+    };
+    Duration::from_millis(ms)
+}
+
 /// Uses the loopback relay when one runs on this machine and the configured URL is a remote `wss://` one
 /// (the relay machine itself would otherwise hairpin through its own tunnel).
 fn resolve_url(configured: &str) -> String {
@@ -445,5 +517,25 @@ fn set_low_latency(socket: &mut Socket) {
             let _ = tls.get_mut().set_nonblocking(true);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_sleep_stays_at_one_ms_during_sessions_and_recent_traffic() {
+        assert_eq!(idle_sleep(Duration::ZERO, false), BUSY_SLEEP);
+        assert_eq!(idle_sleep(Duration::from_millis(1999), false), BUSY_SLEEP);
+        assert_eq!(idle_sleep(Duration::from_secs(3600), true), BUSY_SLEEP, "a session never backs off");
+    }
+
+    #[test]
+    fn idle_sleep_grows_gradually_to_the_cap() {
+        let steps: Vec<u128> =
+            [2, 3, 4, 5, 60].iter().map(|s| idle_sleep(Duration::from_secs(*s), false).as_millis()).collect();
+        assert_eq!(steps, vec![2, 5, 10, 20, 20]);
+        assert!(idle_sleep(Duration::MAX, false) <= IDLE_MAX_SLEEP);
     }
 }
