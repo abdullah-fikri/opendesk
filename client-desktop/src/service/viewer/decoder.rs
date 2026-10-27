@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::io::Cursor;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -51,11 +51,16 @@ pub(crate) fn to_pixel_buffer(rgba: &[u8], width: u32, height: u32) -> SharedPix
 #[derive(Default)]
 pub struct VideoInbox {
     queue: Mutex<VecDeque<Vec<u8>>>,
+    /// Signalled on every push and by [`VideoInbox::wake`], so the decoder thread sleeps while idle.
+    ready: Condvar,
 }
 
 impl VideoInbox {
     /// Bound on queued messages; beyond it the oldest are dropped and the sequence gap requests a key frame.
     const MAX: usize = 32;
+
+    /// Longest idle wait of the decoder thread before it re-checks the session state on its own.
+    pub const IDLE_WAIT: Duration = Duration::from_millis(50);
 
     /// Queues one video message; a full frame drops everything queued before it.
     pub fn push(&self, msg: Vec<u8>) {
@@ -68,11 +73,30 @@ impl VideoInbox {
             q.pop_front();
         }
         q.push_back(msg);
+        self.ready.notify_all();
     }
 
     /// Takes every queued message in arrival order.
+    #[cfg(test)]
     pub fn drain(&self) -> Vec<Vec<u8>> {
         self.queue.lock().unwrap().drain(..).collect()
+    }
+
+    /// Like [`VideoInbox::drain`], but waits up to `timeout` for a message when the queue is empty. Returns
+    /// empty on timeout or [`VideoInbox::wake`].
+    pub fn drain_wait(&self, timeout: Duration) -> Vec<Vec<u8>> {
+        let mut q = self.queue.lock().unwrap();
+        if q.is_empty() {
+            // A single wait, not a loop: a spurious wake-up only costs the caller one extra state check.
+            q = self.ready.wait_timeout(q, timeout).unwrap().0;
+        }
+        q.drain(..).collect()
+    }
+
+    /// Wakes a waiting decoder thread so it re-checks the session's `alive`/`visible` state at once.
+    pub fn wake(&self) {
+        let _guard = self.queue.lock().unwrap();
+        self.ready.notify_all();
     }
 
     #[cfg(test)]
@@ -247,9 +271,10 @@ where
             }
             was_visible = visible;
 
-            let batch = sess.inbox.drain();
+            // Sleeps until a message arrives; close and visibility changes wake it too (`Registry`), and the
+            // timeout bounds the wait should a wake ever be missed.
+            let batch = sess.inbox.drain_wait(VideoInbox::IDLE_WAIT);
             if batch.is_empty() {
-                thread::sleep(Duration::from_millis(1));
                 continue;
             }
             if !visible {
@@ -455,6 +480,39 @@ mod tests {
         let got = inbox.drain();
         assert_eq!(got.len(), 2);
         assert_eq!(FrameHeader::parse(&got[0]).unwrap().0.kind, KIND_KEY);
+    }
+
+    #[test]
+    fn inbox_push_wakes_a_waiting_drain() {
+        let inbox = Arc::new(VideoInbox::default());
+        let pusher = Arc::clone(&inbox);
+        let t = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            pusher.push(core_engine::codec::delta::key_header(4, 4, 4).encode(&[]));
+        });
+        let start = Instant::now();
+        let got = inbox.drain_wait(Duration::from_secs(5));
+        assert_eq!(got.len(), 1);
+        assert!(start.elapsed() < Duration::from_secs(2), "woken by the push, not the timeout");
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn inbox_drain_wait_times_out_empty_and_wake_returns_early() {
+        let inbox = Arc::new(VideoInbox::default());
+        let start = Instant::now();
+        assert!(inbox.drain_wait(Duration::from_millis(30)).is_empty());
+        assert!(start.elapsed() >= Duration::from_millis(25));
+
+        let waker = Arc::clone(&inbox);
+        let t = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            waker.wake();
+        });
+        let start = Instant::now();
+        assert!(inbox.drain_wait(Duration::from_secs(5)).is_empty());
+        assert!(start.elapsed() < Duration::from_secs(2), "woken before the timeout");
+        t.join().unwrap();
     }
 
     // ---- Benchmark: `cargo test --release bench_video_pipeline -- --ignored --nocapture` ----
