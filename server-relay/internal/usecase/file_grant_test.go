@@ -58,6 +58,26 @@ func TestBinaryFileChunkNeedsGrant(t *testing.T) {
 	}
 }
 
+// The relay's whole job for one 128 KiB binary chunk: grant check and queueing it for the receiver's writer.
+func BenchmarkForwardFileChunk128K(b *testing.B) {
+	r := newTestRelay(Options{})
+	a := addPeer(r, "111111111", false)
+	rcpt := newPeer(PeerInfo{CleanID: "222222222", Caps: []string{"file-binary"}}, "", false, nopConn{}, r.metrics)
+	defer rcpt.close()
+	r.peers[rcpt.CleanID] = rcpt
+	if !r.openSession(a, rcpt, true) || r.RouteFile(a, rcpt.CleanID, FileStart, "ft_1") != rcpt {
+		b.Fatal("setup failed")
+	}
+	chunk := fileChunk("ft_1", 0, string(make([]byte, 128<<10)))
+	b.SetBytes(128 << 10)
+	b.ReportAllocs()
+	for b.Loop() {
+		if !r.ForwardBinary(a, chunk) {
+			b.Fatal("chunk rejected")
+		}
+	}
+}
+
 // A multi-session viewer may name the host with the session tag; the grant still decides.
 func TestBinaryFileChunkFromMultiSessionViewer(t *testing.T) {
 	r, v, h := multiFixture(2)
