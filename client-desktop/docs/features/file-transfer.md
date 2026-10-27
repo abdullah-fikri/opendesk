@@ -23,7 +23,10 @@ being sent to that host only shows "Still sending these files"; they are pasted 
 
 ## Sending
 
-Each file is `start`, 32 KiB base64 chunks and `end` with its SHA-256. Senders wait while more than 48 chunks are
+Each file is `start`, chunks and `end` with its SHA-256. Chunks are 128 KiB binary messages when the receiver
+and the relay both list `file-binary`, else 32 KiB base64 inside JSON (Android, older peers and relays); pulled
+clipboard offers always use JSON, which the paste stream reads. A 10 MB file takes 10.0 MB on the wire in 79
+messages instead of 13.4 MB in 308. Senders wait while more than 48 chunks' worth (32 KiB units, ~1.5 MB) are
 queued, so progress follows the network. With `file-ack` the receiver confirms; "Sent" then means verified on
 the other side, and a missing confirmation fails after 120 s. Without it (Android) "Sent (not confirmed by the
 receiver)" only means every byte left this machine. A lost relay connection fails every transfer on it; there is
@@ -42,6 +45,8 @@ SECURITY: everything from the peer is validated before it touches the disk.
 - Limits: 2 GB per file; 10 000 entries and 32 GB per folder transfer.
 - Bytes go to a `.part` file and are linked under the final name only when size and SHA-256 match. Existing
   files and folders are never overwritten or merged into; a copy gets `name (1)`.
+- Binary chunks are accepted only from the sender the relay tagged, at exactly the current offset and up to
+  128 KiB; anything else fails the transfer with a NACK.
 - Transfers without a chunk for 60 s are abandoned. Completed IDs are remembered for 10 minutes to reject replays.
 
 Finished files land in `Downloads\OpenDesk` and are put on the clipboard (and pasted when the sender asked and a

@@ -94,6 +94,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `file-ack` | client | Answers `end` with an `ack`. |
 | `file-offer` | client + relay | Copy-paste of files by offer and pull. |
 | `file-folder` | client | Folder transfers (`group`/`rel`). |
+| `file-binary` | client + relay | File chunks as binary messages (`0x12`, below) instead of base64 JSON. The relay sends them only to clients that list it. |
 | `cursor-shape` | client | Draws its own cursor from `cursor-shape` events; the host stops painting it. |
 | `video-delta` | client | Framed key/delta video; without it the host sends plain JPEGs. |
 | `video-h264` | client | H.264 inside the framed format. |
@@ -105,11 +106,11 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `host-features` | client | The host lists its optional host controls below. Without it the host is a legacy Windows host that has all of them. |
 | `privacy-screen` | client, with `host-features` | `set-privacy` works on this host. |
 | `block-input` | client, with `host-features` | `set-block-input` works on this host. |
-| `p2p-signal`, `file-grant`, `file-offer`, `caps`, `monitor`, `device-security`, `host-alias` | relay | Relay features in `registered-ack`. |
+| `p2p-signal`, `file-grant`, `file-offer`, `file-binary`, `caps`, `monitor`, `device-security`, `host-alias` | relay | Relay features in `registered-ack`. |
 
 Per platform (see [platforms.md](platforms.md)):
 
-- Windows: `file-ack`, `file-offer`, `file-folder`, `cursor-shape`, `video-delta`, `video-h264` (when the
+- Windows: `file-ack`, `file-offer`, `file-folder`, `file-binary`, `cursor-shape`, `video-delta`, `video-h264` (when the
   Media Foundation decoder exists), `p2p.v1`, `multi-session`. No `host-features`: Windows hosts have every
   host control.
 - Linux: the same without `file-offer`, with `video-h264` only when Cisco's OpenH264 is installed, plus
@@ -152,7 +153,7 @@ Per platform (see [platforms.md](platforms.md)):
 | `action` | Fields | Rule |
 | --- | --- | --- |
 | `start` | `id`, `name`, `size`; folders: `dir`, `group`, `rel`, `groupEnd`, `autoPaste` | Needs an active session; creates a grant bound to the two connections. |
-| `chunk` | `id`, `chunk` (base64, at most 32 KiB decoded) | Needs the grant. |
+| `chunk` | `id`, `chunk` (base64, at most 32 KiB decoded) | Needs the grant. With `file-binary` a binary chunk replaces it. |
 | `end` | `id`, `name`, `sha256` (hex), `autoPaste` | Needs the grant. |
 | `ack` | `id`, `ok` | Receiver to sender; consumes the grant. |
 | `offer` | `id`, `files[]` (`name`, `size` or `dir`) | Clipboard offer; needs an active session. |
@@ -160,6 +161,12 @@ Per platform (see [platforms.md](platforms.md)):
 
 A grant lets a transfer finish after its screen session ends, for 60 s of idleness, but only between the
 same two connections. At most 8 grants per sender. See `client-desktop/docs/features/file-transfer.md`.
+
+When the receiver and the relay both list `file-binary`, chunks are binary messages (below) and everything else
+stays JSON. The relay authorizes a binary chunk exactly like a JSON one: the grant for this sender, `id` and
+receiver; anything else is dropped. Everything from `start` to `end` (JSON and binary) goes through the
+receiver's file queue in order, and `relay-clipboard` text never overtakes file messages its sender queued
+before it.
 
 ## Binary messages
 
@@ -169,7 +176,13 @@ video   [0xFF 0xD8 ...]   a plain JPEG, or a framed message (below)
 tagged  [0x10][9 ASCII digits: host clean ID][voice or video]   multi-session viewers only
 monitor [0x11][JPEG]                                           host to relay: monitor-wall thumbnail
 monitor [0x11][9 ASCII digits: host clean ID][JPEG]            relay to administrator
+file    [0x12][id length: 1..80][id][offset: u64 big-endian][data: at most 128 KiB]   sender to relay (file-binary)
+file    [0x10][9 ASCII digits: sender clean ID][file chunk]   relay to receiver, always tagged
 ```
+
+A multi-session viewer may put the session tag in front of a file chunk it sends, as for voice; the grant
+decides the receiver either way. The relay always tags file chunks it delivers with the sender, like `fromClean`
+on `file-transfer`. Receivers append a chunk only at exactly the current `offset`.
 
 Framed video (`video-delta`), all integers big-endian:
 
