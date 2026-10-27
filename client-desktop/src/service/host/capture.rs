@@ -133,11 +133,11 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     let mut monitors = enumerate_monitors();
     let mut current_idx = host.monitor_index.load(Ordering::SeqCst) % monitors.len().max(1);
     let initial_bounds = monitors[current_idx];
-    *host.monitor_bounds.lock().unwrap() = initial_bounds;
+    *host.monitor_bounds.lock() = initial_bounds;
 
     let mut current_mode = host.resolution_mode.load(Ordering::SeqCst);
     let (mut max_width, mut base_quality) = params(current_mode, initial_bounds);
-    let caps = *host.peer_caps.lock().unwrap();
+    let caps = *host.peer_caps.lock();
     let local_cursor = caps.cursor_shape;
     let h264 = h264_mode(caps.video_h264);
     host.keyframe_requested.store(false, Ordering::SeqCst);
@@ -185,7 +185,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
         let req_mode = host.resolution_mode.load(Ordering::Relaxed);
         let desktop_switched = core_engine::desktop::switch_to_input_desktop();
         let mode_only = req_mode != current_mode && req_idx == current_idx && !desktop_switched;
-        if mode_only && params(req_mode, *host.monitor_bounds.lock().unwrap()) == (max_width, base_quality) {
+        if mode_only && params(req_mode, *host.monitor_bounds.lock()) == (max_width, base_quality) {
             // Same stream size and quality (e.g. a resize the aspect ratio absorbs): keep the pipeline.
             current_mode = req_mode;
         } else if req_idx != current_idx || req_mode != current_mode || desktop_switched {
@@ -196,7 +196,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             current_mode = req_mode;
             let bounds = monitors[current_idx];
             (max_width, base_quality) = params(current_mode, bounds);
-            *host.monitor_bounds.lock().unwrap() = bounds;
+            *host.monitor_bounds.lock() = bounds;
             // Drop the old duplication first: an output allows only a few duplications at once.
             drop(capturer);
             capturer = DesktopCapturer::new_for_monitor(bounds, max_width);
