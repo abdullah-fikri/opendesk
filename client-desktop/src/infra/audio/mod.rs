@@ -3,7 +3,7 @@
 //! captured audio. The device backend is selected at compile time: waveIn/waveOut on Windows, cpal (ALSA, which
 //! PipeWire and PulseAudio serve) elsewhere.
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 pub mod opus;
 
@@ -87,7 +87,7 @@ impl VoiceReceiver {
             }
             return;
         };
-        let mut dec = self.opus.lock().unwrap_or_else(|e| e.into_inner());
+        let mut dec = self.opus.lock();
         if dec.is_none() {
             *dec = opus::Decoder::new();
         }

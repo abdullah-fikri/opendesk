@@ -4,12 +4,13 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs, UdpSocket};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use core_engine::codec::{from_base64, to_base64};
+use parking_lot::Mutex;
 use serde_json::{Value, json};
 
 use crate::infra::audio::VoiceEngine;
@@ -365,7 +366,7 @@ impl P2p {
 
     /// True once the Noise handshake has completed and the link is not closed.
     pub fn is_active(&self) -> bool {
-        !self.closed.load(Ordering::SeqCst) && Self::alive(&self.state.lock().unwrap())
+        !self.closed.load(Ordering::SeqCst) && Self::alive(&self.state.lock())
     }
 
     fn alive(st: &State) -> bool {
@@ -376,7 +377,7 @@ impl P2p {
 
     /// Handles a `p2p-signal` payload from the session partner (the relay already checked the pairing).
     pub fn on_signal(&self, candidate: &str) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         if st.signal_handled {
             return;
         }
@@ -442,7 +443,7 @@ impl P2p {
         let builder = || snow::Builder::new(NOISE.parse().unwrap()).prologue(&self.prologue);
         let hs = builder().and_then(|b| if self.is_host { b.build_responder() } else { b.build_initiator() });
         {
-            let mut st = self.state.lock().unwrap();
+            let mut st = self.state.lock();
             st.local_cands = cands.clone();
             match hs {
                 Ok(mut hs) => {
@@ -493,7 +494,7 @@ impl P2p {
     }
 
     fn on_datagram(&self, pkt: &[u8], from: SocketAddr) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         let plain = {
             let State { hs, replay, .. } = &mut *st;
             let Some(Handshake::Done(t)) = hs else { return };
@@ -564,7 +565,7 @@ impl P2p {
     }
 
     fn tick(&self) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         let now = Instant::now();
         let alive = Self::alive(&st);
         if alive != st.was_alive {
@@ -630,7 +631,7 @@ impl P2p {
 
     /// Sends one JPEG over P2P. Returns false (caller uses the relay) if the path is down or the frame is too large.
     pub fn send_video(&self, jpeg: &[u8]) -> bool {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         let count = jpeg.len().div_ceil(FRAG_DATA);
         if !Self::alive(&st) || count == 0 || count > MAX_FRAGS {
             return false;
@@ -659,7 +660,7 @@ impl P2p {
     /// Sends a `[0x02, rate_khz, pcm...]` packet, split at even byte boundaries to fit one datagram each; an Opus
     /// packet goes whole in one datagram.
     pub fn send_audio(&self, pkt: &[u8]) -> bool {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         if !Self::alive(&st) {
             return false;
         }
@@ -693,7 +694,7 @@ impl P2p {
             return false;
         }
         let Ok(body) = serde_json::to_vec(event) else { return false };
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         if !Self::alive(&st) || body.len() + 5 > MAX_PLAIN || st.unacked.len() >= MAX_UNACKED {
             return false;
         }
@@ -816,7 +817,7 @@ mod tests {
             "222222222".into(),
             Arc::new(AtomicBool::new(true)),
             tx_v,
-            mk(dummy, Arc::new(move |f| sink.lock().unwrap().push(f))),
+            mk(dummy, Arc::new(move |f| sink.lock().push(f))),
         )
         .unwrap();
         let host = P2p::start(
@@ -845,11 +846,11 @@ mod tests {
         let jpeg: Vec<u8> = (0..150_000u32).map(|i| i as u8).collect();
         assert!(host.send_video(&jpeg));
         let deadline = Instant::now() + Duration::from_secs(2);
-        while inbox.lock().unwrap().is_empty() {
+        while inbox.lock().is_empty() {
             assert!(Instant::now() < deadline, "frame not delivered");
             thread::sleep(Duration::from_millis(5));
         }
-        assert_eq!(inbox.lock().unwrap().pop().unwrap(), jpeg);
+        assert_eq!(inbox.lock().pop().unwrap(), jpeg);
         assert!(viewer.send_input(&InputEvent::KeyDown { key_code: 65 }));
         assert_eq!(in_rx.recv_timeout(Duration::from_secs(2)).unwrap(), InputEvent::KeyDown { key_code: 65 });
         viewer.close();

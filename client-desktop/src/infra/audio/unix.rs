@@ -2,14 +2,15 @@
 //! opens only while a session is active; playback opens on the first packet and closes after 2 s of silence.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, Device, FromSample, SampleRate, SizedSample, Stream, StreamConfig};
+use parking_lot::Mutex;
 
 use super::{VoiceDspState, VoiceReceiver, VoiceSender, quality_to_audio_params};
 use crate::infra::logger;
@@ -70,7 +71,7 @@ where
     dev.build_output_stream(
         &config(rate, channels),
         move |out: &mut [T], _: &cpal::OutputCallbackInfo| {
-            let mut p = ring.lock().unwrap_or_else(|e| e.into_inner());
+            let mut p = ring.lock();
             if !p.primed && p.queue.len() >= p.prebuffer {
                 p.primed = true;
             }
@@ -198,14 +199,12 @@ impl VoiceEngine {
                     Ok((rate, pcm)) => {
                         if stream.as_ref().is_none_or(|(r, _)| *r != rate) {
                             stream = None;
-                            if let Ok(mut p) = ring.lock() {
-                                // 60 ms prebuffer absorbs network jitter.
-                                *p = Playback {
-                                    queue: VecDeque::new(),
-                                    primed: false,
-                                    prebuffer: rate as usize * 60 / 1000,
-                                };
-                            }
+                            // 60 ms prebuffer absorbs network jitter.
+                            *ring.lock() = Playback {
+                                queue: VecDeque::new(),
+                                primed: false,
+                                prebuffer: rate as usize * 60 / 1000,
+                            };
                             match open_output(rate, &ring) {
                                 Ok(s) => stream = Some((rate, s)),
                                 Err(e) if failed_rate != rate => {
@@ -215,9 +214,8 @@ impl VoiceEngine {
                                 Err(_) => {}
                             }
                         }
-                        if stream.is_some()
-                            && let Ok(mut p) = ring.lock()
-                        {
+                        if stream.is_some() {
+                            let mut p = ring.lock();
                             p.queue.extend(pcm.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)));
                             // Never fall more than 400 ms behind.
                             let cap = rate as usize * 2 / 5;

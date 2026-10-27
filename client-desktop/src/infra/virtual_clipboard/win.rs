@@ -8,10 +8,11 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use core_engine::codec::from_base64;
+use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
 use crate::domain::transfer::{MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, safe_rel_path};
@@ -224,7 +225,7 @@ struct Sink {
 static SINKS: Mutex<Option<HashMap<String, Sink>>> = Mutex::new(None);
 
 fn with_sinks<R>(f: impl FnOnce(&mut HashMap<String, Sink>) -> R) -> R {
-    f(SINKS.lock().unwrap().get_or_insert_with(HashMap::new))
+    f(SINKS.lock().get_or_insert_with(HashMap::new))
 }
 
 /// Handles a `file-transfer` payload if it belongs to one of our pulls. Returns `(status, ack)` like
@@ -393,7 +394,7 @@ unsafe extern "system" fn stream_release(this: *mut c_void) -> u32 {
 unsafe extern "system" fn stream_read(this: *mut c_void, pv: *mut c_void, cb: u32, pcb_read: *mut u32) -> HRESULT {
     unsafe {
         let stream = &*(this as *const PullStream);
-        let mut st = stream.state.lock().unwrap();
+        let mut st = stream.state.lock();
         let out = std::slice::from_raw_parts_mut(pv as *mut u8, cb as usize);
         let mut written = 0usize;
         // Fill the whole request (or reach EOF): a short read must not look like end of file.
@@ -432,7 +433,7 @@ unsafe extern "system" fn stream_write(_: *mut c_void, _: *const c_void, _: u32,
 unsafe extern "system" fn stream_seek(this: *mut c_void, mv: i64, origin: u32, new_pos: *mut u64) -> HRESULT {
     unsafe {
         let stream = &*(this as *const PullStream);
-        let pos = stream.state.lock().unwrap().pos;
+        let pos = stream.state.lock().pos;
         // Forward-only network stream: only "where am I" queries are answerable.
         let target = match origin {
             STREAM_SEEK_SET => mv,
@@ -916,7 +917,7 @@ mod tests {
     fn paste_with_explorer(tag: &str, offer: Value, contents: &HashMap<u64, Vec<u8>>) -> Option<std::path::PathBuf> {
         // Both ignored tests use the one system clipboard.
         static CLIPBOARD: Mutex<()> = Mutex::new(());
-        let _guard = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = CLIPBOARD.lock();
         let dir = std::env::temp_dir().join(format!("opendesk-paste-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

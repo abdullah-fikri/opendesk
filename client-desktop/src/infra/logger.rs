@@ -10,9 +10,10 @@ use std::io::Write;
 use std::panic::{self, PanicHookInfo};
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::{Mutex, TryLockError};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use parking_lot::Mutex;
 
 static LOG_LOCK: Mutex<()> = Mutex::new(());
 
@@ -94,24 +95,19 @@ fn write_line(line: &str) {
 /// Writes one line `level timestamp component pid subsystem - msg` to stderr and the trace file.
 pub fn log_trace(level: &str, component: &str, subsystem: &str, msg: &str) {
     let line = format_line(level, component, subsystem, msg);
-    if let Ok(_guard) = LOG_LOCK.lock() {
-        write_line(&line);
-    }
+    let _guard = LOG_LOCK.lock();
+    write_line(&line);
 }
 
 /// `error` for the panic hook: never waits long for `LOG_LOCK` (the panicking thread may hold it) and still
-/// writes when the lock is poisoned or stays busy.
+/// writes when the lock stays busy.
 fn error_unblocked(subsystem: &str, msg: &str) {
     let line = format_line("error", "front", subsystem, msg);
     for _ in 0..50 {
-        match LOG_LOCK.try_lock() {
-            Ok(_guard) => return write_line(&line),
-            Err(TryLockError::Poisoned(e)) => {
-                let _guard = e.into_inner();
-                return write_line(&line);
-            }
-            Err(TryLockError::WouldBlock) => thread::sleep(Duration::from_millis(2)),
+        if let Some(_guard) = LOG_LOCK.try_lock() {
+            return write_line(&line);
         }
+        thread::sleep(Duration::from_millis(2));
     }
     write_line(&line);
 }
@@ -168,7 +164,7 @@ mod tests {
     static PANIC_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
     fn record(subsystem: &str, msg: &str) {
-        PANIC_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(format!("{subsystem}: {msg}"));
+        PANIC_LOG.lock().push(format!("{subsystem}: {msg}"));
     }
 
     #[test]
@@ -177,7 +173,7 @@ mod tests {
         let result = crate::infra::thread::spawn_named("test-panicking", || panic!("deliberate {}", 42)).join();
         let _ = panic::take_hook(); // back to the default hook
         assert!(result.is_err());
-        let log = PANIC_LOG.lock().unwrap();
+        let log = PANIC_LOG.lock();
         let entry = log.iter().find(|e| e.contains("deliberate 42")).expect("panic logged");
         assert!(entry.starts_with("panic: Thread 'test-panicking' panicked at "), "{entry}");
         assert!(entry.contains("logger.rs"), "{entry}");
