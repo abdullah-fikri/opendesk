@@ -63,8 +63,11 @@ fn read_json<T: DeserializeOwned>(name: &str) -> Option<T> {
 /// Writes `data` to `<path>.tmp`, flushes it to disk and renames it over `path`, so a crash or a concurrent
 /// reader never sees a half-written file. The temporary file is removed on failure.
 fn write_atomic(path: &Path, data: &[u8]) -> io::Result<()> {
+    // Unique per process and call: the CLI, the app and several threads may save the same file at once.
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
+    tmp.push(format!(".{}-{seq}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
     let result = fs::File::create(&tmp)
         .and_then(|mut f| f.write_all(data).and_then(|_| f.sync_all()))
@@ -129,7 +132,9 @@ mod tests {
         write_atomic(&path, b"first").unwrap();
         write_atomic(&path, b"second").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"second");
-        assert!(!dir.join("config.json.tmp").exists());
+        let leftovers =
+            fs::read_dir(&dir).unwrap().filter(|e| e.as_ref().unwrap().path().extension() == Some("tmp".as_ref()));
+        assert_eq!(leftovers.count(), 0);
 
         let _ = fs::remove_dir_all(&dir);
     }
