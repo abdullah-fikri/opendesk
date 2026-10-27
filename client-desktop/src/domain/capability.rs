@@ -50,6 +50,8 @@ pub struct PeerCaps {
     /// Offers need relay support too, so this is the partner's capability AND the relay's.
     pub file_offer: bool,
     pub file_folder: bool,
+    /// The partner accepts binary file chunks (the relay must list `file-binary` too, see [`RelayCaps`]).
+    pub file_binary: bool,
     pub cursor_shape: bool,
     pub video_delta: bool,
     pub video_h264: bool,
@@ -69,6 +71,7 @@ impl PeerCaps {
             file_ack: has(FILE_ACK),
             file_offer: has(FILE_OFFER) && relay_offer,
             file_folder: has(FILE_FOLDER),
+            file_binary: has(FILE_BINARY),
             cursor_shape: has(CURSOR_SHAPE),
             video_delta: has(VIDEO_DELTA),
             video_h264: has(VIDEO_H264),
@@ -88,6 +91,8 @@ pub struct RelayCaps {
     pub monitor: bool,
     pub device_security: bool,
     pub host_alias: bool,
+    /// Binary file chunks are forwarded.
+    pub file_binary: bool,
 }
 
 impl RelayCaps {
@@ -101,6 +106,7 @@ impl RelayCaps {
             monitor: has(RELAY_MONITOR),
             device_security: has(RELAY_DEVICE_SECURITY),
             host_alias: has(RELAY_HOST_ALIAS),
+            file_binary: has(FILE_BINARY),
         }
     }
 }
@@ -116,6 +122,8 @@ mod tests {
         assert!(!PeerCaps::from_list(&caps, false).file_offer);
         assert!(PeerCaps::from_list(&caps, false).file_ack);
         assert!(RelayCaps::from_list(&[MULTI_SESSION.to_string()]).multi_session);
+        assert!(PeerCaps::from_list(&[FILE_BINARY.to_string()], false).file_binary);
+        assert!(RelayCaps::from_list(&[FILE_BINARY.to_string()]).file_binary && !RelayCaps::from_list(&[]).file_binary);
     }
 
     #[test]

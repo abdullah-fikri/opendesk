@@ -34,7 +34,6 @@ pub struct FileChunk<'a> {
 }
 
 /// Encodes a file chunk. `None` if `id` is empty or longer than the relay accepts.
-#[cfg(test)]
 pub fn file_chunk(id: &str, offset: u64, data: &[u8]) -> Option<Vec<u8>> {
     if id.is_empty() || id.len() > MAX_FILE_ID {
         return None;

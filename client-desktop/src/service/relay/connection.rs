@@ -23,7 +23,7 @@ use crate::infra::p2p::{self, P2p};
 use crate::infra::{autostart, device, logger, power, storage, virtual_clipboard, window};
 use crate::protocol::{ClientMessage, FilePayload, InputEvent, Outgoing, ServerMessage, binary};
 use crate::service::context::Ctx;
-use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS};
+use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS, chunk_units};
 use crate::service::ui_port::RelayStatus;
 use crate::service::viewer::decoder;
 
@@ -33,7 +33,8 @@ pub(super) type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
 const RETRY_DELAY: Duration = Duration::from_millis(2000);
 /// Pause after losing an established connection.
 const RECONNECT_DELAY: Duration = Duration::from_millis(1500);
-/// File messages sent per tick while a screen session runs (keeps video and voice latency low)...
+/// File messages sent per tick, in `chunk_units`, while a screen session runs (keeps video and voice latency
+/// low)...
 const FILE_BURST_IN_SESSION: usize = 8;
 /// ...and without one (full-speed background transfer).
 const FILE_BURST_IDLE: usize = 64;
@@ -73,12 +74,20 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
     });
 }
 
+/// One file message ready for the socket: JSON text or a binary chunk (already tagged for its host).
+struct QueuedFile {
+    message: Message,
+    /// Its weight in `IN_FLIGHT_CHUNKS`.
+    units: usize,
+    status: Option<String>,
+}
+
 /// State of the relay connection thread.
 pub(super) struct Connection {
     pub(super) ctx: Ctx,
     outbox: Receiver<Outgoing>,
     /// File messages waiting their turn behind video and voice.
-    files: VecDeque<(ClientMessage, Option<String>)>,
+    files: VecDeque<QueuedFile>,
     pub(super) receiver: FileReceiver,
     /// Input that arrived over a P2P path (host side).
     pub(super) p2p_input_tx: Sender<InputEvent>,
@@ -314,7 +323,20 @@ impl Connection {
                 Outgoing::VideoFrame(frame) => video = Some(frame),
                 Outgoing::MonitorFrame(frame) => self.monitor_pending = Some(frame),
                 Outgoing::Audio(packet) => self.send_audio(socket, partner, packet),
-                Outgoing::File { message, status } => self.files.push_back((message, status)),
+                Outgoing::File { message, status } => {
+                    let message = Message::Text(message.to_json().into());
+                    self.files.push_back(QueuedFile { message, units: 1, status });
+                }
+                Outgoing::FileChunk { target, frame, status } => {
+                    let units = chunk_units(frame.len());
+                    // Like voice: a viewer of several hosts names the host; the relay's grant decides anyway.
+                    let frame = if self.ctx.viewers.multi() && self.ctx.viewers.get(&target).is_some() {
+                        binary::tag(&target, &frame).unwrap_or(frame)
+                    } else {
+                        frame
+                    };
+                    self.files.push_back(QueuedFile { message: Message::Binary(frame.into()), units, status });
+                }
             }
         }
         for (target, norm_x, norm_y) in mouse.into_iter().filter(|m| !m.0.is_empty()) {
@@ -362,22 +384,24 @@ impl Connection {
 
     /// Sends a burst of queued file messages and returns the newest status line among them.
     fn pump_files(&mut self, socket: &mut Socket, idle: bool) -> Option<String> {
-        let burst = if idle { FILE_BURST_IDLE } else { FILE_BURST_IN_SESSION };
+        let mut budget = if idle { FILE_BURST_IDLE } else { FILE_BURST_IN_SESSION };
         let mut latest = None;
-        for _ in 0..burst {
-            let Some((msg, status)) = self.files.pop_front() else { break };
+        while budget > 0 {
+            let Some(file) = self.files.pop_front() else { break };
             // WouldBlock means tungstenite buffered the frame; any other error leaves it queued until the read
-            // loop notices the dead socket and fails the transfer.
-            match socket.send(Message::Text(msg.to_json().into())) {
+            // loop notices the dead socket and fails the transfer. Messages are reference counted: the clone
+            // copies no data.
+            match socket.send(file.message.clone()) {
                 Ok(()) => {}
                 Err(tungstenite::Error::Io(ref e)) if e.kind() == ErrorKind::WouldBlock => {}
                 Err(_) => {
-                    self.files.push_front((msg, status));
+                    self.files.push_front(file);
                     break;
                 }
             }
-            IN_FLIGHT_CHUNKS.fetch_sub(1, Ordering::Relaxed);
-            latest = status.or(latest);
+            IN_FLIGHT_CHUNKS.fetch_sub(file.units, Ordering::Relaxed);
+            budget = budget.saturating_sub(file.units);
+            latest = file.status.or(latest);
         }
         latest
     }
@@ -480,8 +504,8 @@ impl Connection {
         file_transfer::abort_pending_sends();
         virtual_clipboard::abort_pulls();
         virtual_clipboard::clear_offer("");
-        for _ in self.files.drain(..) {
-            IN_FLIGHT_CHUNKS.fetch_sub(1, Ordering::Relaxed);
+        for file in self.files.drain(..) {
+            IN_FLIGHT_CHUNKS.fetch_sub(file.units, Ordering::Relaxed);
         }
         let reason = self.receiver.abort_all(ctx.ui.as_ref());
         crate::service::sessions::end_all(ctx);
