@@ -29,6 +29,8 @@ type Collector struct {
 	egressMessages  atomic.Uint64
 	egressBytes     atomic.Uint64
 	droppedFrames   atomic.Uint64
+	droppedAudio    atomic.Uint64
+	slowReceivers   atomic.Uint64
 	rejected        atomic.Uint64
 	peakPeers       atomic.Int64
 	hostListQueries atomic.Uint64
@@ -63,6 +65,13 @@ func (c *Collector) Egress(size int) {
 
 // DroppedFrame counts a video frame discarded by a full or restarted queue.
 func (c *Collector) DroppedFrame() { c.droppedFrames.Add(1) }
+
+// DroppedAudio counts a voice packet discarded because the receiver's voice queue was full.
+func (c *Collector) DroppedAudio() { c.droppedAudio.Add(1) }
+
+// SlowReceiver counts a receiver closed because it fell too far behind (control queue overflow or a file queue
+// that stayed full).
+func (c *Collector) SlowReceiver() { c.slowReceivers.Add(1) }
 
 // Rejected counts a message that had no authorized recipient.
 func (c *Collector) Rejected() { c.rejected.Add(1) }
@@ -111,6 +120,8 @@ func (c *Collector) Snapshot(activePeers int) map[string]any {
 		"ingress":       ingress,
 		"egress":        map[string]uint64{"messages": c.egressMessages.Load(), "bytes": c.egressBytes.Load()},
 		"droppedFrames": c.droppedFrames.Load(),
+		"droppedAudio":  c.droppedAudio.Load(),
+		"slowReceivers": c.slowReceivers.Load(),
 		"rejected":      c.rejected.Load(),
 		"hostList":      map[string]uint64{"queries": queries, "avgNs": avg, "maxNs": c.hostListMaxNs.Load()},
 		"goroutines":    runtime.NumGoroutine(),
