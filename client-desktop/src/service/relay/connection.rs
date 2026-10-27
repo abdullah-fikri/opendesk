@@ -20,7 +20,7 @@ use tungstenite::{Message, WebSocket};
 use crate::domain::capability;
 use crate::domain::settings::{self, normalize_gateway_url};
 use crate::infra::p2p::{self, P2p};
-use crate::infra::{autostart, device, logger, power, storage, virtual_clipboard};
+use crate::infra::{autostart, device, logger, power, storage, virtual_clipboard, window};
 use crate::protocol::{ClientMessage, InputEvent, Outgoing, ServerMessage, binary};
 use crate::service::context::Ctx;
 use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS};
@@ -45,6 +45,8 @@ const BUSY_SLEEP: Duration = Duration::from_millis(1);
 const IDLE_AFTER: Duration = Duration::from_secs(2);
 /// ...up to this (far below the relay's 15 s ping interval).
 const IDLE_MAX_SLEEP: Duration = Duration::from_millis(20);
+/// How often the loop checks whether the main window is on screen.
+const WINDOW_CHECK: Duration = Duration::from_millis(500);
 
 /// Starts the connection thread. `outbox` is the receiving end of `ctx.outbox`.
 pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
@@ -125,6 +127,7 @@ impl Connection {
         let backoff = idle_backoff_enabled();
         let mut last_traffic = Instant::now();
         let mut awake: Option<power::Awake> = None;
+        let (mut window_shown, mut last_window_check) = (false, Instant::now() - WINDOW_CHECK);
 
         while !ctx.relay.reconnect.load(Ordering::SeqCst) && !lost {
             let partner = ctx.partner();
@@ -185,7 +188,12 @@ impl Connection {
             if traffic {
                 last_traffic = Instant::now();
             }
-            let session = !partner.is_empty() || ctx.is_hosting() || !ctx.viewers.is_empty();
+            // Someone using the open window gets full speed too (typing an ID, browsing the history).
+            if last_window_check.elapsed() >= WINDOW_CHECK {
+                last_window_check = Instant::now();
+                window_shown = window::is_window_shown(&ctx.window_title);
+            }
+            let session = !partner.is_empty() || ctx.is_hosting() || !ctx.viewers.is_empty() || window_shown;
             // Transfers and monitor streams run without a session: recent traffic keeps full speed too.
             let quiet = last_traffic.elapsed();
             if (session || quiet < IDLE_AFTER) != awake.is_some() {

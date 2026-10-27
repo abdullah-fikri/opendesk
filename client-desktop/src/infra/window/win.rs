@@ -86,6 +86,8 @@ unsafe extern "system" {
         p_change_filter_struct: *mut c_void,
     ) -> BOOL;
     fn ShowWindow(h_wnd: HWND, n_cmd_show: i32) -> BOOL;
+    fn IsWindowVisible(h_wnd: HWND) -> BOOL;
+    fn IsIconic(h_wnd: HWND) -> BOOL;
     fn RegisterRawInputDevices(devices: *const RAWINPUTDEVICE, count: UINT, size: UINT) -> BOOL;
 }
 
@@ -162,6 +164,15 @@ pub fn hide_window_by_title(window_title: &str) {
         if !hwnd.is_null() {
             ShowWindow(hwnd, SW_HIDE);
         }
+    }
+}
+
+/// Whether the window titled `window_title` is on screen (visible and not minimized).
+pub fn is_window_shown(window_title: &str) -> bool {
+    unsafe {
+        let title_wide: Vec<u16> = window_title.encode_utf16().chain(std::iter::once(0)).collect();
+        let hwnd = FindWindowW(ptr::null(), title_wide.as_ptr());
+        !hwnd.is_null() && IsWindowVisible(hwnd) != 0 && IsIconic(hwnd) == 0
     }
 }
 
