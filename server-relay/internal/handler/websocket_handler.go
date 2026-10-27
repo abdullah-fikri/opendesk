@@ -304,7 +304,7 @@ func (c *connection) onRelayClipboard(msg []byte) {
 		return
 	}
 	if rcpt := c.h.relay.ActivePartner(c.peer, model.CleanDeskID(req.TargetClean)); rcpt != nil {
-		_ = rcpt.Send(dto.ClipboardSync{Type: dto.TypeClipboardSync, Text: req.Text, FromClean: sourceFor(rcpt, c.peer)})
+		_ = rcpt.SendClipboard(c.peer.CleanID, dto.ClipboardSync{Type: dto.TypeClipboardSync, Text: req.Text, FromClean: sourceFor(rcpt, c.peer)})
 	}
 }
 
