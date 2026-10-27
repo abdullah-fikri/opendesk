@@ -110,6 +110,7 @@ impl Inner {
             let focused = s.id == self.focused;
             let visible = focused || self.layout == 1;
             if visible && !s.visible.swap(true, Ordering::SeqCst) {
+                s.inbox.wake(); // the decoder asks for a key frame without waiting out its idle timeout
                 shown.push(Arc::clone(s));
             } else if !visible {
                 s.visible.store(false, Ordering::SeqCst);
@@ -250,6 +251,7 @@ impl Registry {
         s.alive.store(false, Ordering::SeqCst);
         s.visible.store(false, Ordering::SeqCst);
         s.audio_on.store(false, Ordering::SeqCst);
+        s.inbox.wake(); // the decoder thread exits now instead of after its idle timeout
         if inner.focused == id {
             let next = inner.sessions.get(pos).or_else(|| inner.sessions.last()).map(|n| n.id.clone());
             inner.focused = next.unwrap_or_default();
@@ -290,6 +292,7 @@ impl Registry {
             s.alive.store(false, Ordering::SeqCst);
             s.visible.store(false, Ordering::SeqCst);
             s.audio_on.store(false, Ordering::SeqCst);
+            s.inbox.wake();
         }
         *self.swallowed_click.lock().unwrap() = None;
         all
