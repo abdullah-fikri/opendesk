@@ -35,6 +35,21 @@ pub struct MonitorBounds {
     pub height: i32,
 }
 
+/// Refresh rates displays report one below their nominal value (59.94 Hz is stored as 59).
+const NOMINAL_RATES: [u32; 18] = [24, 30, 48, 60, 72, 75, 90, 100, 120, 144, 165, 170, 180, 200, 240, 280, 300, 360];
+
+/// Turns a reported display frequency into the nominal refresh rate: 59/119/143/239 become 60/120/144/240, and
+/// 0/1 ("hardware default") or anything implausible (under 23 Hz) becomes 60.
+pub fn nominal_refresh_rate(reported: u32) -> u32 {
+    if reported < 23 {
+        60
+    } else if NOMINAL_RATES.contains(&(reported + 1)) {
+        reported + 1
+    } else {
+        reported
+    }
+}
+
 /// Whether this session can share its screen. Viewing works everywhere; hosting needs a capturable desktop.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HostSupport {
@@ -77,6 +92,14 @@ pub fn shape_from_cursor_name(name: &str) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refresh_rates_round_to_nominal() {
+        for (reported, nominal) in [(0, 60), (1, 60), (22, 60), (59, 60), (60, 60), (75, 75), (119, 120), (143, 144)] {
+            assert_eq!(nominal_refresh_rate(reported), nominal, "{reported} Hz");
+        }
+        assert_eq!((nominal_refresh_rate(165), nominal_refresh_rate(239), nominal_refresh_rate(61)), (165, 240, 61));
+    }
 
     #[test]
     fn cursor_names_map_to_shape_codes() {
