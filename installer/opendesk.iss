@@ -32,6 +32,10 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
+; OpenDesk.exe is x64: install into the 64-bit Program Files and registry view.
+; 1.0.0-1.0.2 ran in 32-bit mode (Program Files (x86)); [Code] migrates those installs.
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 ; Admin once at install: needed to register the SYSTEM service that runs the app in the
 ; logged-on user's session, so viewers can control the UAC prompt, the lock screen and elevated
 ; windows (UIPI). The "highest privileges" logon task is the fallback when the service fails.
