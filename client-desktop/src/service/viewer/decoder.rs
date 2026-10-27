@@ -292,15 +292,18 @@ fn request_key(outbox: &Sender<Outgoing>, id: &str) {
 
 /// Starts the session's decoder thread once. `show` runs for every decoded frame.
 /// Hidden sessions (background tabs) are not decoded at all: their messages are dropped together with the
-/// decoder state, and showing the session again asks the host for a key frame.
-pub fn spawn<F>(sess: Arc<Session>, outbox: Sender<Outgoing>, show: F)
+/// decoder state, and showing the session again asks the host for a key frame. `on_panic` runs if the
+/// thread panics.
+pub fn spawn<F, P>(sess: Arc<Session>, outbox: Sender<Outgoing>, show: F, on_panic: P)
 where
     F: Fn(&Arc<Session>, Frame) + Send + 'static,
+    P: FnOnce() + Send + 'static,
 {
     if sess.decoder_started.swap(true, Ordering::SeqCst) {
         return;
     }
-    crate::infra::thread::spawn_named(&format!("viewer-decoder-{}", sess.id), move || {
+    let name = format!("viewer-decoder-{}", sess.id);
+    crate::infra::thread::spawn_supervised(&name, on_panic, move || {
         let mut frame_count = 0u32;
         let mut fps_timer = Instant::now();
         let mut current_fps = 0u32;
@@ -387,9 +390,10 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let shown = Arc::new(AtomicU32::new(0));
         let counter = Arc::clone(&shown);
-        spawn(Arc::clone(&b), tx, move |_, _| {
+        let show = move |_: &Arc<Session>, _| {
             counter.fetch_add(1, Ordering::SeqCst);
-        });
+        };
+        spawn(Arc::clone(&b), tx, show, || {});
         b.inbox.push(core_engine::codec::delta::key_header(4, 4, 4).encode(&[]));
         thread::sleep(Duration::from_millis(50));
         assert!(b.inbox.is_empty(), "hidden tab drains its inbox");

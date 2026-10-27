@@ -33,6 +33,8 @@ pub(super) type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
 const RETRY_DELAY: Duration = Duration::from_millis(2000);
 /// Pause after losing an established connection.
 const RECONNECT_DELAY: Duration = Duration::from_millis(1500);
+/// Pause before the connection loop starts over after a panic.
+const PANIC_RESTART_DELAY: Duration = Duration::from_secs(2);
 /// File messages sent per tick, in `chunk_units`, while a screen session runs (keeps video and voice latency
 /// low)...
 const FILE_BURST_IN_SESSION: usize = 8;
@@ -68,9 +70,15 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
         };
         // This process idles under EcoQoS until a session or traffic needs full speed.
         power::arm();
-        loop {
+        // The app is useless without this loop: after a panic, clean up like a lost socket and start over.
+        let pump = |conn: &mut Connection| loop {
             conn.run_once();
-        }
+        };
+        let recover = |conn: &mut Connection| {
+            conn.on_connection_lost();
+            conn.on_connection_ended();
+        };
+        crate::infra::thread::restart_on_panic("Relay connection loop", PANIC_RESTART_DELAY, &mut conn, pump, recover);
     });
 }
 

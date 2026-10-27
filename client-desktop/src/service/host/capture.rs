@@ -1,6 +1,7 @@
 //! Host capture loop: captures the selected monitor at up to 60 FPS, encodes it for the viewer and announces
 //! monitor and cursor changes. Runs on its own thread for one hosted session.
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,6 +14,7 @@ use crate::domain::resolution;
 use crate::infra::{logger, power};
 use crate::protocol::{InputEvent, MonitorInfo, Outgoing};
 use crate::service::context::Ctx;
+use crate::service::sessions;
 
 /// How often the loop re-enumerates monitors to notice plugged, unplugged or resized displays.
 const MONITOR_POLL: Duration = Duration::from_secs(2);
@@ -107,9 +109,18 @@ fn h264_mode(viewer_supports: bool) -> H264Mode {
     }
 }
 
-/// Starts the loop for `partner`; it runs until the hosted session's `generation` is superseded.
+/// Starts the loop for `partner`; it runs until the hosted session's `generation` is superseded. Should the
+/// loop panic, the session it served ends like a local "end hosting" (keys released, viewer told).
 pub fn spawn(ctx: Ctx, partner: String, generation: u64) {
-    crate::infra::thread::spawn_named("host-capture", move || run(&ctx, &partner, generation));
+    let crashed = Arc::clone(&ctx);
+    let on_panic = move || {
+        // A stop or a newer session already replaced this loop: nothing left to end.
+        if crashed.host.is_current(generation) {
+            sessions::end_hosting(&crashed);
+            crashed.ui.status("Screen sharing stopped after an internal error.".into());
+        }
+    };
+    crate::infra::thread::spawn_supervised("host-capture", on_panic, move || run(&ctx, &partner, generation));
 }
 
 fn run(ctx: &Ctx, partner: &str, generation: u64) {

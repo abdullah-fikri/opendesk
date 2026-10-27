@@ -181,7 +181,18 @@ pub fn on_connected(ctx: &Ctx, id: &str, caps: PeerCaps) -> Option<Arc<Session>>
     apply_focus(ctx);
 
     let ui_ctx = Arc::clone(ctx);
-    decoder::spawn(Arc::clone(&sess), ctx.outbox.clone(), move |s, frame| ui_ctx.ui.session_frame(s.id.clone(), frame));
+    let (crash_ctx, crashed) = (Arc::clone(ctx), Arc::clone(&sess));
+    decoder::spawn(
+        Arc::clone(&sess),
+        ctx.outbox.clone(),
+        move |s, frame| ui_ctx.ui.session_frame(s.id.clone(), frame),
+        // A dead decoder leaves a frozen tab: close it like the user would, unless it was already replaced.
+        move || {
+            if crash_ctx.viewers.get(&crashed.id).is_some_and(|s| Arc::ptr_eq(&s, &crashed)) {
+                close(&crash_ctx, &crashed.id, Some("The session was closed after an internal error.".into()));
+            }
+        },
+    );
 
     // Tell the host the preferred resolution and voice quality. Automatic mode uses the last canvas size;
     // the new canvas reports again if it differs.
