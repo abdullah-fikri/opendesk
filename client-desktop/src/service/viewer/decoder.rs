@@ -16,6 +16,7 @@ use image::ImageReader;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 use crate::domain::capability;
+use crate::domain::perf_stats::{PerfWindow, Stage, kbps};
 use crate::infra::logger;
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 use crate::service::ui_port::Frame;
@@ -260,6 +261,32 @@ impl ViewerDecoder {
     }
 }
 
+/// Decoder-thread counters for one `viewer.perf` window (fields documented in `domain::perf_stats`).
+#[derive(Default)]
+struct ViewerPerf {
+    process: Stage,
+    handoff: Stage,
+    shown: u32,
+    bytes: u64,
+    batches: u32,
+}
+
+impl ViewerPerf {
+    /// The window's log line; resets the counters.
+    fn take_line(&mut self, session: &str, secs: f64) -> String {
+        let line = format!(
+            "session={session} fps={:.1} process avg/max={} handoff={} kbps={} batches={}",
+            self.shown as f64 / secs,
+            self.process.take_summary(),
+            self.handoff.take_summary(),
+            kbps(self.bytes, secs),
+            self.batches,
+        );
+        *self = Self::default();
+        line
+    }
+}
+
 fn request_key(outbox: &Sender<Outgoing>, id: &str) {
     let _ = outbox.send(Outgoing::Message(ClientMessage::input(id, InputEvent::VideoKeyframe)));
 }
@@ -281,6 +308,8 @@ where
         let mut decoder: Option<ViewerDecoder> = None;
         let mut last_key_request: Option<Instant> = None;
         let mut was_visible = sess.visible.load(Ordering::SeqCst);
+        let mut perf = ViewerPerf::default();
+        let mut perf_window = PerfWindow::new(Instant::now());
 
         while sess.alive.load(Ordering::SeqCst) {
             let visible = sess.visible.load(Ordering::SeqCst);
@@ -294,6 +323,12 @@ where
             // Sleeps until a message arrives; close and visibility changes wake it too (`Registry`), and the
             // timeout bounds the wait should a wake ever be missed.
             let batch = sess.inbox.drain_wait(VideoInbox::IDLE_WAIT);
+            if let Some(secs) = perf_window.due(Instant::now()) {
+                // Only windows that decoded something: hidden or idle sessions stay quiet.
+                if perf.batches > 0 {
+                    logger::info("viewer.perf", &perf.take_line(&sess.id, secs));
+                }
+            }
             if batch.is_empty() {
                 continue;
             }
@@ -301,7 +336,12 @@ where
                 decoder = None; // frees the framebuffer and the H.264 decoder while the tab is in the background
                 continue;
             }
-            let (pixels, width, height) = match decoder.get_or_insert_with(ViewerDecoder::new).process(batch) {
+            perf.batches += 1;
+            perf.bytes += batch.iter().map(|m| m.len() as u64).sum::<u64>();
+            let process_start = Instant::now();
+            let out = decoder.get_or_insert_with(ViewerDecoder::new).process(batch);
+            perf.process.record(process_start.elapsed());
+            let (pixels, width, height) = match out {
                 ViewerOutput::Frame(buf, w, h) => (buf, w, h),
                 ViewerOutput::Unchanged => continue,
                 ViewerOutput::NeedKey => {
@@ -321,7 +361,10 @@ where
                 fps_timer = Instant::now();
             }
             let p2p = sess.p2p_active.load(Ordering::Relaxed);
+            let handoff_start = Instant::now();
             show(&sess, Frame { pixels, width, height, fps: current_fps, p2p });
+            perf.handoff.record(handoff_start.elapsed());
+            perf.shown += 1;
         }
     });
 }
@@ -357,6 +400,21 @@ mod tests {
         let Outgoing::Message(ClientMessage::RelayInput { target_clean, event }) = msg else { panic!() };
         assert_eq!((target_clean.as_str(), event), ("222222222", InputEvent::VideoKeyframe));
         r.remove("222222222");
+    }
+
+    #[test]
+    fn perf_line_reports_the_window() {
+        let mut p = ViewerPerf::default();
+        for _ in 0..590 {
+            p.process.record(Duration::from_micros(2400));
+            p.handoff.record(Duration::from_micros(100));
+        }
+        (p.shown, p.bytes, p.batches) = (590, 3_062_500, 600);
+        assert_eq!(
+            p.take_line("123456789", 10.0),
+            "session=123456789 fps=59.0 process avg/max=2.4/2.4ms handoff=0.1/0.1ms kbps=2450 batches=600"
+        );
+        assert_eq!(p.batches, 0);
     }
 
     /// PSNR in dB between a BGRX source frame and the viewer's RGBA framebuffer.
