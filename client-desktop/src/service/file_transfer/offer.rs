@@ -3,9 +3,11 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 
 use super::sender::{SKIPPED_FOLDERS, send_pulled};
 use super::{caps_of, now_micros, tree};
@@ -96,7 +98,7 @@ fn publish(
         return false;
     }
     // Held while sending so offers leave in copy order even when a folder walk finishes late.
-    let mut offers = OFFERS.lock().unwrap();
+    let mut offers = OFFERS.lock();
     if GENERATION.load(Ordering::SeqCst) != generation {
         return false;
     }
@@ -116,7 +118,6 @@ pub fn serve_pull(ctx: &AppContext, from: &str, payload: &FilePayload) {
     let Some(tid) = payload.tid.as_deref().filter(|t| is_safe_id(t)) else { return };
     let path = OFFERS
         .lock()
-        .unwrap()
         .iter()
         .find(|o| o.id == payload.id && o.partner == from)
         .and_then(|o| o.paths.get(index).cloned().flatten()); // folder entries are never pulled

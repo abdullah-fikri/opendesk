@@ -131,7 +131,7 @@ fn publish(ctx: &AppContext, paths: &[PathBuf], paste: bool) {
 /// Folder that receives files (`Downloads\OpenDesk` in the user's home, else `<app dir>/Downloads`).
 pub fn download_dir() -> PathBuf {
     #[cfg(test)]
-    if let Some(dir) = tests::TEST_DOWNLOADS.lock().unwrap().clone() {
+    if let Some(dir) = tests::TEST_DOWNLOADS.lock().clone() {
         return dir;
     }
     if let Ok(profile) = env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
@@ -473,7 +473,7 @@ impl FileReceiver {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     /// Receive folder for tests instead of the user's Downloads.
     pub static TEST_DOWNLOADS: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -499,7 +499,7 @@ pub(super) mod tests {
     fn binary_chunks_append_in_order_only() {
         let dir = env::temp_dir().join(format!("opendesk-bin-{}-{}", std::process::id(), now_ms()));
         fs::create_dir_all(&dir).unwrap();
-        *TEST_DOWNLOADS.lock().unwrap() = Some(dir.clone());
+        *TEST_DOWNLOADS.lock() = Some(dir.clone());
         let ctx = crate::service::test_support::context();
         let mut rx = FileReceiver::new();
         let data: Vec<u8> = (0..BINARY_CHUNK_SIZE + 10).map(|i| i as u8).collect();
@@ -540,7 +540,7 @@ pub(super) mod tests {
         }
         assert!(rx.active_files.is_empty());
         assert_eq!(rx.handle_chunk(&ctx, &FileChunk { id: "../x", offset: 0, data: b"" }, "111"), (None, None));
-        *TEST_DOWNLOADS.lock().unwrap() = None;
+        *TEST_DOWNLOADS.lock() = None;
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -15,10 +15,11 @@ pub mod sender;
 pub mod tree;
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use parking_lot::Mutex;
 
 use crate::domain::capability::PeerCaps;
 
@@ -71,47 +72,41 @@ pub fn chunk_units(len: usize) -> usize {
 
 /// Records the capabilities of viewed host `id`.
 pub fn set_session_caps(id: &str, caps: PeerCaps) {
-    let mut all = SESSION_CAPS.lock().unwrap();
+    let mut all = SESSION_CAPS.lock();
     all.retain(|(k, _)| k != id);
     all.push((id.to_string(), caps));
 }
 
 /// Forgets viewed host `id`.
 pub fn remove_session_caps(id: &str) {
-    SESSION_CAPS.lock().unwrap().retain(|(k, _)| k != id);
+    SESSION_CAPS.lock().retain(|(k, _)| k != id);
 }
 
 /// Records the capabilities of the single partner.
 pub fn set_partner_caps(caps: PeerCaps) {
-    *PARTNER_CAPS.lock().unwrap() = caps;
+    *PARTNER_CAPS.lock() = caps;
 }
 
 /// Capabilities of `target`: its viewer session's when it has one, else the single partner's.
 pub fn caps_of(target: &str) -> PeerCaps {
-    SESSION_CAPS
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|(k, _)| k == target)
-        .map(|(_, c)| *c)
-        .unwrap_or_else(|| *PARTNER_CAPS.lock().unwrap())
+    SESSION_CAPS.lock().iter().find(|(k, _)| k == target).map(|(_, c)| *c).unwrap_or_else(|| *PARTNER_CAPS.lock())
 }
 
 /// True if the clipboard holds exactly the files we just received (provenance, not timing).
 pub fn is_received_clipboard(paths: &[PathBuf]) -> bool {
-    let ours = RECEIVED_CLIPBOARD.lock().unwrap();
+    let ours = RECEIVED_CLIPBOARD.lock();
     !paths.is_empty()
         && paths.len() == ours.len()
         && paths.iter().all(|p| ours.iter().any(|o| o.eq_ignore_ascii_case(&p.to_string_lossy())))
 }
 
 fn remember_received(paths: Vec<String>) {
-    *RECEIVED_CLIPBOARD.lock().unwrap() = paths;
+    *RECEIVED_CLIPBOARD.lock() = paths;
 }
 
 /// Delivers a receiver ACK to the waiting sender thread, if any.
 pub fn deliver_ack(id: &str, ok: bool) {
-    let mut pending = PENDING_ACKS.lock().unwrap();
+    let mut pending = PENDING_ACKS.lock();
     if let Some(pos) = pending.iter().position(|(pid, _)| pid == id) {
         let (_, tx) = pending.swap_remove(pos);
         let _ = tx.send(ok);
@@ -119,17 +114,17 @@ pub fn deliver_ack(id: &str, ok: bool) {
 }
 
 fn expect_ack(id: &str, tx: Sender<bool>) {
-    PENDING_ACKS.lock().unwrap().push((id.to_string(), tx));
+    PENDING_ACKS.lock().push((id.to_string(), tx));
 }
 
 fn forget_ack(id: &str) {
-    PENDING_ACKS.lock().unwrap().retain(|(pid, _)| pid != id);
+    PENDING_ACKS.lock().retain(|(pid, _)| pid != id);
 }
 
 /// Fails every send in progress after the relay connection is lost (grants die with the connection).
 pub fn abort_pending_sends() {
     TRANSFER_EPOCH.fetch_add(1, Ordering::SeqCst);
-    PENDING_ACKS.lock().unwrap().clear();
+    PENDING_ACKS.lock().clear();
 }
 
 fn epoch() -> u64 {
