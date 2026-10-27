@@ -5,7 +5,7 @@ const frameQueueLen = 8
 
 // Binary payload markers (see docs/protocol.md at the repository root).
 const (
-	audioMarker = 0x02 // [0x02, rate_khz, pcm...]
+	audioMarker = 0x02 // [0x02, rate_khz, pcm...] or Opus [0x02, 0x4F, seq u16, packet]; the relay only reads byte 0
 	jpegMarker0 = 0xFF // FF D8: legacy JPEG or framed video
 	jpegMarker1 = 0xD8
 )
