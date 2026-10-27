@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize
 use std::sync::{Arc, Mutex};
 
 use crate::domain::keyboard::KeyForwarder;
+use crate::infra::power;
 use crate::service::viewer::decoder::VideoInbox;
 
 /// Sessions a multi-session viewer may hold (the relay enforces the same limit).
@@ -45,6 +46,8 @@ pub struct Session {
     pub has_monitors: AtomicBool,
     /// Keys this viewer holds down on the host.
     pub keys: Mutex<KeyForwarder>,
+    /// Full speed (no EcoQoS) from opening the session until it is dropped.
+    _awake: power::Awake,
 }
 
 impl Session {
@@ -69,6 +72,7 @@ impl Session {
             offered_seq: AtomicU32::new(0),
             has_monitors: AtomicBool::new(false),
             keys: Mutex::default(),
+            _awake: power::awake(),
         }
     }
 
