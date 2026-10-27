@@ -97,6 +97,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `cursor-shape` | client | Draws its own cursor from `cursor-shape` events; the host stops painting it. |
 | `video-delta` | client | Framed key/delta video; without it the host sends plain JPEGs. |
 | `video-h264` | client | H.264 inside the framed format. |
+| `audio-opus` | client | Decodes Opus voice (`[0x02][0x4F]...`); voice to it is Opus, to everyone else PCM. |
 | `p2p.v1` | client | Direct encrypted UDP path. |
 | `multi-session` | client + relay | Up to four viewer sessions per connection. |
 | `monitor-host` | client | Streams monitor-wall thumbnails on `monitor-start` (every desktop edition). |
@@ -110,7 +111,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 Per platform (see [platforms.md](platforms.md)):
 
 - Windows: `file-ack`, `file-offer`, `file-folder`, `cursor-shape`, `video-delta`, `video-h264` (when the
-  Media Foundation decoder exists), `p2p.v1`, `multi-session`. No `host-features`: Windows hosts have every
+  Media Foundation decoder exists), `audio-opus`, `p2p.v1`, `multi-session`. No `host-features`: Windows hosts have every
   host control.
 - Linux: the same without `file-offer`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.

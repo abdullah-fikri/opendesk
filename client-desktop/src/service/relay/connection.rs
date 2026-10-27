@@ -219,6 +219,8 @@ impl Connection {
         }
         caps.extend([capability::FILE_FOLDER, capability::CURSOR_SHAPE]);
         caps.extend(decoder::supported_video_caps());
+        // The Opus codec is built in, so every desktop build decodes it.
+        caps.push(capability::AUDIO_OPUS);
         if p2p::enabled() {
             caps.push(capability::P2P);
         }

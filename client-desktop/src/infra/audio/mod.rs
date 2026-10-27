@@ -26,6 +26,36 @@ pub fn quality_to_audio_params(quality: usize) -> (u32, u8, usize) {
     }
 }
 
+/// Capture side shared by both backends: wraps each processed 20 ms frame as a PCM packet or, while the
+/// partner listed `audio-opus`, as an Opus packet (PCM again if the encoder fails).
+pub(crate) struct VoiceSender {
+    rate: u32,
+    rate_tag_khz: u8,
+    opus: Option<opus::Encoder>,
+}
+
+impl VoiceSender {
+    pub(crate) fn new(rate: u32, rate_tag_khz: u8) -> Self {
+        Self { rate, rate_tag_khz, opus: None }
+    }
+
+    pub(crate) fn packet(&mut self, pcm: &[u8], use_opus: bool) -> Vec<u8> {
+        if use_opus {
+            if self.opus.is_none() {
+                self.opus = opus::Encoder::new(self.rate);
+            }
+            if let Some(pkt) = self.opus.as_mut().and_then(|e| e.encode(pcm)) {
+                return pkt;
+            }
+        }
+        // Binary fast-path: [0x02, rate_khz, ...pcm_bytes] (even total length)
+        let mut pkt = Vec::with_capacity(2 + pcm.len());
+        pkt.extend_from_slice(&[crate::protocol::binary::AUDIO_MARKER, self.rate_tag_khz]);
+        pkt.extend_from_slice(pcm);
+        pkt
+    }
+}
+
 /// Splits a received PCM voice packet (`[0x02, rate_khz, pcm...]` or legacy `[0x02, pcm...]` at 16 kHz) into
 /// (rate_hz, pcm).
 fn pcm_packet(bin: &[u8]) -> (u32, &[u8]) {

@@ -11,7 +11,7 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, Device, FromSample, SampleRate, SizedSample, Stream, StreamConfig};
 
-use super::{VoiceDspState, VoiceReceiver, quality_to_audio_params};
+use super::{VoiceDspState, VoiceReceiver, VoiceSender, quality_to_audio_params};
 use crate::infra::logger;
 use crate::protocol::Outgoing;
 
@@ -120,6 +120,8 @@ pub struct VoiceEngine {
     pub is_session_active: Arc<AtomicBool>,
     pub is_mic_muted: Arc<AtomicBool>,
     pub audio_quality: Arc<AtomicUsize>,
+    /// The voice partner listed `audio-opus`: send Opus instead of PCM.
+    pub use_opus: Arc<AtomicBool>,
 }
 
 impl VoiceEngine {
@@ -130,9 +132,14 @@ impl VoiceEngine {
         let is_mic_muted = Arc::new(AtomicBool::new(false));
         // Default to tier 2 (48 kHz), as on Windows.
         let audio_quality = Arc::new(AtomicUsize::new(2));
+        let use_opus = Arc::new(AtomicBool::new(false));
 
-        let (active, muted, quality) =
-            (Arc::clone(&is_session_active), Arc::clone(&is_mic_muted), Arc::clone(&audio_quality));
+        let (active, muted, quality, opus) = (
+            Arc::clone(&is_session_active),
+            Arc::clone(&is_mic_muted),
+            Arc::clone(&audio_quality),
+            Arc::clone(&use_opus),
+        );
         thread::spawn(move || {
             let mut warned = false;
             loop {
@@ -157,6 +164,7 @@ impl VoiceEngine {
                 drop(tx_pcm);
                 logger::info("desk_rt.audio_in", &format!("Microphone capture opened at {rate} Hz."));
                 let mut dsp = VoiceDspState::new();
+                let mut sender = VoiceSender::new(rate, tag);
                 let mut pending: Vec<u8> = Vec::with_capacity(frame_bytes * 2);
                 let mut processed = vec![0u8; frame_bytes];
                 while active.load(Ordering::Relaxed) && quality.load(Ordering::Relaxed) == tier {
@@ -166,9 +174,7 @@ impl VoiceEngine {
                             while pending.len() >= frame_bytes {
                                 if !muted.load(Ordering::Relaxed) {
                                     dsp.process_pcm_16le(&pending[..frame_bytes], &mut processed);
-                                    let mut pkt = Vec::with_capacity(2 + frame_bytes);
-                                    pkt.extend_from_slice(&[0x02, tag]);
-                                    pkt.extend_from_slice(&processed);
+                                    let pkt = sender.packet(&processed, opus.load(Ordering::Relaxed));
                                     let _ = tx_out.send(Outgoing::Audio(pkt));
                                 }
                                 pending.drain(..frame_bytes);
@@ -230,7 +236,7 @@ impl VoiceEngine {
             }
         });
 
-        Arc::new(Self { tx_play, rx: VoiceReceiver::new(), is_session_active, is_mic_muted, audio_quality })
+        Arc::new(Self { tx_play, rx: VoiceReceiver::new(), is_session_active, is_mic_muted, audio_quality, use_opus })
     }
 
     /// Plays an incoming voice packet: PCM (`[0x02, rate_khz, pcm...]` or legacy `[0x02, pcm...]`) or Opus.

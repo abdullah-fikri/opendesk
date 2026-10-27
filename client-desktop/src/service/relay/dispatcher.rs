@@ -138,6 +138,8 @@ impl Connection {
         ctx.host.can_send_frame.store(true, Ordering::SeqCst);
 
         if is_host {
+            // A viewer's voice partner is its focused host (see `controller::apply_focus`).
+            ctx.voice.use_opus.store(caps.audio_opus, Ordering::SeqCst);
             if p2p_ok {
                 let sinks = Sinks {
                     video: Arc::new(|_| {}),

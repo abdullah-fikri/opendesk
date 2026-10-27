@@ -4,8 +4,6 @@
 //! The encoder runs at the capture rate (16, 24 or 48 kHz) with in-band FEC; the decoder always outputs 48 kHz.
 //! The sequence number lets the decoder recover a lost frame from the next packet's FEC data and conceal
 //! short gaps (PLC).
-// The encoder is only exercised by tests until a sender negotiates Opus.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use std::ptr;
 
