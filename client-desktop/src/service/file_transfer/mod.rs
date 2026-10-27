@@ -23,8 +23,12 @@ use crate::domain::capability::PeerCaps;
 
 pub use receiver::FileReceiver;
 
-/// Chunk size; also the most a receiver accepts per chunk.
+/// Chunk size of JSON (base64) chunks; also the most a receiver accepts per JSON chunk.
 pub const CHUNK_SIZE: usize = 32 * 1024;
+/// Chunk size of binary chunks (`file-binary`); also the most a receiver accepts per binary chunk. Large
+/// enough to make per-message costs negligible, small enough that one chunk holds input on the shared socket
+/// for only a moment.
+pub const BINARY_CHUNK_SIZE: usize = 128 * 1024;
 /// Largest base64 chunk a receiver accepts (32 KiB encodes to 43 692 characters).
 pub const MAX_CHUNK_B64: usize = 48_000;
 

@@ -21,7 +21,7 @@ use crate::domain::capability;
 use crate::domain::settings::{self, normalize_gateway_url};
 use crate::infra::p2p::{self, P2p};
 use crate::infra::{autostart, device, logger, power, storage, virtual_clipboard, window};
-use crate::protocol::{ClientMessage, InputEvent, Outgoing, ServerMessage, binary};
+use crate::protocol::{ClientMessage, FilePayload, InputEvent, Outgoing, ServerMessage, binary};
 use crate::service::context::Ctx;
 use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS};
 use crate::service::ui_port::RelayStatus;
@@ -217,7 +217,7 @@ impl Connection {
         if cfg!(windows) && !autostart::supervised_by_service() {
             caps.push(capability::FILE_OFFER);
         }
-        caps.extend([capability::FILE_FOLDER, capability::CURSOR_SHAPE]);
+        caps.extend([capability::FILE_FOLDER, capability::FILE_BINARY, capability::CURSOR_SHAPE]);
         caps.extend(decoder::supported_video_caps());
         if p2p::enabled() {
             caps.push(capability::P2P);
@@ -420,8 +420,17 @@ impl Connection {
     }
 
     /// Voice and video from the relay: tagged per host for a multi-session viewer, else the single session.
-    fn on_binary(&self, bin: &[u8]) {
+    /// File chunks are always tagged with their sender.
+    fn on_binary(&mut self, bin: &[u8]) {
+        if let Some((from, payload)) = binary::untag(bin)
+            && let Some(chunk) = binary::parse_file_chunk(payload)
+        {
+            return self.on_file_chunk(from, &chunk);
+        }
         let ctx = &self.ctx;
+        if binary::parse_file_chunk(bin).is_some() {
+            return; // an untagged chunk has no stamped sender
+        }
         if binary::is_monitor(bin) {
             // Monitor-wall thumbnails never belong to a viewer session (and reach only the admin edition).
             #[cfg(feature = "admin")]
@@ -449,6 +458,19 @@ impl Connection {
                     s.inbox.push(bin.to_vec());
                 }
             }
+        }
+    }
+
+    /// A binary file chunk; `from` is the relay's tag, like `fromClean` on `file-transfer`. A rejected chunk is
+    /// answered with a NACK so the sender stops at once.
+    fn on_file_chunk(&mut self, from: &str, chunk: &binary::FileChunk) {
+        let ctx = Arc::clone(&self.ctx);
+        let (status, ack) = self.receiver.handle_chunk(&ctx, chunk, from);
+        if let Some(ok) = ack {
+            ctx.send(ClientMessage::file(from, FilePayload::ack(chunk.id, ok)));
+        }
+        if let Some(status) = status {
+            ctx.ui.status(status);
         }
     }
 

@@ -6,6 +6,9 @@ pub const FILE_ACK: &str = "file-ack";
 pub const FILE_OFFER: &str = "file-offer";
 /// Folder transfer (relative paths, `group`/`rel`).
 pub const FILE_FOLDER: &str = "file-folder";
+/// File chunks as binary messages instead of base64 JSON. From a client: it accepts them; from the relay: it
+/// forwards them. Used only when both the partner and the relay list it.
+pub const FILE_BINARY: &str = "file-binary";
 /// The viewer draws its own cursor in the host's shape.
 pub const CURSOR_SHAPE: &str = "cursor-shape";
 /// Framed key/delta video.
