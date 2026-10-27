@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use core_engine::capture::{DesktopCapturer, MonitorBounds, cursor_shape, enumerate_monitors};
 use core_engine::stream::{FrameInput, H264Mode, StreamEncoder};
 
+use crate::domain::perf_stats::{PerfWindow, Stage, kbps};
 use crate::domain::resolution;
 use crate::infra::{logger, power};
 use crate::protocol::{InputEvent, MonitorInfo, Outgoing};
@@ -46,6 +47,38 @@ impl CongestionMeter {
             (false, Some(_)) => {}
         }
         ((self.ewma_ms - 40.0) / 210.0).clamp(0.0, 1.0)
+    }
+}
+
+/// Capture-loop counters for one `host.perf` window (fields documented in `domain::perf_stats`).
+#[derive(Default)]
+struct HostPerf {
+    grab: Stage,
+    encode: Stage,
+    gate: Stage,
+    sent: u32,
+    bytes: u64,
+    idle: u32,
+    gate_skips: u32,
+}
+
+impl HostPerf {
+    /// The window's log line; resets the counters.
+    fn take_line(&mut self, secs: f64, h264: Option<&str>) -> String {
+        let h264 = h264.map_or_else(|| "off".to_string(), |name| format!("on({name})"));
+        let line = format!(
+            "fps={:.1} target={:.0} grab avg/max={} encode={} gate={} kbps={} idle_frames={} gate_skips={} h264={h264}",
+            self.sent as f64 / secs,
+            1.0 / FRAME_INTERVAL.as_secs_f64(),
+            self.grab.take_summary(),
+            self.encode.take_summary(),
+            self.gate.take_summary(),
+            kbps(self.bytes, secs),
+            self.idle,
+            self.gate_skips,
+        );
+        *self = Self::default();
+        line
     }
 }
 
@@ -126,9 +159,15 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     let mut sent_monitors: Option<InputEvent> = None;
     let mut monitors_dirty = true;
     let mut last_monitor_poll = Instant::now();
+    let mut perf = HostPerf::default();
+    let mut perf_window = PerfWindow::new(last_monitor_poll);
 
     while host.is_current(generation) {
         let frame_start = Instant::now();
+        if let Some(secs) = perf_window.due(frame_start) {
+            let h264 = if h264 == H264Mode::Off { None } else { Some(encoder.h264_name.as_deref().unwrap_or("idle")) };
+            logger::info("host.perf", &perf.take_line(secs, h264));
+        }
 
         // Monitor switch, resolution change or a new input desktop all rebuild the pipeline.
         let req_idx = host.monitor_index.load(Ordering::Relaxed);
@@ -203,20 +242,29 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
         let mut can_send = host.can_send_frame.load(Ordering::Acquire);
         let mut level = congestion.observe(can_send, frame_start);
         if !can_send {
+            let gate_start = Instant::now();
             while !can_send && frame_start.elapsed() + GATE_POLL < FRAME_INTERVAL && host.is_current(generation) {
                 thread::sleep(GATE_POLL);
                 can_send = host.can_send_frame.load(Ordering::Acquire);
             }
+            let now = Instant::now();
+            perf.gate.record(now - gate_start);
             if can_send {
-                level = congestion.observe(true, Instant::now());
+                level = congestion.observe(true, now);
+            } else {
+                perf.gate_skips += 1;
             }
+        } else {
+            perf.gate.record(Duration::ZERO);
         }
         encoder.set_congestion(level);
         if can_send {
             // DXGI blocks here until the desktop changes (or the tick ends), so an idle desktop costs ~nothing.
             let budget = FRAME_INTERVAL.saturating_sub(frame_start.elapsed());
             let backend = capturer.backend();
+            let grab_start = Instant::now();
             capturer.grab(budget.as_millis() as u32);
+            perf.grab.record(grab_start.elapsed());
             if capturer.backend() != backend {
                 logger::warn("host.capture", "DXGI duplication lost for good; falling back to GDI capture.");
                 encoder.request_key();
@@ -227,13 +275,20 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
                 dirty_hint: capturer.dirty_hint(),
                 moves: capturer.moves(),
             };
-            if let Some(msg) = encoder.encode(&frame) {
+            let sent = encoder.encode(&frame);
+            // `encode` times itself; reuse that instead of another clock read.
+            perf.encode.record(Duration::from_micros(encoder.last.encode_us));
+            if let Some(msg) = sent {
+                perf.sent += 1;
+                perf.bytes += msg.len() as u64;
                 if !h264_logged && let Some(name) = &encoder.h264_name {
                     h264_logged = true;
                     logger::info("host.capture", &format!("H.264 motion encoder: {name}"));
                 }
                 host.can_send_frame.store(false, Ordering::Release);
                 let _ = ctx.outbox.send(Outgoing::VideoFrame(msg));
+            } else {
+                perf.idle += 1;
             }
         }
 
@@ -264,6 +319,24 @@ mod tests {
             m.observe(true, t);
         }
         assert!(m.observe(true, t) > 0.9);
+    }
+
+    #[test]
+    fn perf_line_reports_the_window() {
+        let mut p = HostPerf::default();
+        for _ in 0..589 {
+            p.grab.record(Duration::from_micros(1200));
+            p.encode.record(Duration::from_micros(3100));
+            p.gate.record(Duration::from_micros(400));
+        }
+        p.grab.record(Duration::from_millis(4));
+        (p.sent, p.bytes, p.idle) = (589, 3_062_500, 12);
+        let line = p.take_line(10.0, Some("Intel QSV (hardware MFT)"));
+        assert_eq!(
+            line,
+            "fps=58.9 target=60 grab avg/max=1.2/4.0ms encode=3.1/3.1ms gate=0.4/0.4ms kbps=2450 idle_frames=12 gate_skips=0 h264=on(Intel QSV (hardware MFT))"
+        );
+        assert!(p.take_line(10.0, None).starts_with("fps=0.0 target=60 grab avg/max=0.0/0.0ms"));
     }
 
     #[test]
