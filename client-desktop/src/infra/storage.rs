@@ -5,7 +5,8 @@
 
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -59,10 +60,25 @@ fn read_json<T: DeserializeOwned>(name: &str) -> Option<T> {
     }
 }
 
+/// Writes `data` to `<path>.tmp`, flushes it to disk and renames it over `path`, so a crash or a concurrent
+/// reader never sees a half-written file. The temporary file is removed on failure.
+fn write_atomic(path: &Path, data: &[u8]) -> io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let result = fs::File::create(&tmp)
+        .and_then(|mut f| f.write_all(data).and_then(|_| f.sync_all()))
+        .and_then(|_| fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
 fn write_json<T: Serialize + ?Sized>(name: &str, value: &T) {
     let result = serde_json::to_string_pretty(value)
         .map_err(|e| e.to_string())
-        .and_then(|data| fs::write(app_dir().join(name), data).map_err(|e| e.to_string()));
+        .and_then(|data| write_atomic(&app_dir().join(name), data.as_bytes()).map_err(|e| e.to_string()));
     if let Err(e) = result {
         logger::error("storage", &format!("Could not write {name}: {e}"));
     }
@@ -98,4 +114,23 @@ pub fn load_history() -> Vec<HistoryRecord> {
 /// Writes the connection history to disk.
 pub fn save_history(list: &[HistoryRecord]) {
     write_json(HISTORY_FILE, list);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_atomic_replaces_and_leaves_no_tmp() {
+        let dir = std::env::temp_dir().join(format!("opendesk-storage-test-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("config.json");
+
+        write_atomic(&path, b"first").unwrap();
+        write_atomic(&path, b"second").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"second");
+        assert!(!dir.join("config.json.tmp").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
