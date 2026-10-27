@@ -298,8 +298,9 @@ mod tests {
         use crate::infra::audio::VoiceEngine;
         use crate::service::context::{AppContext, Ctx};
         use crate::service::ui_port::*;
+        use parking_lot::Mutex;
         use slint::{Rgba8Pixel, SharedPixelBuffer};
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
         #[derive(Default)]
         struct Recorder {
@@ -324,10 +325,10 @@ mod tests {
             fn focus_changed(&self, _: String) {}
             fn layout_changed(&self, _: i32) {}
             fn wall_changed(&self, view: WallView) {
-                *self.view.lock().unwrap() = Some(view);
+                *self.view.lock() = Some(view);
             }
             fn wall_frames(&self, frames: Vec<(String, SharedPixelBuffer<Rgba8Pixel>)>) {
-                self.frames.lock().unwrap().extend(frames.into_iter().map(|(id, px)| (id, px.width())));
+                self.frames.lock().extend(frames.into_iter().map(|(id, px)| (id, px.width())));
             }
         }
 
@@ -359,18 +360,18 @@ mod tests {
         }];
         let deadline = Instant::now() + Duration::from_secs(10);
         let tile = loop {
-            if ui.view.lock().unwrap().as_ref().is_none_or(|v| v.picks.is_empty()) {
+            if ui.view.lock().as_ref().is_none_or(|v| v.picks.is_empty()) {
                 crate::service::monitor_wall::set_hosts(&admin, &listed);
             }
-            let live = ui.view.lock().unwrap().as_ref().and_then(|v| v.tiles.iter().find(|t| t.id == host_id).cloned());
-            if live.as_ref().is_some_and(|t| t.state == TileState::Live) && !ui.frames.lock().unwrap().is_empty() {
+            let live = ui.view.lock().as_ref().and_then(|v| v.tiles.iter().find(|t| t.id == host_id).cloned());
+            if live.as_ref().is_some_and(|t| t.state == TileState::Live) && !ui.frames.lock().is_empty() {
                 break live.unwrap();
             }
             assert!(Instant::now() < deadline, "no live tile with a picture: {live:?}");
             std::thread::sleep(Duration::from_millis(50));
         };
         assert_eq!(tile.subtitle, crate::domain::desk_id::format(&host_id));
-        let (id, width) = ui.frames.lock().unwrap()[0].clone();
+        let (id, width) = ui.frames.lock()[0].clone();
         assert!(id == host_id && width <= 640, "decoded tile-sized thumbnail: {id} {width}");
         crate::service::monitor_wall::toggle_host(&admin, &host_id);
         crate::service::monitor_wall::close(&admin);
