@@ -292,18 +292,18 @@ impl SystemTray {
                 ptr::null_mut(),
             );
 
-            // Load icon: try icon.ico, fallback to embedded resource 1
-            let icon_file = to_wide("icon.ico");
-            let mut hicon = LoadImageW(
-                ptr::null_mut(),
-                icon_file.as_ptr(),
-                1, // IMAGE_ICON
-                16,
-                16,
-                0x00000010, // LR_LOADFROMFILE
-            );
+            // Load icon: the embedded resource 1 (icon.rc; MAKEINTRESOURCE(1)), fallback to icon.ico
+            let mut hicon = LoadImageW(hinst, ptr::without_provenance::<u16>(1), 1, 16, 16, 0);
             if hicon.is_null() {
-                hicon = LoadImageW(hinst, std::ptr::dangling::<u16>(), 1, 16, 16, 0);
+                let icon_file = to_wide("icon.ico");
+                hicon = LoadImageW(
+                    ptr::null_mut(),
+                    icon_file.as_ptr(),
+                    1, // IMAGE_ICON
+                    16,
+                    16,
+                    0x00000010, // LR_LOADFROMFILE
+                );
             }
 
             let mut nid = std::mem::zeroed::<NOTIFYICONDATAW>();
