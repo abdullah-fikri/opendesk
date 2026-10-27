@@ -8,6 +8,7 @@ pub mod clock;
 pub mod device;
 pub mod logger;
 pub mod p2p;
+pub mod power;
 pub mod privacy;
 pub mod storage;
 pub mod system_service;

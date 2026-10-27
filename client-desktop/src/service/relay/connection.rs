@@ -20,7 +20,7 @@ use tungstenite::{Message, WebSocket};
 use crate::domain::capability;
 use crate::domain::settings::{self, normalize_gateway_url};
 use crate::infra::p2p::{self, P2p};
-use crate::infra::{autostart, device, logger, storage, virtual_clipboard};
+use crate::infra::{autostart, device, logger, power, storage, virtual_clipboard};
 use crate::protocol::{ClientMessage, InputEvent, Outgoing, ServerMessage, binary};
 use crate::service::context::Ctx;
 use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS};
@@ -63,6 +63,8 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
             stashed: None,
             busy: false,
         };
+        // This process idles under EcoQoS until a session or traffic needs full speed.
+        power::arm();
         loop {
             conn.run_once();
         }
@@ -122,6 +124,7 @@ impl Connection {
         let mut last_path_update = Instant::now();
         let backoff = idle_backoff_enabled();
         let mut last_traffic = Instant::now();
+        let mut awake: Option<power::Awake> = None;
 
         while !ctx.relay.reconnect.load(Ordering::SeqCst) && !lost {
             let partner = ctx.partner();
@@ -174,10 +177,6 @@ impl Connection {
                 thread::sleep(RECONNECT_DELAY);
                 break;
             }
-            if !backoff {
-                thread::sleep(BUSY_SLEEP);
-                continue;
-            }
             let traffic = std::mem::take(&mut self.busy)
                 || video_in_flight
                 || self.monitor_in_flight
@@ -187,7 +186,16 @@ impl Connection {
                 last_traffic = Instant::now();
             }
             let session = !partner.is_empty() || ctx.is_hosting() || !ctx.viewers.is_empty();
-            self.pause(idle_sleep(last_traffic.elapsed(), session));
+            // Transfers and monitor streams run without a session: recent traffic keeps full speed too.
+            let quiet = last_traffic.elapsed();
+            if (session || quiet < IDLE_AFTER) != awake.is_some() {
+                awake = awake.is_none().then(power::awake);
+            }
+            if backoff {
+                self.pause(idle_sleep(quiet, session));
+            } else {
+                thread::sleep(BUSY_SLEEP);
+            }
         }
         self.on_connection_ended();
     }
@@ -374,7 +382,8 @@ impl Connection {
         }
         loop {
             let read = socket.read();
-            if read.is_ok() {
+            // Keep-alive pings are not traffic: an idle connection stays idle.
+            if matches!(read, Ok(Message::Binary(_) | Message::Text(_))) {
                 self.busy = true;
             }
             match read {

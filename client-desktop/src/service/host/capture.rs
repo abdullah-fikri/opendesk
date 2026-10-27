@@ -9,7 +9,7 @@ use core_engine::capture::{DesktopCapturer, MonitorBounds, cursor_shape, enumera
 use core_engine::stream::{FrameInput, H264Mode, StreamEncoder};
 
 use crate::domain::resolution;
-use crate::infra::logger;
+use crate::infra::{logger, power};
 use crate::protocol::{InputEvent, MonitorInfo, Outgoing};
 use crate::service::context::Ctx;
 
@@ -81,6 +81,9 @@ pub fn spawn(ctx: Ctx, partner: String, generation: u64) {
 
 fn run(ctx: &Ctx, partner: &str, generation: u64) {
     let host = &ctx.host;
+    // Full speed for the whole session, before the first capture.
+    let _awake = power::awake();
+    power::raise_thread_priority();
     // Follow the secure desktop (UAC / lock screen) when running as SYSTEM; a no-op otherwise.
     core_engine::desktop::switch_to_input_desktop();
     let mut monitors = enumerate_monitors();
