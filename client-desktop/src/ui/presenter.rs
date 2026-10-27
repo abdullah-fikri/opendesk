@@ -159,13 +159,21 @@ impl UiPort for SlintUi {
             let image = Image::from_rgba8(frame.pixels);
             let path = if frame.p2p { "P2P" } else { "Relay" };
             let (width, height) = (frame.width as i32, frame.height as i32);
+            let fps = frame.fps as i32;
+            // The picture changes every frame; the other fields only rarely, so they are written only on change.
             let found = session_model::update(&id, |r| {
                 r.frame = image;
-                r.has_frame = true;
-                r.connecting = false;
-                r.fps = frame.fps as i32;
-                r.stream_width = width;
-                r.stream_height = height;
+                if !r.has_frame || r.connecting {
+                    r.has_frame = true;
+                    r.connecting = false;
+                }
+                if r.fps != fps {
+                    r.fps = fps;
+                }
+                if (r.stream_width, r.stream_height) != (width, height) {
+                    r.stream_width = width;
+                    r.stream_height = height;
+                }
                 if r.path.as_str() != path {
                     r.path = path.into();
                 }
