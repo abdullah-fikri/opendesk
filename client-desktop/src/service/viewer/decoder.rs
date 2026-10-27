@@ -122,6 +122,9 @@ pub struct ViewerDecoder {
     h264: Option<(H264Decoder, u32, u32)>,
     /// The H.264 decoder has seen an IDR since the last non-H.264 picture, so P-frames may follow.
     h264_ready: bool,
+    /// Output buffers, reused round-robin (see [`ViewerDecoder::output`]).
+    pool: Vec<SharedPixelBuffer<Rgba8Pixel>>,
+    next: usize,
 }
 
 impl ViewerDecoder {
@@ -142,16 +145,33 @@ impl ViewerDecoder {
             }
         }
         if changed {
-            ViewerOutput::Frame(
-                to_pixel_buffer(&self.comp.fb, self.comp.width, self.comp.height),
-                self.comp.width,
-                self.comp.height,
-            )
+            ViewerOutput::Frame(self.output(), self.comp.width, self.comp.height)
         } else if need_key {
             ViewerOutput::NeedKey
         } else {
             ViewerOutput::Unchanged
         }
+    }
+
+    /// Bound on reused output buffers: one on screen, one waiting for the UI thread, one being filled.
+    const POOL: usize = 3;
+
+    /// Copies the framebuffer into an output buffer. Buffers are reused round-robin; one the UI still holds
+    /// is shared, so `make_mut_bytes` copies it first and the picture on screen is never written to.
+    fn output(&mut self) -> SharedPixelBuffer<Rgba8Pixel> {
+        let (w, h) = (self.comp.width, self.comp.height);
+        if self.pool.first().is_some_and(|b| (b.width(), b.height()) != (w, h)) {
+            self.pool.clear();
+        }
+        if self.pool.len() < Self::POOL {
+            self.pool.push(to_pixel_buffer(&self.comp.fb, w, h));
+            self.next = 0;
+            return self.pool.last().unwrap().clone();
+        }
+        let buf = &mut self.pool[self.next];
+        self.next = (self.next + 1) % Self::POOL;
+        buf.make_mut_bytes().copy_from_slice(&self.comp.fb);
+        buf.clone()
     }
 
     fn apply(&mut self, msg: &[u8]) -> Applied {
@@ -480,6 +500,44 @@ mod tests {
         let got = inbox.drain();
         assert_eq!(got.len(), 2);
         assert_eq!(FrameHeader::parse(&got[0]).unwrap().0.kind, KIND_KEY);
+    }
+
+    #[test]
+    fn reused_output_buffers_never_change_a_frame_already_handed_out() {
+        let jpeg = |w: u32, h: u32, v: u8| {
+            let mut out = Vec::new();
+            image::RgbImage::from_pixel(w, h, image::Rgb([v, v, v]))
+                .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Jpeg)
+                .unwrap();
+            out
+        };
+        let mut viewer = ViewerDecoder::new();
+        let mut held = Vec::new();
+        for (i, v) in [0u8, 255, 0, 255, 0, 255, 0].into_iter().enumerate() {
+            let ViewerOutput::Frame(buf, ..) = viewer.process(vec![jpeg(8, 8, v)]) else { panic!() };
+            assert_eq!(buf.as_bytes(), &viewer.comp.fb[..]);
+            if i % 2 == 0 {
+                held.push((buf, viewer.comp.fb.clone())); // the UI still shows every other frame
+            }
+        }
+        for (buf, fb) in &held {
+            assert_eq!(buf.as_bytes(), &fb[..], "a frame the UI holds is never rewritten");
+        }
+        assert_eq!(viewer.pool.len(), ViewerDecoder::POOL);
+        let ViewerOutput::Frame(buf, w, h) = viewer.process(vec![jpeg(16, 4, 128)]) else { panic!() };
+        assert_eq!((buf.width(), buf.height(), w, h), (16, 4, 16, 4), "a new stream size resets the pool");
+        assert_eq!(viewer.pool.len(), 1);
+
+        // Buffers the UI has released are refilled in place, not reallocated.
+        let ptrs = |v: &ViewerDecoder| v.pool.iter().map(|b| b.as_bytes().as_ptr()).collect::<Vec<_>>();
+        for _ in 0..ViewerDecoder::POOL {
+            let _ = viewer.process(vec![jpeg(16, 4, 7)]);
+        }
+        let before = ptrs(&viewer);
+        for _ in 0..ViewerDecoder::POOL {
+            let _ = viewer.process(vec![jpeg(16, 4, 9)]);
+        }
+        assert_eq!(ptrs(&viewer), before);
     }
 
     #[test]
