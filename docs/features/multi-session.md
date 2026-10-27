@@ -63,8 +63,9 @@ and cannot be taken as a host.
 - `session-disconnect {targetClean}` ends only that pair; other tabs keep streaming.
 - A host leaving or going offline closes only its tab (`session-closed {targetClean}`).
 - When the viewer's connection drops or is replaced, every host it viewed is released and told.
-- Each view has its own ordered frame queue and writer, so a key frame or congestion from one host never
-  flushes another host's delta chain.
+- Each view has its own ordered frame queue, so a key frame or congestion from one host never flushes another
+  host's delta chain. The viewer's single writer serves those queues in turn, after its input and control
+  messages.
 - File grants stay bound to the two exact connections; the limit of 8 grants is shared across a viewer's
   sessions.
 - P2P signal rate limiting is per partner, and each tab owns its own P2P link.
