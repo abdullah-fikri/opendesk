@@ -165,6 +165,7 @@ same two connections. At most 8 grants per sender. See `client-desktop/docs/feat
 
 ```text
 voice   [0x02][rate_khz: 16|24|48][PCM 16-bit little-endian mono ...]
+voice   [0x02][0x4F][seq u16 big-endian][Opus packet]   20 ms mono, only when both sides list audio-opus
 video   [0xFF 0xD8 ...]   a plain JPEG, or a framed message (below)
 tagged  [0x10][9 ASCII digits: host clean ID][voice or video]   multi-session viewers only
 monitor [0x11][JPEG]                                           host to relay: monitor-wall thumbnail
@@ -186,6 +187,10 @@ Framed video (`video-delta`), all integers big-endian:
     patches (dst_x, dst_y, w, h, atlas_x, atlas_y) x u16, blitted from the payload
     payload
 ```
+
+Opus voice keeps the `0x02` marker, so every relay version forwards it as audio. `0x4F` is never a rate tag;
+`seq` counts packets so the receiver can rebuild one lost frame from the next packet's in-band FEC and conceal
+short gaps. Receivers always accept PCM, and a sender uses Opus only toward a partner that listed `audio-opus`.
 
 The relay keeps at most 8 queued frames per receiver. A key frame or IDR flushes the queue; a delta that does
 not fit flushes it too, and the viewer then sends `video-keyframe`.

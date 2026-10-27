@@ -1,7 +1,11 @@
-//! Voice call audio: microphone capture into binary voice packets (`[0x02][rate_khz][pcm16le]`) and playback of
-//! received packets, with a light DSP stage (high-pass, noise gate, soft limiter) on captured audio. The device
-//! backend is selected at compile time: waveIn/waveOut on Windows, cpal (ALSA, which PipeWire and PulseAudio
-//! serve) elsewhere.
+//! Voice call audio: microphone capture into binary voice packets (`[0x02][rate_khz][pcm16le]`, or Opus, see
+//! `opus`) and playback of received packets, with a light DSP stage (high-pass, noise gate, soft limiter) on
+//! captured audio. The device backend is selected at compile time: waveIn/waveOut on Windows, cpal (ALSA, which
+//! PipeWire and PulseAudio serve) elsewhere.
+
+use std::sync::Mutex;
+
+pub mod opus;
 
 #[cfg(windows)]
 mod win;
@@ -19,6 +23,49 @@ pub fn quality_to_audio_params(quality: usize) -> (u32, u8, usize) {
         0 => (16000, 16, 640),  // 20ms @ 16kHz 16-bit mono
         1 => (24000, 24, 960),  // 20ms @ 24kHz 16-bit mono
         _ => (48000, 48, 1920), // 20ms @ 48kHz 16-bit mono (WhatsApp / AnyDesk HD Voice)
+    }
+}
+
+/// Splits a received PCM voice packet (`[0x02, rate_khz, pcm...]` or legacy `[0x02, pcm...]` at 16 kHz) into
+/// (rate_hz, pcm).
+fn pcm_packet(bin: &[u8]) -> (u32, &[u8]) {
+    // Even total length with valid rate_khz tag (16, 24, 48) -> new header format
+    if bin.len().is_multiple_of(2) && (bin[1] == 16 || bin[1] == 24 || bin[1] == 48) {
+        ((bin[1] as u32) * 1000, &bin[2..])
+    } else {
+        (16000, &bin[1..])
+    }
+}
+
+/// Receive side shared by both backends: PCM packets pass through, Opus packets go through one decoder (only
+/// the focused session's voice plays, so there is a single stream). Relay and P2P threads both deliver here.
+pub(crate) struct VoiceReceiver {
+    opus: Mutex<Option<opus::Decoder>>,
+}
+
+impl VoiceReceiver {
+    pub(crate) fn new() -> Self {
+        Self { opus: Mutex::new(None) }
+    }
+
+    /// Hands every (rate_hz, pcm16le) chunk in voice packet `bin` (longer than 2 bytes) to `play`.
+    pub(crate) fn receive(&self, bin: &[u8], mut play: impl FnMut(u32, Vec<u8>)) {
+        let Some((seq, payload)) = opus::parse(bin) else {
+            let (rate, pcm) = pcm_packet(bin);
+            if !pcm.is_empty() {
+                play(rate, pcm.to_vec());
+            }
+            return;
+        };
+        let mut dec = self.opus.lock().unwrap_or_else(|e| e.into_inner());
+        if dec.is_none() {
+            *dec = opus::Decoder::new();
+        }
+        if let Some(dec) = dec.as_mut() {
+            for pcm in dec.decode(seq, payload) {
+                play(opus::DECODE_RATE, pcm);
+            }
+        }
     }
 }
 
@@ -72,5 +119,21 @@ impl VoiceDspState {
             out[i + 1] = bytes[1];
             i += 2;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn receiver_plays_pcm_as_sent_and_opus_at_48khz() {
+        let rx = VoiceReceiver::new();
+        let mut got = Vec::new();
+        rx.receive(&[0x02, 24, 1, 0, 2, 0], |rate, pcm| got.push((rate, pcm.len())));
+        rx.receive(&[0x02, 1, 0, 2, 0], |rate, pcm| got.push((rate, pcm.len())));
+        let mut enc = opus::Encoder::new(16_000).unwrap();
+        rx.receive(&enc.encode(&[0u8; 640]).unwrap(), |rate, pcm| got.push((rate, pcm.len())));
+        assert_eq!(got, [(24_000, 4), (16_000, 4), (48_000, 1920)]);
     }
 }

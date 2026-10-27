@@ -10,7 +10,7 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Duration;
 
-use super::{VoiceDspState, quality_to_audio_params};
+use super::{VoiceDspState, VoiceReceiver, quality_to_audio_params};
 use crate::infra::logger;
 use crate::protocol::Outgoing;
 
@@ -97,6 +97,7 @@ unsafe extern "system" {
 /// Two-way voice for the current session: microphone capture into binary packets and playback.
 pub struct VoiceEngine {
     tx_play: Sender<(u32, Vec<u8>)>,
+    rx: VoiceReceiver,
     pub is_session_active: Arc<AtomicBool>,
     pub is_mic_muted: Arc<AtomicBool>,
     pub audio_quality: Arc<AtomicUsize>,
@@ -371,22 +372,16 @@ impl VoiceEngine {
             }
         });
 
-        Arc::new(Self { tx_play, is_session_active, is_mic_muted, audio_quality })
+        Arc::new(Self { tx_play, rx: VoiceReceiver::new(), is_session_active, is_mic_muted, audio_quality })
     }
 
-    /// Plays incoming binary audio frame (`[0x02, rate_khz, pcm...]` or legacy `[0x02, pcm...]`)
+    /// Plays an incoming voice packet: PCM (`[0x02, rate_khz, pcm...]` or legacy `[0x02, pcm...]`) or Opus.
     pub fn play_binary_packet(&self, bin: &[u8]) {
         if !self.is_session_active.load(Ordering::Relaxed) || bin.len() <= 2 {
             return;
         }
-        // Even total length with valid rate_khz tag (16, 24, 48) -> new header format
-        let (rate_hz, pcm_slice) = if bin.len().is_multiple_of(2) && (bin[1] == 16 || bin[1] == 24 || bin[1] == 48) {
-            ((bin[1] as u32) * 1000, &bin[2..])
-        } else {
-            (16000, &bin[1..])
-        };
-        if !pcm_slice.is_empty() {
-            let _ = self.tx_play.send((rate_hz, pcm_slice.to_vec()));
-        }
+        self.rx.receive(bin, |rate_hz, pcm| {
+            let _ = self.tx_play.send((rate_hz, pcm));
+        });
     }
 }
