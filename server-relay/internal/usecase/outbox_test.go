@@ -136,13 +136,13 @@ func TestWriterPriorityAndOrder(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	view := p.startView("200000001", true)
 	key := []byte{0xFF, 0xD8, 0x00, 0x4F, 1, 1, 0}
-	_ = p.SendFile(FileChunk, "chunk1")
-	_ = p.SendFile(FileChunk, "chunk2")
+	_ = p.SendFile("200000001", FileChunk, "chunk1")
+	_ = p.SendFile("200000001", FileChunk, "chunk2")
 	p.deliverVideo(view, key)
 	p.deliverAudio(view, "200000001", []byte{audioMarker, 48, 1})
 	p.deliverAudio(nil, "", []byte{audioMarker, 48, 2})
 	_ = p.Send("c1")
-	_ = p.SendFile(FileOffer, "offer") // control class
+	_ = p.SendFile("200000001", FileOffer, "offer") // control class
 	_ = p.Send("c2")
 	close(conn.gate)
 
@@ -165,12 +165,12 @@ func TestFileBackpressure(t *testing.T) {
 	_ = p.Send("hold") // the writer waits on the gate with this one
 	time.Sleep(20 * time.Millisecond)
 	for i := range fileQueueLen {
-		if err := p.SendFile(FileChunk, i); err != nil {
+		if err := p.SendFile("200000001", FileChunk, i); err != nil {
 			t.Fatal(err)
 		}
 	}
 	sent := make(chan error, 1)
-	go func() { sent <- p.SendFile(FileEnd, "end") }()
+	go func() { sent <- p.SendFile("200000001", FileEnd, "end") }()
 	select {
 	case err := <-sent:
 		t.Fatalf("file sender not held back by a full queue: %v", err)

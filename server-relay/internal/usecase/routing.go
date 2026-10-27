@@ -8,12 +8,14 @@ func (r *Relay) ActivePartner(sender *Peer, targetClean string) *Peer {
 	return r.activePartnerLocked(sender, targetClean)
 }
 
-// ForwardBinary relays one binary message (voice or video) from sender to its session partner and reports
-// whether it had an authorized receiver.
+// ForwardBinary relays one binary message (voice, video or a file chunk) from sender to its session partner
+// and reports whether it had an authorized receiver.
 //
 // A multi-session viewer addresses a host with the session-tag prefix, which is stripped (zero copy) so the
 // host receives the plain payload. Messages to a multi-session viewer are tagged with the sending host's ID;
 // its video goes through that session's own queue.
+//
+// A file chunk is routed by its transfer grant instead (see forwardFileChunk).
 //
 // A monitor-wall thumbnail (monitorTag + JPEG) is never session traffic: it goes only to the administrators
 // watching the sender (see monitor.go).
@@ -24,6 +26,9 @@ func (r *Relay) ForwardBinary(sender *Peer, msg []byte) bool {
 	targetID := ""
 	if sender.Multi && len(msg) > sessionTagLen && msg[0] == sessionTag {
 		targetID, msg = string(msg[1:sessionTagLen]), msg[sessionTagLen:]
+	}
+	if len(msg) > 0 && msg[0] == fileChunkMarker {
+		return r.forwardFileChunk(sender, targetID, msg)
 	}
 	r.mu.RLock()
 	rcpt := r.activePartnerLocked(sender, targetID)

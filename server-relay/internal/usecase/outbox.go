@@ -25,7 +25,8 @@ const (
 	controlStallLimit = 500 * time.Millisecond
 	// audioQueueLen bounds queued voice; the oldest packet goes first, since late voice is worse than a gap.
 	audioQueueLen = 16
-	// fileQueueLen and fileQueueBytes bound queued file-transfer messages (chunks are at most 32 KiB decoded).
+	// fileQueueLen and fileQueueBytes bound queued file-transfer messages (JSON chunks carry at most 32 KiB,
+	// binary chunks at most 128 KiB).
 	fileQueueLen   = 16
 	fileQueueBytes = 4 << 20
 	// fileStallLimit is the stall limit for file traffic, the same bound one socket write has
@@ -42,6 +43,8 @@ type outMsg struct {
 	bin    []byte
 	marker byte
 	tag    string
+	// from is the sender's clean ID on file traffic.
+	from string
 	// hangUp closes the connection once everything queued before it is written.
 	hangUp bool
 }
@@ -122,21 +125,26 @@ func (p *Peer) Send(v any) error {
 	return p.enqueue(outMsg{text: data})
 }
 
-// SendFile queues one file-transfer message with the given payload action. Offers and pulls are control
+// SendFile queues one file-transfer message from the given sender with the given payload action. Offers and pulls are control
 // traffic: a forwarded Ctrl+V relies on the offer having arrived before it. Everything else (start, chunks,
 // end, ack) goes to the file queue in order. When that queue is full the caller (the sender's read loop) waits
 // for room, as it waited on the socket before: senders have no end-to-end flow control besides TCP, so dropping
 // or failing early would break transfers to a slower receiver.
-func (p *Peer) SendFile(action string, v any) error {
+func (p *Peer) SendFile(from, action string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	m := outMsg{text: data}
 	if action == FileOffer || action == FilePull {
-		return p.enqueue(m)
+		return p.enqueue(outMsg{text: data})
 	}
-	return p.push(&p.file, fileQueueBytes, fileStallLimit, m)
+	return p.push(&p.file, fileQueueBytes, fileStallLimit, outMsg{text: data, from: from})
+}
+
+// SendFileChunk queues a binary file chunk from the given sender, tagged with its clean ID, in order with that
+// sender's JSON file messages. It waits for room like SendFile.
+func (p *Peer) SendFileChunk(from string, chunk []byte) error {
+	return p.push(&p.file, fileQueueBytes, fileStallLimit, outMsg{bin: chunk, marker: sessionTag, tag: from, from: from})
 }
 
 // Disconnect closes the connection after everything already queued for it is written (for example the error
