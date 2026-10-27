@@ -68,6 +68,30 @@ fn video_type(subtype: &GUID, w: u32, h: u32, fps: u32) -> Result<IMFMediaType> 
     }
 }
 
+/// Memory buffer kept across frames so each one does not allocate a new buffer; replaced only when a frame needs
+/// more room. Owned by its encoder/decoder, so a rebuilt transform starts with a fresh one.
+#[derive(Default)]
+struct BufferCache(Option<IMFMediaBuffer>);
+
+impl BufferCache {
+    /// A buffer of at least `size` bytes with its current length reset to 0.
+    fn get(&mut self, size: u32) -> Result<IMFMediaBuffer> {
+        unsafe {
+            if let Some(b) = &self.0
+                && b.GetMaxLength()? >= size
+            {
+                b.SetCurrentLength(0)?;
+                return Ok(b.clone());
+            }
+            let b = MFCreateMemoryBuffer(size)?;
+            self.0 = Some(b.clone());
+            Ok(b)
+        }
+    }
+}
+
+// Input samples stay one per frame: the Microsoft and hardware H.264 MFTs do not set
+// MFT_INPUT_STREAM_DOES_NOT_ADDREF, so they may still hold the previous input when the next frame arrives.
 fn sample_from(bytes: &[u8], time: i64, duration: i64) -> Result<IMFSample> {
     unsafe {
         let buf = MFCreateMemoryBuffer(bytes.len() as u32)?;
@@ -95,8 +119,9 @@ fn sample_bytes(s: &IMFSample) -> Result<Vec<u8>> {
     }
 }
 
-/// Runs ProcessOutput once; allocates the output sample when the MFT does not provide its own.
-fn process_output(mft: &IMFTransform) -> Result<IMFSample> {
+/// Runs ProcessOutput once; supplies the output sample (buffer from `cache`) when the MFT does not provide its own.
+/// The returned sample is read before the next call, so the cached buffer is free again by then.
+fn process_output(mft: &IMFTransform, cache: &mut BufferCache) -> Result<IMFSample> {
     unsafe {
         let info = mft.GetOutputStreamInfo(0)?;
         let provides = (info.dwFlags
@@ -106,7 +131,7 @@ fn process_output(mft: &IMFTransform) -> Result<IMFSample> {
             None
         } else {
             let s = MFCreateSample()?;
-            s.AddBuffer(&MFCreateMemoryBuffer(info.cbSize.max(1 << 20))?)?;
+            s.AddBuffer(&cache.get(info.cbSize.max(1 << 20))?)?;
             Some(s)
         };
         let mut out = [MFT_OUTPUT_DATA_BUFFER {
@@ -147,6 +172,7 @@ pub struct H264Encoder {
     bitrate: u32,
     sequence_header: Vec<u8>,
     nv12: Vec<u8>,
+    out_buf: BufferCache,
 }
 
 unsafe impl Send for H264Encoder {}
@@ -282,6 +308,7 @@ impl H264Encoder {
                 bitrate,
                 sequence_header,
                 nv12: Vec::new(),
+                out_buf: BufferCache::default(),
             })
         }
     }
@@ -344,7 +371,7 @@ impl H264Encoder {
             unsafe { self.mft.ProcessInput(0, &sample, 0)? };
             let mut au: Option<Vec<u8>> = None;
             loop {
-                match process_output(&self.mft) {
+                match process_output(&self.mft, &mut self.out_buf) {
                     Ok(s) => au.get_or_insert_with(Vec::new).extend(sample_bytes(&s)?),
                     Err(e) if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => break,
                     Err(e) => return Err(e),
@@ -380,7 +407,7 @@ impl H264Encoder {
                             return Ok(out);
                         }
                     } else if t == METransformHaveOutput.0 as u32 {
-                        match process_output(&self.mft) {
+                        match process_output(&self.mft, &mut self.out_buf) {
                             Ok(s) => {
                                 out = Some(sample_bytes(&s)?);
                                 if until_output {
@@ -415,6 +442,7 @@ pub struct H264Decoder {
     pitch: usize,
     rgba: Vec<u8>,
     frame_index: i64,
+    out_buf: BufferCache,
 }
 
 unsafe impl Send for H264Decoder {}
@@ -431,8 +459,15 @@ impl H264Decoder {
             }
             let in_t = video_type(&MFVideoFormat_H264, width, height, 60)?;
             mft.SetInputType(0, &in_t, 0)?;
-            let mut d =
-                Self { mft, out_w: width, out_h: height, pitch: width as usize, rgba: Vec::new(), frame_index: 0 };
+            let mut d = Self {
+                mft,
+                out_w: width,
+                out_h: height,
+                pitch: width as usize,
+                rgba: Vec::new(),
+                frame_index: 0,
+                out_buf: BufferCache::default(),
+            };
             d.pick_output()?;
             d.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
             d.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
@@ -477,7 +512,7 @@ impl H264Decoder {
         unsafe { self.mft.ProcessInput(0, &sample, 0)? };
         let mut got = false;
         loop {
-            match process_output(&self.mft) {
+            match process_output(&self.mft, &mut self.out_buf) {
                 Ok(s) => {
                     self.convert(&s, width.min(self.out_w), height.min(self.out_h), out)?;
                     got = true;

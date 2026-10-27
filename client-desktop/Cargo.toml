@@ -40,6 +40,12 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 [build-dependencies]
 slint-build = "1.18"
 
+# One codegen unit + fat LTO for a smaller, faster binary; no `panic = "abort"`: a panic must only end its thread.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+
 # `cargo deb` (cargo install cargo-deb) builds the Linux package; see `make linux-deb`.
 [package.metadata.deb]
 name = "opendesk"
