@@ -7,9 +7,14 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
+    println!("cargo:rerun-if-changed=icon.rc");
+    println!("cargo:rerun-if-changed=icon.ico");
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let res_obj = format!("{}/icon.o", out_dir);
-    if Command::new("windres").args(["-i", "icon.rc", "-o", &res_obj]).status().map(|s| s.success()).unwrap_or(false) {
-        println!("cargo:rustc-link-arg={}", res_obj);
+    // windres comes with binutils (MSYS2 mingw64); without it the exe just has no icon.
+    match Command::new("windres").args(["-i", "icon.rc", "-o", &res_obj]).status() {
+        Ok(s) if s.success() => println!("cargo:rustc-link-arg={}", res_obj),
+        Ok(s) => println!("cargo:warning=windres failed ({s}): OpenDesk.exe is built without its icon"),
+        Err(e) => println!("cargo:warning=windres not found ({e}): OpenDesk.exe is built without its icon"),
     }
 }
