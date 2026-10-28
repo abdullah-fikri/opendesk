@@ -53,6 +53,7 @@ and the CLI.
 | Command | Effect |
 | --- | --- |
 | `opendesk server <url>` | Set the relay; the running app reconnects within about a second |
-| `opendesk status`, `opendesk id`, `opendesk help` | Show the device name, desk ID and relay |
+| `opendesk status`, `opendesk id`, `opendesk help` | Show the device name, desk ID, device key fingerprint and relay |
+| `opendesk trust <id>` | Accept a host's changed device key: forget the pinned one ([e2e](e2e.md)) |
 | `opendesk stop` | Stop OpenDesk and its watchdog (Windows: the service's agent stops itself; an elevated-task copy needs an elevated terminal) |
 | `opendesk uninstall` | Stop everything and remove autostart entries before uninstalling (Linux: the per-user entry) |

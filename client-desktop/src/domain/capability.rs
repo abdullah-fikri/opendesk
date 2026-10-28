@@ -24,6 +24,8 @@ pub const AUDIO_OPUS: &str = "audio-opus";
 pub const MAX_FPS_PREFIX: &str = "fps-";
 /// Direct encrypted UDP path.
 pub const P2P: &str = "p2p.v1";
+/// End-to-end encryption with pinned device keys (`Noise_XX`, see `docs/features/e2e.md`).
+pub const E2E: &str = "e2e";
 /// Up to four viewer sessions per connection.
 pub const MULTI_SESSION: &str = "multi-session";
 /// The relay forwards P2P signaling.
@@ -65,6 +67,7 @@ pub struct PeerCaps {
     /// Voice to this partner may be Opus (we always decode it, so the partner's word is enough).
     pub audio_opus: bool,
     pub p2p: bool,
+    pub e2e: bool,
     /// The partner can show a privacy screen while hosting.
     pub privacy_screen: bool,
     /// The partner can lock its local input while hosting.
@@ -88,6 +91,7 @@ impl PeerCaps {
             video_h264: has(VIDEO_H264),
             audio_opus: has(AUDIO_OPUS),
             p2p: has(P2P),
+            e2e: has(E2E),
             privacy_screen: legacy_host || has(PRIVACY_SCREEN),
             block_input: legacy_host || has(BLOCK_INPUT),
             max_fps: peer_caps
@@ -165,6 +169,13 @@ mod tests {
         for junk in ["fps-0", "fps-", "fps-fast", "fps=144"] {
             assert_eq!(PeerCaps::from_list(&[junk.to_string()], true).max_fps, 60, "{junk}");
         }
+    }
+
+    #[test]
+    fn e2e_only_with_partners_that_list_it() {
+        // Older desktops and Android keep Noise_NN on P2P and plain relay traffic.
+        assert!(!PeerCaps::from_list(&[P2P.to_string()], true).e2e);
+        assert!(PeerCaps::from_list(&[E2E.to_string()], false).e2e);
     }
 
     #[test]
