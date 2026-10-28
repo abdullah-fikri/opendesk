@@ -1,5 +1,7 @@
 //! Capabilities exchanged at registration (`register.caps`, `registered-ack.caps`, `session-connected.peerCaps`).
 
+use super::frame_rate::DEFAULT_FPS;
+
 /// Receiver answers `end` with an ACK/NACK.
 pub const FILE_ACK: &str = "file-ack";
 /// Copied files are offered and pulled on paste.
@@ -17,6 +19,9 @@ pub const VIDEO_DELTA: &str = "video-delta";
 pub const VIDEO_H264: &str = "video-h264";
 /// Opus voice packets (`[0x02][0x4F][seq][opus]`); without it the partner gets PCM.
 pub const AUDIO_OPUS: &str = "audio-opus";
+/// Prefix of the viewer's frame-rate cap (`fps-144`): the most frames per second it wants. A dash, not `=`:
+/// the relay forwards only names of `[a-z0-9.-]`. Without it the partner gets 60 (see `domain::frame_rate`).
+pub const MAX_FPS_PREFIX: &str = "fps-";
 /// Direct encrypted UDP path.
 pub const P2P: &str = "p2p.v1";
 /// Up to four viewer sessions per connection.
@@ -64,6 +69,8 @@ pub struct PeerCaps {
     pub privacy_screen: bool,
     /// The partner can lock its local input while hosting.
     pub block_input: bool,
+    /// Frame rate the viewer wants at most (`fps-N`); 60 when it lists none.
+    pub max_fps: u32,
 }
 
 impl PeerCaps {
@@ -83,8 +90,18 @@ impl PeerCaps {
             p2p: has(P2P),
             privacy_screen: legacy_host || has(PRIVACY_SCREEN),
             block_input: legacy_host || has(BLOCK_INPUT),
+            max_fps: peer_caps
+                .iter()
+                .find_map(|c| c.strip_prefix(MAX_FPS_PREFIX)?.parse().ok())
+                .filter(|&n| n > 0)
+                .unwrap_or(DEFAULT_FPS),
         }
     }
+}
+
+/// The `fps-N` capability for a viewer that wants up to `fps` frames per second.
+pub fn max_fps_cap(fps: u32) -> String {
+    format!("{MAX_FPS_PREFIX}{fps}")
 }
 
 /// Features the relay advertised in `registered-ack`.
@@ -139,6 +156,15 @@ mod tests {
         assert!(!android.audio_opus && !old_desktop.audio_opus);
         // No relay support is needed: Opus keeps the 0x02 audio marker every relay forwards.
         assert!(PeerCaps::from_list(&[AUDIO_OPUS.to_string()], false).audio_opus);
+    }
+
+    #[test]
+    fn frame_rate_cap_defaults_to_60() {
+        assert_eq!(PeerCaps::from_list(&[VIDEO_DELTA.to_string()], true).max_fps, 60);
+        assert_eq!(PeerCaps::from_list(&[max_fps_cap(144)], true).max_fps, 144);
+        for junk in ["fps-0", "fps-", "fps-fast", "fps=144"] {
+            assert_eq!(PeerCaps::from_list(&[junk.to_string()], true).max_fps, 60, "{junk}");
+        }
     }
 
     #[test]

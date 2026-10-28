@@ -110,6 +110,10 @@ fn bind_dashboard(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {
     });
     on!(win, ctx, on_refresh_hosts, |_w, c| c.send(ClientMessage::GetHosts));
     on!(win, ctx, on_save_gateway_url, |_w, c, url| settings::set_gateway(c, &url));
+    on!(win, ctx, on_save_max_fps, |w, _c, fps| {
+        settings::set_max_fps(fps.max(0) as u32);
+        w.set_max_fps(fps);
+    });
     on!(win, ctx, on_open_rename, |w, _c, id, alias| {
         w.set_rename_target_id(id);
         w.set_rename_input_val(alias);

@@ -31,9 +31,10 @@ pub use presenter::SlintUi;
 slint::include_modules!();
 
 /// Fills the window with its initial state and binds every callback.
-pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, gateway_url: &str) {
+pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, gateway_url: &str, max_fps: u32) {
     win.set_local_desk_id(desk_id::format(&ctx.local_id).into());
     win.set_gateway_url(gateway_url.into());
+    win.set_max_fps(max_fps as i32);
     win.set_is_admin(ctx.edition == Edition::Admin);
     win.set_active_dashboard_tab(if ctx.edition == Edition::Admin { 1 } else { 0 });
     win.set_history_items(view_model::history_items(&history.records()));
