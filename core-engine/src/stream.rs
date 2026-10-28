@@ -109,6 +109,10 @@ pub struct StreamEncoder {
     congestion: f32,
     /// Name of the H.264 encoder in use, for logs.
     pub h264_name: Option<String>,
+    /// The H.264 encoder picked up last was a hardware one (kept while it is rebuilt).
+    h264_hw: bool,
+    /// Frame rate the H.264 encoder is configured for (the capture loop's target).
+    fps: u32,
 }
 
 impl StreamEncoder {
@@ -138,6 +142,8 @@ impl StreamEncoder {
             light_streak: 0,
             congestion: 0.0,
             h264_name: None,
+            h264_hw: false,
+            fps: 60,
         }
     }
 
@@ -147,10 +153,10 @@ impl StreamEncoder {
         if self.h264_mode != H264Mode::Off && self.h264.is_none() && self.h264_pending.is_none() && !self.h264_failed {
             // Prepare the encoder off the capture thread so the first motion burst does not stall.
             let (tx, rx) = mpsc::channel();
-            let (w, h, bps) = (self.width as u32, self.height as u32, self.h264_bitrate());
+            let (w, h, fps, bps) = (self.width as u32, self.height as u32, self.fps, self.h264_bitrate());
             let allow_hw = std::env::var("OPENDESK_H264_HW").map(|v| v != "0").unwrap_or(true);
             std::thread::spawn(move || {
-                let _ = tx.send(H264Encoder::new(w, h, 60, bps, allow_hw).ok());
+                let _ = tx.send(H264Encoder::new(w, h, fps, bps, allow_hw).ok());
             });
             self.h264_pending = Some(rx);
         }
@@ -162,6 +168,7 @@ impl StreamEncoder {
             match rx.recv() {
                 Ok(Some(e)) => {
                     self.h264_name = Some(e.name.clone());
+                    self.h264_hw = e.hardware;
                     self.h264 = Some(e);
                 }
                 _ => self.h264_failed = true,
@@ -176,6 +183,7 @@ impl StreamEncoder {
             match rx.try_recv() {
                 Ok(Some(e)) => {
                     self.h264_name = Some(e.name.clone());
+                    self.h264_hw = e.hardware;
                     self.h264 = Some(e);
                     self.h264_pending = None;
                 }
@@ -188,10 +196,33 @@ impl StreamEncoder {
         }
     }
 
-    /// CBR target: ~2 bits per pixel per second (3.7 Mbps at 1728x1080), lowered under congestion.
+    /// CBR target: ~2 bits per pixel per second at 60 FPS (3.7 Mbps at 1728x1080), scaled by sqrt(fps / 60)
+    /// (consecutive frames differ less at higher rates) and lowered under congestion.
     fn h264_bitrate(&self) -> u32 {
         let base = (self.width as f64 * self.height as f64 * 2.0).clamp(1_500_000.0, 10_000_000.0);
-        (base * (1.0 - 0.7 * self.congestion as f64)) as u32
+        let rate = (self.fps as f64 / 60.0).sqrt();
+        (base * rate * (1.0 - 0.7 * self.congestion as f64)) as u32
+    }
+
+    /// True while H.264 runs on a hardware encoder (also while that encoder is being rebuilt).
+    pub fn h264_hardware(&self) -> bool {
+        self.h264_hw && !self.h264_failed
+    }
+
+    /// Frame rate of the capture loop; a change rebuilds the H.264 encoder for the new rate.
+    pub fn set_fps(&mut self, fps: u32) {
+        if fps != self.fps {
+            self.fps = fps;
+            self.rebuild_h264();
+        }
+    }
+
+    /// Drops the H.264 encoder and prepares a new one for the current size and rate.
+    fn rebuild_h264(&mut self) {
+        self.h264 = None;
+        self.h264_pending = None;
+        self.in_h264 = false;
+        self.set_h264(self.h264_mode);
     }
 
     /// New capture geometry or quality (monitor / resolution switch): restart with a key frame.
@@ -202,10 +233,7 @@ impl StreamEncoder {
             self.diff = BlockDiff::new(width, height, BLOCK);
             self.lowq = vec![false; self.diff.grid_w * self.diff.grid_h];
             // The encoder is bound to the old size.
-            self.h264 = None;
-            self.h264_pending = None;
-            self.in_h264 = false;
-            self.set_h264(self.h264_mode);
+            self.rebuild_h264();
         }
         self.base_quality = base_quality;
         self.request_key();
@@ -463,5 +491,20 @@ impl StreamEncoder {
             patches,
         };
         Some(header.encode(&payload))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn h264_bitrate_scales_with_sqrt_of_fps() {
+        let mut enc = StreamEncoder::new(1728, 1080, 80, true);
+        assert_eq!(enc.h264_bitrate(), 3_732_480, "60 FPS keeps the old target");
+        enc.set_fps(240);
+        assert_eq!(enc.h264_bitrate(), 7_464_960);
+        enc.set_congestion(1.0);
+        assert_eq!(enc.h264_bitrate(), 2_239_488);
     }
 }

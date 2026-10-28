@@ -33,6 +33,8 @@ pub struct HostState {
     /// Backpressure gate: the capture loop only encodes while the previous frame has left the socket.
     /// Shared with the P2P path, whose frame acknowledgements also open it.
     pub can_send_frame: Arc<AtomicBool>,
+    /// The hosted session's video goes over a direct P2P path (updated by the relay connection).
+    pub p2p_active: AtomicBool,
     /// What the hosted viewer supports.
     pub peer_caps: Mutex<PeerCaps>,
     /// The viewer lost a delta frame; the capture loop answers with a key frame.
@@ -54,6 +56,7 @@ impl Default for HostState {
             resolution_mode: AtomicUsize::new(resolution::DEFAULT_PRESET),
             monitor_bounds: Mutex::new(enumerate_monitors()[0]),
             can_send_frame: Arc::new(AtomicBool::new(true)),
+            p2p_active: AtomicBool::new(false),
             peer_caps: Mutex::default(),
             keyframe_requested: AtomicBool::new(false),
             held_keys: Mutex::new(Vec::new()),
@@ -110,6 +113,7 @@ pub fn start(ctx: &Ctx, partner: &str, caps: PeerCaps) {
         ctx.host.resolution_mode.store(resolution::DEFAULT_PRESET, Ordering::SeqCst);
     }
     ctx.host.can_send_frame.store(true, Ordering::SeqCst);
+    ctx.host.p2p_active.store(false, Ordering::SeqCst);
     ctx.host.active.store(true, Ordering::SeqCst);
     let generation = ctx.host.capture_generation.fetch_add(1, Ordering::SeqCst) + 1;
     capture::spawn(Arc::clone(ctx), partner.to_string(), generation);

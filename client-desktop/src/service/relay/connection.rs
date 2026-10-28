@@ -148,6 +148,8 @@ impl Connection {
                         s.p2p_active.store(p.is_active(), Ordering::Relaxed);
                     }
                 }
+                let hosted_p2p = self.links.iter().any(|p| p.is_host() && p.is_active());
+                ctx.host.p2p_active.store(hosted_p2p, Ordering::Relaxed);
             }
 
             video_in_flight |= self.pump_outbox(&mut socket, &partner);

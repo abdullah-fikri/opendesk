@@ -1,13 +1,15 @@
-//! Host capture loop: captures the selected monitor at up to 60 FPS, encodes it for the viewer and announces
+//! Host capture loop: captures the selected monitor at the target frame rate (`domain::frame_rate::host_target`,
+//! 60 unless viewer, monitor, path and encoder all allow more), encodes it for the viewer and announces
 //! monitor and cursor changes. Runs on its own thread for one hosted session.
 
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use core_engine::capture::{DesktopCapturer, MonitorBounds, cursor_shape, enumerate_monitors};
+use core_engine::capture::{DesktopCapturer, MonitorBounds, cursor_shape, enumerate_monitors, refresh_rate};
 use core_engine::stream::{FrameInput, H264Mode, StreamEncoder};
 
+use crate::domain::frame_rate;
 use crate::domain::perf_stats::{PerfWindow, Stage, kbps};
 use crate::domain::resolution;
 use crate::infra::{logger, power};
@@ -16,8 +18,6 @@ use crate::service::context::Ctx;
 
 /// How often the loop re-enumerates monitors to notice plugged, unplugged or resized displays.
 const MONITOR_POLL: Duration = Duration::from_secs(2);
-/// 60 FPS pacing.
-const FRAME_INTERVAL: Duration = Duration::from_micros(16_666);
 /// How often a tick re-checks the backpressure gate while the previous frame is still on its way.
 const GATE_POLL: Duration = Duration::from_millis(1);
 
@@ -63,13 +63,12 @@ struct HostPerf {
 }
 
 impl HostPerf {
-    /// The window's log line; resets the counters.
-    fn take_line(&mut self, secs: f64, h264: Option<&str>) -> String {
+    /// The window's log line (`target` = current target frame rate); resets the counters.
+    fn take_line(&mut self, secs: f64, h264: Option<&str>, target: u32) -> String {
         let h264 = h264.map_or_else(|| "off".to_string(), |name| format!("on({name})"));
         let line = format!(
-            "fps={:.1} target={:.0} grab avg/max={} encode={} gate={} kbps={} idle_frames={} gate_skips={} h264={h264}",
+            "fps={:.1} target={target} grab avg/max={} encode={} gate={} kbps={} idle_frames={} gate_skips={} h264={h264}",
             self.sent as f64 / secs,
-            1.0 / FRAME_INTERVAL.as_secs_f64(),
             self.grab.take_summary(),
             self.encode.take_summary(),
             self.gate.take_summary(),
@@ -90,6 +89,11 @@ pub fn monitors_event(monitors: &[MonitorBounds], active: usize) -> InputEvent {
         .map(|(i, m)| MonitorInfo { index: i as u64, width: m.width as i64, height: m.height as i64, primary: i == 0 })
         .collect();
     InputEvent::Monitors { list, active: active as u64 }
+}
+
+/// Tick length at `fps` frames per second (60 gives the original 16.666 ms).
+fn frame_interval(fps: u32) -> Duration {
+    Duration::from_micros(1_000_000 / u64::from(fps.max(1)))
 }
 
 fn params(mode: usize, bounds: MonitorBounds) -> (i32, u32) {
@@ -138,6 +142,9 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     let mut h264_logged = false;
     let mut last_shape = u8::MAX;
     let mut congestion = CongestionMeter::new();
+    let env_fps = frame_rate::env_cap(std::env::var(frame_rate::MAX_FPS_ENV).ok().as_deref());
+    let mut host_hz = refresh_rate(initial_bounds);
+    let mut target_fps = frame_rate::DEFAULT_FPS;
 
     let (ox, oy, sw, sh, w, h) = capturer.geometry();
     let video = if !caps.video_delta {
@@ -166,7 +173,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
         let frame_start = Instant::now();
         if let Some(secs) = perf_window.due(frame_start) {
             let h264 = if h264 == H264Mode::Off { None } else { Some(encoder.h264_name.as_deref().unwrap_or("idle")) };
-            logger::info("host.perf", &perf.take_line(secs, h264));
+            logger::info("host.perf", &perf.take_line(secs, h264, target_fps));
         }
 
         // Monitor switch, resolution change or a new input desktop all rebuild the pipeline.
@@ -186,6 +193,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             let bounds = monitors[current_idx];
             (max_width, base_quality) = params(current_mode, bounds);
             *host.monitor_bounds.lock().unwrap() = bounds;
+            host_hz = refresh_rate(bounds);
             // Drop the old duplication first: an output allows only a few duplications at once.
             drop(capturer);
             capturer = DesktopCapturer::new_for_monitor(bounds, max_width);
@@ -216,6 +224,8 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
                 monitors = fresh;
                 monitors_dirty = true;
             }
+            // The refresh rate can change without the bounds changing.
+            host_hz = refresh_rate(*host.monitor_bounds.lock().unwrap());
         }
         if monitors_dirty {
             monitors_dirty = false;
@@ -236,6 +246,20 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
         if host.keyframe_requested.swap(false, Ordering::SeqCst) {
             encoder.request_key();
         }
+        let direct = host.p2p_active.load(Ordering::Relaxed);
+        let fps = frame_rate::host_target(host_hz, caps.max_fps, direct, encoder.h264_hardware(), env_fps);
+        if fps != target_fps {
+            logger::info(
+                "host.capture",
+                &format!(
+                    "Target frame rate {target_fps} -> {fps} (monitor={host_hz}Hz viewer={} p2p={direct})",
+                    caps.max_fps
+                ),
+            );
+            target_fps = fps;
+            encoder.set_fps(fps);
+        }
+        let interval = frame_interval(target_fps);
 
         // The previous frame usually leaves within a few milliseconds: wait for it inside this tick instead of
         // skipping the whole tick, which would halve the frame rate whenever sending takes a moment.
@@ -243,7 +267,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
         let mut level = congestion.observe(can_send, frame_start);
         if !can_send {
             let gate_start = Instant::now();
-            while !can_send && frame_start.elapsed() + GATE_POLL < FRAME_INTERVAL && host.is_current(generation) {
+            while !can_send && frame_start.elapsed() + GATE_POLL < interval && host.is_current(generation) {
                 thread::sleep(GATE_POLL);
                 can_send = host.can_send_frame.load(Ordering::Acquire);
             }
@@ -260,7 +284,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
         encoder.set_congestion(level);
         if can_send {
             // DXGI blocks here until the desktop changes (or the tick ends), so an idle desktop costs ~nothing.
-            let budget = FRAME_INTERVAL.saturating_sub(frame_start.elapsed());
+            let budget = interval.saturating_sub(frame_start.elapsed());
             let backend = capturer.backend();
             let grab_start = Instant::now();
             capturer.grab(budget.as_millis() as u32);
@@ -293,7 +317,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
         }
 
         // std sleeps on a high-resolution waitable timer on Windows, so no busy-spin is needed.
-        if let Some(remaining) = FRAME_INTERVAL.checked_sub(frame_start.elapsed()) {
+        if let Some(remaining) = interval.checked_sub(frame_start.elapsed()) {
             thread::sleep(remaining);
         }
     }
@@ -331,12 +355,20 @@ mod tests {
         }
         p.grab.record(Duration::from_millis(4));
         (p.sent, p.bytes, p.idle) = (589, 3_062_500, 12);
-        let line = p.take_line(10.0, Some("Intel QSV (hardware MFT)"));
+        let line = p.take_line(10.0, Some("Intel QSV (hardware MFT)"), 60);
         assert_eq!(
             line,
             "fps=58.9 target=60 grab avg/max=1.2/4.0ms encode=3.1/3.1ms gate=0.4/0.4ms kbps=2450 idle_frames=12 gate_skips=0 h264=on(Intel QSV (hardware MFT))"
         );
-        assert!(p.take_line(10.0, None).starts_with("fps=0.0 target=60 grab avg/max=0.0/0.0ms"));
+        assert!(p.take_line(10.0, None, 60).starts_with("fps=0.0 target=60 grab avg/max=0.0/0.0ms"));
+        assert!(p.take_line(10.0, None, 144).starts_with("fps=0.0 target=144 "));
+    }
+
+    #[test]
+    fn frame_interval_keeps_60_fps_pacing() {
+        assert_eq!(frame_interval(60), Duration::from_micros(16_666));
+        assert_eq!(frame_interval(144), Duration::from_micros(6_944));
+        assert_eq!(frame_interval(0), Duration::from_secs(1));
     }
 
     #[test]
