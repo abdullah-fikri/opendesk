@@ -26,6 +26,9 @@ const (
 	maxSignalMessageBytes = 4096
 	maxCandidateBytes     = 2048
 	minSignalInterval     = 100 * time.Millisecond
+	// signalBurst signals may arrive back to back (a tunnel in front of the relay bunches messages the client
+	// spaced out); past that, one per minSignalInterval.
+	signalBurst = 4
 )
 
 // User-facing messages sent to clients.
@@ -52,7 +55,28 @@ type connection struct {
 	peer *usecase.Peer
 	// lastSignal rate-limits P2P signaling per session partner, so a multi-session viewer's parallel
 	// handshakes do not starve each other.
-	lastSignal map[string]time.Time
+	lastSignal map[string]signalBucket
+}
+
+// signalBucket is a token bucket: up to signalBurst tokens, one more every minSignalInterval.
+type signalBucket struct {
+	tokens float64
+	at     time.Time
+}
+
+// take spends one token at now; false if none is left.
+func (b *signalBucket) take(now time.Time) bool {
+	if b.at.IsZero() {
+		b.tokens = signalBurst
+	} else {
+		b.tokens = min(signalBurst, b.tokens+float64(now.Sub(b.at))/float64(minSignalInterval))
+	}
+	b.at = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
 }
 
 func (h *Handler) serveWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +95,7 @@ func (h *Handler) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer ws.Close()
 	ws.SetReadLimit(maxMessageBytes)
 
-	c := &connection{h: h, ws: ws, conn: newWSConn(ws), remoteAddr: r.RemoteAddr, lastSignal: make(map[string]time.Time, 1)}
+	c := &connection{h: h, ws: ws, conn: newWSConn(ws), remoteAddr: r.RemoteAddr, lastSignal: make(map[string]signalBucket, 1)}
 	liveness := livenessFactor * h.opts.PingInterval
 	if liveness > 0 {
 		_ = ws.SetReadDeadline(time.Now().Add(liveness))
@@ -364,9 +388,6 @@ func (c *connection) onP2PSignal(msg []byte) {
 		return
 	}
 	target := model.CleanDeskID(req.TargetClean)
-	if time.Since(c.lastSignal[target]) < minSignalInterval {
-		return
-	}
 	rcpt := c.h.relay.ActivePartner(c.peer, target)
 	if rcpt == nil {
 		return
@@ -374,7 +395,12 @@ func (c *connection) onP2PSignal(msg []byte) {
 	if len(c.lastSignal) > 2*model.MaxViewSessions {
 		clear(c.lastSignal)
 	}
-	c.lastSignal[target] = time.Now()
+	bucket := c.lastSignal[target]
+	ok := bucket.take(time.Now())
+	c.lastSignal[target] = bucket
+	if !ok {
+		return
+	}
 	_ = rcpt.Send(dto.P2PSignalForward{Type: dto.TypeP2PSignal, FromClean: c.peer.CleanID, Candidate: req.Candidate})
 }
 
