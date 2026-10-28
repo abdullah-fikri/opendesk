@@ -3,7 +3,7 @@
 All notable changes to OpenDesk. Versions follow [Semantic Versioning](https://semver.org); the single source of
 truth is `VERSION`. The release workflow copies the section of the tagged version into the GitHub Release.
 
-## [Unreleased]
+## [1.1.3] - 2026-10-28
 
 ### Added
 - UDP relay: when two clients cannot reach each other directly (networks that drop UDP from unknown addresses),
@@ -164,6 +164,7 @@ First public release.
 - Windows binaries are not code-signed yet (SmartScreen warns on first run); Linux packages are unsigned `.deb`
   files. Verify downloads against `SHA256SUMS.txt`.
 
+[1.1.3]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.1.3
 [1.1.2]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.1.2
 [1.0.2]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.0.2
 [1.0.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.0.1
