@@ -206,6 +206,10 @@ impl UiPort for SlintUi {
                     r.block_input_unavailable = !block_input;
                 }
                 SessionChange::Resolution(mode) => r.resolution_mode = mode,
+                SessionChange::Stats(labels, values) => {
+                    r.stats_labels = labels.into();
+                    r.stats_values = values.into();
+                }
             });
         });
     }

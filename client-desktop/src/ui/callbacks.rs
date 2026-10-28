@@ -166,6 +166,7 @@ fn bind_sessions(win: &MainWindow, ctx: &Ctx) {
             controller::pick_and_send_files(c, &id);
         }
     });
+    on!(win, ctx, on_set_stats_overlay, |_w, c, on| controller::set_stats_overlay(c, on));
     on!(win, ctx, on_session_toggle_mic, |_w, c, id| {
         if c.viewers.is_live(&id) {
             controller::toggle_mic(c, &id);

@@ -128,6 +128,9 @@ export component MainWindow inherits Window {
     callback session_toggle_block_input(string);
     callback session_set_resolution(string, int);
     callback session_set_audio_quality(string, int);
+    // Session stats overlay: off at start, kept for the app run (Rust asks the hosts for their numbers).
+    in-out property <bool> show_stats: false;
+    callback set_stats_overlay(bool);
     // Outside Windows there is no system-key hook: the toolbar offers a shortcut menu instead.
     in property <bool> system_keys_menu: false;
     // "win", "alt-tab", "taskmgr", "explorer", "desktop"
@@ -224,6 +227,8 @@ export component MainWindow inherits Window {
             session_toggle_block_input(id) => { root.session_toggle_block_input(id); }
             session_set_resolution(id, m) => { root.session_set_resolution(id, m); }
             session_set_audio_quality(id, q) => { root.session_set_audio_quality(id, q); }
+            show_stats <=> root.show_stats;
+            set_stats_overlay(on) => { root.set_stats_overlay(on); }
             system_keys_menu: root.system_keys_menu;
             session_shortcut(id, sc) => { root.session_shortcut(id, sc); }
 

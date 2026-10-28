@@ -16,11 +16,12 @@ use parking_lot::{Condvar, Mutex};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 use crate::domain::capability;
-use crate::domain::perf_stats::{PerfWindow, Stage, kbps};
+use crate::domain::perf_stats::{Counter, PerfWindow, STATS_INTERVAL, Stage, kbps};
 use crate::infra::logger;
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 use crate::service::ui_port::Frame;
 use crate::service::viewer::registry::Session;
+use crate::service::viewer::stats::ViewerStats;
 
 /// Minimum spacing of key-frame requests after a broken delta chain.
 const KEY_REQUEST_INTERVAL: Duration = Duration::from_millis(300);
@@ -266,24 +267,35 @@ impl ViewerDecoder {
 struct ViewerPerf {
     process: Stage,
     handoff: Stage,
-    shown: u32,
-    bytes: u64,
-    batches: u32,
+    shown: Counter,
+    bytes: Counter,
+    batches: Counter,
 }
 
 impl ViewerPerf {
     /// The window's log line; resets the counters.
     fn take_line(&mut self, session: &str, secs: f64) -> String {
-        let line = format!(
+        format!(
             "session={session} fps={:.1} process avg/max={} handoff={} kbps={} batches={}",
-            self.shown as f64 / secs,
+            self.shown.take() as f64 / secs,
             self.process.take_summary(),
             self.handoff.take_summary(),
-            kbps(self.bytes, secs),
-            self.batches,
-        );
-        *self = Self::default();
-        line
+            kbps(self.bytes.take(), secs),
+            self.batches.take(),
+        )
+    }
+
+    /// The overlay's numbers since the previous call, independent of the log window.
+    fn take_stats(&mut self, secs: f64) -> ViewerStats {
+        let process = self.process.take_lap();
+        self.handoff.take_lap();
+        self.batches.take_lap();
+        ViewerStats {
+            fps: (self.shown.take_lap() as f64 / secs) as f32,
+            kbps: kbps(self.bytes.take_lap(), secs),
+            decode_ms: process.avg_ms as f32,
+            decode_max_ms: process.max_ms as f32,
+        }
     }
 }
 
@@ -291,13 +303,15 @@ fn request_key(outbox: &Sender<Outgoing>, id: &str) {
     let _ = outbox.send(Outgoing::Message(ClientMessage::input(id, InputEvent::VideoKeyframe)));
 }
 
-/// Starts the session's decoder thread once. `show` runs for every decoded frame.
+/// Starts the session's decoder thread once. `show` runs for every decoded frame; `show_stats` once a second
+/// with the overlay's (labels, values) while the session is visible and its stats overlay is on.
 /// Hidden sessions (background tabs) are not decoded at all: their messages are dropped together with the
 /// decoder state, and showing the session again asks the host for a key frame. `on_panic` runs if the
 /// thread panics.
-pub fn spawn<F, P>(sess: Arc<Session>, outbox: Sender<Outgoing>, show: F, on_panic: P)
+pub fn spawn<F, S, P>(sess: Arc<Session>, outbox: Sender<Outgoing>, show: F, show_stats: S, on_panic: P)
 where
     F: Fn(&Arc<Session>, Frame) + Send + 'static,
+    S: Fn(&Arc<Session>, (String, String)) + Send + 'static,
     P: FnOnce() + Send + 'static,
 {
     if sess.decoder_started.swap(true, Ordering::SeqCst) {
@@ -313,6 +327,7 @@ where
         let mut was_visible = sess.visible.load(Ordering::SeqCst);
         let mut perf = ViewerPerf::default();
         let mut perf_window = PerfWindow::new(Instant::now());
+        let mut stats_window = PerfWindow::every(Instant::now(), STATS_INTERVAL);
 
         while sess.alive.load(Ordering::SeqCst) {
             let visible = sess.visible.load(Ordering::SeqCst);
@@ -328,8 +343,21 @@ where
             let batch = sess.inbox.drain_wait(VideoInbox::IDLE_WAIT);
             if let Some(secs) = perf_window.due(Instant::now()) {
                 // Only windows that decoded something: hidden or idle sessions stay quiet.
-                if perf.batches > 0 {
+                if perf.batches.in_window() > 0 {
                     logger::info("viewer.perf", &perf.take_line(&sess.id, secs));
+                }
+            }
+            if let Some(secs) = stats_window.due(Instant::now()) {
+                let viewer = perf.take_stats(secs);
+                if visible && sess.stats_on.load(Ordering::Relaxed) {
+                    let t = crate::service::file_transfer::now_ms();
+                    let _ = outbox.send(Outgoing::Message(ClientMessage::input(&sess.id, InputEvent::StatsPing { t })));
+                    let columns = {
+                        let mut stats = sess.stats.lock();
+                        stats.viewer = viewer;
+                        stats.columns(sess.p2p_active.load(Ordering::Relaxed))
+                    };
+                    show_stats(&sess, columns);
                 }
             }
             if batch.is_empty() {
@@ -391,10 +419,10 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let shown = Arc::new(AtomicU32::new(0));
         let counter = Arc::clone(&shown);
-        let show = move |_: &Arc<Session>, _| {
+        let show = move |_: &Arc<Session>, _: Frame| {
             counter.fetch_add(1, Ordering::SeqCst);
         };
-        spawn(Arc::clone(&b), tx, show, || {});
+        spawn(Arc::clone(&b), tx, show, |_, _| {}, || {});
         b.inbox.push(core_engine::codec::delta::key_header(4, 4, 4).encode(&[]));
         thread::sleep(Duration::from_millis(50));
         assert!(b.inbox.is_empty(), "hidden tab drains its inbox");
@@ -414,12 +442,14 @@ mod tests {
             p.process.record(Duration::from_micros(2400));
             p.handoff.record(Duration::from_micros(100));
         }
-        (p.shown, p.bytes, p.batches) = (590, 3_062_500, 600);
+        p.shown += 590;
+        p.bytes += 3_062_500;
+        p.batches += 600;
         assert_eq!(
             p.take_line("123456789", 10.0),
             "session=123456789 fps=59.0 process avg/max=2.4/2.4ms handoff=0.1/0.1ms kbps=2450 batches=600"
         );
-        assert_eq!(p.batches, 0);
+        assert_eq!(p.batches.in_window(), 0);
     }
 
     /// PSNR in dB between a BGRX source frame and the viewer's RGBA framebuffer.

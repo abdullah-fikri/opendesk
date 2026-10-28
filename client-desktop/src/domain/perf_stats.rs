@@ -23,26 +23,32 @@ use std::time::{Duration, Instant};
 
 /// How often the perf lines are logged.
 pub const PERF_INTERVAL: Duration = Duration::from_secs(10);
+/// How often the stats overlay (the host's `host-stats` and the viewer's own numbers) is refreshed.
+pub const STATS_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Accumulated durations of one stage since the last summary.
+/// Accumulated durations of one stage, read by two independent windows: the log line
+/// ([`Stage::take_summary`]) and the stats overlay ([`Stage::take_lap`]).
 #[derive(Default)]
 pub struct Stage {
+    window: Acc,
+    lap: Acc,
+}
+
+#[derive(Default)]
+struct Acc {
     count: u32,
     sum_us: u64,
     max_us: u64,
 }
 
-impl Stage {
-    /// Adds one measurement.
-    pub fn record(&mut self, d: Duration) {
-        let us = d.as_micros() as u64;
-        self.count += 1;
-        self.sum_us += us;
+impl Acc {
+    fn record(&mut self, us: u64) {
+        self.count = self.count.saturating_add(1);
+        self.sum_us = self.sum_us.saturating_add(us);
         self.max_us = self.max_us.max(us);
     }
 
-    /// Returns the window's summary and starts a new window.
-    pub fn take_summary(&mut self) -> StageSummary {
+    fn take(&mut self) -> StageSummary {
         let s = StageSummary {
             count: self.count,
             avg_ms: if self.count == 0 { 0.0 } else { self.sum_us as f64 / self.count as f64 / 1000.0 },
@@ -50,6 +56,60 @@ impl Stage {
         };
         *self = Self::default();
         s
+    }
+}
+
+impl Stage {
+    /// Adds one measurement.
+    pub fn record(&mut self, d: Duration) {
+        let us = d.as_micros() as u64;
+        self.window.record(us);
+        self.lap.record(us);
+    }
+
+    /// Returns the log window's summary and starts a new window.
+    pub fn take_summary(&mut self) -> StageSummary {
+        self.window.take()
+    }
+
+    /// Returns the summary since the previous lap (stats overlay) and starts a new lap.
+    pub fn take_lap(&mut self) -> StageSummary {
+        self.lap.take()
+    }
+}
+
+/// An event or byte count, read by the same two windows as [`Stage`].
+#[derive(Default)]
+pub struct Counter {
+    total: u64,
+    logged: u64,
+    lapped: u64,
+}
+
+impl std::ops::AddAssign<u64> for Counter {
+    fn add_assign(&mut self, n: u64) {
+        self.total = self.total.wrapping_add(n);
+    }
+}
+
+impl Counter {
+    /// The count so far in the current log window.
+    pub fn in_window(&self) -> u64 {
+        self.total.wrapping_sub(self.logged)
+    }
+
+    /// The count since the previous log window; starts a new one.
+    pub fn take(&mut self) -> u64 {
+        let n = self.total.wrapping_sub(self.logged);
+        self.logged = self.total;
+        n
+    }
+
+    /// The count since the previous lap; starts a new one.
+    pub fn take_lap(&mut self) -> u64 {
+        let n = self.total.wrapping_sub(self.lapped);
+        self.lapped = self.total;
+        n
     }
 }
 
@@ -67,21 +127,27 @@ impl fmt::Display for StageSummary {
     }
 }
 
-/// Fixed-length logging window.
+/// Fixed-length window: [`PERF_INTERVAL`] for log lines, [`STATS_INTERVAL`] for the stats overlay.
 pub struct PerfWindow {
     started: Instant,
+    interval: Duration,
 }
 
 impl PerfWindow {
-    /// A window starting at `now`.
+    /// A logging window starting at `now`.
     pub fn new(now: Instant) -> Self {
-        Self { started: now }
+        Self::every(now, PERF_INTERVAL)
     }
 
-    /// Once [`PERF_INTERVAL`] has passed: restarts the window and returns its length in seconds.
+    /// A window of `interval` starting at `now`.
+    pub fn every(now: Instant, interval: Duration) -> Self {
+        Self { started: now, interval }
+    }
+
+    /// Once the interval has passed: restarts the window and returns its length in seconds.
     pub fn due(&mut self, now: Instant) -> Option<f64> {
         let elapsed = now.duration_since(self.started);
-        if elapsed < PERF_INTERVAL {
+        if elapsed < self.interval {
             return None;
         }
         self.started = now;
@@ -107,6 +173,20 @@ mod tests {
         assert_eq!((sum.count, sum.avg_ms, sum.max_ms), (2, 2.0, 3.0));
         assert_eq!(sum.to_string(), "2.0/3.0ms");
         assert_eq!(s.take_summary(), StageSummary { count: 0, avg_ms: 0.0, max_ms: 0.0 });
+        // The overlay's lap is independent of the log window.
+        assert_eq!(s.take_lap().count, 2);
+        s.record(Duration::from_micros(500));
+        assert_eq!((s.take_lap().max_ms, s.take_summary().count), (0.5, 1));
+    }
+
+    #[test]
+    fn counter_feeds_both_windows() {
+        let mut c = Counter::default();
+        c += 5;
+        assert_eq!(c.take_lap(), 5);
+        c += 2;
+        assert_eq!(c.in_window(), 7);
+        assert_eq!((c.take(), c.take(), c.take_lap()), (7, 0, 2));
     }
 
     #[test]

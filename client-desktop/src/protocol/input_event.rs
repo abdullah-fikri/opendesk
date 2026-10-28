@@ -123,6 +123,20 @@ pub enum InputEvent {
         list: Vec<MonitorInfo>,
         active: u64,
     },
+    /// The viewer shows (`on`) or hides its stats overlay; the host sends `host-stats` only in between.
+    Stats {
+        on: bool,
+    },
+    /// Round-trip probe of the stats overlay, about once a second while it is shown. `t`: viewer clock, ms.
+    StatsPing {
+        t: u64,
+    },
+    /// Host -> viewer: answers `stats-ping` at once with the same `t`.
+    StatsPong {
+        t: u64,
+    },
+    /// Host -> viewer: about once a second while the viewer asked for `stats`.
+    HostStats(HostStats),
 }
 
 impl InputEvent {
@@ -140,6 +154,29 @@ pub struct MonitorInfo {
     pub height: i64,
     #[serde(default)]
     pub primary: bool,
+}
+
+/// The host's capture-loop numbers over the last second (`host-stats`); fields documented in
+/// `domain::perf_stats`. Missing fields read as zero, so either side may add some.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HostStats {
+    /// Frames sent per second and the capture loop's pacing rate.
+    pub fps: f32,
+    pub target_fps: u32,
+    /// Average and maximum milliseconds per tick.
+    pub grab_ms: f32,
+    pub grab_max_ms: f32,
+    pub encode_ms: f32,
+    pub encode_max_ms: f32,
+    pub kbps: u64,
+    /// Grabs with nothing to send, and ticks skipped because the previous frame was still on its way.
+    pub idle: u32,
+    pub gate_skips: u32,
+    /// 0..1 (`CongestionMeter`).
+    pub congestion: f32,
+    /// H.264 encoder name; empty when the stream is JPEG blocks only.
+    pub encoder: String,
 }
 
 #[cfg(test)]
@@ -173,5 +210,42 @@ mod tests {
         );
         assert_eq!(InputEvent::parse(&json!({ "action": "switch-monitor" })), Some(InputEvent::SwitchMonitor));
         assert_eq!(InputEvent::parse(&json!({ "action": "unknown-thing" })), None);
+    }
+
+    #[test]
+    fn stats_events_round_trip() {
+        assert_eq!(
+            serde_json::to_value(InputEvent::Stats { on: true }).unwrap(),
+            json!({ "action": "stats", "on": true })
+        );
+        assert_eq!(
+            serde_json::to_value(InputEvent::StatsPing { t: 1234 }).unwrap(),
+            json!({ "action": "stats-ping", "t": 1234 })
+        );
+        assert_eq!(
+            InputEvent::parse(&json!({ "action": "stats-pong", "t": 1234 })),
+            Some(InputEvent::StatsPong { t: 1234 })
+        );
+        let stats = HostStats {
+            fps: 58.5,
+            target_fps: 60,
+            grab_ms: 1.25,
+            encode_ms: 3.5,
+            kbps: 2450,
+            gate_skips: 2,
+            encoder: "Intel QSV (hardware MFT)".into(),
+            ..Default::default()
+        };
+        let wire = serde_json::to_value(InputEvent::HostStats(stats.clone())).unwrap();
+        assert_eq!(
+            (&wire["action"], &wire["targetFps"], &wire["grabMs"], &wire["gateSkips"], &wire["encoder"]),
+            (&json!("host-stats"), &json!(60), &json!(1.25), &json!(2), &json!("Intel QSV (hardware MFT)"))
+        );
+        assert_eq!(InputEvent::parse(&wire), Some(InputEvent::HostStats(stats)));
+        // A newer host may add fields, an older one may lack some.
+        assert_eq!(
+            InputEvent::parse(&json!({ "action": "host-stats", "fps": 30.0, "future": 1 })),
+            Some(InputEvent::HostStats(HostStats { fps: 30.0, ..Default::default() }))
+        );
     }
 }

@@ -38,6 +38,8 @@ pub struct HostState {
     pub peer_caps: Mutex<PeerCaps>,
     /// The viewer lost a delta frame; the capture loop answers with a key frame.
     pub keyframe_requested: AtomicBool,
+    /// The viewer shows its stats overlay: the capture loop sends `host-stats` once a second.
+    pub stats_requested: AtomicBool,
     /// Keys injected as down and not yet released, so a session end never leaves one stuck.
     held_keys: Mutex<Vec<u8>>,
     /// An administrator's monitor wall shows this machine (see [`monitor_stream`]).
@@ -57,6 +59,7 @@ impl Default for HostState {
             can_send_frame: Arc::new(AtomicBool::new(true)),
             peer_caps: Mutex::default(),
             keyframe_requested: AtomicBool::new(false),
+            stats_requested: AtomicBool::new(false),
             held_keys: Mutex::new(Vec::new()),
             monitored: AtomicBool::new(false),
             monitor_generation: AtomicU64::new(0),
@@ -111,6 +114,7 @@ pub fn start(ctx: &Ctx, partner: &str, caps: PeerCaps) {
         ctx.host.resolution_mode.store(resolution::DEFAULT_PRESET, Ordering::SeqCst);
     }
     ctx.host.can_send_frame.store(true, Ordering::SeqCst);
+    ctx.host.stats_requested.store(false, Ordering::SeqCst);
     ctx.host.active.store(true, Ordering::SeqCst);
     let generation = ctx.host.capture_generation.fetch_add(1, Ordering::SeqCst) + 1;
     capture::spawn(Arc::clone(ctx), partner.to_string(), generation);
