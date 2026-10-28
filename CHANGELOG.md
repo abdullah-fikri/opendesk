@@ -3,6 +3,23 @@
 All notable changes to OpenDesk. Versions follow [Semantic Versioning](https://semver.org); the single source of
 truth is `VERSION`. The release workflow copies the section of the tagged version into the GitHub Release.
 
+## [Unreleased]
+
+### Added
+- UDP relay: when two clients cannot reach each other directly (networks that drop UDP from unknown addresses),
+  the direct path runs through the relay's UDP forwarder instead of the WebSocket relay. No router settings
+  needed; the datagrams stay end-to-end encrypted and the direct route still wins when it works. Enabled on the
+  relay with `OPENDESK_UDP_RELAY_PUBLIC` (needs a public UDP port, e.g. a VPS); the session overlay shows
+  `Relay (UDP)`. `OPENDESK_UDP_RELAY=0` on a client turns it off.
+
+### Fixed
+- P2P candidates are no longer lost when the relay sits behind a tunnel: the relay accepts short bursts of
+  signals and clients send their candidates again while probing.
+- STUN retries lost requests and falls back to a second server, so a single lost datagram no longer costs the
+  public candidate.
+- A host without a microphone no longer logs a warning every 500 ms.
+- Logs show the NAT type, the partner's candidates and how many datagrams arrived, to diagnose failed P2P paths.
+
 ## [1.1.2] - 2026-10-28
 
 ### Added

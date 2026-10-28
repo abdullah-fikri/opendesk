@@ -41,7 +41,7 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 | `relay-clipboard` | `targetClean`, `text` | Clipboard text for the partner. |
 | `relay-file` | `targetClean`, `payload` | One file-transfer message (see [File transfer](#file-transfer)). |
 | `session-disconnect` | `targetClean` | End this client's session with that partner. |
-| `p2p-signal` | `targetClean`, `candidate` | Noise handshake and UDP candidates for a direct path, and the `e2e` handshake (max 4096 bytes, 10 per second per partner). |
+| `p2p-signal` | `targetClean`, `candidate` | Noise handshake and UDP candidates for a direct path, and the `e2e` handshake (max 4096 bytes; per partner bursts of 4, then 10 per second). |
 | `monitor-set` | `targets[]` | Administrators with `monitor-view` only: replace the hosts on the monitor wall (at most 16; empty stops). See [Monitor wall](#monitor-wall). |
 | `security-get` | | Administrators only: request the device allowlist (`security-state`). |
 | `security-set` | `enabled` | Administrators only: turn the device allowlist on or off. |
@@ -63,6 +63,7 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 | `clipboard-sync` | `text`, `fromClean`* | A relayed `relay-clipboard`. |
 | `file-transfer` | `fromClean`, `payload` | A relayed `relay-file`. `fromClean` is stamped by the relay. |
 | `p2p-signal` | `fromClean`, `candidate` | A relayed signal. |
+| `udp-relay-offer` | `targetClean`, `addr`, `token` | The relay's UDP forwarder for the session with `targetClean`: bind with the 32-hex-digit token at `addr` (`ip:port`). Sent after `session-connected` when both clients list `p2p.v1` and `udp-relay`. See `client-desktop/docs/features/p2p.md`. |
 | `session-closed` | `message`, `targetClean`* | The session ended (partner left, disconnected, or reconnected). |
 | `error` | `message`, `targetClean`* | A request failed (invalid ID, target offline or busy, rejected). |
 | `monitor-state` | `targetClean`, `state` (`live`, `offline`, `unsupported`, `denied`) | Monitor wall: what one tile shows (administrators with `monitor-view`). |
@@ -100,6 +101,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `video-h264` | client | H.264 inside the framed format. |
 | `audio-opus` | client | Decodes Opus voice (`[0x02][0x4F]...`); voice to it is Opus, to everyone else PCM. |
 | `p2p.v1` | client | Direct encrypted UDP path. |
+| `udp-relay` | client + relay | The direct path may run through the relay's UDP forwarder (`udp-relay-offer`). |
 | `e2e` | client | End-to-end encryption: `Noise_XX` with device keys over `p2p-signal`, then sealed relay media and input events (see [Binary messages](#binary-messages) and `client-desktop/docs/features/e2e.md`). Needs the relay's `p2p-signal`. |
 | `multi-session` | client + relay | Up to four viewer sessions per connection. |
 | `monitor-host` | client | Streams monitor-wall thumbnails on `monitor-start` (every desktop edition). |

@@ -26,10 +26,18 @@ environment variables, which win. Invalid values stop the relay at startup inste
 | `OPENDESK_DEVICE_CREDENTIALS` | JSON map of per-device tokens; empty admits every device. See [provisioning](provisioning.md). Malformed JSON stops the relay. |
 | `OPENDESK_METRICS_TOKEN` | Enables `GET /metrics` for `Authorization: Bearer <token>`; at least 32 characters. |
 | `OPENDESK_TLS_PROXY=1` | Accept plaintext WebSocket from non-loopback addresses because TLS ends at a proxy (Docker behind a tunnel). |
-| `OPENDESK_P2P_DISABLED=1` | Do not advertise or forward P2P signaling; every session stays on the relay. |
+| `OPENDESK_P2P_DISABLED=1` | Do not advertise or forward P2P signaling; every session stays on the relay. Also turns the UDP relay off. |
+| `OPENDESK_UDP_RELAY_PUBLIC` | `ip:port` clients reach the UDP relay at, e.g. `203.0.113.5:8089`. Empty (default) disables it. The relay cannot learn its public address itself; it must be an IP address. |
+| `OPENDESK_UDP_RELAY_ADDR` | Local UDP listen address of the UDP relay. Default `0.0.0.0:8089`. |
+| `OPENDESK_UDP_RELAY_MBPS` | Rate limit per session in Mbit/s, both directions together. Default `50`. |
+
+The UDP relay forwards direct-path datagrams of sessions whose clients cannot reach each other. The datagrams are
+end-to-end encrypted by the clients; the relay only passes them between the two addresses that bound with the
+session's tokens. It needs a public UDP port: a tunnel such as cloudflared carries WebSocket only, so the UDP
+relay works on a server with its own public IP (a VPS) and its firewall open for that port.
 
 ## Clients
 
 Clients have their own switches, documented with them: `OPENDESK_DEVICE_TOKEN`, `OPENDESK_P2P`,
-`OPENDESK_STUN`, `OPENDESK_VIDEO_H264`, `OPENDESK_CAPTURE` (see
+`OPENDESK_STUN`, `OPENDESK_UDP_RELAY`, `OPENDESK_VIDEO_H264`, `OPENDESK_CAPTURE` (see
 [client-desktop/docs/configuration.md](../../client-desktop/docs/configuration.md)).
