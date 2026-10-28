@@ -72,7 +72,7 @@ impl Encoder {
     /// Encodes one frame of 16-bit little-endian PCM (2.5 to 60 ms at the encoder's rate) into a voice packet.
     pub fn encode(&mut self, pcm_le: &[u8]) -> Option<Vec<u8>> {
         self.samples.clear();
-        self.samples.extend(pcm_le.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])));
+        self.samples.extend(pcm_le.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)));
         let n = unsafe {
             opus_encode(
                 self.st,
@@ -176,7 +176,7 @@ mod tests {
 
     fn rms(pcm: &[u8]) -> f64 {
         let n = pcm.len() / 2;
-        let sum: f64 = pcm.chunks_exact(2).map(|b| f64::from(i16::from_le_bytes([b[0], b[1]])).powi(2)).sum();
+        let sum: f64 = pcm.as_chunks::<2>().0.iter().map(|b| f64::from(i16::from_le_bytes(*b)).powi(2)).sum();
         (sum / n as f64).sqrt()
     }
 
