@@ -185,7 +185,9 @@ impl Store {
     /// Queues a request (the CLI side); fails without write access (not an administrator).
     pub fn push_request(&self, request: &Request, unique: u128) -> io::Result<()> {
         let dir = self.root.join("requests");
-        fs::create_dir_all(&dir)?;
+        if !dir.is_dir() {
+            fs::create_dir(&dir)?;
+        }
         let tmp = dir.join(format!("{unique:032}.tmp"));
         fs::write(&tmp, serde_json::to_vec(request).map_err(io::Error::other)?)?;
         fs::rename(&tmp, dir.join(format!("{unique:032}.json")))

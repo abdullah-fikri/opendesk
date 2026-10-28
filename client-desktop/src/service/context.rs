@@ -50,6 +50,8 @@ pub struct RelayLink {
     /// Set to drop the connection and reconnect (gateway changed, tray "Reconnect").
     pub reconnect: AtomicBool,
     pub caps: Mutex<RelayCaps>,
+    /// Registered with the relay (set on `registered-ack`, cleared when a connection attempt starts).
+    pub online: AtomicBool,
 }
 
 impl AppContext {
@@ -78,6 +80,7 @@ impl AppContext {
                 gateway_url: Mutex::new(gateway_url),
                 reconnect: AtomicBool::new(false),
                 caps: Mutex::default(),
+                online: AtomicBool::new(false),
             },
             clipboard_seq: AtomicU32::new(core_engine::clipboard::sequence_number()),
             partner: Mutex::new(String::new()),
