@@ -35,6 +35,11 @@ impl Connection {
             ServerMessage::ClipboardSync { text, from_clean } => self.on_clipboard(text, from_clean.as_deref()),
             ServerMessage::FileTransfer { from_clean, payload } => self.on_file(from_clean, payload),
             ServerMessage::P2pSignal { from_clean, candidate } => self.on_signal(&from_clean, &candidate),
+            ServerMessage::UdpRelayOffer { target_clean, addr, token } => {
+                if let Some(p) = self.links.iter().find(|p| p.partner == target_clean) {
+                    p.add_relay(&addr, &token);
+                }
+            }
             ServerMessage::SessionClosed { message, target_clean } => {
                 self.on_session_closed(message, target_clean.as_deref())
             }

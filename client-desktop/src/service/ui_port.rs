@@ -60,8 +60,8 @@ pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
-    /// Arrived over the direct P2P path rather than the relay.
-    pub p2p: bool,
+    /// The session path label (see `viewer::stats::path_label`).
+    pub path: &'static str,
 }
 
 /// A change to one viewer session's presentation.

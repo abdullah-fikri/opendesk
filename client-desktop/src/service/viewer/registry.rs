@@ -32,6 +32,8 @@ pub struct Session {
     /// Focused: its audio plays (shared with the P2P sink).
     pub audio_on: Arc<AtomicBool>,
     pub p2p_active: AtomicBool,
+    /// With `p2p_active`: the path goes through the relay server's UDP forwarder, not directly.
+    pub p2p_relayed: AtomicBool,
     /// Traffic to this host is end-to-end encrypted (see [`Session::e2e_active`]).
     pub e2e_active: AtomicBool,
     pub res_mode: AtomicUsize,
@@ -69,6 +71,7 @@ impl Session {
             visible: AtomicBool::new(false),
             audio_on: Arc::new(AtomicBool::new(false)),
             p2p_active: AtomicBool::new(false),
+            p2p_relayed: AtomicBool::new(false),
             e2e_active: AtomicBool::new(false),
             res_mode: AtomicUsize::new(res_mode),
             viewport: AtomicU64::new(viewport),

@@ -40,6 +40,16 @@ const MAX_UNACKED: usize = 256;
 /// times, every [`SIGNAL_RESEND_EVERY`] while probing; the partner ignores copies after the first.
 const SIGNAL_RESENDS: u32 = 4;
 const SIGNAL_RESEND_EVERY: Duration = Duration::from_secs(2);
+/// UDP relay control datagrams (see `server-relay/internal/udprelay`): `[0x52][0x01][token]` binds, `[0x52][0x02]`
+/// answers. Everything else to and from the relay is an ordinary path datagram it forwards unread.
+const RELAY_TAG: u8 = 0x52;
+const RELAY_BIND: u8 = 0x01;
+const RELAY_BOUND: u8 = 0x02;
+/// Bind again this often once bound (keeps the NAT mapping and the relay's pair alive) and while unbound.
+const RELAY_REBIND: Duration = Duration::from_secs(15);
+const RELAY_BIND_RETRY: Duration = Duration::from_secs(1);
+/// Probes to a bound relay while no path is up, outside the bounded direct probing.
+const RELAY_PROBE: Duration = Duration::from_secs(1);
 /// Second STUN server, only used to tell the NAT type (see `gather_candidates`).
 const STUN_CHECK: &str = "stun1.l.google.com:19302";
 
@@ -55,6 +65,48 @@ const K_KEEPALIVE: u8 = 8;
 /// Client-side kill switch: `OPENDESK_P2P=0` keeps every session on the relay.
 pub fn enabled() -> bool {
     std::env::var("OPENDESK_P2P").map(|v| v != "0").unwrap_or(true)
+}
+
+/// `OPENDESK_UDP_RELAY=0` keeps the path direct-only (no `udp-relay` capability).
+pub fn relay_enabled() -> bool {
+    enabled() && std::env::var("OPENDESK_UDP_RELAY").map(|v| v != "0").unwrap_or(true)
+}
+
+/// Which way the path's datagrams currently go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    Direct(SocketAddr),
+    /// Through the relay server's UDP forwarder.
+    Relayed(SocketAddr),
+}
+
+impl Route {
+    fn addr(self) -> SocketAddr {
+        match self {
+            Route::Direct(a) | Route::Relayed(a) => a,
+        }
+    }
+}
+
+/// The relay server's UDP forwarder for this session (`udp-relay-offer`).
+struct RelayLeg {
+    addr: SocketAddr,
+    token: [u8; 16],
+    bound: bool,
+    last_bind: Option<Instant>,
+    last_probe: Option<Instant>,
+}
+
+fn parse_token(hex: &str) -> Option<[u8; 16]> {
+    let bytes = hex.as_bytes();
+    if bytes.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for (i, pair) in bytes.chunks_exact(2).enumerate() {
+        out[i] = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(out)
 }
 
 /// Where received P2P traffic goes; the same sinks the relay path feeds.
@@ -298,9 +350,13 @@ struct State {
     tx_nonce: u64,
     replay: Replay,
     peer_cands: Vec<SocketAddr>,
+    /// The partner's direct address (the last one an authentic datagram came from) and when that was.
     peer_addr: Option<SocketAddr>,
-    last_rx: Option<Instant>,
-    was_alive: bool,
+    direct_rx: Option<Instant>,
+    relay: Option<RelayLeg>,
+    /// Last authentic datagram through the relay.
+    relay_rx: Option<Instant>,
+    route_was: Option<Route>,
     probe_started: Option<Instant>,
     last_probe: Instant,
     /// Times the candidates were sent again (see [`SIGNAL_RESENDS`]).
@@ -371,8 +427,10 @@ impl P2p {
                 replay: Replay::new(),
                 peer_cands: Vec::new(),
                 peer_addr: None,
-                last_rx: None,
-                was_alive: false,
+                direct_rx: None,
+                relay: None,
+                relay_rx: None,
+                route_was: None,
                 probe_started: None,
                 last_probe: now,
                 signal_resends: 0,
@@ -416,10 +474,42 @@ impl P2p {
         !self.closed.load(Ordering::SeqCst) && Self::alive(&self.state.lock())
     }
 
+    /// The current route, if the path is up: direct whenever it works, else through the relay.
+    pub fn route(&self) -> Option<Route> {
+        if self.closed.load(Ordering::SeqCst) {
+            return None;
+        }
+        Self::route_of(&self.state.lock())
+    }
+
+    fn route_of(st: &State) -> Option<Route> {
+        if !matches!(st.hs, Some(Handshake::Done(_))) {
+            return None;
+        }
+        let fresh = |t: Option<Instant>| t.is_some_and(|t| t.elapsed() < PATH_TIMEOUT);
+        match (st.peer_addr, &st.relay) {
+            (Some(a), _) if fresh(st.direct_rx) => Some(Route::Direct(a)),
+            (_, Some(r)) if fresh(st.relay_rx) => Some(Route::Relayed(r.addr)),
+            _ => None,
+        }
+    }
+
     fn alive(st: &State) -> bool {
-        matches!(st.hs, Some(Handshake::Done(_)))
-            && st.peer_addr.is_some()
-            && st.last_rx.is_some_and(|t| t.elapsed() < PATH_TIMEOUT)
+        Self::route_of(st).is_some()
+    }
+
+    /// Takes the relay server's UDP forwarder (`udp-relay-offer`) as a fallback route.
+    pub fn add_relay(&self, addr: &str, token: &str) {
+        let (Ok(SocketAddr::V4(v4)), Some(token)) = (addr.parse::<SocketAddr>(), parse_token(token)) else {
+            logger::warn("anynet.p2p", &format!("Ignoring a malformed UDP relay offer ({addr})."));
+            return;
+        };
+        if v4.ip().is_unspecified() || v4.port() == 0 {
+            return;
+        }
+        let addr = SocketAddr::V4(v4);
+        logger::info("anynet.p2p", &format!("UDP relay offered at {addr}."));
+        self.state.lock().relay = Some(RelayLeg { addr, token, bound: false, last_bind: None, last_probe: None });
     }
 
     /// Handles a `p2p-signal` payload from the session partner (the relay already checked the pairing).
@@ -570,14 +660,25 @@ impl P2p {
     }
 
     fn send_to_peer(&self, st: &mut State, plain: &[u8]) -> bool {
-        match st.peer_addr {
-            Some(addr) => self.send_plain(st, addr, plain),
+        match Self::route_of(st) {
+            Some(route) => self.send_plain(st, route.addr(), plain),
             None => false,
         }
     }
 
     fn on_datagram(&self, pkt: &[u8], from: SocketAddr) {
         let mut st = self.state.lock();
+        let via_relay = st.relay.as_ref().is_some_and(|r| r.addr == from);
+        if via_relay && pkt.first() == Some(&RELAY_TAG) {
+            if pkt == [RELAY_TAG, RELAY_BOUND]
+                && let Some(r) = st.relay.as_mut()
+                && !r.bound
+            {
+                r.bound = true;
+                logger::info("anynet.p2p", &format!("Bound to the UDP relay at {from}."));
+            }
+            return;
+        }
         st.rx_datagrams += 1;
         st.first_from.get_or_insert(from);
         let plain = {
@@ -596,8 +697,12 @@ impl P2p {
             }
         };
         let Some((&kind, body)) = plain.split_first() else { return };
-        st.peer_addr = Some(from);
-        st.last_rx = Some(Instant::now());
+        if via_relay {
+            st.relay_rx = Some(Instant::now());
+        } else {
+            st.peer_addr = Some(from);
+            st.direct_rx = Some(Instant::now());
+        }
         match kind {
             K_PROBE => {
                 self.send_plain(&mut st, from, &[K_PROBE_ACK]);
@@ -666,15 +771,18 @@ impl P2p {
             st.probe_started = Some(now);
             logger::info("anynet.p2p", "End-to-end keys ready (Noise_XX); probing candidates.");
         }
-        let alive = Self::alive(&st);
-        if alive != st.was_alive {
-            st.was_alive = alive;
-            if alive {
-                logger::info("anynet.p2p", &format!("P2P path active via {}.", st.peer_addr.unwrap()));
-            } else {
-                logger::info("anynet.p2p", "P2P path lost; falling back to relay.");
+        self.maintain_relay(&mut st, now);
+        let route = Self::route_of(&st);
+        let alive = route.is_some();
+        if route != st.route_was {
+            let was_alive = st.route_was.is_some();
+            st.route_was = route;
+            match route {
+                Some(Route::Direct(a)) => logger::info("anynet.p2p", &format!("P2P path active: direct via {a}.")),
+                Some(Route::Relayed(a)) => logger::info("anynet.p2p", &format!("P2P path active: UDP relay via {a}.")),
+                None => logger::info("anynet.p2p", "P2P path lost; falling back to relay."),
             }
-            if !alive {
+            if was_alive && !alive {
                 st.probe_started = Some(now);
                 st.frame_wait.clear();
                 // shortcut: unacked input is dropped, not replayed on the relay, to avoid double clicks.
@@ -704,7 +812,10 @@ impl P2p {
             for (seq, body) in resend {
                 self.send_input_packet(&mut st, seq, &body);
             }
-            return;
+            if matches!(route, Some(Route::Direct(_))) {
+                return;
+            }
+            // On the relay: keep probing the direct candidates below, so the path moves over once one works.
         }
         // Bounded probing: 200 ms for 10 s, then 3 s until 60 s, then stop until the path is lost again.
         let Some(started) = st.probe_started else { return };
@@ -733,6 +844,25 @@ impl P2p {
         }
         for to in targets {
             self.send_plain(&mut st, to, &[K_PROBE]);
+        }
+    }
+
+    /// Binds to the UDP relay (and keeps the binding), and probes the partner through it while no path is up.
+    fn maintain_relay(&self, st: &mut State, now: Instant) {
+        let done = matches!(st.hs, Some(Handshake::Done(_)));
+        let alive = Self::alive(st);
+        let Some(r) = st.relay.as_mut() else { return };
+        let every = if r.bound { RELAY_REBIND } else { RELAY_BIND_RETRY };
+        if r.last_bind.is_none_or(|t| now.duration_since(t) >= every) {
+            r.last_bind = Some(now);
+            let mut bind = vec![RELAY_TAG, RELAY_BIND];
+            bind.extend_from_slice(&r.token);
+            let _ = self.sock.send_to(&bind, r.addr);
+        }
+        if done && r.bound && !alive && r.last_probe.is_none_or(|t| now.duration_since(t) >= RELAY_PROBE) {
+            r.last_probe = Some(now);
+            let to = r.addr;
+            self.send_plain(st, to, &[K_PROBE]);
         }
     }
 
@@ -973,6 +1103,126 @@ mod tests {
         assert_eq!(in_rx.recv_timeout(Duration::from_secs(2)).unwrap(), InputEvent::KeyDown { key_code: 65 });
         viewer.close();
         host.close();
+    }
+
+    /// A stand-in for the relay server's UDP forwarder (`server-relay/internal/udprelay`) on loopback.
+    fn fake_udp_relay(tokens: [[u8; 16]; 2], stop: Arc<AtomicBool>) -> SocketAddr {
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let addr = sock.local_addr().unwrap();
+        sock.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+        thread::spawn(move || {
+            let mut legs: [Option<SocketAddr>; 2] = [None, None];
+            let mut buf = [0u8; 2048];
+            while !stop.load(Ordering::SeqCst) {
+                let Ok((n, from)) = sock.recv_from(&mut buf) else { continue };
+                let pkt = &buf[..n];
+                if n == 18 && pkt[..2] == [RELAY_TAG, RELAY_BIND] {
+                    if let Some(i) = tokens.iter().position(|t| t[..] == pkt[2..]) {
+                        legs[i] = Some(from);
+                        let _ = sock.send_to(&[RELAY_TAG, RELAY_BOUND], from);
+                    }
+                } else if pkt[0] == MAGIC
+                    && let Some(i) = legs.iter().position(|l| *l == Some(from))
+                    && let Some(to) = legs[1 - i]
+                {
+                    let _ = sock.send_to(pkt, to);
+                }
+            }
+        });
+        addr
+    }
+
+    /// Two partners that cannot reach each other (no candidates) meet through the UDP relay.
+    #[test]
+    fn path_runs_through_the_udp_relay_without_candidates() {
+        // SAFETY: set before any thread in this test reads the environment.
+        unsafe { std::env::set_var("OPENDESK_STUN", "off") };
+        let (tx_v, rx_v) = std::sync::mpsc::channel();
+        let (tx_h, rx_h) = std::sync::mpsc::channel();
+        let (in_tx, in_rx) = std::sync::mpsc::channel();
+        let voice = VoiceEngine::new(tx_v.clone());
+        let inbox: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let sink = Arc::clone(&inbox);
+        let mk = |input: Sender<InputEvent>, video: Arc<dyn Fn(Vec<u8>) + Send + Sync>| Sinks {
+            video,
+            voice: Arc::clone(&voice),
+            input,
+            audio_gate: None,
+        };
+        let (dummy, _keep) = std::sync::mpsc::channel();
+        let viewer = P2p::start(
+            false,
+            "111111111",
+            "222222222".into(),
+            Arc::new(SendGate::new(true)),
+            tx_v,
+            mk(dummy, Arc::new(move |f| sink.lock().push(f))),
+            None,
+        )
+        .unwrap();
+        let host = P2p::start(
+            true,
+            "222222222",
+            "111111111".into(),
+            Arc::new(SendGate::new(true)),
+            tx_h,
+            mk(in_tx, Arc::new(|_| {})),
+            None,
+        )
+        .unwrap();
+        // The handshake goes through, the candidates do not: no direct path is possible.
+        let signal = |rx: &std::sync::mpsc::Receiver<Outgoing>| loop {
+            if let Ok(Outgoing::Message(ClientMessage::P2pSignal { candidate, .. })) =
+                rx.recv_timeout(Duration::from_secs(5))
+            {
+                let mut v: Value = serde_json::from_str(&candidate).unwrap();
+                v["c"] = json!([]);
+                break v.to_string();
+            }
+        };
+        host.on_signal(&signal(&rx_v));
+        viewer.on_signal(&signal(&rx_h));
+
+        let tokens = [[1u8; 16], [2u8; 16]];
+        let stop = Arc::new(AtomicBool::new(false));
+        let relay = fake_udp_relay(tokens, Arc::clone(&stop)).to_string();
+        viewer.add_relay(&relay, &"01".repeat(16));
+        host.add_relay(&relay, &"02".repeat(16));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !(viewer.is_active() && host.is_active()) {
+            assert!(Instant::now() < deadline, "path never came up through the relay");
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(matches!(viewer.route(), Some(Route::Relayed(a)) if a.to_string() == relay));
+        assert!(matches!(host.route(), Some(Route::Relayed(_))));
+
+        let jpeg: Vec<u8> = (0..150_000u32).map(|i| i as u8).collect();
+        assert!(host.send_video(&jpeg));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while inbox.lock().is_empty() {
+            assert!(Instant::now() < deadline, "frame not delivered");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(inbox.lock().pop().unwrap(), jpeg);
+        assert!(viewer.send_input(&InputEvent::KeyDown { key_code: 65 }));
+        assert_eq!(in_rx.recv_timeout(Duration::from_secs(2)).unwrap(), InputEvent::KeyDown { key_code: 65 });
+
+        // The relay goes away: the path is lost and the session falls back to the WebSocket relay.
+        stop.store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + PATH_TIMEOUT + Duration::from_secs(2);
+        while viewer.is_active() {
+            assert!(Instant::now() < deadline, "path stayed up without the relay");
+            thread::sleep(Duration::from_millis(50));
+        }
+        viewer.close();
+        host.close();
+    }
+
+    #[test]
+    fn relay_tokens_parse_from_hex_only() {
+        assert_eq!(parse_token(&"0a".repeat(16)), Some([10u8; 16]));
+        assert_eq!(parse_token(&"0a".repeat(15)), None);
+        assert_eq!(parse_token(&"zz".repeat(16)), None);
     }
 
     #[test]
