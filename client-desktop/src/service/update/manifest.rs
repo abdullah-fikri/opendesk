@@ -20,7 +20,7 @@ use crate::domain::desk_id;
 /// PLACEHOLDER: all zeros is not a valid key, so until the real key is set every manifest is rejected and
 /// auto-update stays inert. To set it: `openssl genpkey -algorithm ed25519 -out release-update.pem` (keep the
 /// file offline and in the `UPDATE_SIGNING_KEY` CI secret), then
-/// `openssl pkey -in release-update.pem -pubout -outform DER | tail -c 32 | xxd -p -c 64` and paste the
+/// `openssl pkey -in release-update.pem -pubout -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n'` and paste the
 /// output here. See `docs/auto-update.md`.
 pub const RELEASE_PUBLIC_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -250,6 +250,21 @@ pub mod tests {
         assert_eq!(verify(&bytes, "00", &test_public_hex()), Err(VerifyError::BadSignature));
         let other = hex_encode(SigningKey::from_bytes(&[8u8; 32]).verifying_key().as_bytes());
         assert_eq!(verify(&bytes, &sig, &other), Err(VerifyError::BadSignature));
+    }
+
+    /// Output of `scripts/sign-manifest.sh` with a throwaway OpenSSL key: the script and the client agree.
+    #[test]
+    fn manifests_signed_by_the_openssl_script_verify() {
+        let public = "ab8951a732142210107fb39c81258f7d0ffedb5c69bf365052d628c432e81691";
+        let bytes = concat!(
+            r#"{"version":"9.9.9","channel":"stable","min_version":"9.9.9","rollout_percent":50,"#,
+            r#""installer_url":"https://example.invalid/s.exe","#,
+            r#""sha256":"b5d54c39e66671c9731b9f471e585d8262cd4f54963f0c93082d8dcf334d4c78","size":4}"#,
+            "\n"
+        );
+        let sig = "e21e0bbe8086c4bd8daebb18c6856d136441eb94b5ac8a1304245505f759dd606be7f1b60d659aa6806e69d2f71dde4edcd0bc7e73f587e318ae7ae3fbbb6d02";
+        let m = verify(bytes.as_bytes(), sig, public).unwrap();
+        assert_eq!((m.version.as_str(), m.rollout_percent, m.size), ("9.9.9", 50, 4));
     }
 
     #[test]
