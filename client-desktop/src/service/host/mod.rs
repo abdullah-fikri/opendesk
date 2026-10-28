@@ -17,6 +17,7 @@ use parking_lot::Mutex;
 
 use crate::domain::capability::PeerCaps;
 use crate::domain::{desk_id, resolution};
+use crate::infra::send_gate::SendGate;
 use crate::infra::{logger, privacy};
 use crate::service::context::{AppContext, Ctx};
 
@@ -33,7 +34,9 @@ pub struct HostState {
     pub monitor_bounds: Mutex<MonitorBounds>,
     /// Backpressure gate: the capture loop only encodes while the previous frame has left the socket.
     /// Shared with the P2P path, whose frame acknowledgements also open it.
-    pub can_send_frame: Arc<AtomicBool>,
+    pub can_send_frame: Arc<SendGate>,
+    /// The hosted session's video goes over a direct P2P path (updated by the relay connection).
+    pub p2p_active: AtomicBool,
     /// What the hosted viewer supports.
     pub peer_caps: Mutex<PeerCaps>,
     /// The viewer lost a delta frame; the capture loop answers with a key frame.
@@ -56,7 +59,8 @@ impl Default for HostState {
             monitor_index: AtomicUsize::new(0),
             resolution_mode: AtomicUsize::new(resolution::DEFAULT_PRESET),
             monitor_bounds: Mutex::new(enumerate_monitors()[0]),
-            can_send_frame: Arc::new(AtomicBool::new(true)),
+            can_send_frame: Arc::new(SendGate::new(true)),
+            p2p_active: AtomicBool::new(false),
             peer_caps: Mutex::default(),
             keyframe_requested: AtomicBool::new(false),
             stats_requested: AtomicBool::new(false),
@@ -113,7 +117,8 @@ pub fn start(ctx: &Ctx, partner: &str, caps: PeerCaps) {
     if resolution::is_auto(ctx.host.resolution_mode.load(Ordering::SeqCst)) {
         ctx.host.resolution_mode.store(resolution::DEFAULT_PRESET, Ordering::SeqCst);
     }
-    ctx.host.can_send_frame.store(true, Ordering::SeqCst);
+    ctx.host.can_send_frame.open();
+    ctx.host.p2p_active.store(false, Ordering::SeqCst);
     ctx.host.stats_requested.store(false, Ordering::SeqCst);
     ctx.host.active.store(true, Ordering::SeqCst);
     let generation = ctx.host.capture_generation.fetch_add(1, Ordering::SeqCst) + 1;

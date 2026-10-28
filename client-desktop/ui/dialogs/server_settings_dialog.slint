@@ -1,7 +1,8 @@
-// Relay address dialog.
+// Relay address and viewer frame-rate dialog.
 
 import { Icons } from "../theme.slint";
 import { Icon } from "../components/icon.slint";
+import { Segment } from "../components/segment.slint";
 
 export component ServerSettingsModal inherits Rectangle {
     background: #000000bb;
@@ -10,11 +11,15 @@ export component ServerSettingsModal inherits Rectangle {
 
     in-out property <string> gateway_url: "";
     in-out property <bool> show_settings: false;
+    // Viewer frame-rate limit: 0 = Auto (monitor), 30, 60, 240 = Maximum. Saved with the relay address.
+    in property <int> max_fps: 0;
+    property <int> picked_fps: max_fps;
     callback save_gateway_url(string);
+    callback save_max_fps(int);
 
     Rectangle {
         width: 420px;
-        height: 190px;
+        height: 244px;
         background: #111114;
         border-width: 1px;
         border-color: #27272a;
@@ -80,6 +85,38 @@ export component ServerSettingsModal inherits Rectangle {
                     }
                 }
 
+                VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "Frame rate when viewing";
+                        color: #a1a1aa;
+                        font-size: 11px;
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Segment {
+                            label: "Auto (monitor)";
+                            selected: picked_fps == 0;
+                            clicked => { picked_fps = 0; }
+                        }
+                        Segment {
+                            label: "30";
+                            selected: picked_fps == 30;
+                            clicked => { picked_fps = 30; }
+                        }
+                        Segment {
+                            label: "60";
+                            selected: picked_fps == 60;
+                            clicked => { picked_fps = 60; }
+                        }
+                        Segment {
+                            label: "Maximum";
+                            selected: picked_fps == 240;
+                            clicked => { picked_fps = 240; }
+                        }
+                    }
+                }
+
                 HorizontalLayout {
                     spacing: 8px;
                     alignment: end;
@@ -110,6 +147,7 @@ export component ServerSettingsModal inherits Rectangle {
                         TouchArea {
                             mouse-cursor: pointer;
                             clicked => {
+                                save_max_fps(picked_fps);
                                 save_gateway_url(input-gw.text);
                                 show_settings = false;
                             }

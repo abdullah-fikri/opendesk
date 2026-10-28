@@ -85,7 +85,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     let window = MainWindow::new()?;
     let ctx = build(Arc::new(SlintUi::new(&window)));
     let history = Arc::new(History::load());
-    ui::bind(&window, &ctx, &history, &settings.gateway_url);
+    ui::bind(&window, &ctx, &history, &settings.gateway_url, settings.max_fps);
     let _tray = ui::install_tray(&window, &ctx);
     ui::enable_file_drop(&window, &ctx, opts.background);
     start_services(&ctx, outbox_rx);

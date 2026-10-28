@@ -135,7 +135,7 @@ impl Connection {
         ctx.voice.is_session_active.store(true, Ordering::SeqCst);
         // The microphone is on by default in every session.
         ctx.voice.is_mic_muted.store(false, Ordering::SeqCst);
-        ctx.host.can_send_frame.store(true, Ordering::SeqCst);
+        ctx.host.can_send_frame.open();
 
         if is_host {
             // A viewer's voice partner is its focused host (see `controller::apply_focus`).

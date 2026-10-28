@@ -28,6 +28,8 @@ export component MainWindow inherits Window {
     // ---- Device and relay ----
     in property <string> local_desk_id;
     in-out property <string> gateway_url;
+    // Viewer frame-rate limit: 0 = Auto (monitor), 30, 60, 240 = Maximum.
+    in property <int> max_fps: 0;
     in property <string> status_text: "Connecting...";
     in property <bool> is_relay_online: false;
     in property <bool> is_admin: false;
@@ -95,6 +97,7 @@ export component MainWindow inherits Window {
     callback copy_local_id();
     callback refresh_hosts();
     callback save_gateway_url(string);
+    callback save_max_fps(int);
     callback open_rename(string, string);
     callback save_rename(string, string);
     callback delete_history(string);
@@ -365,7 +368,9 @@ export component MainWindow inherits Window {
     if show_settings: ServerSettingsModal {
         gateway_url <=> root.gateway_url;
         show_settings <=> root.show_settings;
+        max_fps: root.max_fps;
         save_gateway_url(url) => { root.save_gateway_url(url); }
+        save_max_fps(fps) => { root.save_max_fps(fps); }
     }
 
     if show_rename_modal: RenameDeviceModal {

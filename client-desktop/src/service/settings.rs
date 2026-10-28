@@ -20,6 +20,13 @@ pub fn set_gateway(ctx: &AppContext, raw_url: &str) {
     apply_gateway(ctx, url);
 }
 
+/// Stores the viewer frame-rate limit (`Settings::max_fps`); it is advertised from the next registration on.
+pub fn set_max_fps(fps: u32) {
+    let mut settings = storage::load_settings();
+    settings.max_fps = fps;
+    storage::save_settings(&settings);
+}
+
 /// Stores the token the relay issued when it enrolled this device; it is presented to that relay only.
 pub fn store_device_token(ctx: &AppContext, token: &str) {
     if token.is_empty() {

@@ -62,6 +62,7 @@ static PARTNER_CAPS: Mutex<PeerCaps> = Mutex::new(PeerCaps {
     p2p: false,
     privacy_screen: false,
     block_input: false,
+    max_fps: 0,
 });
 
 /// Weight of one queued file message of `len` bytes in [`IN_FLIGHT_CHUNKS`]: a JSON message counts 1, a binary

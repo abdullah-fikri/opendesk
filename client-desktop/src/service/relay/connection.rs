@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
-use crate::domain::capability;
 use crate::domain::settings::{self, normalize_gateway_url};
+use crate::domain::{capability, frame_rate};
 use crate::infra::p2p::{self, P2p};
 use crate::infra::{autostart, device, logger, power, storage, virtual_clipboard, window};
 use crate::protocol::{ClientMessage, FilePayload, InputEvent, Outgoing, ServerMessage, binary};
@@ -135,7 +135,7 @@ impl Connection {
         logger::info("relay", "Connection established.");
         ctx.ui.relay_status(RelayStatus::Registering);
 
-        ctx.host.can_send_frame.store(true, Ordering::SeqCst);
+        ctx.host.can_send_frame.open();
         ctx.viewers.set_multi(false);
         let mut lost = false;
         let mut video_in_flight = false;
@@ -156,6 +156,8 @@ impl Connection {
                         s.p2p_active.store(p.is_active(), Ordering::Relaxed);
                     }
                 }
+                let hosted_p2p = self.links.iter().any(|p| p.is_host() && p.is_active());
+                ctx.host.p2p_active.store(hosted_p2p, Ordering::Relaxed);
             }
 
             video_in_flight |= self.pump_outbox(&mut socket, &partner);
@@ -176,7 +178,7 @@ impl Connection {
             match socket.flush() {
                 Ok(()) => {
                     if std::mem::take(&mut video_in_flight) {
-                        ctx.host.can_send_frame.store(true, Ordering::Release);
+                        ctx.host.can_send_frame.open();
                     }
                     self.monitor_in_flight = false;
                 }
@@ -186,7 +188,7 @@ impl Connection {
                     self.busy = true;
                 }
                 Err(_) => {
-                    ctx.host.can_send_frame.store(true, Ordering::Release);
+                    ctx.host.can_send_frame.open();
                     self.monitor_in_flight = false;
                 }
             }
@@ -258,16 +260,25 @@ impl Connection {
         }
         #[cfg(feature = "admin")]
         caps.push(capability::MONITOR_VIEW);
+        let stored = storage::load_settings();
+        let mut caps: Vec<String> = caps.into_iter().map(String::from).collect();
+        // Last, so a relay that keeps only its first 16 names drops this one (the host then streams 60).
+        if edition.can_view() {
+            let fps = viewer_fps_cap(stored.max_fps);
+            if fps != frame_rate::DEFAULT_FPS {
+                caps.push(capability::max_fps_cap(fps));
+            }
+        }
         let gateway = self.ctx.relay.gateway_url.lock().clone();
-        let device_token = std::env::var("OPENDESK_DEVICE_TOKEN")
-            .unwrap_or_else(|_| settings::token_for(&storage::load_settings(), &gateway));
+        let device_token =
+            std::env::var("OPENDESK_DEVICE_TOKEN").unwrap_or_else(|_| settings::token_for(&stored, &gateway));
         ClientMessage::Register {
             desk_id: self.ctx.local_id.clone(),
             platform: edition.platform_tag().into(),
             device_name: device::display_name(),
             device_token,
             is_admin: edition.is_admin(),
-            caps: caps.into_iter().map(String::from).collect(),
+            caps,
         }
     }
 
@@ -566,6 +577,15 @@ fn idle_sleep(idle_for: Duration, session_active: bool) -> Duration {
 
 /// Uses the loopback relay when one runs on this machine and the configured URL is a remote `wss://` one
 /// (the relay machine itself would otherwise hairpin through its own tunnel).
+/// The frame-rate cap this viewer advertises: `setting` (see `Settings::max_fps`), Auto meaning the fastest
+/// monitor's refresh rate, lowered by `OPENDESK_MAX_FPS`.
+fn viewer_fps_cap(setting: u32) -> u32 {
+    use core_engine::capture::{enumerate_monitors, refresh_rate};
+    let monitor_hz = enumerate_monitors().into_iter().map(refresh_rate).max().unwrap_or(frame_rate::DEFAULT_FPS);
+    let env = frame_rate::env_cap(std::env::var(frame_rate::MAX_FPS_ENV).ok().as_deref());
+    frame_rate::viewer_cap(setting, monitor_hz, env)
+}
+
 fn resolve_url(configured: &str) -> String {
     let url = normalize_gateway_url(configured);
     if url.starts_with("wss://")
