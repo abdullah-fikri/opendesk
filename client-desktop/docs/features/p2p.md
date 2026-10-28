@@ -26,8 +26,11 @@ arrives although both sides know each other's public address. When the relay run
 `udp-relay`) and both clients list `p2p.v1` and `udp-relay`, each side gets a `udp-relay-offer` with the
 forwarder's address and its own bind token:
 
-1. The client sends `[0x52][0x01][token]` from its path socket every second until the relay answers
-   `[0x52][0x02]`, then every 15 s (keeps the NAT mapping and the relay's pair alive).
+1. The client sends `[0x52][0x01][token]` from its path socket; the relay answers `[0x52][0x03][cookie]` for
+   that address, and the client binds with `[0x52][0x01][token][cookie]` until the relay confirms `[0x52][0x02]`,
+   then again every 15 s (keeps the NAT mapping and the relay's pair alive). The cookie proves the client
+   receives at that address, so a token holder cannot bind a spoofed address and aim its partner's traffic at a
+   third party.
 2. Once bound, it probes the partner through the forwarder. The forwarder passes datagrams between the two bound
    addresses unread; they are the same encrypted datagrams as on the direct path.
 3. The direct route wins whenever it works: while the path runs through the relay, the direct candidates are

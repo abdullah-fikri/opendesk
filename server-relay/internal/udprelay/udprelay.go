@@ -5,14 +5,21 @@
 //
 // Wire format (client <-> relay):
 //
-//	[0x52][0x01][token 16B]   bind: the sender's address becomes this token's leg
-//	[0x52][0x02]              bound: the relay's answer to a bind
-//	[0x4F]...                 a P2P datagram, forwarded to the other leg once both are bound
+//	[0x52][0x01][token 16B]             bind request; answered with a challenge
+//	[0x52][0x03][cookie 8B]             challenge: the cookie for this token and the address it was sent to
+//	[0x52][0x01][token 16B][cookie 8B]  bind: the sender's address becomes this token's leg
+//	[0x52][0x02]                        bound: the relay's answer to a bind
+//	[0x4F]...                           a P2P datagram, forwarded to the other leg once both are bound
+//
+// The cookie proves the address is the sender's own (return routability): without it, a client holding a valid
+// token could bind a spoofed source address and have its partner's traffic sent to a third party.
 package udprelay
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"log/slog"
@@ -23,12 +30,14 @@ import (
 )
 
 const (
-	tagControl  = 0x52
-	ctlBind     = 0x01
-	ctlBound    = 0x02
-	tagP2P      = 0x4F
-	tokenLen    = 16
-	maxDatagram = 1500
+	tagControl   = 0x52
+	ctlBind      = 0x01
+	ctlBound     = 0x02
+	ctlChallenge = 0x03
+	cookieLen    = 8
+	tagP2P       = 0x4F
+	tokenLen     = 16
+	maxDatagram  = 1500
 	// unboundTTL: an allocation nobody bound in this time is dropped (the session never used it).
 	unboundTTL = 60 * time.Second
 	// idleTTL: a pair without traffic for this long is dropped; clients rebind every 15 s.
@@ -74,6 +83,8 @@ type Server struct {
 	byAddr      map[netip.AddrPort]*leg
 	now         func() time.Time
 	writeTo     func([]byte, netip.AddrPort)
+	// secret keys the bind cookies; per process, so a restart invalidates them (clients just bind again).
+	secret [32]byte
 }
 
 // Listen opens the UDP socket. mbps caps each pair's forwarded rate (both directions together).
@@ -95,7 +106,7 @@ func Listen(addr string, mbps int, log *slog.Logger) (*Server, error) {
 }
 
 func newServer(mbps int, log *slog.Logger) *Server {
-	return &Server{
+	s := &Server{
 		bytesPerSec: float64(mbps) * 1e6 / 8,
 		log:         log.With("component", "udprelay"),
 		pairs:       make(map[string]*pair),
@@ -103,6 +114,19 @@ func newServer(mbps int, log *slog.Logger) *Server {
 		byAddr:      make(map[netip.AddrPort]*leg),
 		now:         time.Now,
 	}
+	_, _ = rand.Read(s.secret[:])
+	return s
+}
+
+// cookie is the return-routability proof for tok bound from addr.
+func (s *Server) cookie(tok Token, addr netip.AddrPort) [cookieLen]byte {
+	m := hmac.New(sha256.New, s.secret[:])
+	m.Write(tok[:])
+	b, _ := addr.MarshalBinary()
+	m.Write(b)
+	var c [cookieLen]byte
+	copy(c[:], m.Sum(nil))
+	return c
 }
 
 // Run reads datagrams until ctx ends.
@@ -187,12 +211,37 @@ func (s *Server) handle(pkt []byte, from netip.AddrPort) {
 	from = netip.AddrPortFrom(from.Addr().Unmap(), from.Port())
 	switch pkt[0] {
 	case tagControl:
-		if len(pkt) == 2+tokenLen && pkt[1] == ctlBind {
-			s.bind(Token(pkt[2:]), from)
+		if len(pkt) < 2 || pkt[1] != ctlBind {
+			return
+		}
+		switch len(pkt) {
+		case 2 + tokenLen:
+			s.challenge(Token(pkt[2:]), from)
+		case 2 + tokenLen + cookieLen:
+			tok := Token(pkt[2 : 2+tokenLen])
+			want := s.cookie(tok, from)
+			if hmac.Equal(pkt[2+tokenLen:], want[:]) {
+				s.bind(tok, from)
+			} else {
+				s.challenge(tok, from) // a stale cookie (the NAT moved the client): hand out the current one
+			}
 		}
 	case tagP2P:
 		s.forward(pkt, from)
 	}
+}
+
+// challenge answers a bind request with the cookie for this address, only for a known token. The answer (10
+// bytes) is smaller than the request (18), so it cannot amplify anything.
+func (s *Server) challenge(tok Token, from netip.AddrPort) {
+	s.mu.Lock()
+	known := s.byToken[tok] != nil
+	s.mu.Unlock()
+	if !known {
+		return
+	}
+	c := s.cookie(tok, from)
+	s.writeTo(append([]byte{tagControl, ctlChallenge}, c[:]...), from)
 }
 
 func (s *Server) bind(tok Token, from netip.AddrPort) {

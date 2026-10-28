@@ -27,6 +27,18 @@ func testServer(mbps int) (*Server, *[]sent, *time.Time) {
 
 func bindPkt(t Token) []byte { return append([]byte{tagControl, ctlBind}, t[:]...) }
 
+// bindAt runs the challenge and the bind for tok from addr, as a client does, and leaves out the answers.
+func bindAt(t *testing.T, s *Server, out *[]sent, tok Token, addr netip.AddrPort) {
+	t.Helper()
+	before := len(*out)
+	s.handle(bindPkt(tok), addr)
+	if len(*out) != before+1 || (*out)[before].b[1] != ctlChallenge || (*out)[before].to != addr {
+		t.Fatalf("no challenge for a known token: %+v", (*out)[before:])
+	}
+	s.handle(append(bindPkt(tok), (*out)[before].b[2:]...), addr)
+	*out = (*out)[:before]
+}
+
 var (
 	addrA = netip.MustParseAddrPort("198.51.100.1:40000")
 	addrB = netip.MustParseAddrPort("203.0.113.9:50000")
@@ -42,21 +54,26 @@ func TestForwardsOnlyBetweenBoundLegs(t *testing.T) {
 		t.Fatal("an unbound address got a datagram forwarded")
 	}
 	s.handle(bindPkt(ta), addrA)
-	if len(*out) != 1 || !bytes.Equal((*out)[0].b, []byte{tagControl, ctlBound}) || (*out)[0].to != addrA {
+	if len(*out) != 1 || (*out)[0].b[1] != ctlChallenge {
+		t.Fatalf("bind request not challenged: %+v", *out)
+	}
+	cookie := (*out)[0].b[2:]
+	s.handle(append(bindPkt(ta), cookie...), addrA)
+	if len(*out) != 2 || !bytes.Equal((*out)[1].b, []byte{tagControl, ctlBound}) || (*out)[1].to != addrA {
 		t.Fatalf("bind not acknowledged: %+v", *out)
 	}
 	s.handle([]byte{tagP2P, 2}, addrA)
-	if len(*out) != 1 {
+	if len(*out) != 2 {
 		t.Fatal("forwarded before the other leg bound")
 	}
-	s.handle(bindPkt(tb), addrB)
+	bindAt(t, s, out, tb, addrB)
 	*out = nil
 
 	s.handle([]byte{tagP2P, 3}, addrA)
 	s.handle([]byte{tagP2P, 4}, addrB)
 	s.handle([]byte{tagP2P, 5}, addrX)       // stranger
 	s.handle([]byte{0x00, 6}, addrA)         // not a P2P datagram
-	s.handle(bindPkt(Token{9, 9, 9}), addrX) // unknown token
+	s.handle(bindPkt(Token{9, 9, 9}), addrX) // unknown token: not even a challenge
 	want := []sent{{[]byte{tagP2P, 3}, addrB}, {[]byte{tagP2P, 4}, addrA}}
 	if len(*out) != len(want) {
 		t.Fatalf("got %d datagrams, want %d: %+v", len(*out), len(want), *out)
@@ -72,10 +89,10 @@ func TestRebindMovesLegAndReleaseStopsForwarding(t *testing.T) {
 	s, out, _ := testServer(100)
 	key := PairKey("111", "222")
 	ta, tb, _ := s.Allocate(key)
-	s.handle(bindPkt(ta), addrA)
-	s.handle(bindPkt(tb), addrB)
+	bindAt(t, s, out, ta, addrA)
+	bindAt(t, s, out, tb, addrB)
 	moved := netip.MustParseAddrPort("198.51.100.1:40001")
-	s.handle(bindPkt(ta), moved) // NAT rebinding
+	bindAt(t, s, out, ta, moved) // NAT rebinding
 	*out = nil
 
 	s.handle([]byte{tagP2P, 1}, addrA)
@@ -87,8 +104,37 @@ func TestRebindMovesLegAndReleaseStopsForwarding(t *testing.T) {
 	*out = nil
 	s.handle([]byte{tagP2P, 3}, moved)
 	s.handle(bindPkt(ta), moved)
+	s.handle(append(bindPkt(ta), s.cookieBytes(ta, moved)...), moved)
 	if len(*out) != 0 {
 		t.Fatalf("released pair still active: %+v", *out)
+	}
+}
+
+func (s *Server) cookieBytes(tok Token, addr netip.AddrPort) []byte {
+	c := s.cookie(tok, addr)
+	return c[:]
+}
+
+// TestSpoofedBindIsRefused: a client with a valid token cannot bind an address it does not receive at.
+func TestSpoofedBindIsRefused(t *testing.T) {
+	s, out, _ := testServer(100)
+	ta, tb, _ := s.Allocate(PairKey("111", "222"))
+	bindAt(t, s, out, ta, addrA)
+	// The attacker asks from its own address, then claims the victim's with that cookie.
+	s.handle(bindPkt(tb), addrB)
+	cookie := (*out)[0].b[2:]
+	*out = nil
+	s.handle(append(bindPkt(tb), cookie...), addrX)
+	s.handle(append(bindPkt(tb), make([]byte, cookieLen)...), addrX)
+	for _, o := range *out {
+		if o.b[1] == ctlBound {
+			t.Fatalf("spoofed address bound: %+v", *out)
+		}
+	}
+	*out = nil
+	s.handle([]byte{tagP2P, 1}, addrA)
+	if len(*out) != 0 {
+		t.Fatalf("traffic forwarded to an unproven address: %+v", *out)
 	}
 }
 
@@ -106,8 +152,8 @@ func TestAllocateReplacesOldTokens(t *testing.T) {
 func TestRateLimitDropsOverBudget(t *testing.T) {
 	s, out, now := testServer(1) // 125 kB/s, burst 31.25 kB
 	ta, tb, _ := s.Allocate(PairKey("111", "222"))
-	s.handle(bindPkt(ta), addrA)
-	s.handle(bindPkt(tb), addrB)
+	bindAt(t, s, out, ta, addrA)
+	bindAt(t, s, out, tb, addrB)
 	*out = nil
 	pkt := append([]byte{tagP2P}, make([]byte, 999)...)
 	for range 100 {
@@ -127,13 +173,13 @@ func TestRateLimitDropsOverBudget(t *testing.T) {
 }
 
 func TestSweepDropsUnboundAndIdlePairs(t *testing.T) {
-	s, _, now := testServer(100)
+	s, out, now := testServer(100)
 	s.Allocate("unbound")
 	ta, _, _ := s.Allocate("idle")
-	s.handle(bindPkt(ta), addrA)
+	bindAt(t, s, out, ta, addrA)
 	*now = now.Add(30 * time.Second)
 	ta2, _, _ := s.Allocate("fresh")
-	s.handle(bindPkt(ta2), addrB)
+	bindAt(t, s, out, ta2, addrB)
 	*now = now.Add(31 * time.Second)
 	s.sweep()
 	if _, ok := s.pairs["unbound"]; ok {
@@ -172,6 +218,13 @@ func TestRealSockets(t *testing.T) {
 			t.Fatal(err)
 		}
 		buf := make([]byte, 16)
+		n, err := c.Read(buf)
+		if err != nil || n != 2+cookieLen || buf[1] != ctlChallenge {
+			t.Fatalf("challenge %x, %v", buf[:n], err)
+		}
+		if _, err := c.Write(append(bindPkt(tok), buf[2:n]...)); err != nil {
+			t.Fatal(err)
+		}
 		if n, err := c.Read(buf); err != nil || !bytes.Equal(buf[:n], []byte{tagControl, ctlBound}) {
 			t.Fatalf("bind answer %x, %v", buf[:n], err)
 		}

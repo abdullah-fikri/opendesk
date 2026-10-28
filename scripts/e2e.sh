@@ -20,7 +20,7 @@ if [[ "$relay_port" == 8088 ]]; then
 fi
 # The relay lets these override its config file; inherited ones could point it at a real database.
 unset DB_HOST DB_PORT DB_USER DB_PASSWORD DB_NAME OPENDESK_DEVICE_CREDENTIALS OPENDESK_METRICS_TOKEN \
-  OPENDESK_TLS_PROXY OPENDESK_P2P_DISABLED
+  OPENDESK_TLS_PROXY OPENDESK_P2P_DISABLED OPENDESK_UDP_RELAY_PUBLIC OPENDESK_UDP_RELAY_ADDR OPENDESK_UDP_RELAY_MBPS
 work=$(mktemp -d)
 pg_container=""
 relay_pid=""
