@@ -36,6 +36,12 @@ const FRAME_ACK_TIMEOUT: Duration = Duration::from_millis(200);
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 const INPUT_RETRANSMIT: Duration = Duration::from_millis(80);
 const MAX_UNACKED: usize = 256;
+/// The relay may drop a signal (rate limit) and says nothing, so with `e2e` the candidates go out again this many
+/// times, every [`SIGNAL_RESEND_EVERY`] while probing; the partner ignores copies after the first.
+const SIGNAL_RESENDS: u32 = 4;
+const SIGNAL_RESEND_EVERY: Duration = Duration::from_secs(2);
+/// Second STUN server, only used to tell the NAT type (see `gather_candidates`).
+const STUN_CHECK: &str = "stun1.l.google.com:19302";
 
 const K_PROBE: u8 = 1;
 const K_PROBE_ACK: u8 = 2;
@@ -180,20 +186,25 @@ fn stun_query(sock: &UdpSocket, server: &str) -> Option<SocketAddr> {
     let addr = server.to_socket_addrs().ok()?.find(|a| a.is_ipv4())?;
     let mut txid = [0u8; 12];
     getrandom::fill(&mut txid).ok()?;
-    sock.send_to(&stun_request(&txid), addr).ok()?;
+    let request = stun_request(&txid);
     let deadline = Instant::now() + Duration::from_millis(800);
     let mut buf = [0u8; 512];
+    // One lost datagram must not cost the public candidate: the request goes out again every 250 ms.
+    let mut resend = Instant::now();
     while Instant::now() < deadline {
-        let _ = sock
-            .set_read_timeout(Some(deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1))));
+        if Instant::now() >= resend {
+            sock.send_to(&request, addr).ok()?;
+            resend = Instant::now() + Duration::from_millis(250);
+        }
+        let wait = resend.min(deadline).saturating_duration_since(Instant::now()).max(Duration::from_millis(1));
+        let _ = sock.set_read_timeout(Some(wait));
         match sock.recv_from(&mut buf) {
             Ok((n, from)) if from == addr => {
                 if let Some(mapped) = parse_stun_response(&buf[..n], &txid) {
                     return Some(mapped);
                 }
             }
-            Ok(_) => {}
-            Err(_) => break,
+            _ => {}
         }
     }
     None
@@ -210,13 +221,29 @@ fn gather_candidates(sock: &UdpSocket) -> Vec<SocketAddr> {
         cands.push(SocketAddr::V4(SocketAddrV4::new(*local.ip(), port)));
     }
     let server = std::env::var("OPENDESK_STUN").unwrap_or_else(|_| "stun.l.google.com:19302".into());
-    if !server.is_empty()
-        && server != "off"
-        && let Some(mapped) = stun_query(sock, &server)
-        && !cands.contains(&mapped)
-    {
-        cands.push(mapped);
+    if server.is_empty() || server == "off" {
+        return cands;
     }
+    // A second server tells the NAT type: a different public port per destination (symmetric NAT, common
+    // behind carrier-grade NAT) means the peer's probes cannot reach the address the first server saw. It also
+    // stands in when the first one does not answer.
+    match (stun_query(sock, &server), stun_query(sock, STUN_CHECK)) {
+        (Some(mapped), check) => {
+            let nat = match check {
+                Some(other) if other == mapped => "endpoint-independent (hole punching can work)".to_string(),
+                Some(other) => format!("symmetric: {STUN_CHECK} saw {other} (hole punching will likely fail)"),
+                None => "unknown (second STUN server did not answer)".to_string(),
+            };
+            logger::info("anynet.p2p", &format!("STUN mapped {mapped}; NAT {nat}."));
+            cands.push(mapped);
+        }
+        (None, Some(mapped)) => {
+            logger::warn("anynet.p2p", &format!("STUN via {server} failed; {STUN_CHECK} mapped {mapped}."));
+            cands.push(mapped);
+        }
+        (None, None) => logger::warn("anynet.p2p", "STUN failed on both servers; only the LAN address is offered."),
+    }
+    cands.dedup();
     cands.retain(valid_candidate);
     cands
 }
@@ -276,6 +303,13 @@ struct State {
     was_alive: bool,
     probe_started: Option<Instant>,
     last_probe: Instant,
+    /// Times the candidates were sent again (see [`SIGNAL_RESENDS`]).
+    signal_resends: u32,
+    /// Datagrams that reached the socket, those that did not open, and the first sender: tells "nothing got
+    /// through the NATs" apart from "packets arrive but are rejected".
+    rx_datagrams: u64,
+    rx_rejected: u64,
+    first_from: Option<SocketAddr>,
     last_keepalive: Instant,
     frame_id: u32,
     /// Frames awaiting their acknowledgement, oldest first (at most `MAX_FRAMES_IN_FLIGHT`).
@@ -341,6 +375,10 @@ impl P2p {
                 was_alive: false,
                 probe_started: None,
                 last_probe: now,
+                signal_resends: 0,
+                rx_datagrams: 0,
+                rx_rejected: 0,
+                first_from: None,
                 last_keepalive: now,
                 frame_id: 0,
                 frame_wait: VecDeque::new(),
@@ -419,6 +457,8 @@ impl P2p {
                     .collect()
             })
             .unwrap_or_default();
+        let list: Vec<String> = st.peer_cands.iter().map(|a| a.to_string()).collect();
+        logger::info("anynet.p2p", &format!("Peer offered {} candidates: [{}].", list.len(), list.join(", ")));
         if version == 2 {
             return; // probing starts once the shared handshake is done (`tick`)
         }
@@ -482,7 +522,15 @@ impl P2p {
             }
             self.tick();
         }
-        logger::info("anynet.p2p", "P2P path closed.");
+        let st = self.state.lock();
+        let first = st.first_from.map_or("-".to_string(), |a| a.to_string());
+        logger::info(
+            "anynet.p2p",
+            &format!(
+                "P2P path closed; {} datagrams received ({} rejected), first from {first}.",
+                st.rx_datagrams, st.rx_rejected
+            ),
+        );
     }
 
     /// Starts this path's own `Noise_NN` handshake (partners without `e2e`). False if it cannot start.
@@ -530,12 +578,21 @@ impl P2p {
 
     fn on_datagram(&self, pkt: &[u8], from: SocketAddr) {
         let mut st = self.state.lock();
+        st.rx_datagrams += 1;
+        st.first_from.get_or_insert(from);
         let plain = {
             let State { hs, replay, .. } = &mut *st;
-            let Some(Handshake::Done(t)) = hs else { return };
-            match open(t, replay, pkt) {
+            let opened = match hs {
+                Some(Handshake::Done(t)) => open(t, replay, pkt),
+                _ => None,
+            };
+            match opened {
                 Some(p) => p,
-                None => return, // unauthenticated, replayed or malformed: never affects state
+                None => {
+                    // unauthenticated, replayed, malformed or early: never affects state
+                    st.rx_rejected += 1;
+                    return;
+                }
             }
         };
         let Some((&kind, body)) = plain.split_first() else { return };
@@ -612,10 +669,11 @@ impl P2p {
         let alive = Self::alive(&st);
         if alive != st.was_alive {
             st.was_alive = alive;
-            logger::info(
-                "anynet.p2p",
-                if alive { "P2P path active." } else { "P2P path lost; falling back to relay." },
-            );
+            if alive {
+                logger::info("anynet.p2p", &format!("P2P path active via {}.", st.peer_addr.unwrap()));
+            } else {
+                logger::info("anynet.p2p", "P2P path lost; falling back to relay.");
+            }
             if !alive {
                 st.probe_started = Some(now);
                 st.frame_wait.clear();
@@ -651,6 +709,13 @@ impl P2p {
         // Bounded probing: 200 ms for 10 s, then 3 s until 60 s, then stop until the path is lost again.
         let Some(started) = st.probe_started else { return };
         let age = now.duration_since(started);
+        if self.e2e.is_some()
+            && st.signal_resends < SIGNAL_RESENDS
+            && age >= SIGNAL_RESEND_EVERY * (st.signal_resends + 1)
+        {
+            st.signal_resends += 1;
+            self.send_signal(&[], &st.local_cands);
+        }
         let interval = if age < Duration::from_secs(10) {
             Duration::from_millis(200)
         } else if age < Duration::from_secs(60) {
