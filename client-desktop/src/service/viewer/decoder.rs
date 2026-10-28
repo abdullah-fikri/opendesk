@@ -355,7 +355,7 @@ where
                     let columns = {
                         let mut stats = sess.stats.lock();
                         stats.viewer = viewer;
-                        stats.columns(sess.p2p_active.load(Ordering::Relaxed))
+                        stats.columns(sess.p2p_active.load(Ordering::Relaxed), sess.e2e_active())
                     };
                     show_stats(&sess, columns);
                 }
