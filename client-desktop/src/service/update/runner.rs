@@ -130,7 +130,7 @@ impl Updater {
         let root = self.store.root().to_path_buf();
         let (current, desk_id, state, forced) =
             (self.current, report.desk_id.clone(), self.store.state(), std::mem::take(&mut self.forced));
-        thread::spawn(move || {
+        crate::infra::thread::spawn_named("update-check", move || {
             let _ = tx.send(check(&Store::new(root), &url, current, &desk_id, &state, forced));
         });
         self.worker = Some(rx);

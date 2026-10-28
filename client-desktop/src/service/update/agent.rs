@@ -18,7 +18,7 @@ pub fn spawn(ctx: Ctx) {
     if !(system_service::is_local_system() && system_service::installed()) {
         return;
     }
-    thread::spawn(move || {
+    crate::infra::thread::spawn_named("update-health", move || {
         // The service creates the directory with its ACL; never create it here.
         let store = Store::new(super::secure_dir::root());
         let mut healthy_written = false;
