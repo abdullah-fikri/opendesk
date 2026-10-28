@@ -48,6 +48,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
+; ignoreversion and no version check anywhere in [Code]: an older installer can run over a newer install.
+; The auto-update rollback depends on this (it runs the previous installer with /VERYSILENT as SYSTEM
+; from the service); keep it that way. See docs/auto-update.md.
 Source: "{#SourcePath}..\builds\windows\OpenDesk.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; Still shipped: the tray (client-desktop/src/infra/tray/win.rs) loads icon.ico by relative path.
 Source: "{#SourcePath}icon.ico"; DestDir: "{app}"; Flags: ignoreversion

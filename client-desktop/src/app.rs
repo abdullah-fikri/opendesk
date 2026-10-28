@@ -112,4 +112,7 @@ fn start_services(ctx: &Ctx, outbox: mpsc::Receiver<Outgoing>) {
     relay::spawn(Arc::clone(ctx), outbox);
     clipboard_sync::spawn(Arc::clone(ctx));
     settings::spawn_watcher(Arc::clone(ctx));
+    // Tells the service (when it runs this agent) about sessions and the relay, for auto-update.
+    #[cfg(windows)]
+    crate::service::update::agent::spawn(Arc::clone(ctx));
 }

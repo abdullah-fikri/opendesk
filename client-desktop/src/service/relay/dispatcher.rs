@@ -72,6 +72,7 @@ impl Connection {
         ctx.viewers.set_multi(multi);
         logger::info("relay", &format!("Registered. Viewer sessions: {}", if multi { "up to 4" } else { "one" }));
         ctx.ui.relay_status(RelayStatus::Online);
+        ctx.relay.online.store(true, Ordering::SeqCst);
         #[cfg(feature = "admin")]
         {
             crate::service::monitor_wall::relay_registered(ctx, relay.monitor);

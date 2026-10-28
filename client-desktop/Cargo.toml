@@ -28,6 +28,12 @@ parking_lot = "0.12"
 socket2 = "0.6.5"
 # Opus voice: libopus 1.3.1 transpiled to Rust (BSD-3-Clause), so no C toolchain and no DLL.
 unsafe-libopus = "0.2.0"
+# Auto-update: ed25519 signature of the release manifest (curve25519-dalek is already used by snow).
+ed25519-dalek = { version = "2", default-features = false }
+# Auto-update: HTTPS download of the manifest and the installer over the native-tls already used by tungstenite;
+# blocking, no async runtime, follows the GitHub Releases redirect.
+ureq = { version = "2.12", default-features = false, features = ["native-tls"] }
+native-tls = "0.2"
 
 [target.'cfg(not(windows))'.dependencies]
 # Software rendering when OpenGL is missing (VMs without a GPU, VNC/xrdp sessions); Windows keeps femtovg only.

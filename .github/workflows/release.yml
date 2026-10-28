@@ -210,6 +210,26 @@ jobs:
         with:
           name: android
           path: dist
+      # Auto-update manifests (docs/auto-update.md); skipped until the UPDATE_SIGNING_KEY secret exists.
+      - name: Sign update manifests
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          ROLLOUT: ${{ vars.UPDATE_ROLLOUT_PERCENT || '100' }}
+          MIN_VERSION: ${{ vars.UPDATE_MIN_VERSION || '0.0.0' }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "::notice::UPDATE_SIGNING_KEY is not set; no auto-update manifests."
+            exit 0
+          fi
+          key="$RUNNER_TEMP/update-key.pem"
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
+          base="https://github.com/${{ github.repository }}/releases/download/v$VERSION"
+          for pair in "manifest.json:OpenDesk-Setup" "manifest-admin.json:OpenDesk-Admin-Setup" "manifest-host.json:OpenDesk-Host-Setup"; do
+            name=${pair%%:*} setup="${pair#*:}-$VERSION.exe"
+            scripts/sign-manifest.sh "$key" "dist/$setup" "$VERSION" "$base/$setup" "dist/$name" "$ROLLOUT" "$MIN_VERSION"
+          done
+          rm -f "$key"
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2

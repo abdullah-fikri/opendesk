@@ -121,6 +121,7 @@ impl Connection {
     fn run_once(&mut self) {
         let ctx = Arc::clone(&self.ctx);
         ctx.relay.reconnect.store(false, Ordering::SeqCst);
+        ctx.relay.online.store(false, Ordering::SeqCst);
         let url = resolve_url(&ctx.relay.gateway_url.lock());
         logger::info("relay", &format!("Connecting to relay {url}"));
         ctx.ui.relay_status(RelayStatus::Connecting);
