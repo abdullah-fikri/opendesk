@@ -1,5 +1,7 @@
-//! Frame-rate rules: the cap a viewer advertises (`fps-N`, see `capability::max_fps_cap`) and the rate a host
-//! streams at.
+//! Frame-rate rules: the cap a viewer advertises (`fps-N`, see `capability::max_fps_cap`), the rate a host
+//! streams at, and how congestion lowers that rate before it lowers quality.
+
+use std::time::{Duration, Instant};
 
 /// Frame rate of today's pipeline: partners without a cap, relayed sessions and software encoders get this.
 pub const DEFAULT_FPS: u32 = 60;
@@ -32,9 +34,124 @@ pub fn host_target(host_hz: u32, viewer_max: u32, direct: bool, hw_encoder: bool
     fps.min(env.unwrap_or(u32::MAX)).clamp(1, FPS_MAXIMUM)
 }
 
+/// Rates a congested stream above 60 FPS steps down through, one at a time. 60 is the floor: below it,
+/// congestion lowers quality and bitrate as before.
+const FPS_STEPS: [u32; 4] = [144, 120, 90, 60];
+/// Congestion level (see `CongestionMeter`) at which the rate steps down...
+pub const CONGESTION_HIGH: f32 = 0.3;
+/// ...and under which it counts as recovered.
+const CONGESTION_LOW: f32 = 0.05;
+/// Time between two steps down, so the meter sees the effect of the last one.
+const STEP_DOWN_HOLD: Duration = Duration::from_secs(1);
+/// Time the level must stay low before the rate steps back up one step.
+const RECOVER_AFTER: Duration = Duration::from_secs(2);
+
+/// The next lower rate (144 -> 120 -> 90 -> 60); 60 and below stay.
+pub fn step_down(fps: u32) -> u32 {
+    if fps <= DEFAULT_FPS { fps } else { FPS_STEPS.into_iter().find(|&s| s < fps).unwrap_or(DEFAULT_FPS) }
+}
+
+/// The next higher rate, at most `ceiling`.
+pub fn step_up(fps: u32, ceiling: u32) -> u32 {
+    FPS_STEPS.into_iter().rev().find(|&s| s > fps).unwrap_or(ceiling).min(ceiling)
+}
+
+/// Lowers the target rate under congestion and restores it step by step once the link keeps up.
+pub struct FpsGovernor {
+    /// Upper limit from congestion; `u32::MAX` = none.
+    limit: u32,
+    last_down: Option<Instant>,
+    low_since: Option<Instant>,
+}
+
+impl FpsGovernor {
+    /// A governor that does not limit anything yet.
+    pub fn new() -> Self {
+        Self { limit: u32::MAX, last_down: None, low_since: None }
+    }
+
+    /// The rate to stream at, given the negotiated `ceiling` and the current congestion `level`.
+    pub fn update(&mut self, ceiling: u32, level: f32, now: Instant) -> u32 {
+        if ceiling <= DEFAULT_FPS {
+            // Nothing to step down: today's quality path handles congestion alone.
+            *self = Self::new();
+            return ceiling;
+        }
+        let fps = self.limit.min(ceiling);
+        if level >= CONGESTION_HIGH {
+            self.low_since = None;
+            if fps > DEFAULT_FPS && self.last_down.is_none_or(|t| now.duration_since(t) >= STEP_DOWN_HOLD) {
+                self.limit = step_down(fps);
+                self.last_down = Some(now);
+            }
+        } else if level <= CONGESTION_LOW {
+            let since = *self.low_since.get_or_insert(now);
+            if fps < ceiling && now.duration_since(since) >= RECOVER_AFTER {
+                let up = step_up(fps, ceiling);
+                self.limit = if up >= ceiling { u32::MAX } else { up };
+                self.low_since = Some(now);
+            }
+        } else {
+            self.low_since = None;
+        }
+        self.limit.min(ceiling)
+    }
+
+    /// The congestion level handed to the encoder's quality and bitrate: held at [`CONGESTION_HIGH`] while the
+    /// rate is above 60 and can still step down, passed through unchanged at 60 and below.
+    pub fn quality_level(level: f32, fps: u32) -> f32 {
+        if fps > DEFAULT_FPS { level.min(CONGESTION_HIGH) } else { level }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn steps_never_go_below_60() {
+        assert_eq!((step_down(240), step_down(144), step_down(120), step_down(90)), (144, 120, 90, 60));
+        assert_eq!((step_down(165), step_down(75), step_down(60), step_down(30)), (144, 60, 60, 30));
+        assert_eq!((step_up(60, 144), step_up(90, 144), step_up(120, 144), step_up(144, 240)), (90, 120, 144, 240));
+        assert_eq!((step_up(60, 75), step_up(120, 120)), (75, 120));
+    }
+
+    #[test]
+    fn governor_steps_down_then_recovers_one_step_at_a_time() {
+        let mut g = FpsGovernor::new();
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        assert_eq!(g.update(144, 0.0, at(0)), 144);
+        assert_eq!(g.update(144, 0.8, at(10)), 120);
+        // Held for a second before the next step.
+        assert_eq!(g.update(144, 0.8, at(500)), 120);
+        assert_eq!(g.update(144, 0.8, at(1010)), 90);
+        assert_eq!(g.update(144, 0.8, at(2020)), 60);
+        assert_eq!(g.update(144, 0.8, at(3030)), 60, "never below 60");
+        // A medium level neither steps nor counts as recovered.
+        assert_eq!(g.update(144, 0.1, at(3100)), 60);
+        assert_eq!(g.update(144, 0.0, at(3200)), 60);
+        assert_eq!(g.update(144, 0.0, at(5100)), 60);
+        assert_eq!(g.update(144, 0.0, at(5200)), 90);
+        assert_eq!(g.update(144, 0.0, at(6000)), 90);
+        // Congestion again resets the recovery timer.
+        assert_eq!(g.update(144, 0.2, at(7000)), 90);
+        assert_eq!(g.update(144, 0.0, at(7100)), 90);
+        assert_eq!(g.update(144, 0.0, at(9100)), 120);
+        assert_eq!(g.update(144, 0.0, at(11_100)), 144);
+        assert_eq!(g.update(240, 0.0, at(11_200)), 240, "a recovered stream follows a higher ceiling");
+    }
+
+    #[test]
+    fn governor_is_inert_at_60_and_below() {
+        let mut g = FpsGovernor::new();
+        let t0 = Instant::now();
+        assert_eq!(g.update(60, 1.0, t0), 60);
+        assert_eq!(g.update(30, 1.0, t0), 30);
+        assert_eq!(FpsGovernor::quality_level(0.9, 60), 0.9);
+        assert_eq!(FpsGovernor::quality_level(0.9, 144), CONGESTION_HIGH);
+        assert_eq!(FpsGovernor::quality_level(0.1, 144), 0.1);
+    }
 
     #[test]
     fn viewer_cap_follows_setting_and_monitor() {

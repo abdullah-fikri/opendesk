@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use core_engine::capture::{DesktopCapturer, MonitorBounds, cursor_shape, enumerate_monitors, refresh_rate};
 use core_engine::stream::{FrameInput, H264Mode, StreamEncoder};
 
-use crate::domain::frame_rate;
+use crate::domain::frame_rate::{self, FpsGovernor};
 use crate::domain::perf_stats::{PerfWindow, Stage, kbps};
 use crate::domain::resolution;
 use crate::infra::{logger, power};
@@ -145,6 +145,8 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     let env_fps = frame_rate::env_cap(std::env::var(frame_rate::MAX_FPS_ENV).ok().as_deref());
     let mut host_hz = refresh_rate(initial_bounds);
     let mut target_fps = frame_rate::DEFAULT_FPS;
+    let mut governor = FpsGovernor::new();
+    let mut last_level = 0.0;
 
     let (ox, oy, sw, sh, w, h) = capturer.geometry();
     let video = if !caps.video_delta {
@@ -247,12 +249,13 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             encoder.request_key();
         }
         let direct = host.p2p_active.load(Ordering::Relaxed);
-        let fps = frame_rate::host_target(host_hz, caps.max_fps, direct, encoder.h264_hardware(), env_fps);
+        let ceiling = frame_rate::host_target(host_hz, caps.max_fps, direct, encoder.h264_hardware(), env_fps);
+        let fps = governor.update(ceiling, last_level, frame_start);
         if fps != target_fps {
             logger::info(
                 "host.capture",
                 &format!(
-                    "Target frame rate {target_fps} -> {fps} (monitor={host_hz}Hz viewer={} p2p={direct})",
+                    "Target frame rate {target_fps} -> {fps} (ceiling={ceiling} monitor={host_hz}Hz viewer={} p2p={direct} congestion={last_level:.2})",
                     caps.max_fps
                 ),
             );
@@ -278,7 +281,9 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
         } else {
             perf.gate.record(Duration::ZERO);
         }
-        encoder.set_congestion(level);
+        last_level = level;
+        // Above 60 FPS congestion first lowers the rate (see `FpsGovernor`), then quality.
+        encoder.set_congestion(FpsGovernor::quality_level(level, target_fps));
         if can_send {
             // DXGI blocks here until the desktop changes (or the tick ends), so an idle desktop costs ~nothing.
             let budget = interval.saturating_sub(frame_start.elapsed());
