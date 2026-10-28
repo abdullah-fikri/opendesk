@@ -104,7 +104,7 @@ jobs:
             Copy-Item builds\windows\OpenDesk.exe "$out\$stem-$env:VERSION.exe"
             Copy-Item builds\windows\OpenDesk-Setup.exe "$out\$setupStem-$env:VERSION.exe"
           }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: dist/*
@@ -133,7 +133,7 @@ jobs:
           make linux-deb linux-tar
           cp builds/linux/*.deb builds/linux/*.tar.gz dist/
           ls -l dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: dist/*
@@ -175,7 +175,7 @@ jobs:
           # The App Bundle is what Google Play (internal testing / closed tracks) takes; see client-android/README.md.
           aab=$(ls client-android/app/build/outputs/bundle/release/*.aab | head -1)
           cp "$aab" "dist/OpenDesk-$VERSION$suffix.aab"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: android
           path: dist/*
