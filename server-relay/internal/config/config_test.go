@@ -30,3 +30,20 @@ func TestLoadFailsClosed(t *testing.T) {
 		t.Fatal("malformed config file accepted")
 	}
 }
+
+func TestUDPRelaySettings(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	cfg, err := Load(missing)
+	if err != nil || cfg.UDPRelayPublic != "" || cfg.UDPRelayAddr != "0.0.0.0:8089" || cfg.UDPRelayMbps != 50 {
+		t.Fatalf("defaults: %+v %v", cfg, err)
+	}
+	t.Setenv("OPENDESK_UDP_RELAY_PUBLIC", "203.0.113.5:8089")
+	t.Setenv("OPENDESK_UDP_RELAY_MBPS", "80")
+	if cfg, err = Load(missing); err != nil || cfg.UDPRelayPublic != "203.0.113.5:8089" || cfg.UDPRelayMbps != 80 {
+		t.Fatalf("overrides: %+v %v", cfg, err)
+	}
+	t.Setenv("OPENDESK_UDP_RELAY_PUBLIC", "relay.example.com:8089")
+	if _, err := Load(missing); err == nil {
+		t.Fatal("a host name was accepted; clients need an IP address")
+	}
+}

@@ -26,6 +26,9 @@ const (
 	maxSignalMessageBytes = 4096
 	maxCandidateBytes     = 2048
 	minSignalInterval     = 100 * time.Millisecond
+	// signalBurst signals may arrive back to back (a tunnel in front of the relay bunches messages the client
+	// spaced out); past that, one per minSignalInterval.
+	signalBurst = 4
 )
 
 // User-facing messages sent to clients.
@@ -52,7 +55,28 @@ type connection struct {
 	peer *usecase.Peer
 	// lastSignal rate-limits P2P signaling per session partner, so a multi-session viewer's parallel
 	// handshakes do not starve each other.
-	lastSignal map[string]time.Time
+	lastSignal map[string]signalBucket
+}
+
+// signalBucket is a token bucket: up to signalBurst tokens, one more every minSignalInterval.
+type signalBucket struct {
+	tokens float64
+	at     time.Time
+}
+
+// take spends one token at now; false if none is left.
+func (b *signalBucket) take(now time.Time) bool {
+	if b.at.IsZero() {
+		b.tokens = signalBurst
+	} else {
+		b.tokens = min(signalBurst, b.tokens+float64(now.Sub(b.at))/float64(minSignalInterval))
+	}
+	b.at = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
 }
 
 func (h *Handler) serveWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +95,7 @@ func (h *Handler) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer ws.Close()
 	ws.SetReadLimit(maxMessageBytes)
 
-	c := &connection{h: h, ws: ws, conn: newWSConn(ws), remoteAddr: r.RemoteAddr, lastSignal: make(map[string]time.Time, 1)}
+	c := &connection{h: h, ws: ws, conn: newWSConn(ws), remoteAddr: r.RemoteAddr, lastSignal: make(map[string]signalBucket, 1)}
 	liveness := livenessFactor * h.opts.PingInterval
 	if liveness > 0 {
 		_ = ws.SetReadDeadline(time.Now().Add(liveness))
@@ -192,6 +216,7 @@ func (c *connection) onRegister(msg []byte) bool {
 	// From here on other goroutines write through the peer; direct ws writes would race with them.
 	c.peer = peer
 	for _, orphan := range orphans {
+		c.h.releaseUDPRelay(orphan.CleanID, peer.CleanID)
 		_ = orphan.Send(sessionClosed(orphan, peer.CleanID, msgPeerReconnected))
 	}
 	c.h.log.Info("client registered", "id", peer.DeskID, "name", peer.DeviceName, "platform", peer.Platform,
@@ -253,6 +278,7 @@ func (c *connection) onConnectRequest(msg []byte) {
 	} else {
 		_ = res.Target.Send(sessionConnected(c.peer, model.RoleHost))
 		_ = c.peer.Send(sessionConnected(res.Target, model.RoleViewer))
+		c.h.offerUDPRelay(c.peer, res.Target)
 	}
 	c.h.log.Info("session requested", "viewer", c.peer.DeskID, "host", res.Target.DeskID,
 		"platform", res.Target.Platform, "needs_approval", res.NeedsApproval)
@@ -285,6 +311,7 @@ func (c *connection) onApprovalResponse(msg []byte) {
 	}
 	_ = viewer.Send(sessionConnected(c.peer, model.RoleViewer))
 	_ = c.peer.Send(sessionConnected(viewer, model.RoleHost))
+	c.h.offerUDPRelay(viewer, c.peer)
 	c.h.log.Info("session approved", "viewer", viewer.DeskID, "host", c.peer.DeskID)
 }
 
@@ -333,6 +360,7 @@ func (c *connection) onSessionDisconnect(msg []byte) {
 	if rcpt == nil {
 		return
 	}
+	c.h.releaseUDPRelay(c.peer.CleanID, rcpt.CleanID)
 	_ = rcpt.Send(sessionClosed(rcpt, c.peer.CleanID, msgEndedByPeer))
 	c.h.log.Info("session ended by client", "id", c.peer.DeskID)
 }
@@ -364,9 +392,6 @@ func (c *connection) onP2PSignal(msg []byte) {
 		return
 	}
 	target := model.CleanDeskID(req.TargetClean)
-	if time.Since(c.lastSignal[target]) < minSignalInterval {
-		return
-	}
 	rcpt := c.h.relay.ActivePartner(c.peer, target)
 	if rcpt == nil {
 		return
@@ -374,7 +399,12 @@ func (c *connection) onP2PSignal(msg []byte) {
 	if len(c.lastSignal) > 2*model.MaxViewSessions {
 		clear(c.lastSignal)
 	}
-	c.lastSignal[target] = time.Now()
+	bucket := c.lastSignal[target]
+	ok := bucket.take(time.Now())
+	c.lastSignal[target] = bucket
+	if !ok {
+		return
+	}
 	_ = rcpt.Send(dto.P2PSignalForward{Type: dto.TypeP2PSignal, FromClean: c.peer.CleanID, Candidate: req.Candidate})
 }
 
@@ -391,6 +421,7 @@ func (c *connection) unregister() {
 	}
 	c.h.broadcastHostList()
 	for _, partner := range partners {
+		c.h.releaseUDPRelay(partner.CleanID, c.peer.CleanID)
 		_ = partner.Send(sessionClosed(partner, c.peer.CleanID, msgPeerOffline))
 	}
 	c.h.log.Info("client disconnected", "id", c.peer.DeskID, "active_peers", c.h.relay.PeerCount())

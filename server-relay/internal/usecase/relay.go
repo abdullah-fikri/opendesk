@@ -21,6 +21,8 @@ type Options struct {
 	P2PDisabled bool
 	// Security persists the administrator-managed device allowlist; nil keeps it in memory only.
 	Security SecurityRepository
+	// UDPRelay advertises the udp-relay capability (the UDP forwarder runs).
+	UDPRelay bool
 }
 
 // Relay is the in-memory session broker. All exported methods are safe for concurrent use.
@@ -49,6 +51,9 @@ func New(hosts HostRepository, sessions SessionRepository, m FrameMetrics, opts 
 		model.CapDeviceSecurity, model.CapHostAlias, model.CapFileBinary}
 	if opts.P2PDisabled {
 		caps = slices.DeleteFunc(caps, func(c string) bool { return c == model.CapP2PSignal })
+	}
+	if opts.UDPRelay && !opts.P2PDisabled {
+		caps = append(caps, model.CapUDPRelay)
 	}
 	creds := opts.Credentials
 	if creds == nil {

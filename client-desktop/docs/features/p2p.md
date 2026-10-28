@@ -16,7 +16,28 @@ The direct path only moves video, voice and input, and every session falls back 
    instead uses the keys of the session's `Noise_XX` handshake with pinned device keys ([e2e.md](e2e.md)) and the
    signal only carries candidates (`v: 2`). NN alone does not stop a relay that rewrites the handshake; XX does.
 3. Both sides probe each other's candidates. The first answered probe makes the path active; it is considered
-   lost after 3 s without traffic and probing restarts.
+   lost after 3 s without traffic and probing restarts. Candidates are sent again 4 times, every 2 s, because the
+   relay may drop a signal.
+
+## UDP relay
+
+Some networks drop every UDP datagram from an address the machine did not send to first, so no probe ever
+arrives although both sides know each other's public address. When the relay runs a UDP forwarder (it lists
+`udp-relay`) and both clients list `p2p.v1` and `udp-relay`, each side gets a `udp-relay-offer` with the
+forwarder's address and its own bind token:
+
+1. The client sends `[0x52][0x01][token]` from its path socket; the relay answers `[0x52][0x03][cookie]` for
+   that address, and the client binds with `[0x52][0x01][token][cookie]` until the relay confirms `[0x52][0x02]`,
+   then again every 15 s (keeps the NAT mapping and the relay's pair alive). The cookie proves the client
+   receives at that address, so a token holder cannot bind a spoofed address and aim its partner's traffic at a
+   third party.
+2. Once bound, it probes the partner through the forwarder. The forwarder passes datagrams between the two bound
+   addresses unread; they are the same encrypted datagrams as on the direct path.
+3. The direct route wins whenever it works: while the path runs through the relay, the direct candidates are
+   still probed for the usual 60 s and the path moves over on the first answer.
+
+Every NAT lets the answers of a server the machine talks to through, so this works wherever STUN does. The
+session overlay shows `Relay (UDP)` for this route. `OPENDESK_UDP_RELAY=0` on a client leaves it out.
 
 ## Traffic
 

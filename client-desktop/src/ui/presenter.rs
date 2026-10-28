@@ -158,7 +158,7 @@ impl UiPort for SlintUi {
         self.apply(move |w| {
             let Some(frame) = pending.lock().remove(&id) else { return };
             let image = Image::from_rgba8(frame.pixels);
-            let path = if frame.p2p { "P2P" } else { "Relay" };
+            let path = frame.path;
             let (width, height) = (frame.width as i32, frame.height as i32);
             let fps = frame.fps as i32;
             // The picture changes every frame; the other fields only rarely, so they are written only on change.

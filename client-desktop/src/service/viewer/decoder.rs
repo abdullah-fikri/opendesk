@@ -21,7 +21,7 @@ use crate::infra::logger;
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 use crate::service::ui_port::Frame;
 use crate::service::viewer::registry::Session;
-use crate::service::viewer::stats::ViewerStats;
+use crate::service::viewer::stats::{ViewerStats, path_label};
 
 /// Minimum spacing of key-frame requests after a broken delta chain.
 const KEY_REQUEST_INTERVAL: Duration = Duration::from_millis(300);
@@ -303,6 +303,11 @@ fn request_key(outbox: &Sender<Outgoing>, id: &str) {
     let _ = outbox.send(Outgoing::Message(ClientMessage::input(id, InputEvent::VideoKeyframe)));
 }
 
+/// The session's current path label for the overlay and the tab.
+fn path_of(sess: &Session) -> &'static str {
+    path_label(sess.p2p_active.load(Ordering::Relaxed), sess.p2p_relayed.load(Ordering::Relaxed))
+}
+
 /// Starts the session's decoder thread once. `show` runs for every decoded frame; `show_stats` once a second
 /// with the overlay's (labels, values) while the session is visible and its stats overlay is on.
 /// Hidden sessions (background tabs) are not decoded at all: their messages are dropped together with the
@@ -355,7 +360,7 @@ where
                     let columns = {
                         let mut stats = sess.stats.lock();
                         stats.viewer = viewer;
-                        stats.columns(sess.p2p_active.load(Ordering::Relaxed), sess.e2e_active())
+                        stats.columns(path_of(&sess), sess.e2e_active())
                     };
                     show_stats(&sess, columns);
                 }
@@ -391,9 +396,9 @@ where
                 frame_count = 0;
                 fps_timer = Instant::now();
             }
-            let p2p = sess.p2p_active.load(Ordering::Relaxed);
+            let path = path_of(&sess);
             let handoff_start = Instant::now();
-            show(&sess, Frame { pixels, width, height, fps: current_fps, p2p });
+            show(&sess, Frame { pixels, width, height, fps: current_fps, path });
             perf.handoff.record(handoff_start.elapsed());
             perf.shown += 1;
         }

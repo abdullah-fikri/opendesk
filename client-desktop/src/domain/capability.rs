@@ -24,6 +24,8 @@ pub const AUDIO_OPUS: &str = "audio-opus";
 pub const MAX_FPS_PREFIX: &str = "fps-";
 /// Direct encrypted UDP path.
 pub const P2P: &str = "p2p.v1";
+/// Can use the relay server's UDP forwarder for the direct path (`udp-relay-offer`); the relay lists it too.
+pub const UDP_RELAY: &str = "udp-relay";
 /// End-to-end encryption with pinned device keys (`Noise_XX`, see `docs/features/e2e.md`).
 pub const E2E: &str = "e2e";
 /// Up to four viewer sessions per connection.

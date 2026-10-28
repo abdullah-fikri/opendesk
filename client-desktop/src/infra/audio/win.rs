@@ -130,6 +130,9 @@ impl VoiceEngine {
         crate::infra::thread::spawn_named("audio-capture", move || unsafe {
             let block_align = (CHANNELS * BITS_PER_SAMPLE) / 8;
             let mut processed_buf = [0u8; MAX_FRAME_BYTES];
+            // Failed opens in a row: a host without a microphone fails every time, so only the first is logged
+            // and retries slow down to every 5 s.
+            let mut open_failures = 0u32;
 
             loop {
                 while !active_cap.load(Ordering::Relaxed) {
@@ -152,10 +155,17 @@ impl VoiceEngine {
                 let mut h_in: HWAVEIN = ptr::null_mut();
                 let res = waveInOpen(&mut h_in, WAVE_MAPPER, &wfx, 0, 0, CALLBACK_NULL);
                 if res != 0 || h_in.is_null() {
-                    logger::warn("desk_rt.audio_in", &format!("waveInOpen ({}Hz) failed: {}", sample_rate, res));
-                    thread::sleep(Duration::from_millis(500));
+                    if open_failures == 0 {
+                        logger::warn(
+                            "desk_rt.audio_in",
+                            &format!("waveInOpen ({}Hz) failed: {}; retrying quietly.", sample_rate, res),
+                        );
+                    }
+                    open_failures += 1;
+                    thread::sleep(Duration::from_millis(if open_failures < 4 { 500 } else { 5000 }));
                     continue;
                 }
+                open_failures = 0;
 
                 let mut buffers: Vec<Box<[u8; MAX_FRAME_BYTES]>> =
                     (0..IN_RING_COUNT).map(|_| Box::new([0u8; MAX_FRAME_BYTES])).collect();

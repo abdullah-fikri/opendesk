@@ -164,7 +164,9 @@ impl Connection {
                 last_path_update = Instant::now();
                 for p in self.links.iter().filter(|p| !p.is_host()) {
                     if let Some(s) = ctx.viewers.get(&p.partner) {
-                        s.p2p_active.store(p.is_active(), Ordering::Relaxed);
+                        let route = p.route();
+                        s.p2p_active.store(route.is_some(), Ordering::Relaxed);
+                        s.p2p_relayed.store(matches!(route, Some(p2p::Route::Relayed(_))), Ordering::Relaxed);
                     }
                 }
                 let hosted_p2p = self.links.iter().any(|p| p.is_host() && p.is_active());
@@ -258,6 +260,9 @@ impl Connection {
         caps.push(capability::AUDIO_OPUS);
         if p2p::enabled() {
             caps.push(capability::P2P);
+        }
+        if p2p::relay_enabled() {
+            caps.push(capability::UDP_RELAY);
         }
         if e2e::enabled() && crate::infra::identity::local().is_some() {
             caps.push(capability::E2E);

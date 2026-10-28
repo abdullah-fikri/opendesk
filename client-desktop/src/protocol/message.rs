@@ -117,6 +117,12 @@ pub enum ServerMessage {
         from_clean: String,
         candidate: String,
     },
+    /// The relay's UDP forwarder for the session with `target_clean`: where to send and the bind token.
+    UdpRelayOffer {
+        target_clean: String,
+        addr: String,
+        token: String,
+    },
     SessionClosed {
         message: Option<String>,
         target_clean: Option<String>,

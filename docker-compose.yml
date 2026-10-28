@@ -4,17 +4,20 @@
 # The image is pinned to a release (`docker ps` shows which one runs); upgrade by changing RELAY_VERSION.
 services:
   relay:
-    image: ${RELAY_IMAGE:-ghcr.io/abdullah-fikri/opendesk-relay:${RELAY_VERSION:-1.1.2}}
+    image: ${RELAY_IMAGE:-ghcr.io/abdullah-fikri/opendesk-relay:${RELAY_VERSION:-1.1.3}}
     build:
       context: ./server-relay
       args:
-        VERSION: ${RELAY_VERSION:-1.1.2}
+        VERSION: ${RELAY_VERSION:-1.1.3}
     container_name: opendesk-relay
     restart: unless-stopped
     ports:
       # Loopback only: plaintext WebSocket is reachable just by the local TLS tunnel.
       - "127.0.0.1:8088:8088"
       - "[::1]:8088:8088"
+      # UDP relay (OPENDESK_UDP_RELAY_PUBLIC). Loopback by default; set RELAY_UDP_BIND=0.0.0.0 on a server whose
+      # public IP clients reach (a tunnel does not carry UDP).
+      - "${RELAY_UDP_BIND:-127.0.0.1}:8089:8089/udp"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -31,6 +34,8 @@ services:
       OPENDESK_DEVICE_CREDENTIALS: ${OPENDESK_DEVICE_CREDENTIALS:-}
       OPENDESK_METRICS_TOKEN: ${OPENDESK_METRICS_TOKEN:-}
       OPENDESK_P2P_DISABLED: ${OPENDESK_P2P_DISABLED:-0}
+      OPENDESK_UDP_RELAY_PUBLIC: ${OPENDESK_UDP_RELAY_PUBLIC:-}
+      OPENDESK_UDP_RELAY_MBPS: ${OPENDESK_UDP_RELAY_MBPS:-50}
     deploy:
       resources:
         limits:

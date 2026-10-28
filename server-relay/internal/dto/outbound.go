@@ -18,6 +18,7 @@ const (
 	TypeMonitorStop      = "monitor-stop"
 	TypeDeviceCredential = "device-credential"
 	TypeSecurityState    = "security-state"
+	TypeUDPRelayOffer    = "udp-relay-offer"
 )
 
 // RegisteredAck confirms registration and lists the relay's capabilities.
@@ -87,6 +88,14 @@ type P2PSignalForward struct {
 	Type      string `json:"type"`
 	FromClean string `json:"fromClean"`
 	Candidate string `json:"candidate"`
+}
+
+// UDPRelayOffer gives one side of a session the UDP relay address and its bind token (see internal/udprelay).
+type UDPRelayOffer struct {
+	Type        string `json:"type"`
+	TargetClean string `json:"targetClean"`
+	Addr        string `json:"addr"`
+	Token       string `json:"token"`
 }
 
 // SessionClosed ends a session. TargetClean names it for multi-session viewers only.
