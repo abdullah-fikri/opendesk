@@ -8,7 +8,7 @@ use std::env;
 
 use crate::domain::{desk_id, settings};
 use crate::infra::autostart::{self, StopError};
-use crate::infra::{device, logger, storage, user_clipboard, window};
+use crate::infra::{device, identity, logger, storage, user_clipboard, window};
 
 const HELP: &str = "Commands:\r\n  opendesk server <url>   Set the relay address (e.g. wss://relay.example.com)\r\n  opendesk status         Show this device's ID and relay\r\n  opendesk stop           Stop OpenDesk and its watchdog\r\n  opendesk uninstall      Stop OpenDesk and remove autostart entries";
 
@@ -110,9 +110,10 @@ fn clipboard_read(out: Option<&String>) -> i32 {
 fn status() -> i32 {
     let cfg = storage::load_settings();
     autostart::print_to_console(&format!(
-        "[OpenDesk]\r\n  Device name : {}\r\n  Device ID   : {}\r\n  Relay       : {}\r\n\r\n{}",
+        "[OpenDesk]\r\n  Device name : {}\r\n  Device ID   : {}\r\n  Device key  : {}\r\n  Relay       : {}\r\n\r\n{}",
         device::display_name(),
         desk_id::format(&cfg.desk_id),
+        identity::local().map(|id| identity::fingerprint(&id.public)).unwrap_or_else(|| "unavailable".into()),
         cfg.gateway_url,
         HELP
     ));

@@ -6,6 +6,7 @@ pub mod audio;
 pub mod autostart;
 pub mod clock;
 pub mod device;
+pub mod identity;
 pub mod logger;
 pub mod p2p;
 pub mod power;
