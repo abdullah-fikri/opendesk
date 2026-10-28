@@ -127,7 +127,7 @@ impl Connection {
         logger::info("relay", "Connection established.");
         ctx.ui.relay_status(RelayStatus::Registering);
 
-        ctx.host.can_send_frame.store(true, Ordering::SeqCst);
+        ctx.host.can_send_frame.open();
         ctx.viewers.set_multi(false);
         let mut lost = false;
         let mut video_in_flight = false;
@@ -170,7 +170,7 @@ impl Connection {
             match socket.flush() {
                 Ok(()) => {
                     if std::mem::take(&mut video_in_flight) {
-                        ctx.host.can_send_frame.store(true, Ordering::Release);
+                        ctx.host.can_send_frame.open();
                     }
                     self.monitor_in_flight = false;
                 }
@@ -180,7 +180,7 @@ impl Connection {
                     self.busy = true;
                 }
                 Err(_) => {
-                    ctx.host.can_send_frame.store(true, Ordering::Release);
+                    ctx.host.can_send_frame.open();
                     self.monitor_in_flight = false;
                 }
             }

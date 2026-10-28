@@ -18,8 +18,8 @@ use crate::service::context::Ctx;
 
 /// How often the loop re-enumerates monitors to notice plugged, unplugged or resized displays.
 const MONITOR_POLL: Duration = Duration::from_secs(2);
-/// How often a tick re-checks the backpressure gate while the previous frame is still on its way.
-const GATE_POLL: Duration = Duration::from_millis(1);
+/// Time a tick keeps for the grab: it stops waiting for the backpressure gate this long before the tick ends.
+const GATE_MARGIN: Duration = Duration::from_millis(1);
 
 /// Turns how long the loop waited for the backpressure gate into a 0..1 congestion level:
 /// waits under ~40 ms are normal pacing, ~250 ms or more means the link cannot keep up.
@@ -263,14 +263,11 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
 
         // The previous frame usually leaves within a few milliseconds: wait for it inside this tick instead of
         // skipping the whole tick, which would halve the frame rate whenever sending takes a moment.
-        let mut can_send = host.can_send_frame.load(Ordering::Acquire);
+        let mut can_send = host.can_send_frame.is_open();
         let mut level = congestion.observe(can_send, frame_start);
         if !can_send {
             let gate_start = Instant::now();
-            while !can_send && frame_start.elapsed() + GATE_POLL < interval && host.is_current(generation) {
-                thread::sleep(GATE_POLL);
-                can_send = host.can_send_frame.load(Ordering::Acquire);
-            }
+            can_send = host.can_send_frame.wait_open_until(frame_start + interval.saturating_sub(GATE_MARGIN));
             let now = Instant::now();
             perf.gate.record(now - gate_start);
             if can_send {
@@ -309,7 +306,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
                     h264_logged = true;
                     logger::info("host.capture", &format!("H.264 motion encoder: {name}"));
                 }
-                host.can_send_frame.store(false, Ordering::Release);
+                host.can_send_frame.close();
                 let _ = ctx.outbox.send(Outgoing::VideoFrame(msg));
             } else {
                 perf.idle += 1;

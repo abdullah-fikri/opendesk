@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 
 use crate::infra::audio::VoiceEngine;
 use crate::infra::logger;
+use crate::infra::send_gate::SendGate;
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 
 const NOISE: &str = "Noise_NN_25519_ChaChaPoly_BLAKE2s";
@@ -290,7 +291,7 @@ pub struct P2p {
     sock: UdpSocket,
     state: Mutex<State>,
     closed: AtomicBool,
-    can_send_frame: Arc<AtomicBool>,
+    can_send_frame: Arc<SendGate>,
     tx_out: Sender<Outgoing>,
     sinks: Sinks,
 }
@@ -301,7 +302,7 @@ impl P2p {
         is_host: bool,
         local_clean: &str,
         partner: String,
-        can_send_frame: Arc<AtomicBool>,
+        can_send_frame: Arc<SendGate>,
         tx_out: Sender<Outgoing>,
         sinks: Sinks,
     ) -> Option<Arc<P2p>> {
@@ -355,7 +356,7 @@ impl P2p {
     /// Closes the path; the worker thread exits and traffic falls back to the relay.
     pub fn close(&self) {
         if !self.closed.swap(true, Ordering::SeqCst) {
-            self.can_send_frame.store(true, Ordering::Release);
+            self.can_send_frame.open();
         }
     }
 
@@ -526,7 +527,7 @@ impl P2p {
                 // An acknowledgement also covers every older frame (their acks may have been lost).
                 if st.frame_wait.iter().any(|(w, _)| *w == id) {
                     st.frame_wait.retain(|(w, _)| (w.wrapping_sub(id) as i32) > 0);
-                    self.can_send_frame.store(true, Ordering::Release);
+                    self.can_send_frame.open();
                 }
             }
             K_AUDIO => {
@@ -579,7 +580,7 @@ impl P2p {
                 st.frame_wait.clear();
                 // shortcut: unacked input is dropped, not replayed on the relay, to avoid double clicks.
                 st.unacked.clear();
-                self.can_send_frame.store(true, Ordering::Release);
+                self.can_send_frame.open();
             }
         }
         if alive {
@@ -590,7 +591,7 @@ impl P2p {
             let waiting = st.frame_wait.len();
             st.frame_wait.retain(|(_, t)| now.duration_since(*t) < FRAME_ACK_TIMEOUT);
             if st.frame_wait.len() < waiting {
-                self.can_send_frame.store(true, Ordering::Release);
+                self.can_send_frame.open();
             }
             let resend: Vec<(u32, Vec<u8>)> = st
                 .unacked
@@ -652,7 +653,7 @@ impl P2p {
         // capture loop.
         st.frame_wait.push_back((id, Instant::now()));
         if st.frame_wait.len() < MAX_FRAMES_IN_FLIGHT {
-            self.can_send_frame.store(true, Ordering::Release);
+            self.can_send_frame.open();
         }
         true
     }
@@ -814,7 +815,7 @@ mod tests {
             false,
             "111111111",
             "222222222".into(),
-            Arc::new(AtomicBool::new(true)),
+            Arc::new(SendGate::new(true)),
             tx_v,
             mk(dummy, Arc::new(move |f| sink.lock().unwrap().push(f))),
         )
@@ -823,7 +824,7 @@ mod tests {
             true,
             "222222222",
             "111111111".into(),
-            Arc::new(AtomicBool::new(true)),
+            Arc::new(SendGate::new(true)),
             tx_h,
             mk(in_tx, Arc::new(|_| {})),
         )
