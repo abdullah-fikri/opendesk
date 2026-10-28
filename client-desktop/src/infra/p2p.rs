@@ -109,7 +109,7 @@ fn parse_token(hex: &str) -> Option<[u8; 16]> {
         return None;
     }
     let mut out = [0u8; 16];
-    for (i, pair) in bytes.chunks_exact(2).enumerate() {
+    for (i, pair) in bytes.as_chunks::<2>().0.iter().enumerate() {
         out[i] = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
     }
     Some(out)
