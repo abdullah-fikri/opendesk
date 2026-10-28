@@ -146,6 +146,12 @@ Per platform (see [platforms.md](platforms.md)):
 | `set-mic` | `muted` | either; only `muted: true` is honored |
 | `cursor-shape` | `shape` (0 hidden, 1 arrow, 2 text, 3 hand, ...) | host to viewer |
 | `monitors` | `list[]` (`index`, `width`, `height`, `primary`), `active` | host to viewer |
+| `stats` | `on` | viewer to host: stats overlay shown or hidden |
+| `stats-ping` | `t` (viewer clock, ms) | viewer to host, once a second while the overlay is shown |
+| `stats-pong` | `t` (copied from `stats-ping`) | host to viewer, at once |
+| `host-stats` | `fps`, `targetFps`, `grabMs`, `grabMaxMs`, `encodeMs`, `encodeMaxMs`, `kbps`, `idle`, `gateSkips`, `congestion` (0..1), `encoder` (H.264 name, empty = JPEG) | host to viewer, once a second between `stats` on and off |
+
+Peers ignore actions they do not know, so a viewer never gets `host-stats` from a host that predates it.
 
 ## File transfer
 

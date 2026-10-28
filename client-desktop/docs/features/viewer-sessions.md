@@ -39,3 +39,13 @@ The last chosen mode applies to tabs opened later.
 Monitor picker (numbered when the host has several monitors), send files, microphone, privacy mode on the host
 (normal, frozen, maintenance screen, black screen), block the host's physical input, system shortcuts
 (Win, Alt+Tab, Task Manager, Explorer, Show desktop), resolution and voice quality.
+
+## Stats overlay
+
+The **Stats** toolbar button shows a translucent panel in the top-right corner of every session view; it is off
+at start and stays as chosen until the app quits. Once a second it shows the `stats-ping` round trip, the path
+(P2P or Relay), received kbps, shown FPS against the host's target, viewer decode time (avg / max), the host's
+encoder (HW or SW H.264, or JPEG), host grab and encode time (avg / max), idle and dropped frames, and the
+congestion level. Hosts send `host-stats` only while the overlay is shown; hosts that predate it show "–" for
+their rows and the RTT. Over P2P the ping goes direct and the answer through the relay (host events always take
+the relay), so the RTT is that of control messages.
