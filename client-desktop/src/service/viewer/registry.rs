@@ -29,6 +29,8 @@ pub struct Session {
     /// Focused: its audio plays (shared with the P2P sink).
     pub audio_on: Arc<AtomicBool>,
     pub p2p_active: AtomicBool,
+    /// Traffic to this host is end-to-end encrypted (see [`Session::e2e_active`]).
+    pub e2e_active: AtomicBool,
     pub res_mode: AtomicUsize,
     /// Canvas size in physical pixels (`resolution::pack_box`), 0 = unknown.
     pub viewport: AtomicU64,
@@ -61,6 +63,7 @@ impl Session {
             visible: AtomicBool::new(false),
             audio_on: Arc::new(AtomicBool::new(false)),
             p2p_active: AtomicBool::new(false),
+            e2e_active: AtomicBool::new(false),
             res_mode: AtomicUsize::new(res_mode),
             viewport: AtomicU64::new(viewport),
             last_sent_box: AtomicU64::new(0),
@@ -74,6 +77,13 @@ impl Session {
             keys: Mutex::default(),
             _awake: power::awake(),
         }
+    }
+
+    /// "E2E on/off" for the stats overlay: the host's key is verified and this session's traffic is sealed
+    /// end to end (relay path and P2P). Updated every 250 ms by the relay connection.
+    #[allow(dead_code)] // read by the stats overlay
+    pub fn e2e_active(&self) -> bool {
+        self.e2e_active.load(Ordering::Relaxed)
     }
 
     /// True after the relay connected the session.

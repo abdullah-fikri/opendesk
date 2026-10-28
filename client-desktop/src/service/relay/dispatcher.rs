@@ -8,6 +8,9 @@ use core_engine::capture::HostSupport;
 
 use crate::domain::capability::{PeerCaps, RelayCaps};
 use crate::domain::desk_id;
+use crate::infra::e2e::{self, E2e, Verdict};
+use crate::infra::identity;
+use crate::infra::key_pins::{self, Pin};
 use crate::infra::p2p::{self, P2p, Sinks};
 use crate::infra::{logger, privacy, virtual_clipboard};
 use crate::protocol::{ClientMessage, FileAction, FilePayload, HostEntry, InputEvent, ServerMessage};
@@ -31,11 +34,7 @@ impl Connection {
             ServerMessage::InputCommand { event, from_clean } => self.on_input(&event, from_clean.as_deref()),
             ServerMessage::ClipboardSync { text, from_clean } => self.on_clipboard(text, from_clean.as_deref()),
             ServerMessage::FileTransfer { from_clean, payload } => self.on_file(from_clean, payload),
-            ServerMessage::P2pSignal { from_clean, candidate } => {
-                if let Some(p) = self.links.iter().find(|p| p.partner == from_clean) {
-                    p.on_signal(&candidate);
-                }
-            }
+            ServerMessage::P2pSignal { from_clean, candidate } => self.on_signal(&from_clean, &candidate),
             ServerMessage::SessionClosed { message, target_clean } => {
                 self.on_session_closed(message, target_clean.as_deref())
             }
@@ -128,6 +127,9 @@ impl Connection {
             }
             keep
         });
+        self.e2e.retain(|e| multi_viewer && e.partner != target);
+        // Before the P2P path, which uses the end-to-end keys when there are any.
+        self.start_e2e(is_host, target, caps.e2e, relay.p2p_signal);
         let p2p_ok = relay.p2p_signal && caps.p2p && p2p::enabled();
         logger::info("relay", &format!("Session started: partner={target} role={role} p2p={p2p_ok}"));
 
@@ -167,6 +169,7 @@ impl Connection {
 
     fn start_link(&mut self, is_host: bool, partner: &str, sinks: Sinks) {
         let ctx = &self.ctx;
+        let e2e = self.e2e_for(partner).cloned();
         let link = P2p::start(
             is_host,
             &ctx.local_id,
@@ -174,8 +177,79 @@ impl Connection {
             Arc::clone(&ctx.host.can_send_frame),
             ctx.outbox.clone(),
             sinks,
+            e2e,
         );
         self.links.extend(link);
+    }
+
+    /// Starts the end-to-end handshake with a partner that lists `e2e` (the viewer sends the first message).
+    /// A viewer whose host had a pinned key but no longer offers `e2e` is warned: the relay may have removed it.
+    fn start_e2e(&mut self, is_host: bool, partner: &str, peer_e2e: bool, relay_signal: bool) {
+        let ctx = &self.ctx;
+        let id = e2e::enabled().then(identity::local).flatten();
+        let (true, true, Some(id)) = (peer_e2e, relay_signal, id) else {
+            if !is_host && key_pins::pinned(partner).is_some() {
+                let msg = format!(
+                    "Warning: {} used end-to-end encryption before but does not offer it now; this session is not end-to-end encrypted.",
+                    desk_id::format(partner)
+                );
+                logger::warn("e2e", &msg);
+                ctx.ui.status(msg);
+            }
+            return;
+        };
+        let Some((channel, first)) = E2e::start(is_host, &ctx.local_id, partner, id) else { return };
+        if let Some(candidate) = first {
+            ctx.send(ClientMessage::P2pSignal { target_clean: partner.to_string(), candidate });
+        }
+        self.e2e.push(channel);
+    }
+
+    pub(super) fn e2e_for(&self, partner: &str) -> Option<&Arc<E2e>> {
+        self.e2e.iter().find(|e| e.partner == partner)
+    }
+
+    /// A `p2p-signal`: the end-to-end handshake, or the partner's P2P path.
+    fn on_signal(&mut self, from: &str, candidate: &str) {
+        let parsed = serde_json::from_str::<serde_json::Value>(candidate).ok();
+        let Some(v) = parsed.filter(e2e::is_signal) else {
+            if let Some(p) = self.links.iter().find(|p| p.partner == from) {
+                p.on_signal(candidate);
+            }
+            return;
+        };
+        let Some(channel) = self.e2e_for(from).cloned() else { return };
+        let ctx = Arc::clone(&self.ctx);
+        let mut rejected = None;
+        let reply = channel.on_signal(&v, |key| {
+            let fp = identity::fingerprint(key);
+            if channel.is_host() {
+                // Hosts accept every viewer (unattended access); the key is only logged.
+                logger::info("e2e", &format!("Viewer {from} key {fp}."));
+                return Verdict::Trust;
+            }
+            match key_pins::check(from, key) {
+                Pin::New => logger::info("e2e", &format!("Pinned key {fp} of host {from}.")),
+                Pin::Match => {}
+                Pin::Mismatch { pinned } => {
+                    rejected = Some((fp, identity::fingerprint(&pinned)));
+                    return Verdict::Reject;
+                }
+            }
+            Verdict::Trust
+        });
+        if let Some(candidate) = reply {
+            ctx.send(ClientMessage::P2pSignal { target_clean: from.to_string(), candidate });
+        }
+        if let Some((fp, old)) = rejected {
+            let msg = format!(
+                "Security warning: the key of {} changed (now {fp}, was {old}). The session was closed. If the host was reinstalled, run `opendesk trust {from}` and connect again.",
+                desk_id::format(from)
+            );
+            logger::warn("e2e", &msg);
+            controller::close(&ctx, from, Some(msg.clone()));
+            ctx.ui.status(msg);
+        }
     }
 
     /// An event from a host this machine views (tagged with `fromClean`, or the single session), else from the

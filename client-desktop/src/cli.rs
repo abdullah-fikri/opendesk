@@ -8,9 +8,9 @@ use std::env;
 
 use crate::domain::{desk_id, settings};
 use crate::infra::autostart::{self, StopError};
-use crate::infra::{device, identity, logger, storage, user_clipboard, window};
+use crate::infra::{device, identity, key_pins, logger, storage, user_clipboard, window};
 
-const HELP: &str = "Commands:\r\n  opendesk server <url>   Set the relay address (e.g. wss://relay.example.com)\r\n  opendesk status         Show this device's ID and relay\r\n  opendesk stop           Stop OpenDesk and its watchdog\r\n  opendesk uninstall      Stop OpenDesk and remove autostart entries";
+const HELP: &str = "Commands:\r\n  opendesk server <url>   Set the relay address (e.g. wss://relay.example.com)\r\n  opendesk status         Show this device's ID and relay\r\n  opendesk trust <id>     Accept a host's changed device key\r\n  opendesk stop           Stop OpenDesk and its watchdog\r\n  opendesk uninstall      Stop OpenDesk and remove autostart entries";
 
 /// Handles a CLI command and exits, or returns when the arguments are for the GUI app.
 pub fn run_if_requested() {
@@ -20,6 +20,7 @@ pub fn run_if_requested() {
     let code = match first.as_str() {
         "server" => set_server(args.get(1).map(|a| a.trim_start_matches('-').to_string())),
         f if f.starts_with("--server=") => set_server(Some(args[0]["--server=".len()..].to_string())),
+        "trust" => trust(args.get(1)),
         "stop" | "kill" => stop(),
         "uninstall" => uninstall(),
         "status" | "id" | "--status" | "help" | "--help" => status(),
@@ -52,6 +53,25 @@ fn set_server(url: Option<String>) -> i32 {
         cfg.gateway_url,
         desk_id::format(&cfg.desk_id)
     ));
+    0
+}
+
+/// Accepts a host's new key: forgets the pinned one, so the next session pins the key it presents.
+fn trust(id: Option<&String>) -> i32 {
+    let clean = id.map(|s| desk_id::clean(s)).unwrap_or_default();
+    if !desk_id::is_valid(&clean) {
+        autostart::print_to_console("[OpenDesk] Usage: opendesk trust <device ID>");
+        return 2;
+    }
+    let text = if key_pins::forget(&clean) {
+        format!(
+            "[OpenDesk] Forgot the key of {}. The next connection trusts the key it presents.",
+            desk_id::format(&clean)
+        )
+    } else {
+        format!("[OpenDesk] No key of {} was pinned.", desk_id::format(&clean))
+    };
+    autostart::print_to_console(&text);
     0
 }
 

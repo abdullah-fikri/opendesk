@@ -19,6 +19,7 @@ use tungstenite::{Message, WebSocket};
 
 use crate::domain::capability;
 use crate::domain::settings::{self, normalize_gateway_url};
+use crate::infra::e2e::{self, E2e};
 use crate::infra::p2p::{self, P2p};
 use crate::infra::{autostart, device, logger, power, storage, virtual_clipboard, window};
 use crate::protocol::{ClientMessage, FilePayload, InputEvent, Outgoing, ServerMessage, binary};
@@ -61,6 +62,7 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
             p2p_input_tx: input_tx,
             p2p_input: input_rx,
             links: Vec::new(),
+            e2e: Vec::new(),
             monitor_pending: None,
             monitor_in_flight: false,
             stashed: None,
@@ -94,6 +96,8 @@ pub(super) struct Connection {
     p2p_input: Receiver<InputEvent>,
     /// One direct path per session: the hosted viewer, or each viewed host.
     pub(super) links: Vec<Arc<P2p>>,
+    /// One end-to-end channel per session whose partner lists `e2e`; same lifetime as `links`.
+    pub(super) e2e: Vec<Arc<E2e>>,
     /// Newest monitor-wall thumbnail not sent yet, and whether the previous one is still in the socket.
     monitor_pending: Option<Vec<u8>>,
     monitor_in_flight: bool,
@@ -146,6 +150,11 @@ impl Connection {
                 for p in self.links.iter().filter(|p| !p.is_host()) {
                     if let Some(s) = ctx.viewers.get(&p.partner) {
                         s.p2p_active.store(p.is_active(), Ordering::Relaxed);
+                    }
+                }
+                for e in self.e2e.iter().filter(|e| !e.is_host()) {
+                    if let Some(s) = ctx.viewers.get(&e.partner) {
+                        s.e2e_active.store(e.is_on(), Ordering::Relaxed);
                     }
                 }
             }
@@ -233,6 +242,9 @@ impl Connection {
         if p2p::enabled() {
             caps.push(capability::P2P);
         }
+        if e2e::enabled() && crate::infra::identity::local().is_some() {
+            caps.push(capability::E2E);
+        }
         // Sent before the relay's caps are known; multi-session is used only once `registered-ack` lists it too.
         if edition.can_view() {
             caps.push(capability::MULTI_SESSION);
@@ -279,6 +291,9 @@ impl Connection {
         if host_link_closed {
             while self.p2p_input.try_recv().is_ok() {}
         }
+        self.e2e.retain(|e| {
+            if e.is_host() { e.partner == partner && ctx.is_hosting() } else { ctx.viewers.is_live(&e.partner) }
+        });
     }
 
     /// Sleeps `pause`; a longer (idle) pause ends early when a message is queued, which is kept for
@@ -520,6 +535,7 @@ impl Connection {
         for p in self.links.drain(..) {
             p.close();
         }
+        self.e2e.clear();
         let ctx = &self.ctx;
         // Watches live in the relay: a new connection starts without them until the relay asks again.
         crate::service::host::monitor_stream::stop(ctx);

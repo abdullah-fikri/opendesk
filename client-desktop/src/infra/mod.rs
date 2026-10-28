@@ -6,7 +6,10 @@ pub mod audio;
 pub mod autostart;
 pub mod clock;
 pub mod device;
+#[allow(dead_code)] // relay-path sealing is wired in the next step
+pub mod e2e;
 pub mod identity;
+pub mod key_pins;
 pub mod logger;
 pub mod p2p;
 pub mod power;

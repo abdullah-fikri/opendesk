@@ -31,7 +31,6 @@ pub struct Identity {
 
 impl Identity {
     /// The private key, for `snow::Builder::local_private_key`.
-    #[cfg_attr(not(test), allow(dead_code))] // used by the end-to-end handshake (next step)
     pub fn secret(&self) -> &[u8] {
         &self.secret
     }
@@ -198,6 +197,14 @@ mod dpapi {
 
     pub fn unprotect(blob: &[u8]) -> Option<Vec<u8>> {
         run(false, blob)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests_support {
+    /// A fresh identity that is never stored.
+    pub fn identity() -> super::Identity {
+        super::Identity::generate().unwrap()
     }
 }
 
