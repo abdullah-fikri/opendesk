@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 use core_engine::capture::{DesktopCapturer, MonitorBounds, cursor_shape, enumerate_monitors};
 use core_engine::stream::{FrameInput, H264Mode, StreamEncoder};
 
-use crate::domain::perf_stats::{PerfWindow, Stage, kbps};
+use crate::domain::perf_stats::{Counter, PerfWindow, STATS_INTERVAL, Stage, kbps};
 use crate::domain::resolution;
 use crate::infra::{logger, power};
-use crate::protocol::{InputEvent, MonitorInfo, Outgoing};
+use crate::protocol::{HostStats, InputEvent, MonitorInfo, Outgoing};
 use crate::service::context::Ctx;
 
 /// How often the loop re-enumerates monitors to notice plugged, unplugged or resized displays.
@@ -46,6 +46,11 @@ impl CongestionMeter {
             (true, None) => self.ewma_ms *= 0.98, // an idle link recovers slowly
             (false, Some(_)) => {}
         }
+        self.level()
+    }
+
+    /// The level as of the last `observe`.
+    pub fn level(&self) -> f32 {
         ((self.ewma_ms - 40.0) / 210.0).clamp(0.0, 1.0)
     }
 }
@@ -56,29 +61,46 @@ struct HostPerf {
     grab: Stage,
     encode: Stage,
     gate: Stage,
-    sent: u32,
-    bytes: u64,
-    idle: u32,
-    gate_skips: u32,
+    sent: Counter,
+    bytes: Counter,
+    idle: Counter,
+    gate_skips: Counter,
 }
 
 impl HostPerf {
     /// The window's log line; resets the counters.
     fn take_line(&mut self, secs: f64, h264: Option<&str>) -> String {
         let h264 = h264.map_or_else(|| "off".to_string(), |name| format!("on({name})"));
-        let line = format!(
+        format!(
             "fps={:.1} target={:.0} grab avg/max={} encode={} gate={} kbps={} idle_frames={} gate_skips={} h264={h264}",
-            self.sent as f64 / secs,
+            self.sent.take() as f64 / secs,
             1.0 / FRAME_INTERVAL.as_secs_f64(),
             self.grab.take_summary(),
             self.encode.take_summary(),
             self.gate.take_summary(),
-            kbps(self.bytes, secs),
-            self.idle,
-            self.gate_skips,
-        );
-        *self = Self::default();
-        line
+            kbps(self.bytes.take(), secs),
+            self.idle.take(),
+            self.gate_skips.take(),
+        )
+    }
+
+    /// The `host-stats` summary since the previous one, independent of the log window.
+    fn take_stats(&mut self, secs: f64, congestion: f32, encoder: Option<&str>) -> HostStats {
+        let (grab, encode) = (self.grab.take_lap(), self.encode.take_lap());
+        self.gate.take_lap();
+        HostStats {
+            fps: (self.sent.take_lap() as f64 / secs) as f32,
+            target_fps: (1.0 / FRAME_INTERVAL.as_secs_f64()).round() as u32,
+            grab_ms: grab.avg_ms as f32,
+            grab_max_ms: grab.max_ms as f32,
+            encode_ms: encode.avg_ms as f32,
+            encode_max_ms: encode.max_ms as f32,
+            kbps: kbps(self.bytes.take_lap(), secs),
+            idle: self.idle.take_lap() as u32,
+            gate_skips: self.gate_skips.take_lap() as u32,
+            congestion,
+            encoder: encoder.unwrap_or_default().to_string(),
+        }
     }
 }
 
@@ -161,12 +183,20 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     let mut last_monitor_poll = Instant::now();
     let mut perf = HostPerf::default();
     let mut perf_window = PerfWindow::new(last_monitor_poll);
+    let mut stats_window = PerfWindow::every(last_monitor_poll, STATS_INTERVAL);
 
     while host.is_current(generation) {
         let frame_start = Instant::now();
         if let Some(secs) = perf_window.due(frame_start) {
             let h264 = if h264 == H264Mode::Off { None } else { Some(encoder.h264_name.as_deref().unwrap_or("idle")) };
             logger::info("host.perf", &perf.take_line(secs, h264));
+        }
+        // Laps run while the overlay is hidden too, so its first summary covers only the last second.
+        if let Some(secs) = stats_window.due(frame_start) {
+            let stats = perf.take_stats(secs, congestion.level(), encoder.h264_name.as_deref());
+            if host.stats_requested.load(Ordering::Relaxed) {
+                ctx.send_input(partner, InputEvent::HostStats(stats));
+            }
         }
 
         // Monitor switch, resolution change or a new input desktop all rebuild the pipeline.
@@ -330,13 +360,45 @@ mod tests {
             p.gate.record(Duration::from_micros(400));
         }
         p.grab.record(Duration::from_millis(4));
-        (p.sent, p.bytes, p.idle) = (589, 3_062_500, 12);
+        p.sent += 589;
+        p.bytes += 3_062_500;
+        p.idle += 12;
         let line = p.take_line(10.0, Some("Intel QSV (hardware MFT)"));
         assert_eq!(
             line,
             "fps=58.9 target=60 grab avg/max=1.2/4.0ms encode=3.1/3.1ms gate=0.4/0.4ms kbps=2450 idle_frames=12 gate_skips=0 h264=on(Intel QSV (hardware MFT))"
         );
         assert!(p.take_line(10.0, None).starts_with("fps=0.0 target=60 grab avg/max=0.0/0.0ms"));
+    }
+
+    #[test]
+    fn stats_summary_is_independent_of_the_log_window() {
+        let mut p = HostPerf::default();
+        p.grab.record(Duration::from_micros(1000));
+        p.grab.record(Duration::from_micros(3000));
+        p.encode.record(Duration::from_micros(2500));
+        p.sent += 30;
+        p.bytes += 250_000;
+        p.gate_skips += 3;
+        p.take_line(10.0, None);
+        let s = p.take_stats(0.5, 0.25, Some("Intel QSV (hardware MFT)"));
+        assert_eq!(
+            s,
+            HostStats {
+                fps: 60.0,
+                target_fps: 60,
+                grab_ms: 2.0,
+                grab_max_ms: 3.0,
+                encode_ms: 2.5,
+                encode_max_ms: 2.5,
+                kbps: 4000,
+                idle: 0,
+                gate_skips: 3,
+                congestion: 0.25,
+                encoder: "Intel QSV (hardware MFT)".into(),
+            }
+        );
+        assert_eq!(p.take_stats(1.0, 0.0, None), HostStats { target_fps: 60, ..Default::default() });
     }
 
     #[test]

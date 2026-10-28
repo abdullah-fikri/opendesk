@@ -16,7 +16,7 @@ use image::ImageReader;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 use crate::domain::capability;
-use crate::domain::perf_stats::{PerfWindow, Stage, kbps};
+use crate::domain::perf_stats::{Counter, PerfWindow, Stage, kbps};
 use crate::infra::logger;
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 use crate::service::ui_port::Frame;
@@ -266,24 +266,22 @@ impl ViewerDecoder {
 struct ViewerPerf {
     process: Stage,
     handoff: Stage,
-    shown: u32,
-    bytes: u64,
-    batches: u32,
+    shown: Counter,
+    bytes: Counter,
+    batches: Counter,
 }
 
 impl ViewerPerf {
     /// The window's log line; resets the counters.
     fn take_line(&mut self, session: &str, secs: f64) -> String {
-        let line = format!(
+        format!(
             "session={session} fps={:.1} process avg/max={} handoff={} kbps={} batches={}",
-            self.shown as f64 / secs,
+            self.shown.take() as f64 / secs,
             self.process.take_summary(),
             self.handoff.take_summary(),
-            kbps(self.bytes, secs),
-            self.batches,
-        );
-        *self = Self::default();
-        line
+            kbps(self.bytes.take(), secs),
+            self.batches.take(),
+        )
     }
 }
 
@@ -325,7 +323,7 @@ where
             let batch = sess.inbox.drain_wait(VideoInbox::IDLE_WAIT);
             if let Some(secs) = perf_window.due(Instant::now()) {
                 // Only windows that decoded something: hidden or idle sessions stay quiet.
-                if perf.batches > 0 {
+                if perf.batches.in_window() > 0 {
                     logger::info("viewer.perf", &perf.take_line(&sess.id, secs));
                 }
             }
@@ -409,12 +407,14 @@ mod tests {
             p.process.record(Duration::from_micros(2400));
             p.handoff.record(Duration::from_micros(100));
         }
-        (p.shown, p.bytes, p.batches) = (590, 3_062_500, 600);
+        p.shown += 590;
+        p.bytes += 3_062_500;
+        p.batches += 600;
         assert_eq!(
             p.take_line("123456789", 10.0),
             "session=123456789 fps=59.0 process avg/max=2.4/2.4ms handoff=0.1/0.1ms kbps=2450 batches=600"
         );
-        assert_eq!(p.batches, 0);
+        assert_eq!(p.batches.in_window(), 0);
     }
 
     /// PSNR in dB between a BGRX source frame and the viewer's RGBA framebuffer.

@@ -107,6 +107,8 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
         InputEvent::SetPrivacy { mode } => privacy::set_host_privacy_mode(mode.clamp(0, 3)),
         InputEvent::SetBlockInput { blocked } => privacy::set_host_block_input(blocked),
         InputEvent::VideoKeyframe => host.keyframe_requested.store(true, Ordering::SeqCst),
+        InputEvent::Stats { on } => host.stats_requested.store(on, Ordering::Relaxed),
+        InputEvent::StatsPing { t } => ctx.send_input(&ctx.partner(), InputEvent::StatsPong { t }),
         // Viewer-bound events and zero key codes have no meaning on a host.
         _ => {}
     }
