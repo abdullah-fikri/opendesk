@@ -8,6 +8,9 @@ use crate::codec::JpegEncoder;
 use crate::codec::delta::{build_atlas, key_header, pack_atlas};
 use crate::codec::frame::{FLAG_IDR, FrameHeader, KIND_DELTA, KIND_H264, MoveRect};
 use crate::codec::h264::H264Encoder;
+
+/// What `H264Encoder::encode` / `take_ready` return, with the backend's error dropped (any error means the same).
+type H264Result = Result<Option<(Vec<u8>, bool)>, ()>;
 use crate::diff::{BlockDiff, Rect, merge_blocks};
 
 /// 32px blocks: small enough that a caret or glyph costs ~1 KB, large enough to keep the rect list short.
@@ -399,7 +402,9 @@ impl StreamEncoder {
                 self.in_h264 = false;
                 return Some(self.send_key(f, false));
             }
-            return Some(None);
+            // Pipelined: the burst's last frame finishes while the screen is still.
+            let ready = self.h264.as_mut().map(|e| e.take_ready().map_err(drop));
+            return Some(ready.and_then(|r| self.h264_out(f, r)));
         }
         self.idle_ticks = 0;
         // Typing-sized changes are better served by sharp JPEG regions.
@@ -418,12 +423,19 @@ impl StreamEncoder {
     }
 
     fn send_h264(&mut self, f: &FrameInput) -> Option<Vec<u8>> {
-        let target = self.h264_bitrate();
+        let (target, pipelined) = (self.h264_bitrate(), self.high_fps());
         let enc = self.h264.as_mut()?;
         if (enc.bitrate() as f64 - target as f64).abs() > target as f64 * 0.1 {
             enc.set_bitrate(target);
         }
-        match enc.encode(f.pixels, f.stride) {
+        enc.set_pipelined(pipelined);
+        let result = enc.encode(f.pixels, f.stride).map_err(drop);
+        self.h264_out(f, result)
+    }
+
+    /// Frames an access unit from the encoder; an encoder error falls back to JPEG for good.
+    fn h264_out(&mut self, f: &FrameInput, result: H264Result) -> Option<Vec<u8>> {
+        match result {
             Ok(Some((au, idr))) => {
                 self.seq = self.seq.wrapping_add(1);
                 self.last.kind = SentKind::H264;

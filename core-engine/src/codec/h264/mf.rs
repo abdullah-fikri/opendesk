@@ -2,6 +2,7 @@
 //! the Microsoft software MFT otherwise; the viewer decodes with the Microsoft H.264 decoder MFT.
 //! Colour conversion is BT.709 limited range on both ends, done on the CPU.
 
+use std::collections::VecDeque;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -173,6 +174,10 @@ pub struct H264Encoder {
     sequence_header: Vec<u8>,
     nv12: Vec<u8>,
     out_buf: BufferCache,
+    /// Access units taken from an async MFT and not returned yet, oldest first.
+    ready: VecDeque<Vec<u8>>,
+    /// `encode` returns earlier frames' output instead of waiting for its own (see [`Self::set_pipelined`]).
+    pipelined: bool,
 }
 
 unsafe impl Send for H264Encoder {}
@@ -309,6 +314,8 @@ impl H264Encoder {
                 sequence_header,
                 nv12: Vec::new(),
                 out_buf: BufferCache::default(),
+                ready: VecDeque::new(),
+                pipelined: false,
             })
         }
     }
@@ -339,6 +346,35 @@ impl H264Encoder {
     /// Drops output still queued inside an async MFT (stale frames after leaving H.264 mode).
     pub fn discard_pending(&mut self) {
         let _ = self.pump(Duration::ZERO, false);
+        self.ready.clear();
+    }
+
+    /// Pipelined mode (async hardware MFTs): `encode` hands frame N to the encoder and returns whatever earlier
+    /// frame is finished, instead of waiting ~8 ms for frame N itself. One frame more latency, but a frame costs
+    /// only the colour conversion on the capture thread, which is what makes rates above 60 FPS reachable.
+    pub fn set_pipelined(&mut self, on: bool) {
+        self.pipelined = on;
+    }
+
+    /// The next finished access unit without feeding a frame (pipelined mode: the last frame of a motion burst).
+    pub fn take_ready(&mut self) -> Result<Option<(Vec<u8>, bool)>> {
+        if self.events.is_some() {
+            ensure_mf()?;
+            self.pump(Duration::ZERO, false)?;
+        }
+        Ok(self.ready.pop_front().map(|au| self.finish_au(au)))
+    }
+
+    /// IDR detection, plus SPS/PPS in band for encoders that only put them in the media type.
+    fn finish_au(&self, mut au: Vec<u8>) -> (Vec<u8>, bool) {
+        let types = nal_types(&au);
+        let idr = types.contains(&5);
+        if idr && !types.contains(&7) && !self.sequence_header.is_empty() {
+            let mut with = self.sequence_header.clone();
+            with.extend_from_slice(&au);
+            au = with;
+        }
+        (au, idr)
     }
 
     /// Encodes one frame. Returns (Annex-B access unit, is_idr) when the encoder produced output.
@@ -354,19 +390,20 @@ impl H264Encoder {
         self.frame_index += 1;
 
         let au = if self.events.is_some() {
-            // Async (hardware) MFT: input only when it asked for it; wait briefly for the matching output.
-            let mut out = self.pump(Duration::ZERO, false)?;
+            // Async (hardware) MFT: input only when it asked for it; wait briefly for the matching output, unless
+            // pipelined (the output then goes out with a later call).
+            self.pump(Duration::ZERO, false)?;
             if self.credits == 0 {
-                out = out.or(self.pump(Duration::from_millis(20), false)?);
+                self.pump(Duration::from_millis(20), false)?;
             }
             if self.credits > 0 {
                 self.credits -= 1;
                 unsafe { self.mft.ProcessInput(0, &sample, 0)? };
-                if out.is_none() {
-                    out = self.pump(Duration::from_millis(40), true)?;
+                if self.ready.is_empty() && !self.pipelined {
+                    self.pump(Duration::from_millis(40), true)?;
                 }
             }
-            out
+            self.ready.pop_front()
         } else {
             unsafe { self.mft.ProcessInput(0, &sample, 0)? };
             let mut au: Option<Vec<u8>> = None;
@@ -379,24 +416,14 @@ impl H264Encoder {
             }
             au
         };
-        Ok(au.map(|mut au| {
-            let types = nal_types(&au);
-            let idr = types.contains(&5);
-            // Decoders need SPS/PPS in band; some encoders only put them in the media type.
-            if idr && !types.contains(&7) && !self.sequence_header.is_empty() {
-                let mut with = self.sequence_header.clone();
-                with.extend_from_slice(&au);
-                au = with;
-            }
-            (au, idr)
-        }))
+        Ok(au.map(|au| self.finish_au(au)))
     }
 
-    /// Handles async MFT events until an output arrives (when `until_output`) or `wait` elapses.
-    fn pump(&mut self, wait: Duration, until_output: bool) -> Result<Option<Vec<u8>>> {
-        let Some(events) = self.events.clone() else { return Ok(None) };
+    /// Handles async MFT events, queueing outputs in `ready`, until an output arrives (when `until_output`), a
+    /// NeedInput arrives (when waiting for one), or `wait` elapses.
+    fn pump(&mut self, wait: Duration, until_output: bool) -> Result<()> {
+        let Some(events) = self.events.clone() else { return Ok(()) };
         let deadline = Instant::now() + wait;
-        let mut out: Option<Vec<u8>> = None;
         loop {
             match unsafe { events.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
                 Ok(ev) => {
@@ -404,14 +431,14 @@ impl H264Encoder {
                     if t == METransformNeedInput.0 as u32 {
                         self.credits += 1;
                         if !until_output && wait > Duration::ZERO {
-                            return Ok(out);
+                            return Ok(());
                         }
                     } else if t == METransformHaveOutput.0 as u32 {
                         match process_output(&self.mft, &mut self.out_buf) {
                             Ok(s) => {
-                                out = Some(sample_bytes(&s)?);
+                                self.ready.push_back(sample_bytes(&s)?);
                                 if until_output {
-                                    return Ok(out);
+                                    return Ok(());
                                 }
                             }
                             Err(e) if e.code() == MF_E_TRANSFORM_STREAM_CHANGE => unsafe {
@@ -424,7 +451,7 @@ impl H264Encoder {
                 }
                 Err(e) if e.code() == MF_E_NO_EVENTS_AVAILABLE => {
                     if Instant::now() >= deadline {
-                        return Ok(out);
+                        return Ok(());
                     }
                     std::thread::sleep(Duration::from_millis(1));
                 }
@@ -628,5 +655,58 @@ mod tests {
         let grown = private_bytes().saturating_sub(before) / (1024 * 1024);
         println!("{name}: +{grown} MB private after 20 rebuilds");
         assert!(grown < 60, "{name} leaked {grown} MB over 20 rebuilds");
+    }
+
+    /// Pipelined mode loses nothing: every frame's access unit comes out once, in order, and decodes, the last
+    /// ones through `take_ready`. Calls are paced like the capture loop at 144 FPS; prints the time the capture
+    /// thread spends in `encode` against the waiting mode.
+    /// Needs a GPU encoder: `cargo test --release pipelined -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn pipelined_hardware_encode_keeps_every_frame() {
+        let (w, h) = (1728u32, 1080u32);
+        let frames: Vec<Vec<u32>> = (0..8).map(|t| pattern(w as usize, h as usize, t * 7)).collect();
+        let n = 240;
+        let mut per_call = [0.0; 2];
+        for (mode, pipelined) in [false, true].into_iter().enumerate() {
+            let mut enc = H264Encoder::new(w, h, 144, 6_000_000, true).unwrap();
+            if !enc.hardware {
+                println!("no hardware encoder ({}): nothing to pipeline", enc.name);
+                return;
+            }
+            enc.set_pipelined(pipelined);
+            let mut out = Vec::new();
+            let tick = Duration::from_micros(1_000_000 / 144);
+            let mut busy = Duration::ZERO;
+            for i in 0..n {
+                let t0 = Instant::now();
+                out.extend(enc.encode(&frames[i % 8], w as usize).unwrap());
+                let spent = t0.elapsed();
+                busy += spent;
+                if let Some(rest) = tick.checked_sub(spent) {
+                    std::thread::sleep(rest);
+                }
+            }
+            per_call[mode] = busy.as_secs_f64() * 1000.0 / n as f64;
+            // The screen goes still: the frames still inside the encoder come out without new input.
+            let deadline = Instant::now() + Duration::from_millis(500);
+            while Instant::now() < deadline {
+                match enc.take_ready().unwrap() {
+                    Some(au) => out.push(au),
+                    None => std::thread::sleep(Duration::from_millis(2)),
+                }
+            }
+            assert!(out.first().is_some_and(|(_, idr)| *idr), "stream starts with an IDR");
+            let mut dec = H264Decoder::new(w, h).unwrap();
+            let aus = out.len();
+            let decoded = out.iter().filter(|(au, _)| dec.decode(au, w, h).unwrap().is_some()).count();
+            println!(
+                "{} pipelined={pipelined}: {:.2} ms per frame, {aus} of {n} out, {decoded} decoded",
+                enc.name, per_call[mode]
+            );
+            assert_eq!(aus, n, "every frame comes out exactly once");
+            assert!(decoded >= n - 2, "decodes in order ({decoded} of {n})");
+        }
+        assert!(per_call[1] < per_call[0], "pipelining makes a frame cheaper ({per_call:?})");
     }
 }
