@@ -5,6 +5,7 @@
 //! socket (which opens the video backpressure gate), drains all readable messages and sleeps 1 ms; with no
 //! session and no traffic for a while the pause grows to `IDLE_MAX_SLEEP`, cut short by a new outbound message.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, TcpStream};
@@ -323,15 +324,16 @@ impl Connection {
             self.busy = true;
             match item {
                 Outgoing::Message(msg) => {
-                    let direct = match &msg {
+                    let text = match &msg {
                         ClientMessage::RelayInput { target_clean, event } => {
-                            self.direct(target_clean).is_some_and(|p| p.send_input(event))
+                            if self.direct(target_clean).is_some_and(|p| p.send_input(event)) {
+                                continue;
+                            }
+                            self.input_text(target_clean, event)
                         }
-                        _ => false,
+                        _ => msg.to_json(),
                     };
-                    if !direct {
-                        let _ = socket.send(Message::Text(msg.to_json().into()));
-                    }
+                    let _ = socket.send(Message::Text(text.into()));
                 }
                 Outgoing::MouseMove(target, x, y) => match mouse.iter_mut().find(|m| m.0 == target) {
                     Some(m) => (m.1, m.2) = (x, y),
@@ -346,6 +348,8 @@ impl Connection {
                 }
                 Outgoing::FileChunk { target, frame, status } => {
                     let units = chunk_units(frame.len());
+                    // Sealed here, in queue order, so the receiver sees its nonces ascending.
+                    let frame = self.seal(&target, frame);
                     // Like voice: a viewer of several hosts names the host; the relay's grant decides anyway.
                     let frame = if self.ctx.viewers.multi() && self.ctx.viewers.get(&target).is_some() {
                         binary::tag(&target, &frame).unwrap_or(frame)
@@ -359,7 +363,7 @@ impl Connection {
         for (target, norm_x, norm_y) in mouse.into_iter().filter(|m| !m.0.is_empty()) {
             let event = InputEvent::MouseMove { norm_x, norm_y };
             if !self.direct(&target).is_some_and(|p| p.send_input(&event)) {
-                let _ = socket.send(Message::Text(ClientMessage::input(&target, event).to_json().into()));
+                let _ = socket.send(Message::Text(self.input_text(&target, &event).into()));
             }
         }
         let Some(frame) = video else { return false };
@@ -367,8 +371,33 @@ impl Connection {
         if self.direct(partner).is_some_and(|p| p.send_video(&frame)) {
             return false;
         }
-        let _ = socket.send(Message::Binary(frame.into()));
+        let _ = socket.send(Message::Binary(self.seal(partner, frame).into()));
         true
+    }
+
+    /// Seals a binary message for `partner` on the relay path when the session is end-to-end encrypted.
+    fn seal(&self, partner: &str, msg: Vec<u8>) -> Vec<u8> {
+        self.e2e_for(partner).and_then(|e| e.seal(&msg)).unwrap_or(msg)
+    }
+
+    /// Opens a binary message from `partner`; None drops it (see `E2e::open`).
+    fn open<'a>(&self, partner: &str, msg: &'a [u8]) -> Option<Cow<'a, [u8]>> {
+        match self.e2e_for(partner) {
+            Some(e) => e.open(msg),
+            None => Some(Cow::Borrowed(msg)),
+        }
+    }
+
+    /// `relay-input` text for `target`; the event is sealed when the session is end-to-end encrypted. The
+    /// relay only needs `targetClean` to authorize it.
+    fn input_text(&self, target: &str, event: &InputEvent) -> String {
+        let sealed = self.e2e_for(target).and_then(|e| serde_json::to_value(event).ok().and_then(|v| e.seal_event(&v)));
+        match sealed {
+            Some(event) => {
+                serde_json::json!({ "type": "relay-input", "targetClean": target, "event": event }).to_string()
+            }
+            None => ClientMessage::input(target, event.clone()).to_json(),
+        }
     }
 
     /// Sends the newest monitor-wall thumbnail once the previous one has left the socket, so a slow link holds
@@ -389,6 +418,7 @@ impl Connection {
         if partner.is_empty() || self.direct(partner).is_some_and(|p| p.send_audio(&packet)) {
             return;
         }
+        let packet = self.seal(partner, packet);
         let out = if self.ctx.viewers.multi() && self.ctx.viewers.get(partner).is_some() {
             binary::tag(partner, &packet)
         } else {
@@ -464,9 +494,15 @@ impl Connection {
     /// File chunks are always tagged with their sender.
     fn on_binary(&mut self, bin: &[u8]) {
         if let Some((from, payload)) = binary::untag(bin)
-            && let Some(chunk) = binary::parse_file_chunk(payload)
+            && binary::parse_file_chunk(payload).is_some()
         {
-            return self.on_file_chunk(from, &chunk);
+            // A sealed chunk keeps its routing header, so it is recognized before it is opened.
+            if let Some(payload) = self.open(from, payload)
+                && let Some(chunk) = binary::parse_file_chunk(&payload)
+            {
+                self.on_file_chunk(from, &chunk);
+            }
+            return;
         }
         let ctx = &self.ctx;
         if binary::parse_file_chunk(bin).is_some() {
@@ -483,20 +519,30 @@ impl Connection {
         match binary::untag(bin) {
             // Frames for a closed tab are dropped.
             Some((host, payload)) => {
-                if let Some(s) = ctx.viewers.get(host) {
-                    if binary::is_audio(payload) {
+                if let Some(s) = ctx.viewers.get(host)
+                    && let Some(payload) = self.open(host, payload)
+                {
+                    if binary::is_audio(&payload) {
                         if s.audio_on.load(Ordering::Relaxed) {
-                            ctx.voice.play_binary_packet(payload);
+                            ctx.voice.play_binary_packet(&payload);
                         }
                     } else {
-                        s.inbox.push(payload.to_vec());
+                        s.inbox.push(payload.into_owned());
                     }
                 }
             }
-            None if binary::is_audio(bin) => ctx.voice.play_binary_packet(bin),
+            None if binary::is_audio(bin) => {
+                // Untagged voice comes from the hosted viewer, or from the single viewed host.
+                let from = if ctx.is_hosting() { ctx.partner() } else { single_id(ctx) };
+                if let Some(packet) = self.open(&from, bin) {
+                    ctx.voice.play_binary_packet(&packet);
+                }
+            }
             None => {
-                if let Some(s) = ctx.viewers.single() {
-                    s.inbox.push(bin.to_vec());
+                if let Some(s) = ctx.viewers.single()
+                    && let Some(frame) = self.open(&s.id, bin)
+                {
+                    s.inbox.push(frame.into_owned());
                 }
             }
         }
@@ -550,6 +596,11 @@ impl Connection {
             ctx.voice.is_session_active.store(ctx.is_hosting(), Ordering::SeqCst);
         }
     }
+}
+
+/// The single viewed host's ID, or "" without one.
+fn single_id(ctx: &Ctx) -> String {
+    ctx.viewers.single().map(|s| s.id.clone()).unwrap_or_default()
 }
 
 /// Idle backoff of the connection loop: on unless `OPENDESK_IDLE_BACKOFF=0` (a fixed 1 ms tick).

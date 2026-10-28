@@ -187,6 +187,7 @@ impl E2e {
     }
 
     /// The partner's verified static key.
+    #[cfg(test)]
     pub fn peer_key(&self) -> Option<&[u8]> {
         self.peer_key.get().map(Vec::as_slice)
     }

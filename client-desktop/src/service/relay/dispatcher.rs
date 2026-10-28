@@ -256,6 +256,23 @@ impl Connection {
     /// viewer this machine hosts.
     fn on_input(&self, event: &serde_json::Value, from: Option<&str>) {
         let ctx = &self.ctx;
+        // The same sender the routing below picks: the tagged host, the single viewed host, or the hosted viewer.
+        let sender = match from {
+            Some(id) => id.to_string(),
+            None if !ctx.is_hosting() => ctx.viewers.single().map(|s| s.id.clone()).unwrap_or_default(),
+            None => ctx.partner(),
+        };
+        let opened;
+        let event = match self.e2e_for(&sender) {
+            Some(e) => match e.open_event(event) {
+                Some(v) => {
+                    opened = v;
+                    &opened
+                }
+                None => return,
+            },
+            None => event,
+        };
         let Some(event) = InputEvent::parse(event) else { return };
         let viewed = match from {
             Some(id) => ctx.viewers.get(id),
