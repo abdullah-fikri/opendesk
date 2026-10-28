@@ -29,6 +29,8 @@ use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS, chunk_
 use crate::service::ui_port::RelayStatus;
 use crate::service::viewer::decoder;
 
+use super::signal_pacer::SignalPacer;
+
 pub(super) type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
 
 /// Pause before reconnecting after a failed connect.
@@ -70,6 +72,7 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
             monitor_in_flight: false,
             stashed: None,
             busy: false,
+            signals: SignalPacer::default(),
         };
         // This process idles under EcoQoS until a session or traffic needs full speed.
         power::arm();
@@ -114,6 +117,8 @@ pub(super) struct Connection {
     stashed: Option<Outgoing>,
     /// Something was sent or received this tick.
     busy: bool,
+    /// `p2p-signal` messages spaced out per partner (the relay drops ones that follow too closely).
+    signals: SignalPacer,
 }
 
 impl Connection {
@@ -320,6 +325,8 @@ impl Connection {
     /// Sleeps `pause`; a longer (idle) pause ends early when a message is queued, which is kept for
     /// `pump_outbox` so the queue order holds.
     fn pause(&mut self, pause: Duration) {
+        // Queued signals must not wait out an idle pause.
+        let pause = if self.signals.pending() { pause.min(BUSY_SLEEP) } else { pause };
         if pause <= BUSY_SLEEP {
             thread::sleep(pause);
             return;
@@ -351,6 +358,10 @@ impl Connection {
                             }
                             self.input_text(target_clean, event)
                         }
+                        ClientMessage::P2pSignal { target_clean, .. } => {
+                            self.signals.push(target_clean.clone(), msg.to_json());
+                            continue;
+                        }
                         _ => msg.to_json(),
                     };
                     let _ = socket.send(Message::Text(text.into()));
@@ -379,6 +390,9 @@ impl Connection {
                     self.files.push_back(QueuedFile { message: Message::Binary(frame.into()), units, status });
                 }
             }
+        }
+        for text in self.signals.due(Instant::now()) {
+            let _ = socket.send(Message::Text(text.into()));
         }
         for (target, norm_x, norm_y) in mouse.into_iter().filter(|m| !m.0.is_empty()) {
             let event = InputEvent::MouseMove { norm_x, norm_y };
@@ -602,6 +616,7 @@ impl Connection {
             p.close();
         }
         self.e2e.clear();
+        self.signals.clear();
         let ctx = &self.ctx;
         // Watches live in the relay: a new connection starts without them until the relay asks again.
         crate::service::host::monitor_stream::stop(ctx);

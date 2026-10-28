@@ -2,5 +2,6 @@
 
 mod connection;
 mod dispatcher;
+mod signal_pacer;
 
 pub use connection::spawn;
