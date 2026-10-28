@@ -16,7 +16,13 @@ const (
 	// CapFileBinary: the relay forwards binary file chunks. As a client capability it means the client accepts
 	// them; the relay sends one only to such a receiver.
 	CapFileBinary = "file-binary"
+	// CapUDPRelay: the relay forwards direct-path UDP datagrams (udp-relay-offer). As a client capability it
+	// means the client can use one; offers go only to sessions where both clients list it.
+	CapUDPRelay = "udp-relay"
 )
+
+// CapP2P is the client capability of the direct UDP path, which the UDP relay carries.
+const CapP2P = "p2p.v1"
 
 // Client capabilities the relay acts on for the monitor wall.
 const (

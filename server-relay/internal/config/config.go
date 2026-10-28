@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/netip"
 	"os"
 	"strconv"
 	"time"
@@ -35,6 +36,13 @@ type Config struct {
 	TLSProxy bool `json:"-"`
 	// P2PDisabled withdraws the p2p-signal capability so every session stays on the relay (OPENDESK_P2P_DISABLED=1).
 	P2PDisabled bool `json:"-"`
+	// UDPRelayPublic is the host:port clients send direct-path datagrams to when they cannot reach each other
+	// (OPENDESK_UDP_RELAY_PUBLIC). Empty disables the UDP relay; the relay cannot learn its public address itself.
+	UDPRelayPublic string `json:"-"`
+	// UDPRelayAddr is the local UDP listen address (OPENDESK_UDP_RELAY_ADDR, default 0.0.0.0:8089).
+	UDPRelayAddr string `json:"-"`
+	// UDPRelayMbps caps each session's forwarded rate, both directions together (OPENDESK_UDP_RELAY_MBPS, default 50).
+	UDPRelayMbps int `json:"-"`
 }
 
 // PingInterval is the WebSocket keep-alive period.
@@ -88,6 +96,21 @@ func Load(path string) (Config, error) {
 	cfg.MetricsToken = os.Getenv("OPENDESK_METRICS_TOKEN")
 	cfg.TLSProxy = os.Getenv("OPENDESK_TLS_PROXY") == "1"
 	cfg.P2PDisabled = os.Getenv("OPENDESK_P2P_DISABLED") == "1"
+	cfg.UDPRelayPublic = os.Getenv("OPENDESK_UDP_RELAY_PUBLIC")
+	cfg.UDPRelayAddr = "0.0.0.0:8089"
+	overrideString(&cfg.UDPRelayAddr, "OPENDESK_UDP_RELAY_ADDR")
+	cfg.UDPRelayMbps = 50
+	if err := overrideInt(&cfg.UDPRelayMbps, "OPENDESK_UDP_RELAY_MBPS"); err != nil {
+		return Config{}, err
+	}
+	if cfg.UDPRelayPublic != "" {
+		if _, err := netip.ParseAddrPort(cfg.UDPRelayPublic); err != nil {
+			return Config{}, fmt.Errorf("OPENDESK_UDP_RELAY_PUBLIC must be an IPv4 or IPv6 address with a port: %w", err)
+		}
+		if cfg.UDPRelayMbps <= 0 {
+			return Config{}, fmt.Errorf("OPENDESK_UDP_RELAY_MBPS must be positive, got %d", cfg.UDPRelayMbps)
+		}
+	}
 
 	cfg.DeviceCredentials = map[string]model.DeviceCredential{}
 	if raw := os.Getenv("OPENDESK_DEVICE_CREDENTIALS"); raw != "" {

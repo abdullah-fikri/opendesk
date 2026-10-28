@@ -17,6 +17,7 @@ import (
 	"opendesk/server-relay/internal/handler"
 	"opendesk/server-relay/internal/metrics"
 	"opendesk/server-relay/internal/repository/postgres"
+	"opendesk/server-relay/internal/udprelay"
 	"opendesk/server-relay/internal/usecase"
 	"opendesk/server-relay/internal/version"
 )
@@ -54,6 +55,15 @@ func run(configPath string, log *slog.Logger) error {
 	}
 	defer db.Close()
 
+	var udp *udprelay.Server
+	if cfg.UDPRelayPublic != "" && !cfg.P2PDisabled {
+		if udp, err = udprelay.Listen(cfg.UDPRelayAddr, cfg.UDPRelayMbps, log); err != nil {
+			return err
+		}
+		go udp.Run(ctx)
+		log.Info("UDP relay listening", "addr", cfg.UDPRelayAddr, "public", cfg.UDPRelayPublic, "mbps", cfg.UDPRelayMbps)
+	}
+
 	collector := metrics.New()
 	relay := usecase.New(
 		postgres.NewHostRepository(db),
@@ -61,6 +71,7 @@ func run(configPath string, log *slog.Logger) error {
 		collector,
 		usecase.Options{
 			Credentials: cfg.DeviceCredentials, P2PDisabled: cfg.P2PDisabled, Security: postgres.NewSecurityRepository(db),
+			UDPRelay: udp != nil,
 		},
 		log,
 	)
@@ -77,6 +88,8 @@ func run(configPath string, log *slog.Logger) error {
 		PingInterval:    cfg.PingInterval(),
 		MetricsToken:    cfg.MetricsToken,
 		TLSProxy:        cfg.TLSProxy,
+		UDPRelay:        udp,
+		UDPRelayPublic:  cfg.UDPRelayPublic,
 	}, log)
 	go h.RunPinger(ctx)
 	go relay.RunJanitor(ctx, cfg.PingInterval())

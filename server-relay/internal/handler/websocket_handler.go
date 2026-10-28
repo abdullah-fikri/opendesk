@@ -216,6 +216,7 @@ func (c *connection) onRegister(msg []byte) bool {
 	// From here on other goroutines write through the peer; direct ws writes would race with them.
 	c.peer = peer
 	for _, orphan := range orphans {
+		c.h.releaseUDPRelay(orphan.CleanID, peer.CleanID)
 		_ = orphan.Send(sessionClosed(orphan, peer.CleanID, msgPeerReconnected))
 	}
 	c.h.log.Info("client registered", "id", peer.DeskID, "name", peer.DeviceName, "platform", peer.Platform,
@@ -277,6 +278,7 @@ func (c *connection) onConnectRequest(msg []byte) {
 	} else {
 		_ = res.Target.Send(sessionConnected(c.peer, model.RoleHost))
 		_ = c.peer.Send(sessionConnected(res.Target, model.RoleViewer))
+		c.h.offerUDPRelay(c.peer, res.Target)
 	}
 	c.h.log.Info("session requested", "viewer", c.peer.DeskID, "host", res.Target.DeskID,
 		"platform", res.Target.Platform, "needs_approval", res.NeedsApproval)
@@ -309,6 +311,7 @@ func (c *connection) onApprovalResponse(msg []byte) {
 	}
 	_ = viewer.Send(sessionConnected(c.peer, model.RoleViewer))
 	_ = c.peer.Send(sessionConnected(viewer, model.RoleHost))
+	c.h.offerUDPRelay(viewer, c.peer)
 	c.h.log.Info("session approved", "viewer", viewer.DeskID, "host", c.peer.DeskID)
 }
 
@@ -357,6 +360,7 @@ func (c *connection) onSessionDisconnect(msg []byte) {
 	if rcpt == nil {
 		return
 	}
+	c.h.releaseUDPRelay(c.peer.CleanID, rcpt.CleanID)
 	_ = rcpt.Send(sessionClosed(rcpt, c.peer.CleanID, msgEndedByPeer))
 	c.h.log.Info("session ended by client", "id", c.peer.DeskID)
 }
@@ -417,6 +421,7 @@ func (c *connection) unregister() {
 	}
 	c.h.broadcastHostList()
 	for _, partner := range partners {
+		c.h.releaseUDPRelay(partner.CleanID, c.peer.CleanID)
 		_ = partner.Send(sessionClosed(partner, c.peer.CleanID, msgPeerOffline))
 	}
 	c.h.log.Info("client disconnected", "id", c.peer.DeskID, "active_peers", c.h.relay.PeerCount())

@@ -16,6 +16,7 @@ import (
 	"opendesk/server-relay/internal/dto"
 	"opendesk/server-relay/internal/metrics"
 	"opendesk/server-relay/internal/model"
+	"opendesk/server-relay/internal/udprelay"
 	"opendesk/server-relay/internal/usecase"
 	"opendesk/server-relay/internal/version"
 )
@@ -29,6 +30,10 @@ type Options struct {
 	MetricsToken string
 	// TLSProxy accepts plaintext WebSocket from non-loopback addresses (TLS ends at a proxy in front).
 	TLSProxy bool
+	// UDPRelay forwards direct-path datagrams for sessions whose clients list udp-relay; nil disables it.
+	UDPRelay *udprelay.Server
+	// UDPRelayPublic is the address clients bind to (host:port).
+	UDPRelayPublic string
 }
 
 // Handler serves every relay endpoint.
