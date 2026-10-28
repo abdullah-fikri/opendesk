@@ -3,6 +3,53 @@
 All notable changes to OpenDesk. Versions follow [Semantic Versioning](https://semver.org); the single source of
 truth is `VERSION`. The release workflow copies the section of the tagged version into the GitHub Release.
 
+## [1.1.2] - 2026-10-28
+
+### Added
+- End-to-end encryption: when both sides run this version, video, voice, input, clipboard and file chunks are
+  encrypted between the two devices (Noise_XX); the relay forwards them without being able to read them. The
+  host's key is pinned on the first connection and a changed key closes the session with a warning
+  (`opendesk trust <id>` accepts it, e.g. after a reinstall). `opendesk status` shows this device's fingerprint.
+  Sessions with older versions keep working, unencrypted end to end. `OPENDESK_E2E=0` turns it off.
+- Frame rates above 60: a viewer asks for its monitor's refresh rate (server settings dialog: Auto / 30 / 60 / Maximum) and a
+  host on a 120/144/240 Hz monitor streams up to that rate over a direct (P2P) path with a hardware H.264
+  encoder. Relayed sessions, software encoders and older partners stay at 60. Under congestion the rate steps
+  down (144 → 120 → 90 → 60) before quality drops. `OPENDESK_MAX_FPS=60` restores the 60 FPS limit.
+- Session stats overlay: RTT, path, encryption, bitrate, shown vs. target frame rate, decode time, the host's
+  encoder and capture/encode times, dropped frames and congestion.
+- Opus voice (about 30 kbps instead of 768 kbps raw PCM) when both sides support it.
+- Auto-update infrastructure for the Windows service: signed manifests, verified downloads into a folder only
+  SYSTEM and Administrators can write, a health check that rolls a failed update back, and
+  `opendesk --update-now`, `--rollback`, `--pin-version`, `--unpin`. Not active in this release: no release
+  signing key is configured yet, so no update is ever installed.
+
+### Changed
+- The installer runs in 64-bit mode and installs to `Program Files`; 1.0.x installs in `Program Files (x86)`
+  are migrated automatically (custom folders are kept). Device ID, settings and history are unchanged.
+- File transfers send 128 KiB binary chunks instead of base64 JSON when partner and relay support it.
+- The relay writes to each client from one queue with priorities (input and control first, then voice, video,
+  files), so a slow receiver no longer holds up its sender.
+- Above 60 FPS, H.264 takes over any change bigger than typing at once; typing stays on sharp JPEG regions.
+
+### Performance
+- Idle in the tray: the relay connection loop backs off and Windows runs the process under EcoQoS while no
+  session is active, far fewer wakeups.
+- Hardware H.264 above 60 FPS no longer waits for each frame's own output (one frame more latency), and the
+  colour conversion uses AVX2 where available: about 3 ms per frame instead of 11 ms on Intel Quick Sync.
+  The 60 FPS path also gets the faster conversion.
+- Viewer: the decoder wakes on new frames instead of polling, frames are coalesced while the UI is busy and
+  their buffers reused, and only changed session fields are written per frame.
+- The host waits on the video gate instead of polling it every millisecond.
+- Release binary built with fat LTO and stripped (about 15 MB instead of 35 MB).
+
+### Fixed
+- `opendesk.trace` no longer grows without bound: it rotates at 10 MB.
+- `config.json` and `history.json` are written atomically, so a crash or power loss cannot leave them broken.
+- A panic is logged with its thread and backtrace; a crashed capture, decoder or relay thread ends its session
+  cleanly (keys released on the host) or restarts, instead of leaving a frozen session. Locks no longer poison.
+- Clipboard text no longer overtakes the sender's queued file messages through the relay.
+- The tray icon is loaded from the exe's own resource.
+
 ## [1.0.2] - 2026-10-26
 
 ### Fixed
@@ -100,6 +147,7 @@ First public release.
 - Windows binaries are not code-signed yet (SmartScreen warns on first run); Linux packages are unsigned `.deb`
   files. Verify downloads against `SHA256SUMS.txt`.
 
+[1.1.2]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.1.2
 [1.0.2]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.0.2
 [1.0.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.0.1
 [1.0.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.0.0

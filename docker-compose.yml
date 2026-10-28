@@ -4,11 +4,11 @@
 # The image is pinned to a release (`docker ps` shows which one runs); upgrade by changing RELAY_VERSION.
 services:
   relay:
-    image: ${RELAY_IMAGE:-ghcr.io/abdullah-fikri/opendesk-relay:${RELAY_VERSION:-1.0.2}}
+    image: ${RELAY_IMAGE:-ghcr.io/abdullah-fikri/opendesk-relay:${RELAY_VERSION:-1.1.2}}
     build:
       context: ./server-relay
       args:
-        VERSION: ${RELAY_VERSION:-1.0.2}
+        VERSION: ${RELAY_VERSION:-1.1.2}
     container_name: opendesk-relay
     restart: unless-stopped
     ports:
