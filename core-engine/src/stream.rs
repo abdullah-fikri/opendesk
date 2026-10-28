@@ -12,9 +12,9 @@ use crate::diff::{BlockDiff, Rect, merge_blocks};
 
 /// 32px blocks: small enough that a caret or glyph costs ~1 KB, large enough to keep the rect list short.
 pub const BLOCK: i32 = 32;
-/// Idle ticks between keepalives (the old pipeline resent a full JPEG; deltas send a 20-byte header).
+/// Idle ticks at 60 FPS between keepalives (the old pipeline resent a full JPEG; deltas send a 20-byte header).
 const KEEPALIVE_TICKS: u32 = 30;
-/// Idle ticks after motion before blurry (low-quality) regions are resent sharp.
+/// Idle ticks at 60 FPS after motion before blurry (low-quality) regions are resent sharp.
 const SETTLE_TICKS: u32 = 2;
 /// Consecutive motion ticks before switching to H.264 (one big update is often just a window opening).
 const H264_ENTER_STREAK: u32 = 3;
@@ -32,6 +32,30 @@ pub enum H264Mode {
     Auto,
     /// Every changed frame (benchmarking); still ends motion with a sharp JPEG key frame.
     Always,
+}
+
+/// Whether an idle H.264 stream switches to H.264 on this tick. `Auto` waits for sustained motion; above
+/// 60 FPS on a hardware encoder (`high_fps`) any change bigger than typing switches at once, because JPEG
+/// regions cost too much CPU at that rate. Typing stays on sharp JPEG regions: entering H.264 costs an IDR
+/// frame and leaving it a full JPEG key frame.
+fn enters_h264(mode: H264Mode, high_fps: bool, changed: bool, light: bool, motion_streak: u32) -> bool {
+    changed
+        && match mode {
+            H264Mode::Off => false,
+            H264Mode::Always => true,
+            H264Mode::Auto => motion_streak >= H264_ENTER_STREAK || (high_fps && !light),
+        }
+}
+
+/// Typing-sized change: under ~3% of the blocks and not a heavy frame.
+fn is_light(heavy: bool, dirty_blocks: usize, total_blocks: usize) -> bool {
+    !heavy && dirty_blocks * 33 < total_blocks.max(1)
+}
+
+/// `ticks_at_60` idle ticks at `fps`, so settle and keepalive keep their wall-clock time above 60 FPS. At 60
+/// and below the tick counts stay as they were.
+fn scaled_ticks(ticks_at_60: u32, fps: u32) -> u32 {
+    ticks_at_60 * fps.max(60) / 60
 }
 
 /// What the encoder sent for one frame.
@@ -113,6 +137,9 @@ pub struct StreamEncoder {
     h264_hw: bool,
     /// Frame rate the H.264 encoder is configured for (the capture loop's target).
     fps: u32,
+    /// Above 60 FPS on a hardware encoder, `Auto` switches to H.264 for any non-typing change
+    /// (`OPENDESK_H264_HIGH_FPS=0` keeps the 60 FPS rule).
+    high_fps_policy: bool,
 }
 
 impl StreamEncoder {
@@ -144,6 +171,7 @@ impl StreamEncoder {
             h264_name: None,
             h264_hw: false,
             fps: 60,
+            high_fps_policy: std::env::var("OPENDESK_H264_HIGH_FPS").map(|v| v != "0").unwrap_or(true),
         }
     }
 
@@ -207,6 +235,11 @@ impl StreamEncoder {
     /// True while H.264 runs on a hardware encoder (also while that encoder is being rebuilt).
     pub fn h264_hardware(&self) -> bool {
         self.h264_hw && !self.h264_failed
+    }
+
+    /// True while `Auto` follows the high-frame-rate rule (see [`enters_h264`]).
+    fn high_fps(&self) -> bool {
+        self.high_fps_policy && self.fps > 60 && self.h264_hardware()
     }
 
     /// Frame rate of the capture loop; a change rebuilds the H.264 encoder for the new rate.
@@ -306,7 +339,7 @@ impl StreamEncoder {
         } else {
             self.idle_ticks += 1;
             let n_low = self.lowq.iter().filter(|&&d| d).count();
-            if n_low > 0 && self.idle_ticks == SETTLE_TICKS {
+            if n_low > 0 && self.idle_ticks >= scaled_ticks(SETTLE_TICKS, self.fps) {
                 if n_low * 2 > total {
                     self.send_key(f, false)
                 } else {
@@ -314,7 +347,7 @@ impl StreamEncoder {
                     let q = self.quality(false);
                     self.send_delta(f, &blocks, q)
                 }
-            } else if self.idle_ticks >= KEEPALIVE_TICKS {
+            } else if self.idle_ticks >= scaled_ticks(KEEPALIVE_TICKS, self.fps) {
                 self.idle_ticks = 0;
                 self.send_delta(f, &[], self.base_quality)
             } else {
@@ -346,12 +379,9 @@ impl StreamEncoder {
             return None;
         }
         self.poll_h264();
+        let light = is_light(heavy, self.last.dirty_blocks, self.lowq.len());
         if !self.in_h264 {
-            let enter = changed
-                && match self.h264_mode {
-                    H264Mode::Always => true,
-                    _ => self.motion_streak >= H264_ENTER_STREAK,
-                };
+            let enter = enters_h264(self.h264_mode, self.high_fps(), changed, light, self.motion_streak);
             // Until the encoder is ready, motion keeps going out as JPEG deltas.
             let enc = self.h264.as_mut().filter(|_| enter)?;
             enc.discard_pending();
@@ -365,15 +395,14 @@ impl StreamEncoder {
         if !changed {
             self.idle_ticks += 1;
             // Motion over: one sharp JPEG key frame replaces the H.264 picture, then regions as usual.
-            if self.idle_ticks == SETTLE_TICKS {
+            if self.idle_ticks >= scaled_ticks(SETTLE_TICKS, self.fps) {
                 self.in_h264 = false;
                 return Some(self.send_key(f, false));
             }
             return Some(None);
         }
         self.idle_ticks = 0;
-        // Typing-sized changes (under ~3% of the blocks) are better served by sharp JPEG regions.
-        let light = !heavy && self.last.dirty_blocks * 33 < self.lowq.len().max(1);
+        // Typing-sized changes are better served by sharp JPEG regions.
         self.light_streak = if light { self.light_streak + 1 } else { 0 };
         if self.h264_mode == H264Mode::Auto && self.light_streak >= H264_EXIT_LIGHT {
             self.in_h264 = false;
@@ -506,5 +535,40 @@ mod tests {
         assert_eq!(enc.h264_bitrate(), 7_464_960);
         enc.set_congestion(1.0);
         assert_eq!(enc.h264_bitrate(), 2_239_488);
+    }
+
+    #[test]
+    fn high_fps_enters_h264_on_any_change_but_typing() {
+        use H264Mode::*;
+        // 60 FPS rule: sustained motion only.
+        assert!(!enters_h264(Auto, false, true, false, 1));
+        assert!(enters_h264(Auto, false, true, false, H264_ENTER_STREAK));
+        // Above 60 on hardware: the first non-typing change, but never typing or an unchanged frame.
+        assert!(enters_h264(Auto, true, true, false, 0));
+        assert!(!enters_h264(Auto, true, true, true, 0));
+        assert!(!enters_h264(Auto, true, false, false, 9));
+        // Off and Always keep their meaning.
+        assert!(!enters_h264(Off, true, true, false, 9));
+        assert!(enters_h264(Always, false, true, true, 0));
+        assert!(is_light(false, 10, 1000) && !is_light(false, 40, 1000) && !is_light(true, 1, 1000));
+    }
+
+    #[test]
+    fn idle_ticks_keep_their_time_above_60_fps() {
+        assert_eq!((scaled_ticks(SETTLE_TICKS, 30), scaled_ticks(SETTLE_TICKS, 60)), (2, 2));
+        assert_eq!((scaled_ticks(SETTLE_TICKS, 144), scaled_ticks(KEEPALIVE_TICKS, 144)), (4, 72));
+        assert_eq!(scaled_ticks(KEEPALIVE_TICKS, 240), 120);
+    }
+
+    #[test]
+    fn high_fps_rule_needs_a_hardware_encoder_above_60() {
+        let mut enc = StreamEncoder::new(64, 64, 80, true);
+        enc.high_fps_policy = true;
+        enc.set_fps(144);
+        assert!(!enc.high_fps(), "no hardware encoder yet");
+        enc.h264_hw = true;
+        assert!(enc.high_fps());
+        enc.fps = 60;
+        assert!(!enc.high_fps());
     }
 }
