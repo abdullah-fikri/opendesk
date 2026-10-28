@@ -121,6 +121,11 @@ fn query_monitors(conn: &RustConnection, root: Window) -> Res<Vec<MonitorBounds>
     Ok(list.into_iter().map(|(b, _)| b).collect())
 }
 
+/// Refresh rate of `bounds` in Hz; X11 sessions are paced at 60.
+pub fn refresh_rate(_bounds: MonitorBounds) -> u32 {
+    60
+}
+
 /// Active monitors (RandR 1.5), primary first. Without a display, one 1920x1080 placeholder.
 pub fn enumerate_monitors() -> Vec<MonitorBounds> {
     with_shared(query_monitors).filter(|l| !l.is_empty()).unwrap_or_else(|| vec![FALLBACK_MONITOR])

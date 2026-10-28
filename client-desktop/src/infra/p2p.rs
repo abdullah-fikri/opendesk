@@ -4,17 +4,19 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs, UdpSocket};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use core_engine::codec::{from_base64, to_base64};
+use parking_lot::Mutex;
 use serde_json::{Value, json};
 
 use crate::infra::audio::VoiceEngine;
+use crate::infra::e2e::{E2e, P2P_NONCE_LIMIT};
 use crate::infra::logger;
+use crate::infra::send_gate::SendGate;
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 
 const NOISE: &str = "Noise_NN_25519_ChaChaPoly_BLAKE2s";
@@ -120,7 +122,8 @@ fn open(t: &snow::StatelessTransportState, replay: &mut Replay, pkt: &[u8]) -> O
         return None;
     }
     let nonce = u64::from_be_bytes(pkt[1..HEADER].try_into().ok()?);
-    if !replay.check(nonce) {
+    // Nonces above the P2P domain belong to relay-path streams sealed with the same keys (`infra::e2e`).
+    if nonce >= P2P_NONCE_LIMIT || !replay.check(nonce) {
         return None;
     }
     let mut plain = vec![0u8; pkt.len() - HEADER];
@@ -254,7 +257,9 @@ impl Reasm {
 #[allow(clippy::large_enum_variant)]
 enum Handshake {
     Pending(snow::HandshakeState),
-    Done(snow::StatelessTransportState),
+    /// Waiting for the session's end-to-end handshake (`infra::e2e`), which keys this path too.
+    Shared,
+    Done(Arc<snow::StatelessTransportState>),
     Failed,
 }
 
@@ -290,9 +295,11 @@ pub struct P2p {
     sock: UdpSocket,
     state: Mutex<State>,
     closed: AtomicBool,
-    can_send_frame: Arc<AtomicBool>,
+    can_send_frame: Arc<SendGate>,
     tx_out: Sender<Outgoing>,
     sinks: Sinks,
+    /// Both peers list `e2e`: the path uses the session's `Noise_XX` keys instead of its own `Noise_NN`.
+    e2e: Option<Arc<E2e>>,
 }
 
 impl P2p {
@@ -301,9 +308,10 @@ impl P2p {
         is_host: bool,
         local_clean: &str,
         partner: String,
-        can_send_frame: Arc<AtomicBool>,
+        can_send_frame: Arc<SendGate>,
         tx_out: Sender<Outgoing>,
         sinks: Sinks,
+        e2e: Option<Arc<E2e>>,
     ) -> Option<Arc<P2p>> {
         let raw =
             socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP)).ok()?;
@@ -346,16 +354,17 @@ impl P2p {
             can_send_frame,
             tx_out,
             sinks,
+            e2e,
         });
         let worker = Arc::clone(&p);
-        thread::spawn(move || worker.run());
+        crate::infra::thread::spawn_named("p2p-worker", move || worker.run());
         Some(p)
     }
 
     /// Closes the path; the worker thread exits and traffic falls back to the relay.
     pub fn close(&self) {
         if !self.closed.swap(true, Ordering::SeqCst) {
-            self.can_send_frame.store(true, Ordering::Release);
+            self.can_send_frame.open();
         }
     }
 
@@ -366,7 +375,7 @@ impl P2p {
 
     /// True once the Noise handshake has completed and the link is not closed.
     pub fn is_active(&self) -> bool {
-        !self.closed.load(Ordering::SeqCst) && Self::alive(&self.state.lock().unwrap())
+        !self.closed.load(Ordering::SeqCst) && Self::alive(&self.state.lock())
     }
 
     fn alive(st: &State) -> bool {
@@ -377,7 +386,7 @@ impl P2p {
 
     /// Handles a `p2p-signal` payload from the session partner (the relay already checked the pairing).
     pub fn on_signal(&self, candidate: &str) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         if st.signal_handled {
             return;
         }
@@ -392,7 +401,11 @@ impl P2p {
     fn handle_signal(&self, st: &mut State, candidate: &str) {
         let Ok(v) = serde_json::from_str::<Value>(candidate) else { return };
         let hs_msg = v.get("hs").and_then(|h| h.as_str()).and_then(from_base64);
-        if v.get("v").and_then(|x| x.as_u64()) != Some(1) || hs_msg.as_ref().is_none_or(|m| m.len() > 256) {
+        // v1: Noise_NN message and candidates; v2 (with e2e): candidates only.
+        let version = if self.e2e.is_some() { 2 } else { 1 };
+        if v.get("v").and_then(|x| x.as_u64()) != Some(version)
+            || (version == 1 && hs_msg.as_ref().is_none_or(|m| m.len() > 256))
+        {
             return;
         }
         st.peer_cands = v
@@ -406,6 +419,9 @@ impl P2p {
                     .collect()
             })
             .unwrap_or_default();
+        if version == 2 {
+            return; // probing starts once the shared handshake is done (`tick`)
+        }
         let Some(Handshake::Pending(mut hs)) = st.hs.take() else { return };
         let mut buf = [0u8; 256];
         let msg = hs_msg.unwrap();
@@ -422,7 +438,7 @@ impl P2p {
                 }
                 st.probe_started = Some(Instant::now());
                 logger::info("anynet.p2p", &format!("Handshake complete; probing {} candidates.", st.peer_cands.len()));
-                Some(Handshake::Done(t))
+                Some(Handshake::Done(Arc::new(t)))
             }
             _ => {
                 logger::warn("anynet.p2p", "Handshake failed; staying on relay.");
@@ -433,35 +449,28 @@ impl P2p {
 
     fn send_signal(&self, hs_msg: &[u8], cands: &[SocketAddr]) {
         let c: Vec<String> = cands.iter().map(|a| a.to_string()).collect();
-        let candidate = json!({ "v": 1, "hs": to_base64(hs_msg), "c": c }).to_string();
+        let candidate = if self.e2e.is_some() {
+            json!({ "v": 2, "c": c }).to_string()
+        } else {
+            json!({ "v": 1, "hs": to_base64(hs_msg), "c": c }).to_string()
+        };
         let msg = ClientMessage::P2pSignal { target_clean: self.partner.clone(), candidate };
         let _ = self.tx_out.send(Outgoing::Message(msg));
     }
 
     fn run(self: Arc<Self>) {
         let cands = gather_candidates(&self.sock);
-        let builder = || snow::Builder::new(NOISE.parse().unwrap()).prologue(&self.prologue);
-        let hs = builder().and_then(|b| if self.is_host { b.build_responder() } else { b.build_initiator() });
-        {
-            let mut st = self.state.lock().unwrap();
+        if self.e2e.is_some() {
+            let mut st = self.state.lock();
             st.local_cands = cands.clone();
-            match hs {
-                Ok(mut hs) => {
-                    if !self.is_host {
-                        let mut buf = [0u8; 256];
-                        match hs.write_message(&[], &mut buf) {
-                            Ok(n) => self.send_signal(&buf[..n], &cands),
-                            Err(_) => return,
-                        }
-                    }
-                    st.hs = Some(Handshake::Pending(hs));
-                }
-                Err(_) => return,
-            }
+            self.send_signal(&[], &cands);
+            st.hs = Some(Handshake::Shared);
             if let Some(sig) = st.pending_signal.take() {
                 st.signal_handled = true;
                 self.handle_signal(&mut st, &sig);
             }
+        } else if !self.start_nn(&cands) {
+            return;
         }
         logger::info("anynet.p2p", &format!("UDP ready with {} local candidates.", cands.len()));
 
@@ -474,6 +483,32 @@ impl P2p {
             self.tick();
         }
         logger::info("anynet.p2p", "P2P path closed.");
+    }
+
+    /// Starts this path's own `Noise_NN` handshake (partners without `e2e`). False if it cannot start.
+    fn start_nn(&self, cands: &[SocketAddr]) -> bool {
+        let builder = || snow::Builder::new(NOISE.parse().unwrap()).prologue(&self.prologue);
+        let hs = builder().and_then(|b| if self.is_host { b.build_responder() } else { b.build_initiator() });
+        let mut st = self.state.lock();
+        st.local_cands = cands.to_vec();
+        match hs {
+            Ok(mut hs) => {
+                if !self.is_host {
+                    let mut buf = [0u8; 256];
+                    match hs.write_message(&[], &mut buf) {
+                        Ok(n) => self.send_signal(&buf[..n], cands),
+                        Err(_) => return false,
+                    }
+                }
+                st.hs = Some(Handshake::Pending(hs));
+            }
+            Err(_) => return false,
+        }
+        if let Some(sig) = st.pending_signal.take() {
+            st.signal_handled = true;
+            self.handle_signal(&mut st, &sig);
+        }
+        true
     }
 
     fn send_plain(&self, st: &mut State, to: SocketAddr, plain: &[u8]) -> bool {
@@ -494,7 +529,7 @@ impl P2p {
     }
 
     fn on_datagram(&self, pkt: &[u8], from: SocketAddr) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         let plain = {
             let State { hs, replay, .. } = &mut *st;
             let Some(Handshake::Done(t)) = hs else { return };
@@ -526,7 +561,7 @@ impl P2p {
                 // An acknowledgement also covers every older frame (their acks may have been lost).
                 if st.frame_wait.iter().any(|(w, _)| *w == id) {
                     st.frame_wait.retain(|(w, _)| (w.wrapping_sub(id) as i32) > 0);
-                    self.can_send_frame.store(true, Ordering::Release);
+                    self.can_send_frame.open();
                 }
             }
             K_AUDIO => {
@@ -565,8 +600,15 @@ impl P2p {
     }
 
     fn tick(&self) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         let now = Instant::now();
+        if matches!(st.hs, Some(Handshake::Shared))
+            && let Some(t) = self.e2e.as_ref().and_then(|e| e.transport())
+        {
+            st.hs = Some(Handshake::Done(t));
+            st.probe_started = Some(now);
+            logger::info("anynet.p2p", "End-to-end keys ready (Noise_XX); probing candidates.");
+        }
         let alive = Self::alive(&st);
         if alive != st.was_alive {
             st.was_alive = alive;
@@ -579,7 +621,7 @@ impl P2p {
                 st.frame_wait.clear();
                 // shortcut: unacked input is dropped, not replayed on the relay, to avoid double clicks.
                 st.unacked.clear();
-                self.can_send_frame.store(true, Ordering::Release);
+                self.can_send_frame.open();
             }
         }
         if alive {
@@ -590,7 +632,7 @@ impl P2p {
             let waiting = st.frame_wait.len();
             st.frame_wait.retain(|(_, t)| now.duration_since(*t) < FRAME_ACK_TIMEOUT);
             if st.frame_wait.len() < waiting {
-                self.can_send_frame.store(true, Ordering::Release);
+                self.can_send_frame.open();
             }
             let resend: Vec<(u32, Vec<u8>)> = st
                 .unacked
@@ -631,7 +673,7 @@ impl P2p {
 
     /// Sends one JPEG over P2P. Returns false (caller uses the relay) if the path is down or the frame is too large.
     pub fn send_video(&self, jpeg: &[u8]) -> bool {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         let count = jpeg.len().div_ceil(FRAG_DATA);
         if !Self::alive(&st) || count == 0 || count > MAX_FRAGS {
             return false;
@@ -652,15 +694,29 @@ impl P2p {
         // capture loop.
         st.frame_wait.push_back((id, Instant::now()));
         if st.frame_wait.len() < MAX_FRAMES_IN_FLIGHT {
-            self.can_send_frame.store(true, Ordering::Release);
+            self.can_send_frame.open();
         }
         true
     }
 
-    /// Sends a `[0x02, rate_khz, pcm...]` packet, split at even byte boundaries to fit one datagram each.
+    /// Sends a `[0x02, rate_khz, pcm...]` packet, split at even byte boundaries to fit one datagram each; an Opus
+    /// packet goes whole in one datagram.
     pub fn send_audio(&self, pkt: &[u8]) -> bool {
-        let mut st = self.state.lock().unwrap();
-        if !Self::alive(&st) || pkt.len() < 4 || !pkt.len().is_multiple_of(2) || pkt[0] != 0x02 {
+        let mut st = self.state.lock();
+        if !Self::alive(&st) {
+            return false;
+        }
+        if crate::infra::audio::opus::parse(pkt).is_some() {
+            if pkt.len() + 1 > MAX_PLAIN {
+                return false;
+            }
+            let mut plain = Vec::with_capacity(1 + pkt.len());
+            plain.push(K_AUDIO);
+            plain.extend_from_slice(pkt);
+            self.send_to_peer(&mut st, &plain);
+            return true;
+        }
+        if pkt.len() < 4 || !pkt.len().is_multiple_of(2) || pkt[0] != 0x02 {
             return false;
         }
         for chunk in pkt[2..].chunks((MAX_PLAIN - 3) & !1) {
@@ -680,7 +736,7 @@ impl P2p {
             return false;
         }
         let Ok(body) = serde_json::to_vec(event) else { return false };
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         if !Self::alive(&st) || body.len() + 5 > MAX_PLAIN || st.unacked.len() >= MAX_UNACKED {
             return false;
         }
@@ -703,6 +759,7 @@ impl P2p {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::thread;
 
     fn pair(prologue: &[u8]) -> (snow::StatelessTransportState, snow::StatelessTransportState) {
         let b = || snow::Builder::new(NOISE.parse().unwrap()).prologue(prologue).unwrap();
@@ -733,6 +790,15 @@ mod tests {
             open(&host, &mut replay, &seal(&viewer, 5, b"\x05late").unwrap()).is_some(),
             "in-window reorder rejected"
         );
+    }
+
+    #[test]
+    fn relay_path_nonces_never_open_as_datagrams() {
+        let (viewer, host) = pair(b"opendesk-p2p-v1|1|2");
+        let mut replay = Replay::new();
+        // Same keys, relay-path domain: a relay forwarding a sealed relay message as a datagram gets nowhere.
+        assert!(open(&host, &mut replay, &seal(&viewer, P2P_NONCE_LIMIT + 1, b"\x05x").unwrap()).is_none());
+        assert!(open(&host, &mut replay, &seal(&viewer, 1, b"\x05x").unwrap()).is_some());
     }
 
     #[test]
@@ -800,18 +866,20 @@ mod tests {
             false,
             "111111111",
             "222222222".into(),
-            Arc::new(AtomicBool::new(true)),
+            Arc::new(SendGate::new(true)),
             tx_v,
-            mk(dummy, Arc::new(move |f| sink.lock().unwrap().push(f))),
+            mk(dummy, Arc::new(move |f| sink.lock().push(f))),
+            None,
         )
         .unwrap();
         let host = P2p::start(
             true,
             "222222222",
             "111111111".into(),
-            Arc::new(AtomicBool::new(true)),
+            Arc::new(SendGate::new(true)),
             tx_h,
             mk(in_tx, Arc::new(|_| {})),
+            None,
         )
         .unwrap();
         let signal = |rx: &std::sync::mpsc::Receiver<Outgoing>| loop {
@@ -831,11 +899,11 @@ mod tests {
         let jpeg: Vec<u8> = (0..150_000u32).map(|i| i as u8).collect();
         assert!(host.send_video(&jpeg));
         let deadline = Instant::now() + Duration::from_secs(2);
-        while inbox.lock().unwrap().is_empty() {
+        while inbox.lock().is_empty() {
             assert!(Instant::now() < deadline, "frame not delivered");
             thread::sleep(Duration::from_millis(5));
         }
-        assert_eq!(inbox.lock().unwrap().pop().unwrap(), jpeg);
+        assert_eq!(inbox.lock().pop().unwrap(), jpeg);
         assert!(viewer.send_input(&InputEvent::KeyDown { key_code: 65 }));
         assert_eq!(in_rx.recv_timeout(Duration::from_secs(2)).unwrap(), InputEvent::KeyDown { key_code: 65 });
         viewer.close();

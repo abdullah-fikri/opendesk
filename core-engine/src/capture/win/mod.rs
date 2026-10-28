@@ -8,7 +8,7 @@ mod win32;
 
 pub use cursor::cursor_shape;
 pub use gdi::GdiScreenCapturer;
-pub use monitor::{enable_per_monitor_dpi_awareness, enumerate_monitors};
+pub use monitor::{enable_per_monitor_dpi_awareness, enumerate_monitors, refresh_rate};
 
 use crate::capture::{HostSupport, MonitorBounds};
 

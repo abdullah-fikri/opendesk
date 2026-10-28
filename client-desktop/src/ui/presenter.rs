@@ -1,8 +1,11 @@
 //! [`UiPort`] for the Slint window. Every call may come from any thread; it is forwarded to the UI thread
 //! with `upgrade_in_event_loop` and applied there.
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use parking_lot::Mutex;
 use slint::{ComponentHandle, Image, Weak};
 
 use super::{MainWindow, session_model, transfer_model, view_model};
@@ -13,9 +16,21 @@ use crate::service::ui_port::{Frame, RelayStatus, RemoteHost, SessionChange, Tra
 /// The frame-rate line in the status bar yields to file-transfer progress for this long after a transfer.
 const TRANSFER_STATUS_HOLD_MS: u64 = 2000;
 
+/// Newest frame per session not yet shown. A session has an entry exactly while a closure that will show it is
+/// queued on the UI thread, so a busy UI thread holds one frame per session instead of a backlog. Frames
+/// overwritten here are display-only: the decoder has already applied every delta to its own framebuffer.
+type PendingFrames = Arc<Mutex<HashMap<String, Frame>>>;
+
+/// Newest monitor-wall thumbnail per host not yet shown; non-empty exactly while a closure is queued.
+#[cfg(feature = "admin")]
+type PendingWall = Arc<Mutex<HashMap<String, slint::SharedPixelBuffer<slint::Rgba8Pixel>>>>;
+
 /// Presents service events on the main window.
 pub struct SlintUi {
     window: Weak<MainWindow>,
+    frames: PendingFrames,
+    #[cfg(feature = "admin")]
+    wall: PendingWall,
 }
 
 impl SlintUi {
@@ -25,7 +40,12 @@ impl SlintUi {
         transfer_model::install(window);
         #[cfg(feature = "admin")]
         super::monitor_wall_model::install(window);
-        Self { window: window.as_weak() }
+        Self {
+            window: window.as_weak(),
+            frames: PendingFrames::default(),
+            #[cfg(feature = "admin")]
+            wall: PendingWall::default(),
+        }
     }
 
     fn apply(&self, f: impl FnOnce(&MainWindow) + Send + 'static) {
@@ -131,17 +151,30 @@ impl UiPort for SlintUi {
     }
 
     fn session_frame(&self, id: String, frame: Frame) {
+        if self.frames.lock().insert(id.clone(), frame).is_some() {
+            return; // the queued closure shows this newer frame instead
+        }
+        let pending = Arc::clone(&self.frames);
         self.apply(move |w| {
+            let Some(frame) = pending.lock().remove(&id) else { return };
             let image = Image::from_rgba8(frame.pixels);
             let path = if frame.p2p { "P2P" } else { "Relay" };
             let (width, height) = (frame.width as i32, frame.height as i32);
+            let fps = frame.fps as i32;
+            // The picture changes every frame; the other fields only rarely, so they are written only on change.
             let found = session_model::update(&id, |r| {
                 r.frame = image;
-                r.has_frame = true;
-                r.connecting = false;
-                r.fps = frame.fps as i32;
-                r.stream_width = width;
-                r.stream_height = height;
+                if !r.has_frame || r.connecting {
+                    r.has_frame = true;
+                    r.connecting = false;
+                }
+                if r.fps != fps {
+                    r.fps = fps;
+                }
+                if (r.stream_width, r.stream_height) != (width, height) {
+                    r.stream_width = width;
+                    r.stream_height = height;
+                }
                 if r.path.as_str() != path {
                     r.path = path.into();
                 }
@@ -173,11 +206,16 @@ impl UiPort for SlintUi {
                     r.block_input_unavailable = !block_input;
                 }
                 SessionChange::Resolution(mode) => r.resolution_mode = mode,
+                SessionChange::Stats(labels, values) => {
+                    r.stats_labels = labels.into();
+                    r.stats_values = values.into();
+                }
             });
         });
     }
 
     fn session_closed(&self, id: String, status: Option<String>) {
+        self.frames.lock().remove(&id);
         self.apply(move |w| {
             session_model::remove(&id);
             if session_model::is_empty() {
@@ -194,6 +232,7 @@ impl UiPort for SlintUi {
     }
 
     fn all_sessions_closed(&self) {
+        self.frames.lock().clear();
         self.apply(|w| {
             session_model::clear();
             w.set_focused_session("".into());
@@ -246,6 +285,17 @@ impl UiPort for SlintUi {
 
     #[cfg(feature = "admin")]
     fn wall_frames(&self, frames: Vec<(String, slint::SharedPixelBuffer<slint::Rgba8Pixel>)>) {
-        self.apply(move |_| super::monitor_wall_model::set_frames(frames));
+        let mut pending = self.wall.lock();
+        let idle = pending.is_empty();
+        pending.extend(frames);
+        if !idle {
+            return; // the queued closure shows these too
+        }
+        drop(pending);
+        let pending = Arc::clone(&self.wall);
+        self.apply(move |_| {
+            let frames: Vec<_> = pending.lock().drain().collect();
+            super::monitor_wall_model::set_frames(frames);
+        });
     }
 }

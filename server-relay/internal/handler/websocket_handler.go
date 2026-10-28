@@ -97,16 +97,23 @@ func (h *Handler) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// onBinary relays voice (0x02 ...) and video (FF D8 ...) between active session partners without copying.
+// onBinary relays voice (0x02 ...), video (FF D8 ...) and file chunks (0x12 ...) without copying.
 func (c *connection) onBinary(msg []byte) {
 	kind := metrics.KindVideo
 	if len(msg) > 0 && msg[0] == 0x02 {
 		kind = metrics.KindAudio
+	} else if isFileChunk(msg) {
+		kind = metrics.KindFile
 	}
 	c.h.metrics.Ingress(kind, len(msg))
 	if c.peer != nil {
 		c.h.relay.ForwardBinary(c.peer, msg)
 	}
+}
+
+// isFileChunk reports a binary file chunk, plain or behind a multi-session viewer's session tag.
+func isFileChunk(msg []byte) bool {
+	return len(msg) > 0 && msg[0] == 0x12 || len(msg) > 10 && msg[0] == 0x10 && msg[10] == 0x12
 }
 
 // onText dispatches one JSON message. It returns false when the connection must be closed.
@@ -297,7 +304,7 @@ func (c *connection) onRelayClipboard(msg []byte) {
 		return
 	}
 	if rcpt := c.h.relay.ActivePartner(c.peer, model.CleanDeskID(req.TargetClean)); rcpt != nil {
-		_ = rcpt.Send(dto.ClipboardSync{Type: dto.TypeClipboardSync, Text: req.Text, FromClean: sourceFor(rcpt, c.peer)})
+		_ = rcpt.SendClipboard(c.peer.CleanID, dto.ClipboardSync{Type: dto.TypeClipboardSync, Text: req.Text, FromClean: sourceFor(rcpt, c.peer)})
 	}
 }
 
@@ -314,7 +321,7 @@ func (c *connection) onRelayFile(msg []byte) {
 		c.h.metrics.Rejected()
 		return
 	}
-	_ = rcpt.Send(dto.FileTransfer{Type: dto.TypeFileTransfer, FromClean: c.peer.CleanID, Payload: req.Payload})
+	_ = rcpt.SendFile(c.peer.CleanID, hdr.Action, dto.FileTransfer{Type: dto.TypeFileTransfer, FromClean: c.peer.CleanID, Payload: req.Payload})
 }
 
 func (c *connection) onSessionDisconnect(msg []byte) {

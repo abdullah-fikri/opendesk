@@ -8,6 +8,7 @@ export component SessionTile inherits Rectangle {
     in property <SessionView> s;
     in property <bool> focused: false;
     in property <bool> show_header: false;
+    in property <bool> show_stats: false;
     callback activate(string);
     callback mouse_move(string, int, int);
     callback mouse_down(string, int, int, int);
@@ -80,6 +81,33 @@ export component SessionTile inherits Rectangle {
                 send_key_event(t, p, r, c, a, sh) => { root.key_event(root.s.id, t, p, r, c, a, sh); }
                 release_remote_keys => { root.release_keys(root.s.id); }
                 viewport_resized(w, h) => { root.viewport_resized(root.s.id, w, h); }
+            }
+
+            // Stats overlay, top right. It has no TouchArea, so pointer input reaches the canvas below.
+            if root.show_stats && root.s.stats_labels != "": Rectangle {
+                x: parent.width - self.width - 8px;
+                y: 8px;
+                width: stats-row.preferred-width;
+                height: stats-row.preferred-height;
+                background: #09090bcc;
+                border-width: 1px;
+                border-color: Theme.border;
+                border-radius: 4px;
+                stats-row := HorizontalLayout {
+                    padding: 8px;
+                    spacing: 12px;
+                    Text {
+                        text: root.s.stats_labels;
+                        color: Theme.text-3;
+                        font-size: 11px;
+                    }
+                    Text {
+                        text: root.s.stats_values;
+                        color: Theme.text;
+                        font-size: 11px;
+                        horizontal-alignment: right;
+                    }
+                }
             }
         }
     }

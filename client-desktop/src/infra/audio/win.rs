@@ -1,6 +1,6 @@
 //! Voice call audio through the Windows waveIn/waveOut API: captures the microphone into binary voice
-//! packets (`[0x02][rate_khz][pcm16le]`) for the outbound queue and plays received packets. A light DSP stage
-//! (high-pass, noise gate, soft limiter) runs on captured audio.
+//! packets (`[0x02][rate_khz][pcm16le]`, or Opus) for the outbound queue and plays received packets. A light
+//! DSP stage (high-pass, noise gate, soft limiter) runs on captured audio.
 
 use std::ffi::c_void;
 use std::ptr;
@@ -10,7 +10,7 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Duration;
 
-use super::{VoiceDspState, quality_to_audio_params};
+use super::{VoiceDspState, VoiceReceiver, VoiceSender, quality_to_audio_params};
 use crate::infra::logger;
 use crate::protocol::Outgoing;
 
@@ -97,9 +97,12 @@ unsafe extern "system" {
 /// Two-way voice for the current session: microphone capture into binary packets and playback.
 pub struct VoiceEngine {
     tx_play: Sender<(u32, Vec<u8>)>,
+    rx: VoiceReceiver,
     pub is_session_active: Arc<AtomicBool>,
     pub is_mic_muted: Arc<AtomicBool>,
     pub audio_quality: Arc<AtomicUsize>,
+    /// The voice partner listed `audio-opus`: send Opus instead of PCM.
+    pub use_opus: Arc<AtomicBool>,
 }
 
 impl VoiceEngine {
@@ -115,14 +118,16 @@ impl VoiceEngine {
         let is_mic_muted = Arc::new(AtomicBool::new(false));
         // Default to tier 2 (48kHz HD Voice like WhatsApp/AnyDesk)
         let audio_quality = Arc::new(AtomicUsize::new(2));
+        let use_opus = Arc::new(AtomicBool::new(false));
 
         let active_cap = Arc::clone(&is_session_active);
         let muted_cap = Arc::clone(&is_mic_muted);
         let quality_cap = Arc::clone(&audio_quality);
+        let opus_cap = Arc::clone(&use_opus);
 
         // 1. Microphone Capture Thread
         // Keeps waveIn open across mute/unmute toggles during a session so re-enabling mic never fails!
-        thread::spawn(move || unsafe {
+        crate::infra::thread::spawn_named("audio-capture", move || unsafe {
             let block_align = (CHANNELS * BITS_PER_SAMPLE) / 8;
             let mut processed_buf = [0u8; MAX_FRAME_BYTES];
 
@@ -187,6 +192,7 @@ impl VoiceEngine {
                 );
 
                 let mut dsp = VoiceDspState::new();
+                let mut sender = VoiceSender::new(sample_rate, rate_tag_khz);
                 let mut idx = 0usize;
 
                 while active_cap.load(Ordering::Relaxed) && quality_cap.load(Ordering::Relaxed) == cur_quality {
@@ -198,11 +204,7 @@ impl VoiceEngine {
                         if recorded > 0 && !muted_cap.load(Ordering::Relaxed) {
                             let slice = std::slice::from_raw_parts((*h_ptr).lp_data, recorded);
                             dsp.process_pcm_16le(slice, &mut processed_buf[..recorded]);
-                            // Binary fast-path: [0x02, rate_khz, ...pcm_bytes] (even total length)
-                            let mut pkt = Vec::with_capacity(2 + recorded);
-                            pkt.push(0x02);
-                            pkt.push(rate_tag_khz);
-                            pkt.extend_from_slice(&processed_buf[..recorded]);
+                            let pkt = sender.packet(&processed_buf[..recorded], opus_cap.load(Ordering::Relaxed));
                             let _ = tx_out.send(Outgoing::Audio(pkt));
                         }
                         waveInUnprepareHeader(h_in, h_ptr, hdr_size);
@@ -230,7 +232,7 @@ impl VoiceEngine {
         });
 
         // 2. Speaker Playback Thread (Dynamic 16kHz / 24kHz / 48kHz waveOut with low-latency jitter prebuffer)
-        thread::spawn(move || unsafe {
+        crate::infra::thread::spawn_named("audio-playback", move || unsafe {
             let block_align = (CHANNELS * BITS_PER_SAMPLE) / 8;
             let mut h_out: HWAVEOUT = ptr::null_mut();
             let mut current_rate: u32 = 0;
@@ -371,22 +373,16 @@ impl VoiceEngine {
             }
         });
 
-        Arc::new(Self { tx_play, is_session_active, is_mic_muted, audio_quality })
+        Arc::new(Self { tx_play, rx: VoiceReceiver::new(), is_session_active, is_mic_muted, audio_quality, use_opus })
     }
 
-    /// Plays incoming binary audio frame (`[0x02, rate_khz, pcm...]` or legacy `[0x02, pcm...]`)
+    /// Plays an incoming voice packet: PCM (`[0x02, rate_khz, pcm...]` or legacy `[0x02, pcm...]`) or Opus.
     pub fn play_binary_packet(&self, bin: &[u8]) {
         if !self.is_session_active.load(Ordering::Relaxed) || bin.len() <= 2 {
             return;
         }
-        // Even total length with valid rate_khz tag (16, 24, 48) -> new header format
-        let (rate_hz, pcm_slice) = if bin.len().is_multiple_of(2) && (bin[1] == 16 || bin[1] == 24 || bin[1] == 48) {
-            ((bin[1] as u32) * 1000, &bin[2..])
-        } else {
-            (16000, &bin[1..])
-        };
-        if !pcm_slice.is_empty() {
-            let _ = self.tx_play.send((rate_hz, pcm_slice.to_vec()));
-        }
+        self.rx.receive(bin, |rate_hz, pcm| {
+            let _ = self.tx_play.send((rate_hz, pcm));
+        });
     }
 }

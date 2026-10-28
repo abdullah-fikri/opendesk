@@ -41,7 +41,7 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 | `relay-clipboard` | `targetClean`, `text` | Clipboard text for the partner. |
 | `relay-file` | `targetClean`, `payload` | One file-transfer message (see [File transfer](#file-transfer)). |
 | `session-disconnect` | `targetClean` | End this client's session with that partner. |
-| `p2p-signal` | `targetClean`, `candidate` | Noise handshake and UDP candidates for a direct path (max 4096 bytes, 10 per second per partner). |
+| `p2p-signal` | `targetClean`, `candidate` | Noise handshake and UDP candidates for a direct path, and the `e2e` handshake (max 4096 bytes, 10 per second per partner). |
 | `monitor-set` | `targets[]` | Administrators with `monitor-view` only: replace the hosts on the monitor wall (at most 16; empty stops). See [Monitor wall](#monitor-wall). |
 | `security-get` | | Administrators only: request the device allowlist (`security-state`). |
 | `security-set` | `enabled` | Administrators only: turn the device allowlist on or off. |
@@ -94,10 +94,13 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `file-ack` | client | Answers `end` with an `ack`. |
 | `file-offer` | client + relay | Copy-paste of files by offer and pull. |
 | `file-folder` | client | Folder transfers (`group`/`rel`). |
+| `file-binary` | client + relay | File chunks as binary messages (`0x12`, below) instead of base64 JSON. The relay sends them only to clients that list it. |
 | `cursor-shape` | client | Draws its own cursor from `cursor-shape` events; the host stops painting it. |
 | `video-delta` | client | Framed key/delta video; without it the host sends plain JPEGs. |
 | `video-h264` | client | H.264 inside the framed format. |
+| `audio-opus` | client | Decodes Opus voice (`[0x02][0x4F]...`); voice to it is Opus, to everyone else PCM. |
 | `p2p.v1` | client | Direct encrypted UDP path. |
+| `e2e` | client | End-to-end encryption: `Noise_XX` with device keys over `p2p-signal`, then sealed relay media and input events (see [Binary messages](#binary-messages) and `client-desktop/docs/features/e2e.md`). Needs the relay's `p2p-signal`. |
 | `multi-session` | client + relay | Up to four viewer sessions per connection. |
 | `monitor-host` | client | Streams monitor-wall thumbnails on `monitor-start` (every desktop edition). |
 | `monitor-view` | client | Shows the monitor wall: `monitor-state` and the `0x11` tag (admin edition). |
@@ -105,12 +108,12 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `host-features` | client | The host lists its optional host controls below. Without it the host is a legacy Windows host that has all of them. |
 | `privacy-screen` | client, with `host-features` | `set-privacy` works on this host. |
 | `block-input` | client, with `host-features` | `set-block-input` works on this host. |
-| `p2p-signal`, `file-grant`, `file-offer`, `caps`, `monitor`, `device-security`, `host-alias` | relay | Relay features in `registered-ack`. |
+| `p2p-signal`, `file-grant`, `file-offer`, `file-binary`, `caps`, `monitor`, `device-security`, `host-alias` | relay | Relay features in `registered-ack`. |
 
 Per platform (see [platforms.md](platforms.md)):
 
-- Windows: `file-ack`, `file-offer`, `file-folder`, `cursor-shape`, `video-delta`, `video-h264` (when the
-  Media Foundation decoder exists), `p2p.v1`, `multi-session`. No `host-features`: Windows hosts have every
+- Windows: `file-ack`, `file-offer`, `file-folder`, `file-binary`, `cursor-shape`, `video-delta`, `video-h264` (when the
+  Media Foundation decoder exists), `audio-opus`, `p2p.v1`, `multi-session`. No `host-features`: Windows hosts have every
   host control.
 - Linux: the same without `file-offer`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
@@ -144,6 +147,12 @@ Per platform (see [platforms.md](platforms.md)):
 | `set-mic` | `muted` | either; only `muted: true` is honored |
 | `cursor-shape` | `shape` (0 hidden, 1 arrow, 2 text, 3 hand, ...) | host to viewer |
 | `monitors` | `list[]` (`index`, `width`, `height`, `primary`), `active` | host to viewer |
+| `stats` | `on` | viewer to host: stats overlay shown or hidden |
+| `stats-ping` | `t` (viewer clock, ms) | viewer to host, once a second while the overlay is shown |
+| `stats-pong` | `t` (copied from `stats-ping`) | host to viewer, at once |
+| `host-stats` | `fps`, `targetFps`, `grabMs`, `grabMaxMs`, `encodeMs`, `encodeMaxMs`, `kbps`, `idle`, `gateSkips`, `congestion` (0..1), `encoder` (H.264 name, empty = JPEG) | host to viewer, once a second between `stats` on and off |
+
+Peers ignore actions they do not know, so a viewer never gets `host-stats` from a host that predates it.
 
 ## File transfer
 
@@ -152,7 +161,7 @@ Per platform (see [platforms.md](platforms.md)):
 | `action` | Fields | Rule |
 | --- | --- | --- |
 | `start` | `id`, `name`, `size`; folders: `dir`, `group`, `rel`, `groupEnd`, `autoPaste` | Needs an active session; creates a grant bound to the two connections. |
-| `chunk` | `id`, `chunk` (base64, at most 32 KiB decoded) | Needs the grant. |
+| `chunk` | `id`, `chunk` (base64, at most 32 KiB decoded) | Needs the grant. With `file-binary` a binary chunk replaces it. |
 | `end` | `id`, `name`, `sha256` (hex), `autoPaste` | Needs the grant. |
 | `ack` | `id`, `ok` | Receiver to sender; consumes the grant. |
 | `offer` | `id`, `files[]` (`name`, `size` or `dir`) | Clipboard offer; needs an active session. |
@@ -161,15 +170,33 @@ Per platform (see [platforms.md](platforms.md)):
 A grant lets a transfer finish after its screen session ends, for 60 s of idleness, but only between the
 same two connections. At most 8 grants per sender. See `client-desktop/docs/features/file-transfer.md`.
 
+When the receiver and the relay both list `file-binary`, chunks are binary messages (below) and everything else
+stays JSON. The relay authorizes a binary chunk exactly like a JSON one: the grant for this sender, `id` and
+receiver; anything else is dropped. Everything from `start` to `end` (JSON and binary) goes through the
+receiver's file queue in order, and `relay-clipboard` text never overtakes file messages its sender queued
+before it.
+
 ## Binary messages
 
 ```text
 voice   [0x02][rate_khz: 16|24|48][PCM 16-bit little-endian mono ...]
+voice   [0x02][0x4F][seq u16 big-endian][Opus packet]   20 ms mono, only when both sides list audio-opus
 video   [0xFF 0xD8 ...]   a plain JPEG, or a framed message (below)
 tagged  [0x10][9 ASCII digits: host clean ID][voice or video]   multi-session viewers only
 monitor [0x11][JPEG]                                           host to relay: monitor-wall thumbnail
 monitor [0x11][9 ASCII digits: host clean ID][JPEG]            relay to administrator
+file    [0x12][id length: 1..80][id][offset: u64 big-endian][data: at most 128 KiB]   sender to relay (file-binary)
+file    [0x10][9 ASCII digits: sender clean ID][file chunk]   relay to receiver, always tagged
 ```
+
+Between two peers that list `e2e`, once their handshake completed, video, voice and file chunks are sealed and
+keep only their routing header in clear: `[FF D8 00 4F ver kind flags 0xE2]`, `[0x02 0xE2]` or
+`[0x12 len id FF*8]`, then a nonce and the encrypted original message. The relay reads these exactly as before.
+Input events between them are `{"action":"e2e","d":...}`; receivers that do not use `e2e` never get one.
+
+A multi-session viewer may put the session tag in front of a file chunk it sends, as for voice; the grant
+decides the receiver either way. The relay always tags file chunks it delivers with the sender, like `fromClean`
+on `file-transfer`. Receivers append a chunk only at exactly the current `offset`.
 
 Framed video (`video-delta`), all integers big-endian:
 
@@ -186,6 +213,10 @@ Framed video (`video-delta`), all integers big-endian:
     patches (dst_x, dst_y, w, h, atlas_x, atlas_y) x u16, blitted from the payload
     payload
 ```
+
+Opus voice keeps the `0x02` marker, so every relay version forwards it as audio. `0x4F` is never a rate tag;
+`seq` counts packets so the receiver can rebuild one lost frame from the next packet's in-band FEC and conceal
+short gaps. Receivers always accept PCM, and a sender uses Opus only toward a partner that listed `audio-opus`.
 
 The relay keeps at most 8 queued frames per receiver. A key frame or IDR flushes the queue; a delta that does
 not fit flushes it too, and the viewer then sends `video-keyframe`.

@@ -5,7 +5,7 @@ const frameQueueLen = 8
 
 // Binary payload markers (see docs/protocol.md at the repository root).
 const (
-	audioMarker = 0x02 // [0x02, rate_khz, pcm...]
+	audioMarker = 0x02 // [0x02, rate_khz, pcm...] or Opus [0x02, 0x4F, seq u16, packet]; the relay only reads byte 0
 	jpegMarker0 = 0xFF // FF D8: legacy JPEG or framed video
 	jpegMarker1 = 0xD8
 )
@@ -35,10 +35,12 @@ func isRestartFrame(data []byte) bool {
 }
 
 // frameQueue is an ordered, bounded video queue for one receiver (or one session of a multi-session viewer).
-// Only the sending host's read loop pushes, so drain never races a producer.
+// Only the sending host's read loop pushes, so drain never races a producer; the receiver's writer consumes.
 type frameQueue struct {
 	ch      chan []byte
 	metrics FrameMetrics
+	// wake signals the receiver's writer; nil for a queue no writer serves.
+	wake chan struct{}
 }
 
 func newFrameQueue(m FrameMetrics) *frameQueue {
@@ -69,5 +71,10 @@ func (q *frameQueue) push(frame []byte) {
 	default:
 		q.drain()
 		q.metrics.DroppedFrame()
+		return
+	}
+	select {
+	case q.wake <- struct{}{}:
+	default:
 	}
 }

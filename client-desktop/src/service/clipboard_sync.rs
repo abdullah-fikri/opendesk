@@ -22,7 +22,7 @@ static UNREADABLE_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// Starts the clipboard watcher thread.
 pub fn spawn(ctx: Ctx) {
-    thread::spawn(move || {
+    crate::infra::thread::spawn_named("clipboard-watch", move || {
         let mut last_files: Option<(Vec<PathBuf>, Instant)> = None;
         loop {
             thread::sleep(POLL);

@@ -3,7 +3,7 @@
 use std::ptr;
 
 use super::win32::*;
-use crate::capture::MonitorBounds;
+use crate::capture::{MonitorBounds, nominal_refresh_rate};
 
 /// Makes the process per-monitor DPI aware (V2, else system aware) so sizes are physical pixels.
 pub fn enable_per_monitor_dpi_awareness() {
@@ -63,5 +63,32 @@ pub fn enumerate_monitors() -> Vec<MonitorBounds> {
             monitors.push(MonitorBounds { left: 0, top: 0, width: w, height: h });
         }
         monitors
+    }
+}
+
+/// Nominal refresh rate (Hz) of the display at `bounds` (matched by position and size like
+/// [`enumerate_monitors`]); 60 when it cannot be read.
+pub fn refresh_rate(bounds: MonitorBounds) -> u32 {
+    unsafe {
+        let mut dev_idx: DWORD = 0;
+        loop {
+            let mut dd: DISPLAY_DEVICEW = std::mem::zeroed();
+            dd.cb = std::mem::size_of::<DISPLAY_DEVICEW>() as DWORD;
+            if EnumDisplayDevicesW(ptr::null(), dev_idx, &mut dd, 0) == 0 {
+                return 60;
+            }
+            dev_idx += 1;
+            if (dd.state_flags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) == 0 {
+                continue;
+            }
+            let mut dm: DEVMODEW = std::mem::zeroed();
+            dm.dm_size = std::mem::size_of::<DEVMODEW>() as WORD;
+            if EnumDisplaySettingsExW(dd.device_name.as_ptr(), ENUM_CURRENT_SETTINGS, &mut dm, 0) != 0
+                && (dm.dm_position.x, dm.dm_position.y, dm.dm_pels_width as i32, dm.dm_pels_height as i32)
+                    == (bounds.left, bounds.top, bounds.width, bounds.height)
+            {
+                return nominal_refresh_rate(dm.dm_display_frequency);
+            }
+        }
     }
 }

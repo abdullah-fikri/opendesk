@@ -3,7 +3,7 @@
 ; Expects builds\windows\OpenDesk.exe, produced by `make windows`.
 #define MyAppName "OpenDesk"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.2"
+  #define MyAppVersion "1.1.2"
 #endif
 #define MyAppPublisher "OpenDesk Team"
 #define MyAppURL "https://github.com/abdullah-fikri/opendesk"
@@ -32,6 +32,10 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
+; OpenDesk.exe is x64: install into the 64-bit Program Files and registry view.
+; 1.0.0-1.0.2 ran in 32-bit mode (Program Files (x86)); [Code] migrates those installs.
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 ; Admin once at install: needed to register the SYSTEM service that runs the app in the
 ; logged-on user's session, so viewers can control the UAC prompt, the lock screen and elevated
 ; windows (UIPI). The "highest privileges" logon task is the fallback when the service fails.
@@ -44,12 +48,17 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
+; ignoreversion and no version check anywhere in [Code]: an older installer can run over a newer install.
+; The auto-update rollback depends on this (it runs the previous installer with /VERYSILENT as SYSTEM
+; from the service); keep it that way. See docs/auto-update.md.
 Source: "{#SourcePath}..\builds\windows\OpenDesk.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Still shipped: the tray (client-desktop/src/infra/tray/win.rs) loads icon.ico by relative path.
 Source: "{#SourcePath}icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; IconFilename: "{app}\icon.ico"
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"
+; Shortcuts use the icon embedded in the exe (client-desktop/build.rs, icon.rc).
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autoprograms}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 
 ; Autostart is no longer an HKCU Run value: the service (or the elevated logon task) is created in
@@ -76,7 +85,12 @@ const
   ServiceName = '{#ServiceName}';
   RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
   // Same AppId as [Setup]: its closing braces are literal (only the opening pair is an escape).
-  OldUserUninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{C78F7A41-75A2-4D7F-8A2F-9B6C3F81254D}}_is1';
+  // Used for old per-user installs (HKCU) and old 32-bit-mode installs (HKLM32).
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{C78F7A41-75A2-4D7F-8A2F-9B6C3F81254D}}_is1';
+
+var
+  { The old 32-bit-mode install had the desktop icon task unchecked; keep it unchecked. }
+  OldNoDesktopIcon: Boolean;
 
 { XML-escape and turn every non-ASCII char into &#N; so the file is pure ASCII.
   schtasks rejects UTF-8 with BOM/declaration and mis-reads non-ASCII bytes otherwise. }
@@ -248,11 +262,85 @@ begin
   DeleteFile(AppData + '\watchdog.lock');
 end;
 
+{ 1.0.0-1.0.2 were installed in 32-bit mode: Program Files (x86) and the 32-bit registry view. }
+function FindOldX86Install(var Dir, Uninstaller: String): Boolean;
+begin
+  Result := False;
+  if not IsWin64 then
+    Exit;
+  if not RegQueryStringValue(HKLM32, UninstallKey, 'UninstallString', Uninstaller) then
+    Exit;
+  Uninstaller := RemoveQuotes(Uninstaller);
+  if not RegQueryStringValue(HKLM32, UninstallKey, 'InstallLocation', Dir) or (Dir = '') then
+    Dir := ExtractFileDir(Uninstaller);
+  Dir := RemoveBackslashUnlessRoot(Dir);
+  Result := True;
+end;
+
+{ unins000.exe copies itself to %TEMP% and exits at once, so Exec cannot wait for it.
+  The copy deletes the original when it is done: wait for that (max 60 s). }
+function RunOldUninstaller(const Uninstaller: String): Boolean;
+var
+  Code, Waited: Integer;
+begin
+  Result := True;
+  if not FileExists(Uninstaller) then
+    Exit;
+  Code := RunHidden(Uninstaller, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART');
+  if Code = -1 then
+  begin
+    Log(Format('Old uninstaller could not be started: %s', [Uninstaller]));
+    Exit;
+  end;
+  Waited := 0;
+  while FileExists(Uninstaller) and (Waited < 60000) do
+  begin
+    Sleep(250);
+    Waited := Waited + 250;
+  end;
+  Result := not FileExists(Uninstaller);
+  if not Result then
+    Log(Format('Old uninstaller still present after %d ms: %s (exit %d)', [Waited, Uninstaller, Code]))
+  else
+    Log(Format('Removed old install: %s (exit %d, %d ms)', [Uninstaller, Code, Waited]));
+end;
+
+procedure InitializeWizard;
+var
+  OldDir, OldUninstaller, OldTasks, Pf32: String;
+begin
+  if not FindOldX86Install(OldDir, OldUninstaller) then
+    Exit;
+  Log(Format('Old 32-bit-mode install found: %s', [OldDir]));
+
+  { Read before PrepareToInstall uninstalls it (the key goes with it). }
+  if RegQueryStringValue(HKLM32, UninstallKey, 'Inno Setup: Selected Tasks', OldTasks) then
+    OldNoDesktopIcon := Pos(',desktopicon,', ',' + Lowercase(OldTasks) + ',') = 0;
+
+  { An explicit /DIR= wins. Default dir -> the 64-bit Program Files; custom dir -> keep it. }
+  if ExpandConstant('{param:DIR|}') <> '' then
+    Exit;
+  Pf32 := Uppercase(AddBackslash(ExpandConstant('{commonpf32}')));
+  if Pos(Pf32, Uppercase(AddBackslash(OldDir))) = 1 then
+    WizardForm.DirEdit.Text := ExpandConstant('{autopf}\{#MyAppName}')
+  else
+    WizardForm.DirEdit.Text := OldDir;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  { Once: the user may still tick it again on this page. }
+  if (CurPageID = wpSelectTasks) and OldNoDesktopIcon then
+  begin
+    WizardSelectTasks('!desktopicon');
+    OldNoDesktopIcon := False;
+  end;
+end;
+
 { Stop every running copy before files are replaced (upgrade). }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
-  AppData, OldUninstaller: String;
-  Code: Integer;
+  AppData, OldDir, OldUninstaller: String;
 begin
   Result := '';
   RunHidden(ExpandConstant('{sys}\sc.exe'), 'stop ' + ServiceName);
@@ -269,13 +357,29 @@ begin
 
   { Older versions installed per-user (PrivilegesRequired=lowest). Its Start Menu shortcut would
     launch an old exe without the elevated hand-off -> remove that install silently. }
-  if RegQueryStringValue(HKEY_CURRENT_USER, OldUserUninstallKey, 'UninstallString', OldUninstaller) then
+  if RegQueryStringValue(HKEY_CURRENT_USER, UninstallKey, 'UninstallString', OldUninstaller) then
+    RunOldUninstaller(RemoveQuotes(OldUninstaller));
+
+  { 1.0.0-1.0.2 (32-bit mode): remove it so only the 64-bit install remains. Its uninstaller also
+    deletes the service and the task; CurStepChanged creates them again for the new app dir. }
+  if FindOldX86Install(OldDir, OldUninstaller) then
   begin
-    OldUninstaller := RemoveQuotes(OldUninstaller);
-    if FileExists(OldUninstaller) then
+    { No wizard page in silent mode; an explicit /TASKS= wins.
+      TODO: verify on a VM that this keeps the desktop icon off in /SILENT and /VERYSILENT. }
+    if OldNoDesktopIcon and WizardSilent and (ExpandConstant('{param:TASKS|}') = '') then
+      WizardSelectTasks('!desktopicon');
+    { Still running in the same dir: it would delete the files this setup is about to copy. }
+    if not RunOldUninstaller(OldUninstaller) and
+       SameText(AddBackslash(OldDir), AddBackslash(WizardDirValue)) then
     begin
-      Code := RunHidden(OldUninstaller, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART');
-      Log(Format('Removed old per-user install: %s -> %d', [OldUninstaller, Code]));
+      Result := 'The previous OpenDesk version could not be removed. Wait a minute and run Setup again.';
+      Exit;
+    end;
+    { Uninstaller missing or timed out: drop the stale entry so Apps & Features lists one OpenDesk. }
+    if RegKeyExists(HKLM32, UninstallKey) then
+    begin
+      RegDeleteKeyIncludingSubkeys(HKLM32, UninstallKey);
+      Log('Deleted stale 32-bit uninstall entry');
     end;
   end;
 end;

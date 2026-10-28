@@ -8,7 +8,9 @@
 //! - starts the agent when a user is logged on to the console, and again when it exits,
 //! - stops it when the console session changes (fast user switching) and when the service stops,
 //! - leaves it stopped while `user_exit.flag` exists (tray "Stop & Exit", `opendesk stop`), until the next
-//!   launch from the Start Menu removes the flag.
+//!   launch from the Start Menu removes the flag,
+//! - drives auto-update and rollback (`service::update::runner`): it stops the agent for an install and
+//!   does not restart it while the installer runs.
 
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
@@ -19,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use crate::infra::autostart::STOP_FLAG;
 use crate::infra::logger;
+use crate::service::update::runner::Updater;
 
 type HANDLE = *mut c_void;
 type BOOL = i32;
@@ -313,7 +316,17 @@ fn supervise(stop: HANDLE) {
     let mut agent: Option<Agent> = None;
     let mut retry_at = Instant::now();
     let mut logon = None;
+    let mut updater = Updater::new();
     loop {
+        if let Some(u) = updater.as_mut() {
+            let running = agent.is_some();
+            u.poll(running, &mut || {
+                if let Some(a) = agent.take() {
+                    logger::info("service", "Stopping the agent for an update.");
+                    a.terminate();
+                }
+            });
+        }
         let session = unsafe { WTSGetActiveConsoleSessionId() };
         if let Some(a) = agent.take() {
             if a.session != session {
@@ -327,9 +340,13 @@ fn supervise(stop: HANDLE) {
             } else if a.started.elapsed() < MIN_UPTIME {
                 logger::warn("service", "Agent exited right after start; retrying in 30 s.");
                 retry_at = Instant::now() + RETRY_AFTER;
+                if let Some(u) = updater.as_mut() {
+                    u.agent_exited_early();
+                }
             }
         }
-        if agent.is_none() && session != NO_SESSION && Instant::now() >= retry_at {
+        let held = updater.as_ref().is_some_and(Updater::holds_agent);
+        if agent.is_none() && !held && session != NO_SESSION && Instant::now() >= retry_at {
             match start_agent(session, &mut logon) {
                 Ok(started) => agent = started,
                 Err(e) => {

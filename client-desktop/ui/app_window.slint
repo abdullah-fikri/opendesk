@@ -28,6 +28,8 @@ export component MainWindow inherits Window {
     // ---- Device and relay ----
     in property <string> local_desk_id;
     in-out property <string> gateway_url;
+    // Viewer frame-rate limit: 0 = Auto (monitor), 30, 60, 240 = Maximum.
+    in property <int> max_fps: 0;
     in property <string> status_text: "Connecting...";
     in property <bool> is_relay_online: false;
     in property <bool> is_admin: false;
@@ -95,6 +97,7 @@ export component MainWindow inherits Window {
     callback copy_local_id();
     callback refresh_hosts();
     callback save_gateway_url(string);
+    callback save_max_fps(int);
     callback open_rename(string, string);
     callback save_rename(string, string);
     callback delete_history(string);
@@ -128,6 +131,9 @@ export component MainWindow inherits Window {
     callback session_toggle_block_input(string);
     callback session_set_resolution(string, int);
     callback session_set_audio_quality(string, int);
+    // Session stats overlay: off at start, kept for the app run (Rust asks the hosts for their numbers).
+    in-out property <bool> show_stats: false;
+    callback set_stats_overlay(bool);
     // Outside Windows there is no system-key hook: the toolbar offers a shortcut menu instead.
     in property <bool> system_keys_menu: false;
     // "win", "alt-tab", "taskmgr", "explorer", "desktop"
@@ -224,6 +230,8 @@ export component MainWindow inherits Window {
             session_toggle_block_input(id) => { root.session_toggle_block_input(id); }
             session_set_resolution(id, m) => { root.session_set_resolution(id, m); }
             session_set_audio_quality(id, q) => { root.session_set_audio_quality(id, q); }
+            show_stats <=> root.show_stats;
+            set_stats_overlay(on) => { root.set_stats_overlay(on); }
             system_keys_menu: root.system_keys_menu;
             session_shortcut(id, sc) => { root.session_shortcut(id, sc); }
 
@@ -360,7 +368,9 @@ export component MainWindow inherits Window {
     if show_settings: ServerSettingsModal {
         gateway_url <=> root.gateway_url;
         show_settings <=> root.show_settings;
+        max_fps: root.max_fps;
         save_gateway_url(url) => { root.save_gateway_url(url); }
+        save_max_fps(fps) => { root.save_max_fps(fps); }
     }
 
     if show_rename_modal: RenameDeviceModal {

@@ -43,6 +43,7 @@ The workflow then:
 | Secret | Needed for |
 | --- | --- |
 | `GITHUB_TOKEN` | Provided automatically; publishes the image and the release. |
+| `UPDATE_SIGNING_KEY` | ed25519 PEM key that signs the auto-update manifests (`manifest*.json` + `.sig`). Optional: without it no manifests are published. See [auto-update.md](auto-update.md). |
 | `ANDROID_KEYSTORE_BASE64` | Base64 of the release keystore (`base64 -w0 release.jks`). Optional. |
 | `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | Signing the APK and App Bundle. Optional. Locally the same names also work as Gradle properties; see [client-android/README.md](../client-android/README.md). |
 

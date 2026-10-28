@@ -52,9 +52,11 @@ func (c blockConn) WriteBinary(...[]byte) error {
 	return nil
 }
 
+// addAdmin registers an administrator whose writer runs, so its tiles' frames reach conn.
 func addAdmin(r *Relay, id string, conn Conn) *Peer {
 	p := addPeer(r, id, true)
 	p.IsAdmin, p.MonitorView, p.conn = true, true, conn
+	go p.writeLoop()
 	return p
 }
 

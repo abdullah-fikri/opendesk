@@ -3,9 +3,11 @@
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Duration;
+
+use parking_lot::Mutex;
 
 type HWND = *mut c_void;
 type HICON = *mut c_void;
@@ -53,8 +55,7 @@ static TRAY_CALLBACK: OnceLock<Mutex<Option<TrayHandler>>> = OnceLock::new();
 
 fn dispatch_tray_action(action: TrayAction) {
     if let Some(lock) = TRAY_CALLBACK.get()
-        && let Ok(guard) = lock.lock()
-        && let Some(cb) = guard.as_ref()
+        && let Some(cb) = lock.lock().as_ref()
     {
         cb(action);
     }
@@ -255,16 +256,13 @@ impl SystemTray {
     where
         F: Fn(TrayAction) + Send + Sync + 'static,
     {
-        let lock = TRAY_CALLBACK.get_or_init(|| Mutex::new(None));
-        if let Ok(mut guard) = lock.lock() {
-            *guard = Some(Box::new(on_action));
-        }
+        *TRAY_CALLBACK.get_or_init(|| Mutex::new(None)).lock() = Some(Box::new(on_action));
 
         let is_running = Arc::new(AtomicBool::new(true));
         let running_clone = Arc::clone(&is_running);
         let tip_str = tooltip.to_string();
 
-        thread::spawn(move || unsafe {
+        crate::infra::thread::spawn_named("tray", move || unsafe {
             let class_name = to_wide("OpenDeskTrayMsgClass");
             let win_name = to_wide("OpenDeskTrayMessageWindow");
             let hinst = GetModuleHandleW(ptr::null());
@@ -292,18 +290,18 @@ impl SystemTray {
                 ptr::null_mut(),
             );
 
-            // Load icon: try icon.ico, fallback to embedded resource 1
-            let icon_file = to_wide("icon.ico");
-            let mut hicon = LoadImageW(
-                ptr::null_mut(),
-                icon_file.as_ptr(),
-                1, // IMAGE_ICON
-                16,
-                16,
-                0x00000010, // LR_LOADFROMFILE
-            );
+            // Load icon: the embedded resource 1 (icon.rc; MAKEINTRESOURCE(1)), fallback to icon.ico
+            let mut hicon = LoadImageW(hinst, ptr::without_provenance::<u16>(1), 1, 16, 16, 0);
             if hicon.is_null() {
-                hicon = LoadImageW(hinst, std::ptr::dangling::<u16>(), 1, 16, 16, 0);
+                let icon_file = to_wide("icon.ico");
+                hicon = LoadImageW(
+                    ptr::null_mut(),
+                    icon_file.as_ptr(),
+                    1, // IMAGE_ICON
+                    16,
+                    16,
+                    0x00000010, // LR_LOADFROMFILE
+                );
             }
 
             let mut nid = std::mem::zeroed::<NOTIFYICONDATAW>();

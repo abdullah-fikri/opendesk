@@ -9,6 +9,11 @@ use crate::infra::logger;
 /// Slint hides the window (see [`super::NATIVE_HIDE`]); nothing to do natively.
 pub fn hide_window_by_title(_window_title: &str) {}
 
+/// Only used to keep EcoQoS off while the window is open, which exists on Windows only.
+pub fn is_window_shown(_window_title: &str) -> bool {
+    false
+}
+
 /// No native drop target outside Windows (see [`super::FILE_DROP_SUPPORTED`]).
 pub fn register_window_file_drop<F>(_window_title: &str, _callback: F) -> bool
 where

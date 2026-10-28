@@ -28,6 +28,7 @@ Received files go to `%USERPROFILE%\Downloads\OpenDesk` (Windows) or `~/Download
 | --- | --- | --- |
 | `OPENDESK_DEVICE_TOKEN` | `device_token` from `config.json` | Relay credential ([provisioning](../../server-relay/docs/provisioning.md)). |
 | `OPENDESK_P2P` | on | `0` keeps every session on the relay. |
+| `OPENDESK_E2E` | on | `0` turns end-to-end encryption off ([e2e](features/e2e.md)). |
 | `OPENDESK_STUN` | `stun.l.google.com:19302` | STUN server for the public P2P candidate; `off` uses LAN candidates only. |
 | `OPENDESK_VIDEO_H264` | auto | `0` disables H.264; `always` uses it for every changed frame. |
 | `OPENDESK_CAPTURE` | DXGI | Windows: `gdi` forces GDI capture (for machines where Desktop Duplication misbehaves). |

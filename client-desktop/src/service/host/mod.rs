@@ -8,14 +8,16 @@ pub mod capture;
 pub mod input;
 pub mod monitor_stream;
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 use core_engine::capture::{MonitorBounds, enumerate_monitors};
 use core_engine::input::InputInjector;
+use parking_lot::Mutex;
 
 use crate::domain::capability::PeerCaps;
 use crate::domain::{desk_id, resolution};
+use crate::infra::send_gate::SendGate;
 use crate::infra::{logger, privacy};
 use crate::service::context::{AppContext, Ctx};
 
@@ -32,11 +34,15 @@ pub struct HostState {
     pub monitor_bounds: Mutex<MonitorBounds>,
     /// Backpressure gate: the capture loop only encodes while the previous frame has left the socket.
     /// Shared with the P2P path, whose frame acknowledgements also open it.
-    pub can_send_frame: Arc<AtomicBool>,
+    pub can_send_frame: Arc<SendGate>,
+    /// The hosted session's video goes over a direct P2P path (updated by the relay connection).
+    pub p2p_active: AtomicBool,
     /// What the hosted viewer supports.
     pub peer_caps: Mutex<PeerCaps>,
     /// The viewer lost a delta frame; the capture loop answers with a key frame.
     pub keyframe_requested: AtomicBool,
+    /// The viewer shows its stats overlay: the capture loop sends `host-stats` once a second.
+    pub stats_requested: AtomicBool,
     /// Keys injected as down and not yet released, so a session end never leaves one stuck.
     held_keys: Mutex<Vec<u8>>,
     /// An administrator's monitor wall shows this machine (see [`monitor_stream`]).
@@ -53,9 +59,11 @@ impl Default for HostState {
             monitor_index: AtomicUsize::new(0),
             resolution_mode: AtomicUsize::new(resolution::DEFAULT_PRESET),
             monitor_bounds: Mutex::new(enumerate_monitors()[0]),
-            can_send_frame: Arc::new(AtomicBool::new(true)),
+            can_send_frame: Arc::new(SendGate::new(true)),
+            p2p_active: AtomicBool::new(false),
             peer_caps: Mutex::default(),
             keyframe_requested: AtomicBool::new(false),
+            stats_requested: AtomicBool::new(false),
             held_keys: Mutex::new(Vec::new()),
             monitored: AtomicBool::new(false),
             monitor_generation: AtomicU64::new(0),
@@ -77,7 +85,7 @@ impl HostState {
     /// Presses `vk` and remembers it.
     pub fn key_down(&self, injector: &InputInjector, vk: u8) {
         injector.key_down(vk);
-        let mut held = self.held_keys.lock().unwrap();
+        let mut held = self.held_keys.lock();
         if !held.contains(&vk) {
             held.push(vk);
         }
@@ -86,12 +94,12 @@ impl HostState {
     /// Releases `vk`.
     pub fn key_up(&self, injector: &InputInjector, vk: u8) {
         injector.key_up(vk);
-        self.held_keys.lock().unwrap().retain(|&k| k != vk);
+        self.held_keys.lock().retain(|&k| k != vk);
     }
 
     /// Releases every key the viewer left pressed (disconnect, lost relay, viewer crash).
     pub fn release_all_keys(&self, injector: &InputInjector) {
-        let keys = std::mem::take(&mut *self.held_keys.lock().unwrap());
+        let keys = std::mem::take(&mut *self.held_keys.lock());
         for vk in keys.into_iter().rev() {
             injector.key_up(vk);
         }
@@ -101,7 +109,7 @@ impl HostState {
 /// A viewer connected to this machine: start streaming to it.
 pub fn start(ctx: &Ctx, partner: &str, caps: PeerCaps) {
     ctx.set_partner(partner);
-    *ctx.host.peer_caps.lock().unwrap() = caps;
+    *ctx.host.peer_caps.lock() = caps;
     // The viewer keyboard hook belongs to viewing; this machine is being controlled now.
     privacy::set_viewer_hook_state(false, "");
     ctx.host.monitor_index.store(0, Ordering::SeqCst);
@@ -109,7 +117,9 @@ pub fn start(ctx: &Ctx, partner: &str, caps: PeerCaps) {
     if resolution::is_auto(ctx.host.resolution_mode.load(Ordering::SeqCst)) {
         ctx.host.resolution_mode.store(resolution::DEFAULT_PRESET, Ordering::SeqCst);
     }
-    ctx.host.can_send_frame.store(true, Ordering::SeqCst);
+    ctx.host.can_send_frame.open();
+    ctx.host.p2p_active.store(false, Ordering::SeqCst);
+    ctx.host.stats_requested.store(false, Ordering::SeqCst);
     ctx.host.active.store(true, Ordering::SeqCst);
     let generation = ctx.host.capture_generation.fetch_add(1, Ordering::SeqCst) + 1;
     capture::spawn(Arc::clone(ctx), partner.to_string(), generation);

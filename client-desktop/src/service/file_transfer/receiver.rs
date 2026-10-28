@@ -14,11 +14,12 @@ use core_engine::codec::from_base64;
 use sha2::{Digest, Sha256};
 
 use super::tree::{create_dir_unique, link_unique};
-use super::{CHUNK_SIZE, LAST_RECEIVED_MS, MAX_CHUNK_B64, hex, now_ms, remember_received};
+use super::{BINARY_CHUNK_SIZE, CHUNK_SIZE, LAST_RECEIVED_MS, MAX_CHUNK_B64, hex, now_ms, remember_received};
 use crate::domain::transfer::{
     MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, is_safe_id, percent, safe_rel_path, sanitize_file_name,
 };
 use crate::infra::{logger, storage, virtual_clipboard, window};
+use crate::protocol::binary::FileChunk;
 use crate::protocol::{FileAction, FilePayload};
 use crate::service::context::AppContext;
 use crate::service::ui_port::{TransferState, TransferUpdate, UiPort};
@@ -130,7 +131,7 @@ fn publish(ctx: &AppContext, paths: &[PathBuf], paste: bool) {
 /// Folder that receives files (`Downloads\OpenDesk` in the user's home, else `<app dir>/Downloads`).
 pub fn download_dir() -> PathBuf {
     #[cfg(test)]
-    if let Some(dir) = tests::TEST_DOWNLOADS.lock().unwrap().clone() {
+    if let Some(dir) = tests::TEST_DOWNLOADS.lock().clone() {
         return dir;
     }
     if let Ok(profile) = env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
@@ -363,16 +364,42 @@ impl FileReceiver {
         Err((Some(done_status(&label)), Some(true)))
     }
 
+    /// Handles one binary chunk from `from` (`file-binary`); the transfer itself started and ends with JSON.
+    pub fn handle_chunk(&mut self, ctx: &AppContext, chunk: &FileChunk, from: &str) -> Outcome {
+        if !is_safe_id(chunk.id) {
+            return (None, None);
+        }
+        let key = format!("{from}:{}", chunk.id);
+        if self.completed_ids.contains_key(&key) {
+            return (None, None);
+        }
+        self.write_chunk(ctx, &key, Some(chunk.offset), Some(chunk.data), BINARY_CHUNK_SIZE)
+    }
+
     fn chunk(&mut self, ctx: &AppContext, payload: &FilePayload, key: &str) -> Outcome {
-        let Some(entry) = self.active_files.get_mut(key) else { return (None, None) };
         let bytes = payload.chunk.as_deref().filter(|b64| b64.len() <= MAX_CHUNK_B64).and_then(from_base64);
+        self.write_chunk(ctx, key, None, bytes.as_deref(), CHUNK_SIZE)
+    }
+
+    /// Appends one chunk of at most `max` bytes. A binary chunk names its `offset`, which must be exactly
+    /// where the file stands: relay and TCP keep the order, so anything else is a broken or hostile stream.
+    fn write_chunk(
+        &mut self,
+        ctx: &AppContext,
+        key: &str,
+        offset: Option<u64>,
+        bytes: Option<&[u8]>,
+        max: usize,
+    ) -> Outcome {
+        let Some(entry) = self.active_files.get_mut(key) else { return (None, None) };
         let ok = match bytes {
             Some(bytes)
-                if bytes.len() <= CHUNK_SIZE
+                if bytes.len() <= max
+                    && offset.is_none_or(|o| o == entry.received)
                     && entry.received.saturating_add(bytes.len() as u64) <= entry.total
-                    && entry.file.write_all(&bytes).is_ok() =>
+                    && entry.file.write_all(bytes).is_ok() =>
             {
-                entry.hash.update(&bytes);
+                entry.hash.update(bytes);
                 entry.received += bytes.len() as u64;
                 entry.last_activity = Instant::now();
                 true
@@ -446,7 +473,7 @@ impl FileReceiver {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     /// Receive folder for tests instead of the user's Downloads.
     pub static TEST_DOWNLOADS: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -465,6 +492,56 @@ pub(super) mod tests {
         assert_eq!(g.tops, vec![base.join("Project (1)")]);
         assert_eq!(fs::read(base.join("Project/old.txt")).unwrap(), b"old");
         let _ = fs::remove_dir_all(base);
+    }
+
+    /// Binary chunks land in the same staging file as JSON ones, only in order, and only for their sender.
+    #[test]
+    fn binary_chunks_append_in_order_only() {
+        let dir = env::temp_dir().join(format!("opendesk-bin-{}-{}", std::process::id(), now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        *TEST_DOWNLOADS.lock() = Some(dir.clone());
+        let ctx = crate::service::test_support::context();
+        let mut rx = FileReceiver::new();
+        let data: Vec<u8> = (0..BINARY_CHUNK_SIZE + 10).map(|i| i as u8).collect();
+        let total = data.len() as u64 + 3;
+        assert_eq!(rx.handle(&ctx, &FilePayload::start("ft_1", "a.bin", total), "111", false).1, None);
+        let chunk = |offset: usize, len: usize| FileChunk {
+            id: "ft_1",
+            offset: offset as u64,
+            data: &data[offset..offset + len],
+        };
+
+        assert_eq!(rx.handle_chunk(&ctx, &chunk(0, BINARY_CHUNK_SIZE), "111").1, None);
+        // Another sender cannot write into this transfer; the receiver ignores it.
+        assert_eq!(rx.handle_chunk(&ctx, &chunk(BINARY_CHUNK_SIZE, 10), "222"), (None, None));
+        assert_eq!(rx.handle_chunk(&ctx, &chunk(BINARY_CHUNK_SIZE, 10), "111").1, None);
+        // JSON and binary chunks may mix: both append.
+        let json = FilePayload::chunk("ft_1", core_engine::codec::to_base64(b"xyz"));
+        assert_eq!(rx.handle(&ctx, &json, "111", false).1, None);
+        let entry = &rx.active_files["111:ft_1"];
+        let mut whole = data.clone();
+        whole.extend_from_slice(b"xyz");
+        assert_eq!((entry.received, hex(&entry.hash.clone().finalize())), (total, hex(&Sha256::digest(&whole))));
+        // A wrong SHA-256 at `end` discards the staging file and never publishes it.
+        let staging = entry.path.clone();
+        let end = FilePayload::end("ft_1", "a.bin", "00".repeat(32), false);
+        assert_eq!(rx.handle(&ctx, &end, "111", false).1, Some(false));
+        assert!(!staging.exists() && rx.active_files.is_empty());
+
+        // A gap, a repeat or an oversize chunk fails the transfer with a NACK.
+        for (i, (offset, len)) in [(1, 1), (0, 0), (0, BINARY_CHUNK_SIZE + 1)].into_iter().enumerate() {
+            let id = format!("ft_{}", i + 2);
+            rx.handle(&ctx, &FilePayload::start(&id, "b.bin", total), "111", false);
+            if len == 0 {
+                rx.handle_chunk(&ctx, &FileChunk { id: &id, ..chunk(0, 1) }, "111");
+            }
+            let bad = FileChunk { id: &id, offset: offset as u64, data: &data[..len.max(1)] };
+            assert_eq!(rx.handle_chunk(&ctx, &bad, "111").1, Some(false), "{offset} {len}");
+        }
+        assert!(rx.active_files.is_empty());
+        assert_eq!(rx.handle_chunk(&ctx, &FileChunk { id: "../x", offset: 0, data: b"" }, "111"), (None, None));
+        *TEST_DOWNLOADS.lock() = None;
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

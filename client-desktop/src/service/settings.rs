@@ -20,6 +20,13 @@ pub fn set_gateway(ctx: &AppContext, raw_url: &str) {
     apply_gateway(ctx, url);
 }
 
+/// Stores the viewer frame-rate limit (`Settings::max_fps`); it is advertised from the next registration on.
+pub fn set_max_fps(fps: u32) {
+    let mut settings = storage::load_settings();
+    settings.max_fps = fps;
+    storage::save_settings(&settings);
+}
+
 /// Stores the token the relay issued when it enrolled this device; it is presented to that relay only.
 pub fn store_device_token(ctx: &AppContext, token: &str) {
     if token.is_empty() {
@@ -27,24 +34,24 @@ pub fn store_device_token(ctx: &AppContext, token: &str) {
     }
     let mut settings = storage::load_settings();
     settings.device_token = token.to_string();
-    settings.device_token_relay = ctx.relay.gateway_url.lock().unwrap().clone();
+    settings.device_token_relay = ctx.relay.gateway_url.lock().clone();
     storage::save_settings(&settings);
     logger::info("settings", "The relay enrolled this device; its token is stored.");
 }
 
 fn apply_gateway(ctx: &AppContext, url: String) {
-    *ctx.relay.gateway_url.lock().unwrap() = url.clone();
+    *ctx.relay.gateway_url.lock() = url.clone();
     ctx.ui.gateway_changed(url);
     ctx.relay.reconnect.store(true, Ordering::SeqCst);
 }
 
 /// Watches `config.json` so a CLI change reaches the running app within about a second.
 pub fn spawn_watcher(ctx: Ctx) {
-    thread::spawn(move || {
+    crate::infra::thread::spawn_named("settings-watch", move || {
         loop {
             thread::sleep(WATCH_INTERVAL);
             let on_disk = storage::load_settings().gateway_url;
-            let current = ctx.relay.gateway_url.lock().unwrap().clone();
+            let current = ctx.relay.gateway_url.lock().clone();
             if !on_disk.is_empty() && on_disk != current {
                 logger::info("settings", &format!("Gateway changed on disk: {current} -> {on_disk}"));
                 apply_gateway(&ctx, on_disk);

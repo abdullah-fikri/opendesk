@@ -5,11 +5,15 @@
 //! Threads: the registry is shared by the UI thread and the relay connection. Each connected session owns one
 //! decoder thread, so nothing runs while no session is open.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 
 use crate::domain::keyboard::KeyForwarder;
+use crate::infra::power;
 use crate::service::viewer::decoder::VideoInbox;
+use crate::service::viewer::stats::SessionStats;
 
 /// Sessions a multi-session viewer may hold (the relay enforces the same limit).
 pub const MAX_SESSIONS: usize = 4;
@@ -28,6 +32,8 @@ pub struct Session {
     /// Focused: its audio plays (shared with the P2P sink).
     pub audio_on: Arc<AtomicBool>,
     pub p2p_active: AtomicBool,
+    /// Traffic to this host is end-to-end encrypted (see [`Session::e2e_active`]).
+    pub e2e_active: AtomicBool,
     pub res_mode: AtomicUsize,
     /// Canvas size in physical pixels (`resolution::pack_box`), 0 = unknown.
     pub viewport: AtomicU64,
@@ -45,6 +51,11 @@ pub struct Session {
     pub has_monitors: AtomicBool,
     /// Keys this viewer holds down on the host.
     pub keys: Mutex<KeyForwarder>,
+    /// The stats overlay is shown: the decoder thread refreshes [`Session::stats`] and pings the host.
+    pub stats_on: AtomicBool,
+    pub stats: Mutex<SessionStats>,
+    /// Full speed (no EcoQoS) from opening the session until it is dropped.
+    _awake: power::Awake,
 }
 
 impl Session {
@@ -58,6 +69,7 @@ impl Session {
             visible: AtomicBool::new(false),
             audio_on: Arc::new(AtomicBool::new(false)),
             p2p_active: AtomicBool::new(false),
+            e2e_active: AtomicBool::new(false),
             res_mode: AtomicUsize::new(res_mode),
             viewport: AtomicU64::new(viewport),
             last_sent_box: AtomicU64::new(0),
@@ -69,7 +81,17 @@ impl Session {
             offered_seq: AtomicU32::new(0),
             has_monitors: AtomicBool::new(false),
             keys: Mutex::default(),
+            stats_on: AtomicBool::new(false),
+            stats: Mutex::default(),
+            _awake: power::awake(),
         }
+    }
+
+    /// "E2E on/off" for the stats overlay: the host's key is verified and this session's traffic is sealed
+    /// end to end (relay path and P2P). Updated every 250 ms by the relay connection.
+    #[allow(dead_code)] // read by the stats overlay
+    pub fn e2e_active(&self) -> bool {
+        self.e2e_active.load(Ordering::Relaxed)
     }
 
     /// True after the relay connected the session.
@@ -106,6 +128,7 @@ impl Inner {
             let focused = s.id == self.focused;
             let visible = focused || self.layout == 1;
             if visible && !s.visible.swap(true, Ordering::SeqCst) {
+                s.inbox.wake(); // the decoder asks for a key frame without waiting out its idle timeout
                 shown.push(Arc::clone(s));
             } else if !visible {
                 s.visible.store(false, Ordering::SeqCst);
@@ -126,6 +149,8 @@ pub struct Registry {
     default_resolution: AtomicUsize,
     /// Last canvas size seen (`resolution::pack_box`), so a new session can ask for the right size at once.
     default_viewport: AtomicU64,
+    /// The stats overlay is shown (off at start, kept for the app run).
+    stats_overlay: AtomicBool,
 }
 
 impl Registry {
@@ -137,7 +162,18 @@ impl Registry {
             swallowed_click: Mutex::new(None),
             default_resolution: AtomicUsize::new(crate::domain::resolution::AUTO),
             default_viewport: AtomicU64::new(0),
+            stats_overlay: AtomicBool::new(false),
         }
+    }
+
+    /// True while the stats overlay is shown.
+    pub fn stats_overlay(&self) -> bool {
+        self.stats_overlay.load(Ordering::SeqCst)
+    }
+
+    /// Shows or hides the stats overlay of every session.
+    pub fn set_stats_overlay(&self, on: bool) {
+        self.stats_overlay.store(on, Ordering::SeqCst);
     }
 
     /// Resolution mode for sessions opened from now on.
@@ -177,7 +213,7 @@ impl Registry {
 
     /// True when no session is open.
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().unwrap().sessions.is_empty()
+        self.inner.lock().sessions.is_empty()
     }
 
     /// The session with host `id`.
@@ -185,28 +221,28 @@ impl Registry {
         if id.is_empty() {
             return None;
         }
-        self.inner.lock().unwrap().sessions.iter().find(|s| s.id == id).cloned()
+        self.inner.lock().sessions.iter().find(|s| s.id == id).cloned()
     }
 
     /// Every session, in tab order.
     pub fn all(&self) -> Vec<Arc<Session>> {
-        self.inner.lock().unwrap().sessions.clone()
+        self.inner.lock().sessions.clone()
     }
 
     /// The focused session.
     pub fn focused(&self) -> Option<Arc<Session>> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock();
         inner.sessions.iter().find(|s| s.id == inner.focused).cloned()
     }
 
     /// ID of the focused session (empty: none).
     pub fn focused_id(&self) -> String {
-        self.inner.lock().unwrap().focused.clone()
+        self.inner.lock().focused.clone()
     }
 
     /// True when `id` is the focused session.
     pub fn is_focused(&self, id: &str) -> bool {
-        !id.is_empty() && self.inner.lock().unwrap().focused == id
+        !id.is_empty() && self.inner.lock().focused == id
     }
 
     /// True for a session that exists and is connected.
@@ -219,13 +255,13 @@ impl Registry {
         if self.multi() {
             return None;
         }
-        self.inner.lock().unwrap().sessions.first().cloned()
+        self.inner.lock().sessions.first().cloned()
     }
 
     /// Adds a (pending) session unless it exists or the limit is reached. Focus is left to the caller.
     pub fn open(&self, id: &str, res_mode: usize, viewport: u64, audio_quality: usize) -> Open {
         let limit = self.limit();
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         if let Some(s) = inner.sessions.iter().find(|s| s.id == id) {
             return Open::Exists(Arc::clone(s));
         }
@@ -240,12 +276,13 @@ impl Registry {
 
     /// Removes a session and stops its decoder. A removed focused session hands focus to its neighbour.
     pub fn remove(&self, id: &str) -> Option<Arc<Session>> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         let pos = inner.sessions.iter().position(|s| s.id == id)?;
         let s = inner.sessions.remove(pos);
         s.alive.store(false, Ordering::SeqCst);
         s.visible.store(false, Ordering::SeqCst);
         s.audio_on.store(false, Ordering::SeqCst);
+        s.inbox.wake(); // the decoder thread exits now instead of after its idle timeout
         if inner.focused == id {
             let next = inner.sessions.get(pos).or_else(|| inner.sessions.last()).map(|n| n.id.clone());
             inner.focused = next.unwrap_or_default();
@@ -256,7 +293,7 @@ impl Registry {
 
     /// Moves focus; returns the previous focus, or None if `id` is unknown or already focused.
     pub fn set_focus(&self, id: &str) -> Option<String> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         if inner.focused == id || !inner.sessions.iter().any(|s| s.id == id) {
             return None;
         }
@@ -267,27 +304,28 @@ impl Registry {
 
     /// 0 = tabs, 1 = split. Returns sessions that just became visible.
     pub fn set_layout(&self, layout: i32) -> Vec<Arc<Session>> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         inner.layout = if layout == 1 { 1 } else { 0 };
         inner.refresh()
     }
 
     /// 0 = tabs, 1 = split view.
     pub fn layout(&self) -> i32 {
-        self.inner.lock().unwrap().layout
+        self.inner.lock().layout
     }
 
     /// Ends every session (relay connection lost).
     pub fn clear(&self) -> Vec<Arc<Session>> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         inner.focused.clear();
         let all: Vec<Arc<Session>> = std::mem::take(&mut inner.sessions);
         for s in &all {
             s.alive.store(false, Ordering::SeqCst);
             s.visible.store(false, Ordering::SeqCst);
             s.audio_on.store(false, Ordering::SeqCst);
+            s.inbox.wake();
         }
-        *self.swallowed_click.lock().unwrap() = None;
+        *self.swallowed_click.lock() = None;
         all
     }
 }

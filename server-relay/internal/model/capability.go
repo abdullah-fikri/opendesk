@@ -13,6 +13,9 @@ const (
 	CapDeviceSecurity = "device-security"
 	// CapHostAlias: administrators can name devices in the shared host list.
 	CapHostAlias = "host-alias"
+	// CapFileBinary: the relay forwards binary file chunks. As a client capability it means the client accepts
+	// them; the relay sends one only to such a receiver.
+	CapFileBinary = "file-binary"
 )
 
 // Client capabilities the relay acts on for the monitor wall.

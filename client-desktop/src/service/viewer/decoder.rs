@@ -5,21 +5,23 @@ use std::collections::VecDeque;
 use std::io::Cursor;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use core_engine::codec::delta::{Applied, Compositor};
 use core_engine::codec::frame::{FLAG_IDR, FrameHeader, KIND_DELTA, KIND_H264, KIND_KEY, is_framed};
 use core_engine::codec::h264::H264Decoder;
 use image::ImageReader;
+use parking_lot::{Condvar, Mutex};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 use crate::domain::capability;
+use crate::domain::perf_stats::{Counter, PerfWindow, STATS_INTERVAL, Stage, kbps};
 use crate::infra::logger;
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 use crate::service::ui_port::Frame;
 use crate::service::viewer::registry::Session;
+use crate::service::viewer::stats::ViewerStats;
 
 /// Minimum spacing of key-frame requests after a broken delta chain.
 const KEY_REQUEST_INTERVAL: Duration = Duration::from_millis(300);
@@ -51,16 +53,21 @@ pub(crate) fn to_pixel_buffer(rgba: &[u8], width: u32, height: u32) -> SharedPix
 #[derive(Default)]
 pub struct VideoInbox {
     queue: Mutex<VecDeque<Vec<u8>>>,
+    /// Signalled on every push and by [`VideoInbox::wake`], so the decoder thread sleeps while idle.
+    ready: Condvar,
 }
 
 impl VideoInbox {
     /// Bound on queued messages; beyond it the oldest are dropped and the sequence gap requests a key frame.
     const MAX: usize = 32;
 
+    /// Longest idle wait of the decoder thread before it re-checks the session state on its own.
+    pub const IDLE_WAIT: Duration = Duration::from_millis(50);
+
     /// Queues one video message; a full frame drops everything queued before it.
     pub fn push(&self, msg: Vec<u8>) {
         let full = !is_framed(&msg) || FrameHeader::parse(&msg).is_some_and(|(h, _)| h.kind == KIND_KEY);
-        let mut q = self.queue.lock().unwrap();
+        let mut q = self.queue.lock();
         if full {
             q.clear();
         }
@@ -68,16 +75,35 @@ impl VideoInbox {
             q.pop_front();
         }
         q.push_back(msg);
+        self.ready.notify_all();
     }
 
     /// Takes every queued message in arrival order.
+    #[cfg(test)]
     pub fn drain(&self) -> Vec<Vec<u8>> {
-        self.queue.lock().unwrap().drain(..).collect()
+        self.queue.lock().drain(..).collect()
+    }
+
+    /// Like [`VideoInbox::drain`], but waits up to `timeout` for a message when the queue is empty. Returns
+    /// empty on timeout or [`VideoInbox::wake`].
+    pub fn drain_wait(&self, timeout: Duration) -> Vec<Vec<u8>> {
+        let mut q = self.queue.lock();
+        if q.is_empty() {
+            // A single wait, not a loop: a spurious wake-up only costs the caller one extra state check.
+            let _ = self.ready.wait_for(&mut q, timeout);
+        }
+        q.drain(..).collect()
+    }
+
+    /// Wakes a waiting decoder thread so it re-checks the session's `alive`/`visible` state at once.
+    pub fn wake(&self) {
+        let _guard = self.queue.lock();
+        self.ready.notify_all();
     }
 
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.queue.lock().unwrap().is_empty()
+        self.queue.lock().is_empty()
     }
 }
 
@@ -98,6 +124,9 @@ pub struct ViewerDecoder {
     h264: Option<(H264Decoder, u32, u32)>,
     /// The H.264 decoder has seen an IDR since the last non-H.264 picture, so P-frames may follow.
     h264_ready: bool,
+    /// Output buffers, reused round-robin (see [`ViewerDecoder::output`]).
+    pool: Vec<SharedPixelBuffer<Rgba8Pixel>>,
+    next: usize,
 }
 
 impl ViewerDecoder {
@@ -118,16 +147,33 @@ impl ViewerDecoder {
             }
         }
         if changed {
-            ViewerOutput::Frame(
-                to_pixel_buffer(&self.comp.fb, self.comp.width, self.comp.height),
-                self.comp.width,
-                self.comp.height,
-            )
+            ViewerOutput::Frame(self.output(), self.comp.width, self.comp.height)
         } else if need_key {
             ViewerOutput::NeedKey
         } else {
             ViewerOutput::Unchanged
         }
+    }
+
+    /// Bound on reused output buffers: one on screen, one waiting for the UI thread, one being filled.
+    const POOL: usize = 3;
+
+    /// Copies the framebuffer into an output buffer. Buffers are reused round-robin; one the UI still holds
+    /// is shared, so `make_mut_bytes` copies it first and the picture on screen is never written to.
+    fn output(&mut self) -> SharedPixelBuffer<Rgba8Pixel> {
+        let (w, h) = (self.comp.width, self.comp.height);
+        if self.pool.first().is_some_and(|b| (b.width(), b.height()) != (w, h)) {
+            self.pool.clear();
+        }
+        if self.pool.len() < Self::POOL {
+            self.pool.push(to_pixel_buffer(&self.comp.fb, w, h));
+            self.next = 0;
+            return self.pool.last().unwrap().clone();
+        }
+        let buf = &mut self.pool[self.next];
+        self.next = (self.next + 1) % Self::POOL;
+        buf.make_mut_bytes().copy_from_slice(&self.comp.fb);
+        buf.clone()
     }
 
     fn apply(&mut self, msg: &[u8]) -> Applied {
@@ -216,27 +262,72 @@ impl ViewerDecoder {
     }
 }
 
+/// Decoder-thread counters for one `viewer.perf` window (fields documented in `domain::perf_stats`).
+#[derive(Default)]
+struct ViewerPerf {
+    process: Stage,
+    handoff: Stage,
+    shown: Counter,
+    bytes: Counter,
+    batches: Counter,
+}
+
+impl ViewerPerf {
+    /// The window's log line; resets the counters.
+    fn take_line(&mut self, session: &str, secs: f64) -> String {
+        format!(
+            "session={session} fps={:.1} process avg/max={} handoff={} kbps={} batches={}",
+            self.shown.take() as f64 / secs,
+            self.process.take_summary(),
+            self.handoff.take_summary(),
+            kbps(self.bytes.take(), secs),
+            self.batches.take(),
+        )
+    }
+
+    /// The overlay's numbers since the previous call, independent of the log window.
+    fn take_stats(&mut self, secs: f64) -> ViewerStats {
+        let process = self.process.take_lap();
+        self.handoff.take_lap();
+        self.batches.take_lap();
+        ViewerStats {
+            fps: (self.shown.take_lap() as f64 / secs) as f32,
+            kbps: kbps(self.bytes.take_lap(), secs),
+            decode_ms: process.avg_ms as f32,
+            decode_max_ms: process.max_ms as f32,
+        }
+    }
+}
+
 fn request_key(outbox: &Sender<Outgoing>, id: &str) {
     let _ = outbox.send(Outgoing::Message(ClientMessage::input(id, InputEvent::VideoKeyframe)));
 }
 
-/// Starts the session's decoder thread once. `show` runs for every decoded frame.
+/// Starts the session's decoder thread once. `show` runs for every decoded frame; `show_stats` once a second
+/// with the overlay's (labels, values) while the session is visible and its stats overlay is on.
 /// Hidden sessions (background tabs) are not decoded at all: their messages are dropped together with the
-/// decoder state, and showing the session again asks the host for a key frame.
-pub fn spawn<F>(sess: Arc<Session>, outbox: Sender<Outgoing>, show: F)
+/// decoder state, and showing the session again asks the host for a key frame. `on_panic` runs if the
+/// thread panics.
+pub fn spawn<F, S, P>(sess: Arc<Session>, outbox: Sender<Outgoing>, show: F, show_stats: S, on_panic: P)
 where
     F: Fn(&Arc<Session>, Frame) + Send + 'static,
+    S: Fn(&Arc<Session>, (String, String)) + Send + 'static,
+    P: FnOnce() + Send + 'static,
 {
     if sess.decoder_started.swap(true, Ordering::SeqCst) {
         return;
     }
-    thread::spawn(move || {
+    let name = format!("viewer-decoder-{}", sess.id);
+    crate::infra::thread::spawn_supervised(&name, on_panic, move || {
         let mut frame_count = 0u32;
         let mut fps_timer = Instant::now();
         let mut current_fps = 0u32;
         let mut decoder: Option<ViewerDecoder> = None;
         let mut last_key_request: Option<Instant> = None;
         let mut was_visible = sess.visible.load(Ordering::SeqCst);
+        let mut perf = ViewerPerf::default();
+        let mut perf_window = PerfWindow::new(Instant::now());
+        let mut stats_window = PerfWindow::every(Instant::now(), STATS_INTERVAL);
 
         while sess.alive.load(Ordering::SeqCst) {
             let visible = sess.visible.load(Ordering::SeqCst);
@@ -247,16 +338,41 @@ where
             }
             was_visible = visible;
 
-            let batch = sess.inbox.drain();
+            // Sleeps until a message arrives; close and visibility changes wake it too (`Registry`), and the
+            // timeout bounds the wait should a wake ever be missed.
+            let batch = sess.inbox.drain_wait(VideoInbox::IDLE_WAIT);
+            if let Some(secs) = perf_window.due(Instant::now()) {
+                // Only windows that decoded something: hidden or idle sessions stay quiet.
+                if perf.batches.in_window() > 0 {
+                    logger::info("viewer.perf", &perf.take_line(&sess.id, secs));
+                }
+            }
+            if let Some(secs) = stats_window.due(Instant::now()) {
+                let viewer = perf.take_stats(secs);
+                if visible && sess.stats_on.load(Ordering::Relaxed) {
+                    let t = crate::service::file_transfer::now_ms();
+                    let _ = outbox.send(Outgoing::Message(ClientMessage::input(&sess.id, InputEvent::StatsPing { t })));
+                    let columns = {
+                        let mut stats = sess.stats.lock();
+                        stats.viewer = viewer;
+                        stats.columns(sess.p2p_active.load(Ordering::Relaxed), sess.e2e_active())
+                    };
+                    show_stats(&sess, columns);
+                }
+            }
             if batch.is_empty() {
-                thread::sleep(Duration::from_millis(1));
                 continue;
             }
             if !visible {
                 decoder = None; // frees the framebuffer and the H.264 decoder while the tab is in the background
                 continue;
             }
-            let (pixels, width, height) = match decoder.get_or_insert_with(ViewerDecoder::new).process(batch) {
+            perf.batches += 1;
+            perf.bytes += batch.iter().map(|m| m.len() as u64).sum::<u64>();
+            let process_start = Instant::now();
+            let out = decoder.get_or_insert_with(ViewerDecoder::new).process(batch);
+            perf.process.record(process_start.elapsed());
+            let (pixels, width, height) = match out {
                 ViewerOutput::Frame(buf, w, h) => (buf, w, h),
                 ViewerOutput::Unchanged => continue,
                 ViewerOutput::NeedKey => {
@@ -276,7 +392,10 @@ where
                 fps_timer = Instant::now();
             }
             let p2p = sess.p2p_active.load(Ordering::Relaxed);
+            let handoff_start = Instant::now();
             show(&sess, Frame { pixels, width, height, fps: current_fps, p2p });
+            perf.handoff.record(handoff_start.elapsed());
+            perf.shown += 1;
         }
     });
 }
@@ -288,6 +407,7 @@ mod tests {
     use core_engine::capture::{DesktopCapturer, enumerate_monitors};
     use core_engine::stream::{FrameInput, H264Mode, StreamEncoder};
     use std::sync::atomic::AtomicU32;
+    use std::thread;
 
     #[test]
     fn hidden_session_skips_decoding_and_resyncs_with_a_key_frame_when_shown() {
@@ -299,9 +419,10 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let shown = Arc::new(AtomicU32::new(0));
         let counter = Arc::clone(&shown);
-        spawn(Arc::clone(&b), tx, move |_, _| {
+        let show = move |_: &Arc<Session>, _: Frame| {
             counter.fetch_add(1, Ordering::SeqCst);
-        });
+        };
+        spawn(Arc::clone(&b), tx, show, |_, _| {}, || {});
         b.inbox.push(core_engine::codec::delta::key_header(4, 4, 4).encode(&[]));
         thread::sleep(Duration::from_millis(50));
         assert!(b.inbox.is_empty(), "hidden tab drains its inbox");
@@ -312,6 +433,23 @@ mod tests {
         let Outgoing::Message(ClientMessage::RelayInput { target_clean, event }) = msg else { panic!() };
         assert_eq!((target_clean.as_str(), event), ("222222222", InputEvent::VideoKeyframe));
         r.remove("222222222");
+    }
+
+    #[test]
+    fn perf_line_reports_the_window() {
+        let mut p = ViewerPerf::default();
+        for _ in 0..590 {
+            p.process.record(Duration::from_micros(2400));
+            p.handoff.record(Duration::from_micros(100));
+        }
+        p.shown += 590;
+        p.bytes += 3_062_500;
+        p.batches += 600;
+        assert_eq!(
+            p.take_line("123456789", 10.0),
+            "session=123456789 fps=59.0 process avg/max=2.4/2.4ms handoff=0.1/0.1ms kbps=2450 batches=600"
+        );
+        assert_eq!(p.batches.in_window(), 0);
     }
 
     /// PSNR in dB between a BGRX source frame and the viewer's RGBA framebuffer.
@@ -455,6 +593,77 @@ mod tests {
         let got = inbox.drain();
         assert_eq!(got.len(), 2);
         assert_eq!(FrameHeader::parse(&got[0]).unwrap().0.kind, KIND_KEY);
+    }
+
+    #[test]
+    fn reused_output_buffers_never_change_a_frame_already_handed_out() {
+        let jpeg = |w: u32, h: u32, v: u8| {
+            let mut out = Vec::new();
+            image::RgbImage::from_pixel(w, h, image::Rgb([v, v, v]))
+                .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Jpeg)
+                .unwrap();
+            out
+        };
+        let mut viewer = ViewerDecoder::new();
+        let mut held = Vec::new();
+        for (i, v) in [0u8, 255, 0, 255, 0, 255, 0].into_iter().enumerate() {
+            let ViewerOutput::Frame(buf, ..) = viewer.process(vec![jpeg(8, 8, v)]) else { panic!() };
+            assert_eq!(buf.as_bytes(), &viewer.comp.fb[..]);
+            if i % 2 == 0 {
+                held.push((buf, viewer.comp.fb.clone())); // the UI still shows every other frame
+            }
+        }
+        for (buf, fb) in &held {
+            assert_eq!(buf.as_bytes(), &fb[..], "a frame the UI holds is never rewritten");
+        }
+        assert_eq!(viewer.pool.len(), ViewerDecoder::POOL);
+        let ViewerOutput::Frame(buf, w, h) = viewer.process(vec![jpeg(16, 4, 128)]) else { panic!() };
+        assert_eq!((buf.width(), buf.height(), w, h), (16, 4, 16, 4), "a new stream size resets the pool");
+        assert_eq!(viewer.pool.len(), 1);
+
+        // Buffers the UI has released are refilled in place, not reallocated.
+        let ptrs = |v: &ViewerDecoder| v.pool.iter().map(|b| b.as_bytes().as_ptr()).collect::<Vec<_>>();
+        for _ in 0..ViewerDecoder::POOL {
+            let _ = viewer.process(vec![jpeg(16, 4, 7)]);
+        }
+        let before = ptrs(&viewer);
+        for _ in 0..ViewerDecoder::POOL {
+            let _ = viewer.process(vec![jpeg(16, 4, 9)]);
+        }
+        assert_eq!(ptrs(&viewer), before);
+    }
+
+    #[test]
+    fn inbox_push_wakes_a_waiting_drain() {
+        let inbox = Arc::new(VideoInbox::default());
+        let pusher = Arc::clone(&inbox);
+        let t = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            pusher.push(core_engine::codec::delta::key_header(4, 4, 4).encode(&[]));
+        });
+        let start = Instant::now();
+        let got = inbox.drain_wait(Duration::from_secs(5));
+        assert_eq!(got.len(), 1);
+        assert!(start.elapsed() < Duration::from_secs(2), "woken by the push, not the timeout");
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn inbox_drain_wait_times_out_empty_and_wake_returns_early() {
+        let inbox = Arc::new(VideoInbox::default());
+        let start = Instant::now();
+        assert!(inbox.drain_wait(Duration::from_millis(30)).is_empty());
+        assert!(start.elapsed() >= Duration::from_millis(25));
+
+        let waker = Arc::clone(&inbox);
+        let t = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            waker.wake();
+        });
+        let start = Instant::now();
+        assert!(inbox.drain_wait(Duration::from_secs(5)).is_empty());
+        assert!(start.elapsed() < Duration::from_secs(2), "woken before the timeout");
+        t.join().unwrap();
     }
 
     // ---- Benchmark: `cargo test --release bench_video_pipeline -- --ignored --nocapture` ----

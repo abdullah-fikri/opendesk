@@ -298,8 +298,9 @@ mod tests {
         use crate::infra::audio::VoiceEngine;
         use crate::service::context::{AppContext, Ctx};
         use crate::service::ui_port::*;
+        use parking_lot::Mutex;
         use slint::{Rgba8Pixel, SharedPixelBuffer};
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
         #[derive(Default)]
         struct Recorder {
@@ -324,10 +325,10 @@ mod tests {
             fn focus_changed(&self, _: String) {}
             fn layout_changed(&self, _: i32) {}
             fn wall_changed(&self, view: WallView) {
-                *self.view.lock().unwrap() = Some(view);
+                *self.view.lock() = Some(view);
             }
             fn wall_frames(&self, frames: Vec<(String, SharedPixelBuffer<Rgba8Pixel>)>) {
-                self.frames.lock().unwrap().extend(frames.into_iter().map(|(id, px)| (id, px.width())));
+                self.frames.lock().extend(frames.into_iter().map(|(id, px)| (id, px.width())));
             }
         }
 
@@ -359,22 +360,146 @@ mod tests {
         }];
         let deadline = Instant::now() + Duration::from_secs(10);
         let tile = loop {
-            if ui.view.lock().unwrap().as_ref().is_none_or(|v| v.picks.is_empty()) {
+            if ui.view.lock().as_ref().is_none_or(|v| v.picks.is_empty()) {
                 crate::service::monitor_wall::set_hosts(&admin, &listed);
             }
-            let live = ui.view.lock().unwrap().as_ref().and_then(|v| v.tiles.iter().find(|t| t.id == host_id).cloned());
-            if live.as_ref().is_some_and(|t| t.state == TileState::Live) && !ui.frames.lock().unwrap().is_empty() {
+            let live = ui.view.lock().as_ref().and_then(|v| v.tiles.iter().find(|t| t.id == host_id).cloned());
+            if live.as_ref().is_some_and(|t| t.state == TileState::Live) && !ui.frames.lock().is_empty() {
                 break live.unwrap();
             }
             assert!(Instant::now() < deadline, "no live tile with a picture: {live:?}");
             std::thread::sleep(Duration::from_millis(50));
         };
         assert_eq!(tile.subtitle, crate::domain::desk_id::format(&host_id));
-        let (id, width) = ui.frames.lock().unwrap()[0].clone();
+        let (id, width) = ui.frames.lock()[0].clone();
         assert!(id == host_id && width <= 640, "decoded tile-sized thumbnail: {id} {width}");
         crate::service::monitor_wall::toggle_host(&admin, &host_id);
         crate::service::monitor_wall::close(&admin);
         crate::service::monitor_wall::set_all(&admin, true);
+    }
+
+    /// Two real clients (host and viewer, the whole service stack) in one process: the session comes up
+    /// end-to-end encrypted, the host's real screen arrives decoded, and the stats overlay fills with the host's
+    /// summary. `p2p = false` forces the relay path, so video and input events travel sealed through the relay.
+    fn real_session(p2p: bool, host_id: &str, viewer_id: &str) {
+        use crate::domain::edition::Edition;
+        use crate::domain::history::HistoryRecord;
+        use crate::infra::audio::VoiceEngine;
+        use crate::service::context::{AppContext, Ctx};
+        use crate::service::ui_port::*;
+        use crate::service::viewer::controller;
+        use parking_lot::Mutex;
+        use std::sync::Arc;
+
+        #[derive(Default)]
+        struct Recorder {
+            frames: Mutex<u32>,
+            stats: Mutex<Option<(String, String)>>,
+        }
+        impl UiPort for Recorder {
+            fn status(&self, _: String) {}
+            fn relay_status(&self, _: RelayStatus) {}
+            fn gateway_changed(&self, _: String) {}
+            fn host_list(&self, _: Vec<RemoteHost>) {}
+            fn history(&self, _: Vec<HistoryRecord>) {}
+            fn hosting_started(&self, _: String) {}
+            fn hosting_ended(&self) {}
+            fn hosting_mic(&self, _: bool) {}
+            fn session_opened(&self, _: String, _: String, _: String, _: i32, _: i32) {}
+            fn session_connected(&self, _: String, _: String) {}
+            fn session_frame(&self, _: String, _: Frame) {
+                *self.frames.lock() += 1;
+            }
+            fn session_changed(&self, _: String, change: SessionChange) {
+                if let SessionChange::Stats(labels, values) = change {
+                    *self.stats.lock() = Some((labels, values));
+                }
+            }
+            fn session_closed(&self, _: String, _: Option<String>) {}
+            fn all_sessions_closed(&self) {}
+            fn focus_changed(&self, _: String) {}
+            fn layout_changed(&self, _: i32) {}
+            #[cfg(feature = "admin")]
+            fn wall_changed(&self, _: WallView) {}
+            #[cfg(feature = "admin")]
+            fn wall_frames(&self, _: Vec<(String, slint::SharedPixelBuffer<slint::Rgba8Pixel>)>) {}
+        }
+
+        // SAFETY: the e2e tests run one at a time (--test-threads=1); the relay threads read it at connect.
+        unsafe { std::env::set_var("OPENDESK_P2P", if p2p { "1" } else { "0" }) };
+        let url = std::env::var("OPENDESK_E2E_RELAY").unwrap_or_else(|_| "ws://127.0.0.1:8088".into());
+        let start = |id: &str, ui: Arc<dyn UiPort>| -> Ctx {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let voice = VoiceEngine::new(tx.clone());
+            let ctx = Arc::new(AppContext::new(Edition::Standard, id.to_string(), url.clone(), tx, ui, voice));
+            crate::service::relay::spawn(Arc::clone(&ctx), rx);
+            ctx
+        };
+        let ui = Arc::new(Recorder::default());
+        let host = start(host_id, Arc::new(NoUi));
+        let viewer = start(viewer_id, ui.clone());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !(host.relay.online.load(Ordering::SeqCst) && viewer.relay.online.load(Ordering::SeqCst)) {
+            assert!(Instant::now() < deadline, "both clients register with the relay");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        controller::request_connect(&viewer, host_id, "e2e host".into(), String::new());
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let sess = loop {
+            let s = viewer.viewers.get(host_id);
+            if let Some(s) = s.filter(|s| s.is_connected() && s.e2e_active() && *ui.frames.lock() >= 1) {
+                break s;
+            }
+            assert!(Instant::now() < deadline, "end-to-end session with a picture (frames={})", *ui.frames.lock());
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(host.host.is_active(), "the host side is hosting");
+
+        controller::set_stats_overlay(&viewer, true);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let values = loop {
+            // The host's summary fills "Host grab"; until then it shows a dash.
+            if let Some((labels, values)) = ui.stats.lock().clone()
+                && let Some(row) = labels.lines().position(|l| l == "Host grab")
+                && values.lines().nth(row).is_some_and(|v| v != "–")
+            {
+                break values;
+            }
+            assert!(Instant::now() < deadline, "host stats reach the overlay: {:?}", ui.stats.lock());
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        println!(
+            "p2p={p2p} path={} overlay:\n{values}",
+            if sess.p2p_active.load(Ordering::SeqCst) { "P2P" } else { "Relay" }
+        );
+        assert!(values.lines().any(|v| v == "End-to-end"), "{values}");
+        if !p2p {
+            assert!(values.lines().any(|v| v == "Relay"), "{values}");
+        }
+
+        controller::set_stats_overlay(&viewer, false);
+        controller::close(&viewer, host_id, None);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while host.host.is_active() {
+            assert!(Instant::now() < deadline, "the host notices the session ended");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        unsafe { std::env::remove_var("OPENDESK_P2P") };
+    }
+
+    #[test]
+    #[ignore]
+    fn relay_e2e_real_session_over_relay() {
+        let base = &ids()[0][..8];
+        real_session(false, &format!("{base}4"), &format!("{base}5"));
+    }
+
+    #[test]
+    #[ignore]
+    fn relay_e2e_real_session_p2p() {
+        let base = &ids()[0][..8];
+        real_session(true, &format!("{base}6"), &format!("{base}7"));
     }
 
     /// A device registered as `viewer-only` (Android, Linux on Wayland) is never offered as a host.

@@ -23,6 +23,21 @@ pub struct Settings {
     /// Monitor wall (admin edition). Stored by every edition so switching editions never loses it.
     #[serde(default)]
     pub monitor: MonitorSettings,
+    /// Viewer frame-rate limit: 0 = Auto (this monitor's refresh rate), 30, 60, or
+    /// `frame_rate::FPS_MAXIMUM` for "Maximum".
+    #[serde(default)]
+    pub max_fps: u32,
+    /// Let the service install signed updates (Windows, see `docs/auto-update.md`). `OPENDESK_AUTO_UPDATE=0`
+    /// also turns it off.
+    #[serde(default = "yes")]
+    pub auto_update: bool,
+    /// Manifest URL instead of the GitHub release (`OPENDESK_UPDATE_URL` overrides it). Empty: default.
+    #[serde(default)]
+    pub update_url: String,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Monitor-wall preferences (see `docs/features/monitor-wall.md` at the repository root).
@@ -55,6 +70,9 @@ impl Settings {
             device_token: String::new(),
             device_token_relay: String::new(),
             monitor: MonitorSettings::default(),
+            max_fps: 0,
+            auto_update: true,
+            update_url: String::new(),
         }
     }
 
@@ -138,8 +156,20 @@ mod tests {
     #[test]
     fn settings_without_monitor_section_still_load() {
         let s: Settings = serde_json::from_str(r#"{"gateway_url":"ws://x","desk_id":"123456789"}"#).unwrap();
-        assert_eq!(s.monitor, MonitorSettings::default());
+        assert_eq!((s.monitor, s.max_fps), (MonitorSettings::default(), 0));
         let partial: MonitorSettings = serde_json::from_str(r#"{"grid":4}"#).unwrap();
         assert_eq!((partial.grid, partial.all, partial.rotate_secs), (4, true, 10));
+        assert!(s.auto_update);
+    }
+
+    /// Rollback rule: an older build must read the config a newer one wrote, so fields are only ever added
+    /// (with a default), never removed or renamed, and unknown fields are ignored.
+    #[test]
+    fn settings_with_fields_from_a_newer_version_still_load() {
+        let s: Settings = serde_json::from_str(
+            r#"{"gateway_url":"ws://x","desk_id":"123456789","from_a_later_release":{"a":1},"monitor":{"grid":2,"later":true}}"#,
+        )
+        .unwrap();
+        assert_eq!((s.desk_id.as_str(), s.monitor.grid), ("123456789", 2));
     }
 }

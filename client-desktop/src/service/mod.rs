@@ -13,6 +13,7 @@ pub mod relay;
 pub mod sessions;
 pub mod settings;
 pub mod ui_port;
+pub mod update;
 pub mod viewer;
 
 #[cfg(test)]

@@ -8,13 +8,16 @@ use crate::codec::JpegEncoder;
 use crate::codec::delta::{build_atlas, key_header, pack_atlas};
 use crate::codec::frame::{FLAG_IDR, FrameHeader, KIND_DELTA, KIND_H264, MoveRect};
 use crate::codec::h264::H264Encoder;
+
+/// What `H264Encoder::encode` / `take_ready` return, with the backend's error dropped (any error means the same).
+type H264Result = Result<Option<(Vec<u8>, bool)>, ()>;
 use crate::diff::{BlockDiff, Rect, merge_blocks};
 
 /// 32px blocks: small enough that a caret or glyph costs ~1 KB, large enough to keep the rect list short.
 pub const BLOCK: i32 = 32;
-/// Idle ticks between keepalives (the old pipeline resent a full JPEG; deltas send a 20-byte header).
+/// Idle ticks at 60 FPS between keepalives (the old pipeline resent a full JPEG; deltas send a 20-byte header).
 const KEEPALIVE_TICKS: u32 = 30;
-/// Idle ticks after motion before blurry (low-quality) regions are resent sharp.
+/// Idle ticks at 60 FPS after motion before blurry (low-quality) regions are resent sharp.
 const SETTLE_TICKS: u32 = 2;
 /// Consecutive motion ticks before switching to H.264 (one big update is often just a window opening).
 const H264_ENTER_STREAK: u32 = 3;
@@ -32,6 +35,30 @@ pub enum H264Mode {
     Auto,
     /// Every changed frame (benchmarking); still ends motion with a sharp JPEG key frame.
     Always,
+}
+
+/// Whether an idle H.264 stream switches to H.264 on this tick. `Auto` waits for sustained motion; above
+/// 60 FPS on a hardware encoder (`high_fps`) any change bigger than typing switches at once, because JPEG
+/// regions cost too much CPU at that rate. Typing stays on sharp JPEG regions: entering H.264 costs an IDR
+/// frame and leaving it a full JPEG key frame.
+fn enters_h264(mode: H264Mode, high_fps: bool, changed: bool, light: bool, motion_streak: u32) -> bool {
+    changed
+        && match mode {
+            H264Mode::Off => false,
+            H264Mode::Always => true,
+            H264Mode::Auto => motion_streak >= H264_ENTER_STREAK || (high_fps && !light),
+        }
+}
+
+/// Typing-sized change: under ~3% of the blocks and not a heavy frame.
+fn is_light(heavy: bool, dirty_blocks: usize, total_blocks: usize) -> bool {
+    !heavy && dirty_blocks * 33 < total_blocks.max(1)
+}
+
+/// `ticks_at_60` idle ticks at `fps`, so settle and keepalive keep their wall-clock time above 60 FPS. At 60
+/// and below the tick counts stay as they were.
+fn scaled_ticks(ticks_at_60: u32, fps: u32) -> u32 {
+    ticks_at_60 * fps.max(60) / 60
 }
 
 /// What the encoder sent for one frame.
@@ -109,6 +136,13 @@ pub struct StreamEncoder {
     congestion: f32,
     /// Name of the H.264 encoder in use, for logs.
     pub h264_name: Option<String>,
+    /// The H.264 encoder picked up last was a hardware one (kept while it is rebuilt).
+    h264_hw: bool,
+    /// Frame rate the H.264 encoder is configured for (the capture loop's target).
+    fps: u32,
+    /// Above 60 FPS on a hardware encoder, `Auto` switches to H.264 for any non-typing change
+    /// (`OPENDESK_H264_HIGH_FPS=0` keeps the 60 FPS rule).
+    high_fps_policy: bool,
 }
 
 impl StreamEncoder {
@@ -138,6 +172,9 @@ impl StreamEncoder {
             light_streak: 0,
             congestion: 0.0,
             h264_name: None,
+            h264_hw: false,
+            fps: 60,
+            high_fps_policy: std::env::var("OPENDESK_H264_HIGH_FPS").map(|v| v != "0").unwrap_or(true),
         }
     }
 
@@ -147,10 +184,10 @@ impl StreamEncoder {
         if self.h264_mode != H264Mode::Off && self.h264.is_none() && self.h264_pending.is_none() && !self.h264_failed {
             // Prepare the encoder off the capture thread so the first motion burst does not stall.
             let (tx, rx) = mpsc::channel();
-            let (w, h, bps) = (self.width as u32, self.height as u32, self.h264_bitrate());
+            let (w, h, fps, bps) = (self.width as u32, self.height as u32, self.fps, self.h264_bitrate());
             let allow_hw = std::env::var("OPENDESK_H264_HW").map(|v| v != "0").unwrap_or(true);
             std::thread::spawn(move || {
-                let _ = tx.send(H264Encoder::new(w, h, 60, bps, allow_hw).ok());
+                let _ = tx.send(H264Encoder::new(w, h, fps, bps, allow_hw).ok());
             });
             self.h264_pending = Some(rx);
         }
@@ -162,6 +199,7 @@ impl StreamEncoder {
             match rx.recv() {
                 Ok(Some(e)) => {
                     self.h264_name = Some(e.name.clone());
+                    self.h264_hw = e.hardware;
                     self.h264 = Some(e);
                 }
                 _ => self.h264_failed = true,
@@ -176,6 +214,7 @@ impl StreamEncoder {
             match rx.try_recv() {
                 Ok(Some(e)) => {
                     self.h264_name = Some(e.name.clone());
+                    self.h264_hw = e.hardware;
                     self.h264 = Some(e);
                     self.h264_pending = None;
                 }
@@ -188,10 +227,38 @@ impl StreamEncoder {
         }
     }
 
-    /// CBR target: ~2 bits per pixel per second (3.7 Mbps at 1728x1080), lowered under congestion.
+    /// CBR target: ~2 bits per pixel per second at 60 FPS (3.7 Mbps at 1728x1080), scaled by sqrt(fps / 60)
+    /// (consecutive frames differ less at higher rates) and lowered under congestion.
     fn h264_bitrate(&self) -> u32 {
         let base = (self.width as f64 * self.height as f64 * 2.0).clamp(1_500_000.0, 10_000_000.0);
-        (base * (1.0 - 0.7 * self.congestion as f64)) as u32
+        let rate = (self.fps as f64 / 60.0).sqrt();
+        (base * rate * (1.0 - 0.7 * self.congestion as f64)) as u32
+    }
+
+    /// True while H.264 runs on a hardware encoder (also while that encoder is being rebuilt).
+    pub fn h264_hardware(&self) -> bool {
+        self.h264_hw && !self.h264_failed
+    }
+
+    /// True while `Auto` follows the high-frame-rate rule (see [`enters_h264`]).
+    fn high_fps(&self) -> bool {
+        self.high_fps_policy && self.fps > 60 && self.h264_hardware()
+    }
+
+    /// Frame rate of the capture loop; a change rebuilds the H.264 encoder for the new rate.
+    pub fn set_fps(&mut self, fps: u32) {
+        if fps != self.fps {
+            self.fps = fps;
+            self.rebuild_h264();
+        }
+    }
+
+    /// Drops the H.264 encoder and prepares a new one for the current size and rate.
+    fn rebuild_h264(&mut self) {
+        self.h264 = None;
+        self.h264_pending = None;
+        self.in_h264 = false;
+        self.set_h264(self.h264_mode);
     }
 
     /// New capture geometry or quality (monitor / resolution switch): restart with a key frame.
@@ -202,10 +269,7 @@ impl StreamEncoder {
             self.diff = BlockDiff::new(width, height, BLOCK);
             self.lowq = vec![false; self.diff.grid_w * self.diff.grid_h];
             // The encoder is bound to the old size.
-            self.h264 = None;
-            self.h264_pending = None;
-            self.in_h264 = false;
-            self.set_h264(self.h264_mode);
+            self.rebuild_h264();
         }
         self.base_quality = base_quality;
         self.request_key();
@@ -278,7 +342,7 @@ impl StreamEncoder {
         } else {
             self.idle_ticks += 1;
             let n_low = self.lowq.iter().filter(|&&d| d).count();
-            if n_low > 0 && self.idle_ticks == SETTLE_TICKS {
+            if n_low > 0 && self.idle_ticks >= scaled_ticks(SETTLE_TICKS, self.fps) {
                 if n_low * 2 > total {
                     self.send_key(f, false)
                 } else {
@@ -286,7 +350,7 @@ impl StreamEncoder {
                     let q = self.quality(false);
                     self.send_delta(f, &blocks, q)
                 }
-            } else if self.idle_ticks >= KEEPALIVE_TICKS {
+            } else if self.idle_ticks >= scaled_ticks(KEEPALIVE_TICKS, self.fps) {
                 self.idle_ticks = 0;
                 self.send_delta(f, &[], self.base_quality)
             } else {
@@ -318,12 +382,9 @@ impl StreamEncoder {
             return None;
         }
         self.poll_h264();
+        let light = is_light(heavy, self.last.dirty_blocks, self.lowq.len());
         if !self.in_h264 {
-            let enter = changed
-                && match self.h264_mode {
-                    H264Mode::Always => true,
-                    _ => self.motion_streak >= H264_ENTER_STREAK,
-                };
+            let enter = enters_h264(self.h264_mode, self.high_fps(), changed, light, self.motion_streak);
             // Until the encoder is ready, motion keeps going out as JPEG deltas.
             let enc = self.h264.as_mut().filter(|_| enter)?;
             enc.discard_pending();
@@ -337,15 +398,16 @@ impl StreamEncoder {
         if !changed {
             self.idle_ticks += 1;
             // Motion over: one sharp JPEG key frame replaces the H.264 picture, then regions as usual.
-            if self.idle_ticks == SETTLE_TICKS {
+            if self.idle_ticks >= scaled_ticks(SETTLE_TICKS, self.fps) {
                 self.in_h264 = false;
                 return Some(self.send_key(f, false));
             }
-            return Some(None);
+            // Pipelined: the burst's last frame finishes while the screen is still.
+            let ready = self.h264.as_mut().map(|e| e.take_ready().map_err(drop));
+            return Some(ready.and_then(|r| self.h264_out(f, r)));
         }
         self.idle_ticks = 0;
-        // Typing-sized changes (under ~3% of the blocks) are better served by sharp JPEG regions.
-        let light = !heavy && self.last.dirty_blocks * 33 < self.lowq.len().max(1);
+        // Typing-sized changes are better served by sharp JPEG regions.
         self.light_streak = if light { self.light_streak + 1 } else { 0 };
         if self.h264_mode == H264Mode::Auto && self.light_streak >= H264_EXIT_LIGHT {
             self.in_h264 = false;
@@ -361,12 +423,19 @@ impl StreamEncoder {
     }
 
     fn send_h264(&mut self, f: &FrameInput) -> Option<Vec<u8>> {
-        let target = self.h264_bitrate();
+        let (target, pipelined) = (self.h264_bitrate(), self.high_fps());
         let enc = self.h264.as_mut()?;
         if (enc.bitrate() as f64 - target as f64).abs() > target as f64 * 0.1 {
             enc.set_bitrate(target);
         }
-        match enc.encode(f.pixels, f.stride) {
+        enc.set_pipelined(pipelined);
+        let result = enc.encode(f.pixels, f.stride).map_err(drop);
+        self.h264_out(f, result)
+    }
+
+    /// Frames an access unit from the encoder; an encoder error falls back to JPEG for good.
+    fn h264_out(&mut self, f: &FrameInput, result: H264Result) -> Option<Vec<u8>> {
+        match result {
             Ok(Some((au, idr))) => {
                 self.seq = self.seq.wrapping_add(1);
                 self.last.kind = SentKind::H264;
@@ -463,5 +532,55 @@ impl StreamEncoder {
             patches,
         };
         Some(header.encode(&payload))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn h264_bitrate_scales_with_sqrt_of_fps() {
+        let mut enc = StreamEncoder::new(1728, 1080, 80, true);
+        assert_eq!(enc.h264_bitrate(), 3_732_480, "60 FPS keeps the old target");
+        enc.set_fps(240);
+        assert_eq!(enc.h264_bitrate(), 7_464_960);
+        enc.set_congestion(1.0);
+        assert_eq!(enc.h264_bitrate(), 2_239_488);
+    }
+
+    #[test]
+    fn high_fps_enters_h264_on_any_change_but_typing() {
+        use H264Mode::*;
+        // 60 FPS rule: sustained motion only.
+        assert!(!enters_h264(Auto, false, true, false, 1));
+        assert!(enters_h264(Auto, false, true, false, H264_ENTER_STREAK));
+        // Above 60 on hardware: the first non-typing change, but never typing or an unchanged frame.
+        assert!(enters_h264(Auto, true, true, false, 0));
+        assert!(!enters_h264(Auto, true, true, true, 0));
+        assert!(!enters_h264(Auto, true, false, false, 9));
+        // Off and Always keep their meaning.
+        assert!(!enters_h264(Off, true, true, false, 9));
+        assert!(enters_h264(Always, false, true, true, 0));
+        assert!(is_light(false, 10, 1000) && !is_light(false, 40, 1000) && !is_light(true, 1, 1000));
+    }
+
+    #[test]
+    fn idle_ticks_keep_their_time_above_60_fps() {
+        assert_eq!((scaled_ticks(SETTLE_TICKS, 30), scaled_ticks(SETTLE_TICKS, 60)), (2, 2));
+        assert_eq!((scaled_ticks(SETTLE_TICKS, 144), scaled_ticks(KEEPALIVE_TICKS, 144)), (4, 72));
+        assert_eq!(scaled_ticks(KEEPALIVE_TICKS, 240), 120);
+    }
+
+    #[test]
+    fn high_fps_rule_needs_a_hardware_encoder_above_60() {
+        let mut enc = StreamEncoder::new(64, 64, 80, true);
+        enc.high_fps_policy = true;
+        enc.set_fps(144);
+        assert!(!enc.high_fps(), "no hardware encoder yet");
+        enc.h264_hw = true;
+        assert!(enc.high_fps());
+        enc.fps = 60;
+        assert!(!enc.high_fps());
     }
 }

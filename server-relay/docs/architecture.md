@@ -24,9 +24,15 @@ in-memory fakes and never import transport or storage code.
 - One goroutine per connection reads and dispatches messages (`handler/websocket_handler.go`).
 - `usecase.Relay` holds every peer and session in memory behind one `sync.RWMutex`. Methods ending in `Locked`
   require it; nothing else touches session fields.
-- Every peer has a frame-writer goroutine with a bounded queue; every multi-session view has its own. Other
-  writes go through `Peer.write`, serialized by a per-peer mutex. A failed write closes the connection, which
-  ends its read loop and runs the normal cleanup.
+- Every peer has one writer goroutine (`usecase/outbox.go`), the only code that writes its socket (pings
+  aside). Senders enqueue and return; the writer serves bounded queues in priority order: control and input
+  text, voice, video, file transfers. Video keeps one ordered frame queue per single session, multi-session
+  view and monitor tile (served round robin); file messages get a turn at least every 8 writes.
+- Overflow: voice drops its oldest packet; video keeps the frame-queue rules; a full control (256 messages)
+  or file (16) queue holds its sender back while the writer is making progress. A receiver whose current
+  write has been stuck for 500 ms with a full control queue, or 10 s with a full file queue, is closed, and so
+  is one whose write fails or times out (10 s). Closing ends its read loop and runs the normal cleanup, which
+  stops the writer and releases its queues.
 - Storage writes run synchronously with a 5 s timeout. They are an audit trail: a failure is logged and the
   live session continues.
 - Background: `handler.RunPinger` (WebSocket pings) and `Relay.RunJanitor` (expires file grants), both stopped

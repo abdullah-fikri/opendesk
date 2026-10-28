@@ -31,9 +31,10 @@ pub use presenter::SlintUi;
 slint::include_modules!();
 
 /// Fills the window with its initial state and binds every callback.
-pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, gateway_url: &str) {
+pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, gateway_url: &str, max_fps: u32) {
     win.set_local_desk_id(desk_id::format(&ctx.local_id).into());
     win.set_gateway_url(gateway_url.into());
+    win.set_max_fps(max_fps as i32);
     win.set_is_admin(ctx.edition == Edition::Admin);
     win.set_active_dashboard_tab(if ctx.edition == Edition::Admin { 1 } else { 0 });
     win.set_history_items(view_model::history_items(&history.records()));
@@ -109,7 +110,7 @@ pub fn enable_file_drop(win: &MainWindow, ctx: &Ctx, hide_after: bool) {
     }
     let weak = win.as_weak();
     let ctx = Arc::clone(ctx);
-    thread::spawn(move || {
+    crate::infra::thread::spawn_named("file-drop-register", move || {
         for _ in 0..20 {
             thread::sleep(Duration::from_millis(250));
             let registered = Arc::new(AtomicBool::new(false));

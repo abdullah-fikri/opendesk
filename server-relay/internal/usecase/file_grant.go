@@ -12,6 +12,11 @@ const (
 	FilePull  = "pull"  // asks the offerer to start a granted transfer; needs an active session
 )
 
+// Binary file chunk, used only between peers that both advertise file-binary (see docs/protocol.md):
+// fileChunkMarker, id length (1 byte), id, offset (8 bytes, big endian), data. The transfer itself still starts
+// and ends with JSON; a binary chunk needs the same grant as a JSON one.
+const fileChunkMarker = 0x12
+
 const (
 	fileGrantIdle    = 60 * time.Second
 	maxGrantsPerPeer = 8
@@ -66,6 +71,31 @@ func (r *Relay) RouteFile(sender *Peer, targetClean, action, id string) *Peer {
 		return gr.from
 	}
 	return nil
+}
+
+// fileChunkID returns the transfer ID of a binary file chunk, or "" when its header is malformed.
+func fileChunkID(msg []byte) string {
+	if len(msg) < 2 || msg[0] != fileChunkMarker {
+		return ""
+	}
+	n := int(msg[1])
+	if n == 0 || n > maxFileIDLen || len(msg) < 2+n+8 {
+		return ""
+	}
+	return string(msg[2 : 2+n])
+}
+
+// forwardFileChunk authorizes a binary chunk exactly like a JSON one (the grant for this sender, transfer ID
+// and receiver) and queues it as file traffic, tagged with the sender's clean ID: the binary counterpart of
+// the fromClean the relay stamps on file-transfer. Receivers that did not advertise file-binary never get one.
+func (r *Relay) forwardFileChunk(sender *Peer, targetClean string, msg []byte) bool {
+	rcpt := r.RouteFile(sender, targetClean, FileChunk, fileChunkID(msg))
+	if rcpt == nil || !rcpt.FileBinary {
+		r.metrics.Rejected()
+		return false
+	}
+	_ = rcpt.SendFileChunk(sender.CleanID, msg)
+	return true
 }
 
 func (r *Relay) grantsOwnedLocked(p *Peer) int {

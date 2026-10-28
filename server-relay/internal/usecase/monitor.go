@@ -28,11 +28,10 @@ type monitorFeed struct {
 	last []byte
 }
 
-// monitorTile is one administrator's tile. It has its own queue and writer, so a slow administrator only
-// drops its own frames and never holds more than two per tile.
+// monitorTile is one administrator's tile. It has its own queue, served by the administrator's writer, so a
+// slow administrator only drops its own frames and never holds more than two per tile.
 type monitorTile struct {
 	frames *frameQueue
-	done   chan struct{}
 }
 
 // MonitorNotice is one monitor-state message for an administrator.
@@ -49,16 +48,9 @@ type MonitorUpdate struct {
 	Stop    []*Peer // hosts nobody watches any more (monitor-stop)
 }
 
-// startTile creates a tile whose writer tags every frame with monitorTag and the host's clean ID.
+// startTile creates a tile whose frames the writer tags with monitorTag and the host's clean ID.
 func (p *Peer) startTile(hostClean string) *monitorTile {
-	t := &monitorTile{frames: newFrameQueue(p.metrics), done: make(chan struct{})}
-	go p.writeFrames(t.frames, t.done, monitorTag, hostClean)
-	return t
-}
-
-func (t *monitorTile) stop() {
-	close(t.done)
-	t.frames.drain()
+	return &monitorTile{frames: p.addStream(monitorTag, hostClean)}
 }
 
 // WatchMonitors replaces the set of hosts admin watches with targets (clean IDs; invalid IDs, the admin itself
@@ -159,7 +151,7 @@ func (r *Relay) watchLocked(admin *Peer, hostID string, up *MonitorUpdate) {
 
 func (r *Relay) unwatchLocked(admin *Peer, hostID string, up *MonitorUpdate) {
 	if tile := admin.watching[hostID]; tile != nil {
-		tile.stop()
+		admin.removeStream(tile.frames)
 	}
 	delete(admin.watching, hostID)
 	feed := r.monitors[hostID]

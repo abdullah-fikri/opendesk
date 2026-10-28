@@ -184,6 +184,14 @@ impl H264Encoder {
     /// Nothing is queued in a synchronous encoder.
     pub fn discard_pending(&mut self) {}
 
+    /// A synchronous encoder returns every frame's output at once; nothing to pipeline.
+    pub fn set_pipelined(&mut self, _on: bool) {}
+
+    /// Nothing is ever pending in a synchronous encoder.
+    pub fn take_ready(&mut self) -> Result<Option<(Vec<u8>, bool)>> {
+        Ok(None)
+    }
+
     /// Encodes one BGRX frame (`stride` in pixels). Returns the Annex-B access unit and whether it is an IDR,
     /// or None when the encoder skipped the frame.
     pub fn encode(&mut self, bgra: &[u32], stride: usize) -> Result<Option<(Vec<u8>, bool)>> {

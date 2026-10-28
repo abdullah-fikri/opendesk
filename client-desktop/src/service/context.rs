@@ -1,10 +1,11 @@
 //! Shared handles of the running client, built once by the composition root (`app.rs`).
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
 
 use core_engine::input::InputInjector;
+use parking_lot::Mutex;
 
 use crate::domain::capability::RelayCaps;
 use crate::domain::edition::Edition;
@@ -50,6 +51,8 @@ pub struct RelayLink {
     /// Set to drop the connection and reconnect (gateway changed, tray "Reconnect").
     pub reconnect: AtomicBool,
     pub caps: Mutex<RelayCaps>,
+    /// Registered with the relay (set on `registered-ack`, cleared when a connection attempt starts).
+    pub online: AtomicBool,
 }
 
 impl AppContext {
@@ -78,6 +81,7 @@ impl AppContext {
                 gateway_url: Mutex::new(gateway_url),
                 reconnect: AtomicBool::new(false),
                 caps: Mutex::default(),
+                online: AtomicBool::new(false),
             },
             clipboard_seq: AtomicU32::new(core_engine::clipboard::sequence_number()),
             partner: Mutex::new(String::new()),
@@ -98,12 +102,12 @@ impl AppContext {
 
     /// The current partner's clean ID (empty: none).
     pub fn partner(&self) -> String {
-        self.partner.lock().unwrap().clone()
+        self.partner.lock().clone()
     }
 
     /// Replaces the current partner.
     pub fn set_partner(&self, id: &str) {
-        *self.partner.lock().unwrap() = id.to_string();
+        *self.partner.lock() = id.to_string();
     }
 
     /// True while a viewer controls this machine.
