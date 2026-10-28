@@ -76,6 +76,11 @@ Rules that keep it that way:
 - **Transport.** Use `wss://` through a TLS terminator. The relay refuses plaintext WebSocket from
   non-loopback addresses unless told TLS ends at a proxy. The P2P path is encrypted with Noise
   (`Noise_NN_25519_ChaChaPoly_BLAKE2s`), bound to the relay-approved pair.
+- **End to end.** Desktop peers that both list `e2e` run `Noise_XX` with per-device keys; viewers pin host keys
+  on first use and close the session when one changes. Those keys then protect P2P, and on the relay path video,
+  voice, file chunks and input events, keeping in clear only the bytes the relay routes on. The relay still sees
+  file names, clipboard text and metadata. See
+  [client-desktop/docs/features/e2e.md](../client-desktop/docs/features/e2e.md).
 - **Authorization.** The relay forwards input, clipboard, files and signals only inside an active session,
   checked from both sides, and stamps the sender of every file message itself.
 - **Monitor wall.** Administrators may watch up to 16 hosts' thumbnails at once

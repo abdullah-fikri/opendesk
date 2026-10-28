@@ -41,7 +41,7 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 | `relay-clipboard` | `targetClean`, `text` | Clipboard text for the partner. |
 | `relay-file` | `targetClean`, `payload` | One file-transfer message (see [File transfer](#file-transfer)). |
 | `session-disconnect` | `targetClean` | End this client's session with that partner. |
-| `p2p-signal` | `targetClean`, `candidate` | Noise handshake and UDP candidates for a direct path (max 4096 bytes, 10 per second per partner). |
+| `p2p-signal` | `targetClean`, `candidate` | Noise handshake and UDP candidates for a direct path, and the `e2e` handshake (max 4096 bytes, 10 per second per partner). |
 | `monitor-set` | `targets[]` | Administrators with `monitor-view` only: replace the hosts on the monitor wall (at most 16; empty stops). See [Monitor wall](#monitor-wall). |
 | `security-get` | | Administrators only: request the device allowlist (`security-state`). |
 | `security-set` | `enabled` | Administrators only: turn the device allowlist on or off. |
@@ -100,6 +100,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `video-h264` | client | H.264 inside the framed format. |
 | `audio-opus` | client | Decodes Opus voice (`[0x02][0x4F]...`); voice to it is Opus, to everyone else PCM. |
 | `p2p.v1` | client | Direct encrypted UDP path. |
+| `e2e` | client | End-to-end encryption: `Noise_XX` with device keys over `p2p-signal`, then sealed relay media and input events (see [Binary messages](#binary-messages) and `client-desktop/docs/features/e2e.md`). Needs the relay's `p2p-signal`. |
 | `multi-session` | client + relay | Up to four viewer sessions per connection. |
 | `monitor-host` | client | Streams monitor-wall thumbnails on `monitor-start` (every desktop edition). |
 | `monitor-view` | client | Shows the monitor wall: `monitor-state` and the `0x11` tag (admin edition). |
@@ -181,6 +182,11 @@ monitor [0x11][9 ASCII digits: host clean ID][JPEG]            relay to administ
 file    [0x12][id length: 1..80][id][offset: u64 big-endian][data: at most 128 KiB]   sender to relay (file-binary)
 file    [0x10][9 ASCII digits: sender clean ID][file chunk]   relay to receiver, always tagged
 ```
+
+Between two peers that list `e2e`, once their handshake completed, video, voice and file chunks are sealed and
+keep only their routing header in clear: `[FF D8 00 4F ver kind flags 0xE2]`, `[0x02 0xE2]` or
+`[0x12 len id FF*8]`, then a nonce and the encrypted original message. The relay reads these exactly as before.
+Input events between them are `{"action":"e2e","d":...}`; receivers that do not use `e2e` never get one.
 
 A multi-session viewer may put the session tag in front of a file chunk it sends, as for voice; the grant
 decides the receiver either way. The relay always tags file chunks it delivers with the sender, like `fromClean`

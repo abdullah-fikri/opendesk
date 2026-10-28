@@ -12,7 +12,9 @@ The direct path only moves video, voice and input, and every session falls back 
    (`OPENDESK_STUN`, default `stun.l.google.com:19302`; `off` disables it). At most 8; loopback, multicast and
    ports below 1024 are rejected.
 2. A Noise `NN_25519_ChaChaPoly_BLAKE2s` handshake travels in `p2p-signal` messages through the relay, with a
-   prologue binding it to the viewer and host desk IDs.
+   prologue binding it to the viewer and host desk IDs (signal `v: 1`). When both peers list `e2e`, the path
+   instead uses the keys of the session's `Noise_XX` handshake with pinned device keys ([e2e.md](e2e.md)) and the
+   signal only carries candidates (`v: 2`). NN alone does not stop a relay that rewrites the handshake; XX does.
 3. Both sides probe each other's candidates. The first answered probe makes the path active; it is considered
    lost after 3 s without traffic and probing restarts.
 
