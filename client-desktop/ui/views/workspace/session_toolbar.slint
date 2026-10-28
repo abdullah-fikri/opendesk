@@ -23,6 +23,9 @@ export component SessionToolbar inherits Rectangle {
     callback set_resolution(string, int);
     callback set_audio_quality(string, int);
     callback disconnect(string);
+    // Stats overlay (shared by every session).
+    in property <bool> stats_on: false;
+    callback toggle_stats();
 
     height: 38px;
     background: Theme.surface;
@@ -180,6 +183,14 @@ export component SessionToolbar inherits Rectangle {
                     }
                 }
             }
+        }
+
+        ToolButton {
+            y: (parent.height - self.height) / 2;
+            label: "Stats";
+            active: root.stats_on;
+            tip: root.stats_on ? "Hide connection statistics" : "Show connection statistics (latency, bitrate, frame times)";
+            clicked => { root.toggle_stats(); }
         }
 
         // Per-session status (transfers, errors): takes the free space and elides when narrow.

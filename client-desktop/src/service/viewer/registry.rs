@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use crate::domain::keyboard::KeyForwarder;
 use crate::infra::power;
 use crate::service::viewer::decoder::VideoInbox;
+use crate::service::viewer::stats::SessionStats;
 
 /// Sessions a multi-session viewer may hold (the relay enforces the same limit).
 pub const MAX_SESSIONS: usize = 4;
@@ -46,6 +47,9 @@ pub struct Session {
     pub has_monitors: AtomicBool,
     /// Keys this viewer holds down on the host.
     pub keys: Mutex<KeyForwarder>,
+    /// The stats overlay is shown: the decoder thread refreshes [`Session::stats`] and pings the host.
+    pub stats_on: AtomicBool,
+    pub stats: Mutex<SessionStats>,
     /// Full speed (no EcoQoS) from opening the session until it is dropped.
     _awake: power::Awake,
 }
@@ -72,6 +76,8 @@ impl Session {
             offered_seq: AtomicU32::new(0),
             has_monitors: AtomicBool::new(false),
             keys: Mutex::default(),
+            stats_on: AtomicBool::new(false),
+            stats: Mutex::default(),
             _awake: power::awake(),
         }
     }
@@ -131,6 +137,8 @@ pub struct Registry {
     default_resolution: AtomicUsize,
     /// Last canvas size seen (`resolution::pack_box`), so a new session can ask for the right size at once.
     default_viewport: AtomicU64,
+    /// The stats overlay is shown (off at start, kept for the app run).
+    stats_overlay: AtomicBool,
 }
 
 impl Registry {
@@ -142,7 +150,18 @@ impl Registry {
             swallowed_click: Mutex::new(None),
             default_resolution: AtomicUsize::new(crate::domain::resolution::AUTO),
             default_viewport: AtomicU64::new(0),
+            stats_overlay: AtomicBool::new(false),
         }
+    }
+
+    /// True while the stats overlay is shown.
+    pub fn stats_overlay(&self) -> bool {
+        self.stats_overlay.load(Ordering::SeqCst)
+    }
+
+    /// Shows or hides the stats overlay of every session.
+    pub fn set_stats_overlay(&self, on: bool) {
+        self.stats_overlay.store(on, Ordering::SeqCst);
     }
 
     /// Resolution mode for sessions opened from now on.

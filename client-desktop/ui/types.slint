@@ -47,6 +47,8 @@ export struct SessionView {
     audio_quality: int,
     monitors: [MonitorItem],
     active_monitor: int,    // index into the host's monitor list
+    stats_labels: string,   // stats overlay: newline-separated labels and values ("" until the first refresh)
+    stats_values: string,
 }
 
 // ---- File transfers (see client-desktop/docs/features/file-transfer.md). Rust fills these. ----

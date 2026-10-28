@@ -16,11 +16,12 @@ use image::ImageReader;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 use crate::domain::capability;
-use crate::domain::perf_stats::{Counter, PerfWindow, Stage, kbps};
+use crate::domain::perf_stats::{Counter, PerfWindow, STATS_INTERVAL, Stage, kbps};
 use crate::infra::logger;
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 use crate::service::ui_port::Frame;
 use crate::service::viewer::registry::Session;
+use crate::service::viewer::stats::ViewerStats;
 
 /// Minimum spacing of key-frame requests after a broken delta chain.
 const KEY_REQUEST_INTERVAL: Duration = Duration::from_millis(300);
@@ -283,18 +284,33 @@ impl ViewerPerf {
             self.batches.take(),
         )
     }
+
+    /// The overlay's numbers since the previous call, independent of the log window.
+    fn take_stats(&mut self, secs: f64) -> ViewerStats {
+        let process = self.process.take_lap();
+        self.handoff.take_lap();
+        self.batches.take_lap();
+        ViewerStats {
+            fps: (self.shown.take_lap() as f64 / secs) as f32,
+            kbps: kbps(self.bytes.take_lap(), secs),
+            decode_ms: process.avg_ms as f32,
+            decode_max_ms: process.max_ms as f32,
+        }
+    }
 }
 
 fn request_key(outbox: &Sender<Outgoing>, id: &str) {
     let _ = outbox.send(Outgoing::Message(ClientMessage::input(id, InputEvent::VideoKeyframe)));
 }
 
-/// Starts the session's decoder thread once. `show` runs for every decoded frame.
+/// Starts the session's decoder thread once. `show` runs for every decoded frame; `show_stats` once a second
+/// with the overlay's (labels, values) while the session is visible and its stats overlay is on.
 /// Hidden sessions (background tabs) are not decoded at all: their messages are dropped together with the
 /// decoder state, and showing the session again asks the host for a key frame.
-pub fn spawn<F>(sess: Arc<Session>, outbox: Sender<Outgoing>, show: F)
+pub fn spawn<F, S>(sess: Arc<Session>, outbox: Sender<Outgoing>, show: F, show_stats: S)
 where
     F: Fn(&Arc<Session>, Frame) + Send + 'static,
+    S: Fn(&Arc<Session>, (String, String)) + Send + 'static,
 {
     if sess.decoder_started.swap(true, Ordering::SeqCst) {
         return;
@@ -308,6 +324,7 @@ where
         let mut was_visible = sess.visible.load(Ordering::SeqCst);
         let mut perf = ViewerPerf::default();
         let mut perf_window = PerfWindow::new(Instant::now());
+        let mut stats_window = PerfWindow::every(Instant::now(), STATS_INTERVAL);
 
         while sess.alive.load(Ordering::SeqCst) {
             let visible = sess.visible.load(Ordering::SeqCst);
@@ -325,6 +342,19 @@ where
                 // Only windows that decoded something: hidden or idle sessions stay quiet.
                 if perf.batches.in_window() > 0 {
                     logger::info("viewer.perf", &perf.take_line(&sess.id, secs));
+                }
+            }
+            if let Some(secs) = stats_window.due(Instant::now()) {
+                let viewer = perf.take_stats(secs);
+                if visible && sess.stats_on.load(Ordering::Relaxed) {
+                    let t = crate::service::file_transfer::now_ms();
+                    let _ = outbox.send(Outgoing::Message(ClientMessage::input(&sess.id, InputEvent::StatsPing { t })));
+                    let columns = {
+                        let mut stats = sess.stats.lock().unwrap();
+                        stats.viewer = viewer;
+                        stats.columns(sess.p2p_active.load(Ordering::Relaxed))
+                    };
+                    show_stats(&sess, columns);
                 }
             }
             if batch.is_empty() {
@@ -385,9 +415,10 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let shown = Arc::new(AtomicU32::new(0));
         let counter = Arc::clone(&shown);
-        spawn(Arc::clone(&b), tx, move |_, _| {
+        let show = move |_: &Arc<Session>, _: Frame| {
             counter.fetch_add(1, Ordering::SeqCst);
-        });
+        };
+        spawn(Arc::clone(&b), tx, show, |_, _| {});
         b.inbox.push(core_engine::codec::delta::key_header(4, 4, 4).encode(&[]));
         thread::sleep(Duration::from_millis(50));
         assert!(b.inbox.is_empty(), "hidden tab drains its inbox");

@@ -181,8 +181,16 @@ pub fn on_connected(ctx: &Ctx, id: &str, caps: PeerCaps) -> Option<Arc<Session>>
     }
     apply_focus(ctx);
 
-    let ui_ctx = Arc::clone(ctx);
-    decoder::spawn(Arc::clone(&sess), ctx.outbox.clone(), move |s, frame| ui_ctx.ui.session_frame(s.id.clone(), frame));
+    let (ui_ctx, stats_ctx) = (Arc::clone(ctx), Arc::clone(ctx));
+    decoder::spawn(
+        Arc::clone(&sess),
+        ctx.outbox.clone(),
+        move |s, frame| ui_ctx.ui.session_frame(s.id.clone(), frame),
+        move |s, (labels, values)| stats_ctx.ui.session_changed(s.id.clone(), SessionChange::Stats(labels, values)),
+    );
+    if ctx.viewers.stats_overlay() {
+        request_stats(ctx, &sess, true);
+    }
 
     // Tell the host the preferred resolution and voice quality. Automatic mode uses the last canvas size;
     // the new canvas reports again if it differs.
@@ -277,8 +285,31 @@ pub fn on_host_event(ctx: &AppContext, sess: &Session, event: InputEvent) {
             sess.has_monitors.store(true, Ordering::SeqCst);
             ctx.ui.session_changed(id, SessionChange::Monitors(monitors, active));
         }
+        // Shown with the decoder thread's next once-a-second refresh.
+        InputEvent::HostStats(stats) => sess.stats.lock().unwrap().host = Some(stats),
+        InputEvent::StatsPong { t } => {
+            sess.stats.lock().unwrap().rtt_ms = Some(file_transfer::now_ms().saturating_sub(t));
+        }
         _ => {}
     }
+}
+
+// ---- Stats overlay ----
+
+/// Shows or hides the stats overlay of every session (off at start, kept for the app run). Hosts send
+/// `host-stats` only while it is shown.
+pub fn set_stats_overlay(ctx: &AppContext, on: bool) {
+    ctx.viewers.set_stats_overlay(on);
+    for s in ctx.viewers.all().iter().filter(|s| s.is_connected()) {
+        request_stats(ctx, s, on);
+    }
+}
+
+fn request_stats(ctx: &AppContext, s: &Session, on: bool) {
+    // Numbers from before the overlay was last hidden are stale.
+    *s.stats.lock().unwrap() = Default::default();
+    s.stats_on.store(on, Ordering::Relaxed);
+    ctx.send_input(&s.id, InputEvent::Stats { on });
 }
 
 // ---- Input ----

@@ -41,6 +41,9 @@ export component SessionWorkspace inherits Rectangle {
     callback session_toggle_block_input(string);
     callback session_set_resolution(string, int);
     callback session_set_audio_quality(string, int);
+    // Stats overlay on every session view.
+    in-out property <bool> show_stats: false;
+    callback set_stats_overlay(bool);
     // Viewers without a system-key hook (outside Windows) send system shortcuts from a menu.
     in property <bool> system_keys_menu: false;
     callback session_shortcut(string, string);
@@ -248,6 +251,11 @@ export component SessionWorkspace inherits Rectangle {
                     toggle_block_input(id) => { root.session_toggle_block_input(id); }
                     set_resolution(id, m) => { root.session_set_resolution(id, m); }
                     set_audio_quality(id, q) => { root.session_set_audio_quality(id, q); }
+                    stats_on: root.show_stats;
+                    toggle_stats => {
+                        root.show_stats = !root.show_stats;
+                        root.set_stats_overlay(root.show_stats);
+                    }
                     disconnect(id) => { root.close_session(id); }
                 }
             }
@@ -271,6 +279,7 @@ export component SessionWorkspace inherits Rectangle {
                         s: s;
                         focused: true;
                         show_header: false;
+                        show_stats: root.show_stats;
                         activate(id) => { root.pick(id); }
                         mouse_move(id, x, y) => { root.session_mouse_move(id, x, y); }
                         mouse_down(id, x, y, b) => { root.session_mouse_down(id, x, y, b); }
@@ -292,6 +301,7 @@ export component SessionWorkspace inherits Rectangle {
                     s: s;
                     focused: root.is-shown(s.id, i);
                     show_header: true;
+                    show_stats: root.show_stats;
                     activate(id) => { root.pick(id); }
                     mouse_move(id, x, y) => { root.session_mouse_move(id, x, y); }
                     mouse_down(id, x, y, b) => { root.session_mouse_down(id, x, y, b); }

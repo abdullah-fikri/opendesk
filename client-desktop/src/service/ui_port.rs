@@ -80,6 +80,8 @@ pub enum SessionChange {
         block_input: bool,
     },
     Resolution(i32),
+    /// Stats overlay text: newline-separated labels and values (`viewer::stats::SessionStats::columns`).
+    Stats(String, String),
 }
 
 /// What a monitor-wall tile shows besides its picture (admin edition).
