@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::domain::resolution;
+use crate::domain::{latency, resolution};
 use crate::infra::{logger, privacy};
 use crate::protocol::InputEvent;
 use crate::service::context::AppContext;
@@ -108,7 +108,10 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
         InputEvent::SetBlockInput { blocked } => privacy::set_host_block_input(blocked),
         InputEvent::VideoKeyframe => host.keyframe_requested.store(true, Ordering::SeqCst),
         InputEvent::Stats { on } => host.stats_requested.store(on, Ordering::Relaxed),
-        InputEvent::StatsPing { t } => ctx.send_input(&ctx.partner(), InputEvent::StatsPong { t }),
+        InputEvent::StatsPing { t } => {
+            let h = Some(latency::mono_us(std::time::Instant::now()) as u64);
+            ctx.send_input(&ctx.partner(), InputEvent::StatsPong { t, h })
+        }
         // Viewer-bound events and zero key codes have no meaning on a host.
         _ => {}
     }

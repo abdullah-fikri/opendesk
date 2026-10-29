@@ -58,6 +58,7 @@ static PARTNER_CAPS: Mutex<PeerCaps> = Mutex::new(PeerCaps {
     cursor_shape: false,
     video_delta: false,
     video_h264: false,
+    frame_stamp: false,
     audio_opus: false,
     p2p: false,
     e2e: false,
