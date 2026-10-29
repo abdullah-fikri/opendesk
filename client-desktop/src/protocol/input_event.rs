@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::domain::performance::Performance;
+
 /// One event. Viewer -> host unless noted.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "action", rename_all = "kebab-case", rename_all_fields = "camelCase")]
@@ -96,6 +98,14 @@ pub enum InputEvent {
     /// 0 = 16 kHz, 1 = 24 kHz, 2 = 48 kHz. Either direction.
     SetAudioQuality {
         quality: u64,
+    },
+    /// The viewer's performance preset and the frame-rate cap it stands for (what `perf-*` and `fps-N` say at
+    /// registration, 0 = none): sent at session start and when the user picks another preset, so it applies
+    /// without reconnecting. Older hosts ignore it and keep the registration caps.
+    SetPerformance {
+        preset: Performance,
+        #[serde(default)]
+        max_fps: u32,
     },
     /// A peer may mute the other side's microphone, never unmute it. Either direction.
     SetMic {
@@ -196,6 +206,21 @@ mod tests {
             serde_json::to_value(InputEvent::Wheel { norm_x: 0.5, norm_y: 0.25, delta_y: -120 }).unwrap(),
             json!({ "action": "wheel", "normX": 0.5, "normY": 0.25, "deltaY": -120 })
         );
+    }
+
+    #[test]
+    fn performance_event_wire_shape() {
+        let e = InputEvent::SetPerformance { preset: Performance::High, max_fps: 144 };
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            json!({ "action": "set-performance", "preset": "high", "maxFps": 144 })
+        );
+        assert_eq!(
+            InputEvent::parse(&json!({ "action": "set-performance", "preset": "low" })),
+            Some(InputEvent::SetPerformance { preset: Performance::Low, max_fps: 0 })
+        );
+        // A preset from a later release is ignored as a whole.
+        assert_eq!(InputEvent::parse(&json!({ "action": "set-performance", "preset": "ultra", "maxFps": 60 })), None);
     }
 
     #[test]

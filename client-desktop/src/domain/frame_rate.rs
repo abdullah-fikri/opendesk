@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 /// Frame rate of today's pipeline: partners without a cap, relayed sessions and software encoders get this.
 pub const DEFAULT_FPS: u32 = 60;
-/// Highest rate ever streamed; the "Maximum" setting asks for it.
+/// Highest rate ever streamed; the High preset follows the monitor up to it (1.2.0's "Maximum" asked for it).
 pub const FPS_MAXIMUM: u32 = 240;
 /// Environment variable that caps the frame rate on both sides (`OPENDESK_MAX_FPS=60` restores the 60 FPS
 /// pipeline).
@@ -16,19 +16,36 @@ pub fn env_cap(raw: Option<&str>) -> Option<u32> {
     raw.and_then(|v| v.trim().parse().ok()).filter(|&n| n > 0)
 }
 
-/// The cap a viewer advertises: its monitor's refresh rate for `setting` 0 (Auto), else the setting itself
-/// (30, 60 or [`FPS_MAXIMUM`]), lowered by the environment cap.
+/// The cap a viewer advertises: its monitor's refresh rate for `setting` 0 (Auto, the High preset), else the
+/// setting itself (30 or 60, see `Performance::fps_setting`), lowered by the environment cap.
 pub fn viewer_cap(setting: u32, monitor_hz: u32, env: Option<u32>) -> u32 {
     let wanted = if setting == 0 { monitor_hz } else { setting };
     wanted.min(env.unwrap_or(u32::MAX)).clamp(1, FPS_MAXIMUM)
 }
 
+/// Environment variable that, set to `0`, keeps sessions on the WebSocket relay at 60 FPS (the rule before
+/// performance presets: only a direct or UDP-relayed path went above 60).
+pub const WS_HIGH_FPS_ENV: &str = "OPENDESK_WS_HIGH_FPS";
+
+/// Reads the `OPENDESK_WS_HIGH_FPS` value: anything but `0` allows more than 60 FPS over the WebSocket relay.
+pub fn ws_high_fps(raw: Option<&str>) -> bool {
+    raw.map(str::trim) != Some("0")
+}
+
 /// The host's target rate: the viewer's cap (0 = none = 60), never more than the host monitor shows. A monitor
-/// slower than 60 Hz keeps today's 60. Above 60 needs a direct (P2P) path and a hardware H.264 encoder.
-pub fn host_target(host_hz: u32, viewer_max: u32, direct: bool, hw_encoder: bool, env: Option<u32>) -> u32 {
+/// slower than 60 Hz keeps today's 60. Above 60 needs a hardware H.264 encoder, on any path: P2P, the UDP relay
+/// or (unless `ws_high_fps` is off) the WebSocket relay, where congestion steps the rate down like elsewhere.
+pub fn host_target(
+    host_hz: u32,
+    viewer_max: u32,
+    direct: bool,
+    hw_encoder: bool,
+    ws_high_fps: bool,
+    env: Option<u32>,
+) -> u32 {
     let viewer = if viewer_max == 0 { DEFAULT_FPS } else { viewer_max };
     let mut fps = viewer.min(host_hz.max(DEFAULT_FPS));
-    if !(direct && hw_encoder) {
+    if !(hw_encoder && (direct || ws_high_fps)) {
         fps = fps.min(DEFAULT_FPS);
     }
     fps.min(env.unwrap_or(u32::MAX)).clamp(1, FPS_MAXIMUM)
@@ -166,18 +183,29 @@ mod tests {
     #[test]
     fn host_target_is_60_unless_everything_allows_more() {
         // Old viewers (no cap) and the kill switch keep today's 60, whatever the hardware.
-        assert_eq!(host_target(144, 0, true, true, None), 60);
-        assert_eq!(host_target(144, 60, true, true, None), 60);
-        assert_eq!(host_target(144, 144, true, true, Some(60)), 60);
-        // Relay path or software encoder: at most 60.
-        assert_eq!(host_target(144, 144, false, true, None), 60);
-        assert_eq!(host_target(144, 144, true, false, None), 60);
+        assert_eq!(host_target(144, 0, true, true, true, None), 60);
+        assert_eq!(host_target(144, 60, true, true, true, None), 60);
+        assert_eq!(host_target(144, 144, true, true, true, Some(60)), 60);
+        // Software encoder: at most 60 on every path.
+        assert_eq!(host_target(144, 144, true, false, true, None), 60);
+        assert_eq!(host_target(144, 144, false, false, true, None), 60);
         // Everything allows more: the lower of both monitors.
-        assert_eq!(host_target(144, 240, true, true, None), 144);
-        assert_eq!(host_target(240, 120, true, true, None), 120);
+        assert_eq!(host_target(144, 240, true, true, true, None), 144);
+        assert_eq!(host_target(240, 120, true, true, true, None), 120);
         // A slow host monitor still streams 60; a viewer asking for 30 gets 30.
-        assert_eq!(host_target(30, 0, false, false, None), 60);
-        assert_eq!(host_target(144, 30, false, false, None), 30);
+        assert_eq!(host_target(30, 0, false, false, true, None), 60);
+        assert_eq!(host_target(144, 30, false, false, true, None), 30);
+    }
+
+    #[test]
+    fn websocket_relay_goes_above_60_unless_switched_off() {
+        // A hardware encoder is enough on the WebSocket relay too.
+        assert_eq!(host_target(144, 144, false, true, true, None), 144);
+        // OPENDESK_WS_HIGH_FPS=0: the old rule, 60 on the WebSocket relay, more only on a direct path.
+        assert_eq!(host_target(144, 144, false, true, false, None), 60);
+        assert_eq!(host_target(144, 144, true, true, false, None), 144);
+        assert!(ws_high_fps(None) && ws_high_fps(Some("1")) && ws_high_fps(Some("")));
+        assert!(!ws_high_fps(Some("0")) && !ws_high_fps(Some(" 0 ")));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! Host capture loop: captures the selected monitor at the target frame rate (`domain::frame_rate::host_target`,
-//! 60 unless viewer, monitor, path and encoder all allow more), encodes it for the viewer and announces
+//! 60 unless viewer, monitor and encoder all allow more), encodes it for the viewer and announces
 //! monitor and cursor changes. Runs on its own thread for one hosted session.
 
 use std::sync::Arc;
@@ -171,11 +171,15 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     let mut capturer = DesktopCapturer::new_for_monitor(initial_bounds, max_width);
     capturer.set_hide_viewer_cursor(local_cursor);
     let mut encoder = StreamEncoder::new(capturer.width(), capturer.height(), base_quality, caps.video_delta);
+    // The viewer's performance preset; `set-performance` may change it during the session.
+    let mut preset = caps.performance;
+    encoder.set_preset(preset.bitrate_factor(), preset.prefers_h264());
     encoder.set_h264(h264);
     let mut h264_logged = false;
     let mut last_shape = u8::MAX;
     let mut congestion = CongestionMeter::new();
     let env_fps = frame_rate::env_cap(std::env::var(frame_rate::MAX_FPS_ENV).ok().as_deref());
+    let ws_high_fps = frame_rate::ws_high_fps(std::env::var(frame_rate::WS_HIGH_FPS_ENV).ok().as_deref());
     let mut host_hz = refresh_rate(initial_bounds);
     let mut target_fps = frame_rate::DEFAULT_FPS;
     let mut governor = FpsGovernor::new();
@@ -289,15 +293,24 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
         if host.keyframe_requested.swap(false, Ordering::SeqCst) {
             encoder.request_key();
         }
+        let (viewer_fps, viewer_preset) = {
+            let live = host.peer_caps.lock();
+            (live.max_fps, live.performance)
+        };
+        if viewer_preset != preset {
+            preset = viewer_preset;
+            encoder.set_preset(preset.bitrate_factor(), preset.prefers_h264());
+            logger::info("host.capture", &format!("Viewer performance preset: {}", preset.cap()));
+        }
         let direct = host.p2p_active.load(Ordering::Relaxed);
-        let ceiling = frame_rate::host_target(host_hz, caps.max_fps, direct, encoder.h264_hardware(), env_fps);
+        let ceiling =
+            frame_rate::host_target(host_hz, viewer_fps, direct, encoder.h264_hardware(), ws_high_fps, env_fps);
         let fps = governor.update(ceiling, last_level, frame_start);
         if fps != target_fps {
             logger::info(
                 "host.capture",
                 &format!(
-                    "Target frame rate {target_fps} -> {fps} (ceiling={ceiling} monitor={host_hz}Hz viewer={} p2p={direct} congestion={last_level:.2})",
-                    caps.max_fps
+                    "Target frame rate {target_fps} -> {fps} (ceiling={ceiling} monitor={host_hz}Hz viewer={viewer_fps} p2p={direct} congestion={last_level:.2})"
                 ),
             );
             target_fps = fps;
