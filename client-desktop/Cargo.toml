@@ -1,6 +1,6 @@
 [package]
 name = "opendesk-client"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2024"
 description = "OpenDesk self-hosted remote desktop client for Windows and Linux"
 license-file = "../LICENSE"

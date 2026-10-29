@@ -3,7 +3,7 @@
 All notable changes to OpenDesk. Versions follow [Semantic Versioning](https://semver.org); the single source of
 truth is `VERSION`. The release workflow copies the section of the tagged version into the GitHub Release.
 
-## [Unreleased]
+## [1.2.1] - 2026-10-29
 
 ### Added
 - Performance presets: one "Performance" setting (Low / Medium / High) replaces the frame-rate picker in the relay
@@ -210,6 +210,7 @@ First public release.
 - Windows binaries are not code-signed yet (SmartScreen warns on first run); Linux packages are unsigned `.deb`
   files. Verify downloads against `SHA256SUMS.txt`.
 
+[1.2.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.2.1
 [1.2.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.2.0
 [1.1.3]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.1.3
 [1.1.2]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.1.2
