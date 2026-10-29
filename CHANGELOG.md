@@ -3,6 +3,29 @@
 All notable changes to OpenDesk. Versions follow [Semantic Versioning](https://semver.org); the single source of
 truth is `VERSION`. The release workflow copies the section of the tagged version into the GitHub Release.
 
+## [1.2.0] - 2026-10-29
+
+### Added
+- Android: end-to-end encryption with desktop hosts (the same Noise_XX protocol as the desktop). Video, voice and
+  input are sealed; the host's key is pinned on the first connection and a changed key closes the session with a
+  dialog that can trust the new key. No touch or keystroke leaves the phone before the encryption is up.
+- Android: framed key/delta video (`video-delta`), needed for the encryption and lighter on the network.
+- `opendesk update [latest|<version>|status]`: install the newest release or a chosen one (newer or older; it then
+  stays on it), and show the update state. `opendesk rollback`, `pin`, `unpin` and `version` are commands now;
+  the older `--update-now`, `--rollback`, `--pin-version` and `--unpin` still work.
+- Auto-update is live: the release signing key is set, so Windows installs from this version on update
+  themselves from signed manifests.
+- `SECURITY.md` (private vulnerability reports), `CLA.md` with a CLA check on pull requests, `MAINTAINERS.md`.
+
+### Changed
+- A host whose key was pinned but that no longer offers end-to-end encryption now closes the session (like a
+  changed key) instead of only warning; `opendesk trust <id>` accepts it.
+
+### Fixed
+- `opendesk help` and every other command printed its output twice in a terminal.
+- A mistyped command (`opendesk updte`) started the app silently; it now prints the help.
+- `opendesk help` no longer prints the device status; `opendesk status` does.
+
 ## [1.1.3] - 2026-10-28
 
 ### Added
@@ -164,6 +187,7 @@ First public release.
 - Windows binaries are not code-signed yet (SmartScreen warns on first run); Linux packages are unsigned `.deb`
   files. Verify downloads against `SHA256SUMS.txt`.
 
+[1.2.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.2.0
 [1.1.3]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.1.3
 [1.1.2]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.1.2
 [1.0.2]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.0.2

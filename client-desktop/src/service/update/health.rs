@@ -37,7 +37,7 @@ pub enum Pending {
         #[serde(default)]
         crashes: u32,
     },
-    /// The installer of `target` was started (automatic rollback or `opendesk --rollback`).
+    /// The installer of `target` was started (automatic rollback or `opendesk rollback`).
     RollingBack { target: String, started: u64 },
 }
 

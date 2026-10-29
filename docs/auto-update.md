@@ -37,7 +37,9 @@ skipped and devices see no update). Repository variables `UPDATE_ROLLOUT_PERCENT
 3. `openssl pkey -in release-update.pem -pubout -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n'`
    and put the 64 hex digits in `RELEASE_PUBLIC_KEY` (`client-desktop/src/service/update/manifest.rs`).
 
-Until step 3 the constant is the all-zero placeholder, which rejects every manifest: auto-update is inert.
+The key is set (since 1.2.0); a build with the all-zero placeholder would reject every manifest. Releases
+signed by CI need the `UPDATE_SIGNING_KEY` secret; without it the step is skipped and devices see no update.
+Keep an offline backup of the PEM: losing it means installed devices can never be updated automatically again.
 Rotating the key means shipping a build with the new public key, signed with the old one, first.
 
 ## Device side
@@ -78,12 +80,15 @@ A non-administrator can point `update_url` anywhere, but only manifests signed w
 
 | Command | Effect |
 | --- | --- |
-| `opendesk --update-now` | Check now, ignoring the rollout and bad marks; installs when idle |
-| `opendesk --rollback [version] [--force]` | Reinstall the previous kept version (or `version`) now and mark the current one bad |
-| `opendesk --pin-version 1.2.3` / `opendesk --unpin` | Install only that version / follow releases again |
+| `opendesk update` / `opendesk update latest` | Unpin and check now, ignoring the rollout and bad marks; installs when idle |
+| `opendesk update 1.2.3 [--force]` | Fetch that release's signed manifest (`.../download/v1.2.3/`), install it when idle (newer or older) and pin it; below `min_version` needs `--force` |
+| `opendesk update status` | Installed, pinned, kept and bad versions, and the update in progress |
+| `opendesk rollback [version] [--force]` | Reinstall the previous kept version (or `version`) now and mark the current one bad |
+| `opendesk pin 1.2.3` / `opendesk unpin` | Install only that version / follow releases again |
 
-The commands are queued in `requests\` and carried out by the service within seconds; results are in the
-service's log (`opendesk.trace` of the SYSTEM profile).
+The older spellings `--update-now`, `--rollback`, `--pin-version` and `--unpin` still work. The commands are
+queued in `requests\` and carried out by the service within seconds; results are in the service's log
+(`opendesk.trace` of the SYSTEM profile).
 
 ## Compatibility rules
 

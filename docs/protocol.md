@@ -119,7 +119,8 @@ Per platform (see [platforms.md](platforms.md)):
   host control.
 - Linux: the same without `file-offer`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
-- Android: only `viewer-only`, so it receives plain JPEGs and single-session message shapes.
+- Android: `viewer-only`, `video-delta` and `e2e`, so it receives framed JPEG video (no H.264) and single-session
+  message shapes.
 
 `register.platform` is `windows-pc`, `windows-admin`, `windows-host`, `linux-pc`, `linux-admin`, `linux-host` or
 `android`; it is informational except for `android`.

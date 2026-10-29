@@ -27,7 +27,7 @@
     <string name="hold_active">Hold (on)</string>
     <string name="right_click">Right click</string>
     <string name="switching_monitor">Switching monitor...</string>
-    <string name="viewer_status" translatable="false">%1$s%2$d FPS • %3$s</string>
+    <string name="viewer_status" translatable="false">%1$s%2$d FPS • %3$s%4$s</string>
     <string name="clip_label_id" translatable="false">OpenDesk ID</string>
     <string name="id_copied">ID copied to the clipboard</string>
     <string name="session_closed">Session closed</string>
@@ -55,4 +55,12 @@
     <string name="scroll_down" translatable="false">▼</string>
     <string name="fit_screen">Fit</string>
     <string name="incoming_input_label">Remote keyboard input</string>
+    <string name="e2e_key_changed">Security warning: the key of %1$s changed (now %2$s, was %3$s). The session was closed. If the computer was reinstalled, trust the new key and connect again.</string>
+    <string name="e2e_downgraded">Security warning: %1$s used end-to-end encryption before but does not offer it now. The session was closed. Trust it only if you know why it changed.</string>
+    <string name="e2e_failed">End-to-end encryption with this computer could not be set up. The session was closed; try again.</string>
+    <string name="security_alert_title">Session closed for safety</string>
+    <string name="trust_and_forget">Trust the new key</string>
+    <string name="host_trusted">Trusted. Connect again.</string>
+    <string name="this_device_key">This phone\'s key: %1$s</string>
+    <string name="e2e_badge" translatable="false">" • E2E"</string>
 </resources>

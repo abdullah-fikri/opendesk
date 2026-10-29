@@ -17,12 +17,11 @@ use crate::domain::desk_id;
 /// Public half of the release signing key (hex, 32 bytes), embedded so a compromised download source cannot
 /// ship an update.
 ///
-/// PLACEHOLDER: all zeros is not a valid key, so until the real key is set every manifest is rejected and
-/// auto-update stays inert. To set it: `openssl genpkey -algorithm ed25519 -out release-update.pem` (keep the
-/// file offline and in the `UPDATE_SIGNING_KEY` CI secret), then
-/// `openssl pkey -in release-update.pem -pubout -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n'` and paste the
-/// output here. See `docs/auto-update.md`.
-pub const RELEASE_PUBLIC_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+/// Generated with `openssl genpkey -algorithm ed25519`; the private key is kept offline and in the
+/// `UPDATE_SIGNING_KEY` CI secret. Printed with
+/// `openssl pkey -in release-update.pem -pubout -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n'`.
+/// Rotating it means shipping a build with the new key, signed with the old one, first. See `docs/auto-update.md`.
+pub const RELEASE_PUBLIC_KEY: &str = "aebd97f5bfd502be4bdcff24104156dc6f34998b93b6f5fe593bf6a2d90a98b8";
 
 /// A release version `major.minor.patch` (no pre-release tags: releases are tagged `vX.Y.Z`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -144,9 +143,13 @@ pub enum Decision {
     Bad,
     /// Pinned to another version.
     Pinned,
+    /// `opendesk update <version>` below the rollback floor without `--force`.
+    BelowFloor,
+    /// The manifest fetched for `opendesk update <version>` describes another release.
+    WrongRelease,
 }
 
-/// What this device should do with a verified `manifest`. `forced` (`opendesk --update-now`) skips the
+/// What this device should do with a verified `manifest`. `forced` (`opendesk update`) skips the
 /// rollout and the bad mark; a pin always wins.
 pub fn decide(
     manifest: &Manifest,
@@ -172,6 +175,27 @@ pub fn decide(
         return Decision::NotInRollout;
     }
     Decision::Install(version)
+}
+
+/// `opendesk update <version>`: install the release `target` names, newer or older than the running build.
+/// Rollout and bad marks do not apply (the administrator chose it); going below `floor` needs `force`.
+pub fn decide_target(
+    manifest: &Manifest,
+    current: Version,
+    target: Version,
+    floor: Option<Version>,
+    force: bool,
+) -> Decision {
+    if manifest.version() != Some(target) {
+        return Decision::WrongRelease;
+    }
+    if target == current {
+        return Decision::UpToDate;
+    }
+    if target < current && !rollback_allowed(target, floor, force) {
+        return Decision::BelowFloor;
+    }
+    Decision::Install(target)
 }
 
 /// May this device go back to `target`? `floor` is the `min_version` of the newest manifest it installed.
@@ -268,9 +292,11 @@ pub mod tests {
     }
 
     #[test]
-    fn the_placeholder_key_rejects_everything() {
+    fn the_release_key_is_real_and_rejects_other_signers() {
         let bytes = manifest_json("9.0.0", 100);
-        assert_eq!(verify(&bytes, &sign(&bytes), RELEASE_PUBLIC_KEY), Err(VerifyError::BadKey));
+        assert_eq!(verify(&bytes, &sign(&bytes), &"0".repeat(64)), Err(VerifyError::BadKey));
+        // A valid, strong key: a signature from any other key is a bad signature, not a bad key.
+        assert_eq!(verify(&bytes, &sign(&bytes), RELEASE_PUBLIC_KEY), Err(VerifyError::BadSignature));
     }
 
     #[test]
@@ -306,6 +332,19 @@ pub mod tests {
         let none: Manifest = serde_json::from_slice(&manifest_json("1.1.0", 0)).unwrap();
         assert_eq!(decide(&none, cur, "1", &[], None, false), Decision::NotInRollout);
         assert_eq!(decide(&none, cur, "1", &[], None, true), Decision::Install(Version(1, 1, 0)));
+    }
+
+    #[test]
+    fn decide_target_installs_the_chosen_release_in_either_direction() {
+        let m: Manifest = serde_json::from_slice(&manifest_json("1.1.0", 0)).unwrap();
+        let v = Version(1, 1, 0);
+        assert_eq!(decide_target(&m, Version(1, 0, 0), v, None, false), Decision::Install(v));
+        assert_eq!(decide_target(&m, Version(1, 2, 0), v, None, false), Decision::Install(v));
+        assert_eq!(decide_target(&m, v, v, None, false), Decision::UpToDate);
+        assert_eq!(decide_target(&m, Version(1, 0, 0), Version(1, 2, 0), None, false), Decision::WrongRelease);
+        let floor = Some(Version(1, 2, 0));
+        assert_eq!(decide_target(&m, Version(1, 3, 0), v, floor, false), Decision::BelowFloor);
+        assert_eq!(decide_target(&m, Version(1, 3, 0), v, floor, true), Decision::Install(v));
     }
 
     #[test]

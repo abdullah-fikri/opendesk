@@ -5,7 +5,6 @@
 use std::env;
 use std::ffi::c_void;
 use std::fs;
-use std::io::Write;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -168,14 +167,11 @@ pub fn supervised_by_service() -> bool {
     system_service::is_local_system() && system_service::installed()
 }
 
-/// Writes `msg` to the console of the terminal that launched this GUI-subsystem process.
+/// Writes `msg` to the console of the terminal that launched this GUI-subsystem process, or to the file or pipe
+/// its output is redirected to. Exactly one write: after `AttachConsole`, `std::io::stdout()` is that same
+/// handle, so writing through both printed everything twice.
 pub fn print_to_console(msg: &str) {
-    let line = format!(
-        "
-{}
-",
-        msg
-    );
+    let line = format!("\r\n{}\r\n", msg);
     // SAFETY: attaching to the parent console and writing a byte slice of known length.
     unsafe {
         let _ = AttachConsole(ATTACH_PARENT_PROCESS);
@@ -185,8 +181,6 @@ pub fn print_to_console(msg: &str) {
             WriteFile(h_out, line.as_ptr(), line.len() as u32, &mut written, ptr::null_mut());
         }
     }
-    let _ = std::io::stdout().write_all(line.as_bytes());
-    let _ = std::io::stdout().flush();
 }
 
 /// Process names of every OpenDesk build flavor.

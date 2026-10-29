@@ -11,7 +11,7 @@
   <p>
     <a href="https://github.com/abdullah-fikri/opendesk/actions/workflows/ci.yml"><img src="https://github.com/abdullah-fikri/opendesk/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/License-AGPLv3%20%2F%20Commercial-blue.svg" alt="License: AGPLv3 / Commercial" /></a>
-    <img src="https://img.shields.io/badge/version-1.0.0-informational.svg" alt="Version 1.0.0" />
+    <img src="https://img.shields.io/badge/version-1.2.0-informational.svg" alt="Version 1.2.0" />
     <img src="https://img.shields.io/badge/Stack-Rust%20%7C%20Go%20%7C%20Kotlin-orange.svg" alt="Stack" />
   </p>
 
@@ -129,7 +129,7 @@ Read this before exposing a relay:
   (`Noise_NN_25519_ChaChaPoly_BLAKE2s`) bound to the relay-approved pair.
 - **Files from a peer** are validated, staged, checksum-verified and never overwrite existing files.
 
-More: [docs/architecture.md](docs/architecture.md#security-model).
+More: [docs/architecture.md](docs/architecture.md#security-model). Report vulnerabilities privately: [SECURITY.md](SECURITY.md).
 
 ## Repository
 
@@ -152,6 +152,7 @@ opendesk/
 - [Architecture](docs/architecture.md) · [Platforms](docs/platforms.md) · [Wire protocol](docs/protocol.md) ·
   [CI/CD and releases](docs/ci-cd.md)
 - [Contributing](CONTRIBUTING.md): build, test, layering rules and code conventions
+- [Security policy](SECURITY.md) · [Contributor License Agreement](CLA.md) · [Maintainers](MAINTAINERS.md)
 
 ## Building from source
 

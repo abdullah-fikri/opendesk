@@ -4,7 +4,6 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.os.Bundle
 import android.os.SystemClock
@@ -40,7 +39,7 @@ import kotlin.math.hypot
  * vertical drag = scroll wheel, pinch = zoom (moving the fingers while pinching pans). In trackpad mode one finger
  * moves a virtual cursor and a zoomed view follows it; in touch mode the cursor jumps to the finger.
  *
- * Frames are decoded on a worker thread, newest frame only, so a slow phone never builds up latency. The
+ * Video is applied on a worker thread and only the newest frame is drawn, so a slow phone never builds up latency. The
  * activity handles rotation itself (see the manifest), so the session, zoom and last frame survive it.
  */
 class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener {
@@ -63,6 +62,9 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
         private const val CURSOR_MARGIN_PX = 48f
         private const val BUTTON_LEFT = 0
         private const val BUTTON_RIGHT = 2
+        /** Video messages waiting for the decoder; more means it fell behind, and a key frame resynchronizes. */
+        private const val MAX_QUEUED = 8
+        private const val KEY_REQUEST_INTERVAL_MS = 500L
     }
 
     /** What the current two-finger gesture turned out to be. */
@@ -195,6 +197,8 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
     }
 
     override fun onMicMuted() = updateMicButton()
+
+    override fun onEndToEnd() = updateStatusBadge()
 
     // ---- Window ----
 
@@ -477,7 +481,8 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
         val w = viewport.imageWidth
         val h = viewport.imageHeight
         val resolution = if (w > 0 && h > 0) "${w}x$h • " else ""
-        tvRemoteFps.text = getString(R.string.viewer_status, resolution, lastFps, mode)
+        val e2e = if (RelayConnection.isEndToEnd) getString(R.string.e2e_badge) else ""
+        tvRemoteFps.text = getString(R.string.viewer_status, resolution, lastFps, mode, e2e)
     }
 
     // ---- Input ----
@@ -498,57 +503,73 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
     }
 
     /**
-     * Decodes JPEG frames on its own thread. The socket thread only drops the newest frame into a slot; the decoder
-     * sleeps until one arrives and hands at most one bitmap at a time to the main thread, always the newest.
+     * Applies video messages on its own thread, in order: framed deltas build on the frame before them, so none may
+     * be skipped. The socket thread queues them (at most [MAX_QUEUED]; beyond that the queue is dropped and a key
+     * frame requested). At most one bitmap at a time waits for the main thread, always the newest.
      */
     private inner class FrameDecoder(private val render: (Bitmap, Int) -> Unit) {
         private val lock = Object()
-        private var pending: ByteArray? = null
+        private val queue = ArrayDeque<ByteArray>()
         private var running = false
 
         /** Bumped by every start, so a thread left over from a quick stop/start exits instead of doubling up. */
         private var generation = 0
+        private var lastKeyRequestMs = 0L
 
-        // Newest decoded bitmap waiting for the main thread; replaced, never queued.
+        // Newest frame waiting for the main thread; replaced, never queued.
         private val decoded = java.util.concurrent.atomic.AtomicReference<Pair<Bitmap, Int>?>(null)
 
         /** Socket thread. */
         fun offer(bytes: ByteArray) {
-            synchronized(lock) {
-                pending = bytes
+            val overflow = synchronized(lock) {
+                val full = queue.size >= MAX_QUEUED
+                if (full) queue.clear()
+                queue.addLast(bytes)
                 lock.notifyAll()
+                full
             }
+            if (overflow) requestKeyFrame()
         }
 
         fun start() {
             val gen = synchronized(lock) {
                 if (running) return
                 running = true
-                pending = null
+                queue.clear()
                 ++generation
             }
             Thread({ loop(gen) }, "OpenDesk-FrameDecoder").apply {
                 priority = Thread.MAX_PRIORITY
                 start()
             }
+            // A new screen has no base frame for the deltas that may follow.
+            requestKeyFrame()
         }
 
         fun stop() {
             synchronized(lock) {
                 running = false
-                pending = null
+                queue.clear()
                 lock.notifyAll()
             }
         }
 
+        /** Asks the host for a key frame, at most every [KEY_REQUEST_INTERVAL_MS]. */
+        private fun requestKeyFrame() {
+            val now = SystemClock.uptimeMillis()
+            if (now - lastKeyRequestMs < KEY_REQUEST_INTERVAL_MS) return
+            lastKeyRequestMs = now
+            runOnUiThread { RelayConnection.sendInput(InputEvent(action = "video-keyframe")) }
+        }
+
         private fun loop(gen: Int) {
-            val options = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
+            val compositor = FrameCompositor()
             var frames = 0
             var windowStart = SystemClock.uptimeMillis()
             var fps = 0
             while (true) {
-                val bytes = synchronized(lock) {
-                    while (running && generation == gen && pending == null) {
+                val (bytes, more) = synchronized(lock) {
+                    while (running && generation == gen && queue.isEmpty()) {
                         try {
                             lock.wait()
                         } catch (_: InterruptedException) {
@@ -556,9 +577,16 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
                         }
                     }
                     if (!running || generation != gen) return
-                    pending.also { pending = null }
-                } ?: continue
-                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: continue
+                    queue.removeFirst() to queue.isNotEmpty()
+                }
+                when (compositor.apply(bytes)) {
+                    FrameCompositor.Result.NEED_KEY -> {
+                        requestKeyFrame()
+                        continue
+                    }
+                    FrameCompositor.Result.UNCHANGED -> continue
+                    FrameCompositor.Result.UPDATED -> {}
+                }
                 frames++
                 val now = SystemClock.uptimeMillis()
                 if (now - windowStart >= 1000L) {
@@ -566,7 +594,9 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
                     frames = 0
                     windowStart = now
                 }
-                // Only schedule a render when none is waiting; a waiting one picks up this newer bitmap.
+                // Copy only what the screen can show: skip while newer messages wait, or a render is pending.
+                if (more || decoded.get() != null) continue
+                val bitmap = compositor.snapshot() ?: continue
                 if (decoded.getAndSet(bitmap to fps) == null) {
                     runOnUiThread { decoded.getAndSet(null)?.let { (b, f) -> render(b, f) } }
                 }
