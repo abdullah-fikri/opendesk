@@ -104,6 +104,14 @@ impl DesktopCapturer {
         }
     }
 
+    /// Part of the last `grab` spent waiting for a desktop change (DXGI); the rest is capture work. GDI never waits.
+    pub fn last_wait(&self) -> std::time::Duration {
+        match self {
+            DesktopCapturer::Dxgi(d) => d.last_wait(),
+            DesktopCapturer::Gdi(_) => std::time::Duration::ZERO,
+        }
+    }
+
     /// The last captured image as BGRX pixels, `width()` per row.
     pub fn pixels(&self) -> &[u32] {
         match self {

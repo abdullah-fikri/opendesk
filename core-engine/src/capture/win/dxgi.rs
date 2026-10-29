@@ -128,6 +128,8 @@ pub struct DxgiCapturer {
     moves: Vec<MoveRect>,
     fresh: bool,
     has_image: bool,
+    /// Time the last `grab` spent blocked in `AcquireNextFrame` waiting for a change.
+    last_wait: std::time::Duration,
     cursor: Option<CursorOverlay>,
     tile_dc: HDC,
     tile_bmp: HBITMAP,
@@ -266,6 +268,7 @@ impl DxgiCapturer {
                 moves: Vec::new(),
                 fresh: true,
                 has_image: false,
+                last_wait: std::time::Duration::ZERO,
                 cursor: None,
                 tile_dc,
                 tile_bmp,
@@ -293,6 +296,11 @@ impl DxgiCapturer {
         self.dirty.as_deref()
     }
 
+    /// Time the last `grab` waited for the desktop to change (the whole timeout when nothing changed).
+    pub fn last_wait(&self) -> std::time::Duration {
+        self.last_wait
+    }
+
     /// Framebuffer moves of the last grab (only when not scaling).
     pub fn moves(&self) -> &[MoveRect] {
         &self.moves
@@ -310,7 +318,10 @@ impl DxgiCapturer {
         let dup = self.dup.clone().unwrap();
         let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut resource: Option<IDXGIResource> = None;
-        match unsafe { dup.AcquireNextFrame(timeout_ms, &mut info, &mut resource) } {
+        let wait_start = std::time::Instant::now();
+        let acquired = unsafe { dup.AcquireNextFrame(timeout_ms, &mut info, &mut resource) };
+        self.last_wait = wait_start.elapsed();
+        match acquired {
             Ok(()) => {}
             Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => {
                 self.dirty = Some(Vec::new());
