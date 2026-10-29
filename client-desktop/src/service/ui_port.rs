@@ -62,6 +62,8 @@ pub struct Frame {
     pub fps: u32,
     /// The session path label (see `viewer::stats::path_label`).
     pub path: &'static str,
+    /// Call [`FrameLatency::shown`] when the image reaches the UI toolkit; dropping it records nothing.
+    pub latency: crate::service::viewer::stats::FrameLatency,
 }
 
 /// A change to one viewer session's presentation.

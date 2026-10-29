@@ -44,8 +44,24 @@ Monitor picker (numbered when the host has several monitors), send files, microp
 
 The **Stats** toolbar button shows a translucent panel in the top-right corner of every session view; it is off
 at start and stays as chosen until the app quits. Once a second it shows the `stats-ping` round trip, the path
-(P2P or Relay), received kbps, shown FPS against the host's target, viewer decode time (avg / max), the host's
-encoder (HW or SW H.264, or JPEG), host grab and encode time (avg / max), idle and dropped frames, and the
-congestion level. Hosts send `host-stats` only while the overlay is shown; hosts that predate it show "–" for
-their rows and the RTT. Over P2P the ping goes direct and the answer through the relay (host events always take
-the relay), so the RTT is that of control messages.
+(P2P or Relay), received kbps, shown FPS against the host's target, the host's encoder (HW or SW H.264, or JPEG),
+where a frame's latency goes (avg / max), host grab and encode time (avg / max), idle and dropped frames, the
+congestion level, and CPU and RAM of OpenDesk on both machines. Hosts send `host-stats` only while the overlay is
+shown; hosts that predate it show "–" for their rows and the RTT. Over P2P the ping goes direct and the answer
+through the relay (host events always take the relay), so the RTT is that of control messages.
+
+The latency rows follow one frame from capture to screen; together they make up Total:
+
+| Row | From → to |
+| --- | --- |
+| Host | capture on the host → handed to its send queue (grab work, encode, waiting for the previous frame) |
+| Network | send queue → complete in the viewer (relay or P2P, including all fragments) |
+| Decode | received → decoded (including a wait while the previous frame decodes) |
+| Display | decoded → handed to the UI; the screen's next refresh adds up to one more frame |
+| Total | capture → handed to the UI |
+
+Host, Network and Total need hosts that list `frame-stamp` (others show "–"). Network and Total also map the host's
+clock onto the viewer's from the ping, taking the answer as sent halfway through the round trip: accurate to a few
+ms on the relay path, while over P2P the ping and answer take different routes, which can shift up to half that
+difference between Network and the true value. Host grab is the capture work only; waiting for the screen to change
+is not counted (the `host.perf` log shows it as `wait`). CPU is a share of the whole machine, like Task Manager.

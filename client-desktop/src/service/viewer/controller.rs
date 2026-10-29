@@ -293,8 +293,10 @@ pub fn on_host_event(ctx: &AppContext, sess: &Session, event: InputEvent) {
         }
         // Shown with the decoder thread's next once-a-second refresh.
         InputEvent::HostStats(stats) => sess.stats.lock().host = Some(stats),
-        InputEvent::StatsPong { t } => {
+        InputEvent::StatsPong { t, h } => {
             sess.stats.lock().rtt_ms = Some(file_transfer::now_ms().saturating_sub(t));
+            let now = crate::domain::latency::mono_us(std::time::Instant::now());
+            sess.latency.lock().pong(t, h.map(|h| h as i64), now);
         }
         _ => {}
     }
