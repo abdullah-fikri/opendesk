@@ -34,6 +34,28 @@ The status line shows resolution, frame rate and path (P2P or relay) for the foc
 
 The last chosen mode applies to tabs opened later.
 
+## Performance
+
+One preset in the relay settings dialog, like a game's graphics quality option, for every session this machine
+views (`Settings::performance`, `domain/performance.rs`):
+
+| Preset | Frame rate | H.264 bitrate | Video |
+| --- | --- | --- | --- |
+| Low | 30 | ×0.5 | Auto (sharp JPEG regions, H.264 for sustained motion) |
+| Medium (default) | 60 | ×1 | Auto |
+| High | This machine's fastest monitor refresh rate (up to 240) | ×2 | Auto, but motion switches to H.264 at once (hosts with a hardware encoder) |
+
+The congestion governor lowers frame rate and bitrate on every preset, and hosts without a hardware H.264 encoder
+stay at 60. Resolution and voice quality stay per session in the toolbar. The viewer lists the preset at
+registration (`perf-low`, `perf-high`; Medium lists nothing) after its `fps-N` cap, and sends `set-performance`
+at session start and when the preset changes, so a change applies to running sessions at once. Hosts before
+presets only read the registration's `fps-N`: with no session open, saving a new preset re-registers; with
+sessions open they keep the old cap until the next connection. Saving the dialog with an unchanged relay
+address no longer reconnects.
+
+Configs from before presets keep their frame-rate choice: 30 becomes Low, 60 Medium, Auto and Maximum High. The
+config keeps `max_fps` in step (30, 60, 0) so an older build reads the same frame rate.
+
 ## Toolbar actions
 
 Monitor picker (numbered when the host has several monitors), send files, microphone, privacy mode on the host
@@ -44,8 +66,24 @@ Monitor picker (numbered when the host has several monitors), send files, microp
 
 The **Stats** toolbar button shows a translucent panel in the top-right corner of every session view; it is off
 at start and stays as chosen until the app quits. Once a second it shows the `stats-ping` round trip, the path
-(P2P or Relay), received kbps, shown FPS against the host's target, viewer decode time (avg / max), the host's
-encoder (HW or SW H.264, or JPEG), host grab and encode time (avg / max), idle and dropped frames, and the
-congestion level. Hosts send `host-stats` only while the overlay is shown; hosts that predate it show "–" for
-their rows and the RTT. Over P2P the ping goes direct and the answer through the relay (host events always take
-the relay), so the RTT is that of control messages.
+(P2P or Relay), received kbps, shown FPS against the host's target, the host's encoder (HW or SW H.264, or JPEG),
+where a frame's latency goes (avg / max), host grab and encode time (avg / max), idle and dropped frames, the
+congestion level, and CPU and RAM of OpenDesk on both machines. Hosts send `host-stats` only while the overlay is
+shown; hosts that predate it show "–" for their rows and the RTT. Over P2P the ping goes direct and the answer
+through the relay (host events always take the relay), so the RTT is that of control messages.
+
+The latency rows follow one frame from capture to screen; together they make up Total:
+
+| Row | From → to |
+| --- | --- |
+| Host | capture on the host → handed to its send queue (grab work, encode, waiting for the previous frame) |
+| Network | send queue → complete in the viewer (relay or P2P, including all fragments) |
+| Decode | received → decoded (including a wait while the previous frame decodes) |
+| Display | decoded → handed to the UI; the screen's next refresh adds up to one more frame |
+| Total | capture → handed to the UI |
+
+Host, Network and Total need hosts that list `frame-stamp` (others show "–"). Network and Total also map the host's
+clock onto the viewer's from the ping, taking the answer as sent halfway through the round trip: accurate to a few
+ms on the relay path, while over P2P the ping and answer take different routes, which can shift up to half that
+difference between Network and the true value. Host grab is the capture work only; waiting for the screen to change
+is not counted (the `host.perf` log shows it as `wait`). CPU is a share of the whole machine, like Task Manager.

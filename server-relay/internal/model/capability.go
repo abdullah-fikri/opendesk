@@ -40,11 +40,11 @@ const CapViewerOnly = "viewer-only"
 const PlatformAndroid = "android"
 
 const (
-	maxCapabilities  = 16
+	maxCapabilities  = 32
 	maxCapabilityLen = 32
 )
 
-// SanitizeCapabilities keeps at most 16 well-formed capability names (lowercase letters, digits, '-' and '.',
+// SanitizeCapabilities keeps at most 32 well-formed capability names (lowercase letters, digits, '-' and '.',
 // 1..32 characters) and drops everything else. The result is never nil.
 func SanitizeCapabilities(raw []string) []string {
 	caps := make([]string, 0, min(len(raw), maxCapabilities))

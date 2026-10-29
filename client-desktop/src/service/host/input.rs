@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::domain::resolution;
+use crate::domain::{frame_rate, latency, resolution};
 use crate::infra::{logger, privacy};
 use crate::protocol::InputEvent;
 use crate::service::context::AppContext;
@@ -99,6 +99,13 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
             ctx.voice.audio_quality.store(quality.min(2) as usize, Ordering::SeqCst);
             logger::info("host.input", &format!("Viewer set voice quality: {}", quality.min(2)));
         }
+        // The capture loop picks both up on its next tick.
+        InputEvent::SetPerformance { preset, max_fps } => {
+            let mut caps = host.peer_caps.lock();
+            caps.performance = preset;
+            caps.max_fps = if max_fps == 0 { frame_rate::DEFAULT_FPS } else { max_fps };
+            logger::info("host.input", &format!("Viewer set performance: {} (fps cap {})", preset.cap(), caps.max_fps));
+        }
         // A remote peer may silence this microphone, but only the local user can enable it.
         InputEvent::SetMic { muted: true } => {
             ctx.voice.is_mic_muted.store(true, Ordering::SeqCst);
@@ -108,7 +115,10 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
         InputEvent::SetBlockInput { blocked } => privacy::set_host_block_input(blocked),
         InputEvent::VideoKeyframe => host.keyframe_requested.store(true, Ordering::SeqCst),
         InputEvent::Stats { on } => host.stats_requested.store(on, Ordering::Relaxed),
-        InputEvent::StatsPing { t } => ctx.send_input(&ctx.partner(), InputEvent::StatsPong { t }),
+        InputEvent::StatsPing { t } => {
+            let h = Some(latency::mono_us(std::time::Instant::now()) as u64);
+            ctx.send_input(&ctx.partner(), InputEvent::StatsPong { t, h })
+        }
         // Viewer-bound events and zero key codes have no meaning on a host.
         _ => {}
     }

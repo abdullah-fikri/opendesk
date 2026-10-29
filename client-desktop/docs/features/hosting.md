@@ -17,8 +17,18 @@ One thread per hosted session (`capture.rs`):
   ([autostart](autostart-and-cli.md#windows-service)); on Linux with X11 MIT-SHM, paced by the loop.
 - Encodes with `core_engine::stream::StreamEncoder`: plain JPEG for viewers without `video-delta`, otherwise key
   and delta frames, plus H.264 for motion when the viewer supports it.
-- Paces at 60 FPS and encodes only while the previous frame has left the socket (or the P2P path acknowledged
-  it); the wait feeds a congestion level that lowers quality.
+- Paces at the viewer's cap (`fps-N` or `set-performance`, 60 without one), at most the host monitor's refresh
+  rate; above 60 only with a hardware H.264 encoder, on any path (P2P, UDP relay or WebSocket relay;
+  `OPENDESK_WS_HIGH_FPS=0` keeps the WebSocket relay at 60). Encodes only while the previous frame has left the
+  socket (or the P2P path acknowledged it); the wait feeds a congestion level that first steps the rate down
+  (144 → 120 → 90 → 60), then lowers quality and bitrate.
+- Follows the viewer's performance preset (`perf-*` or `set-performance`, Medium without one): the H.264 bitrate
+  is halved on Low and doubled on High, and on High with a hardware encoder motion switches to H.264 at once.
+  A preset change applies on the next frame.
+- While its video goes over the WebSocket relay, the relay socket's send buffer shrinks to 512 KiB
+  (`OPENDESK_WS_SNDBUF`), so frames cannot pile up in an auto-tuned kernel buffer of several megabytes and
+  congestion shows sooner; 512 KiB still carries about 17 Mbps at 234 ms RTT. Afterwards it is set to 4 MiB
+  for file transfers.
 - Rebuilds the pipeline when the viewer switches monitor or resolution; re-checks the monitor list every 2 s and
   announces changes (`monitors`), and announces the cursor shape when the viewer draws its own.
 - Releases every key the viewer left pressed when the session ends.

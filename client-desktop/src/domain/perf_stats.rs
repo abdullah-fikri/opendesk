@@ -4,19 +4,25 @@
 //!
 //! Host line (`host.perf`, one per window while a session is hosted):
 //! - `fps`: frames sent per second; `target`: the capture loop's pacing rate.
-//! - `grab`, `encode`, `gate`: avg/max milliseconds per tick for `DesktopCapturer::grab` (includes DXGI's
-//!   wait for a desktop change), `StreamEncoder::encode` (block diff + JPEG/H.264) and the wait for the
-//!   previous frame to leave (`can_send_frame`).
+//! - `grab`, `wait`, `encode`, `gate`: avg/max milliseconds per tick for the work of `DesktopCapturer::grab`
+//!   (copy and scale, without DXGI's wait for a desktop change), that wait itself (the whole tick budget on an
+//!   idle screen; not a cost), `StreamEncoder::encode` (block diff + JPEG/H.264) and the wait for the previous
+//!   frame to leave (`can_send_frame`).
+//! - `latency`: avg/max ms from capture to handing a sent frame to the outbox (the `Host` overlay row).
 //! - `kbps`: video message bytes sent, in kilobits per second.
 //! - `idle_frames`: grabs that produced nothing to send (no change); `gate_skips`: ticks skipped because the
 //!   previous frame was still on its way when the tick ended.
 //! - `h264`: `off`, or `on(<encoder name>)` once the motion encoder is running.
+//! - `cpu`, `ram`: this process over the window (see [`ProcessUsage`]).
 //!
 //! Viewer line (`viewer.perf`, one per window while the session is visible and receiving video):
 //! - `session`: the viewer session id; `fps`: frames handed to the UI per second.
 //! - `process`: avg/max ms to decode and compose a batch into an output buffer.
 //! - `handoff`: avg/max ms to pass the buffer to the UI thread.
 //! - `kbps`: video message bytes received, in kilobits per second; `batches`: inbox drains decoded.
+//! - `latency host/net/decode/display/total`: avg/max ms per stage of displayed frames (`domain::latency`);
+//!   `-` where unmeasured (hosts without `frame-stamp`, or no clock offset yet).
+//! - `cpu`, `ram`: this process over the window (see [`ProcessUsage`]).
 
 use std::fmt;
 use std::time::{Duration, Instant};
@@ -114,7 +120,7 @@ impl Counter {
 }
 
 /// One stage's numbers over a window; displays as `avg/maxms`.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StageSummary {
     pub count: u32,
     pub avg_ms: f64,
@@ -152,6 +158,31 @@ impl PerfWindow {
         }
         self.started = now;
         Some(elapsed.as_secs_f64())
+    }
+}
+
+/// CPU and memory of this process, as the stats overlay and the perf lines show it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ProcessUsage {
+    /// Percent of the whole machine (all cores = 100), like Task Manager.
+    pub cpu_pct: f32,
+    /// Working set (Windows) or resident set (Linux), MiB.
+    pub ram_mb: f32,
+}
+
+impl ProcessUsage {
+    /// Usage from `cpu` time consumed over `wall` time on a machine with `cores` logical processors.
+    pub fn from_times(cpu: Duration, wall: Duration, cores: usize, ram_bytes: u64) -> Self {
+        let wall = wall.as_secs_f64() * cores.max(1) as f64;
+        let cpu_pct = if wall <= 0.0 { 0.0 } else { (cpu.as_secs_f64() / wall * 100.0).clamp(0.0, 100.0) };
+        Self { cpu_pct: cpu_pct as f32, ram_mb: (ram_bytes as f64 / (1024.0 * 1024.0)) as f32 }
+    }
+}
+
+impl fmt::Display for ProcessUsage {
+    /// `cpu=3.2% ram=148MB`, the perf lines' form.
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "cpu={:.1}% ram={:.0}MB", self.cpu_pct, self.ram_mb)
     }
 }
 
@@ -196,6 +227,15 @@ mod tests {
         assert_eq!(w.due(t0 + Duration::from_secs(9)), None);
         assert_eq!(w.due(t0 + Duration::from_secs(10)), Some(10.0));
         assert_eq!(w.due(t0 + Duration::from_secs(15)), None);
+    }
+
+    #[test]
+    fn process_usage_is_a_share_of_the_whole_machine() {
+        let u = ProcessUsage::from_times(Duration::from_millis(500), Duration::from_secs(1), 4, 150 << 20);
+        assert_eq!((u.cpu_pct, u.ram_mb), (12.5, 150.0));
+        assert_eq!(u.to_string(), "cpu=12.5% ram=150MB");
+        assert_eq!(ProcessUsage::from_times(Duration::from_secs(9), Duration::from_secs(1), 2, 0).cpu_pct, 100.0);
+        assert_eq!(ProcessUsage::from_times(Duration::from_secs(1), Duration::ZERO, 0, 0).cpu_pct, 0.0);
     }
 
     #[test]

@@ -99,6 +99,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `cursor-shape` | client | Draws its own cursor from `cursor-shape` events; the host stops painting it. |
 | `video-delta` | client | Framed key/delta video; without it the host sends plain JPEGs. |
 | `video-h264` | client | H.264 inside the framed format. |
+| `frame-stamp` | client | Framed video to this viewer may end in a capture stamp (below) for the stats overlay's latency rows. |
 | `audio-opus` | client | Decodes Opus voice (`[0x02][0x4F]...`); voice to it is Opus, to everyone else PCM. |
 | `p2p.v1` | client | Direct encrypted UDP path. |
 | `udp-relay` | client + relay | The direct path may run through the relay's UDP forwarder (`udp-relay-offer`). |
@@ -110,12 +111,14 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `host-features` | client | The host lists its optional host controls below. Without it the host is a legacy Windows host that has all of them. |
 | `privacy-screen` | client, with `host-features` | `set-privacy` works on this host. |
 | `block-input` | client, with `host-features` | `set-block-input` works on this host. |
+| `fps-N` (e.g. `fps-144`) | client | The viewer wants at most N frames per second; without it the host streams 60. Listed after every other client capability (relays up to 1.2.0 keep only the first 16 names, newer ones 32). |
+| `perf-low`, `perf-medium`, `perf-high` | client | The viewer's performance preset: the host halves (Low) or doubles (High) its H.264 bitrate, and on High switches motion to H.264 at once. Without one the host uses Medium. Listed after `fps-N`; Medium is not listed. |
 | `p2p-signal`, `file-grant`, `file-offer`, `file-binary`, `caps`, `monitor`, `device-security`, `host-alias` | relay | Relay features in `registered-ack`. |
 
 Per platform (see [platforms.md](platforms.md)):
 
-- Windows: `file-ack`, `file-offer`, `file-folder`, `file-binary`, `cursor-shape`, `video-delta`, `video-h264` (when the
-  Media Foundation decoder exists), `audio-opus`, `p2p.v1`, `multi-session`. No `host-features`: Windows hosts have every
+- Windows: `file-ack`, `file-offer`, `file-folder`, `file-binary`, `cursor-shape`, `video-delta`, `frame-stamp`,
+  `video-h264` (when the Media Foundation decoder exists), `audio-opus`, `p2p.v1`, `multi-session`. No `host-features`: Windows hosts have every
   host control.
 - Linux: the same without `file-offer`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
@@ -147,13 +150,14 @@ Per platform (see [platforms.md](platforms.md)):
 | `set-block-input` | `blocked` | viewer to host |
 | `video-keyframe` | | viewer to host: delta chain broken |
 | `set-audio-quality` | `quality`: 0 = 16 kHz, 1 = 24 kHz, 2 = 48 kHz | either |
+| `set-performance` | `preset` (`low`, `medium`, `high`), `maxFps` (0 = none) | viewer to host: at session start and when the preset changes; replaces the registration's `perf-*` and `fps-N` for this session |
 | `set-mic` | `muted` | either; only `muted: true` is honored |
 | `cursor-shape` | `shape` (0 hidden, 1 arrow, 2 text, 3 hand, ...) | host to viewer |
 | `monitors` | `list[]` (`index`, `width`, `height`, `primary`), `active` | host to viewer |
 | `stats` | `on` | viewer to host: stats overlay shown or hidden |
 | `stats-ping` | `t` (viewer clock, ms) | viewer to host, once a second while the overlay is shown |
-| `stats-pong` | `t` (copied from `stats-ping`) | host to viewer, at once |
-| `host-stats` | `fps`, `targetFps`, `grabMs`, `grabMaxMs`, `encodeMs`, `encodeMaxMs`, `kbps`, `idle`, `gateSkips`, `congestion` (0..1), `encoder` (H.264 name, empty = JPEG) | host to viewer, once a second between `stats` on and off |
+| `stats-pong` | `t` (copied from `stats-ping`), `h` (host monotonic clock, µs; absent up to 1.2.0) | host to viewer, at once |
+| `host-stats` | `fps`, `targetFps`, `grabMs`, `grabMaxMs` (capture work, without waiting for a screen change), `encodeMs`, `encodeMaxMs`, `kbps`, `idle`, `gateSkips`, `congestion` (0..1), `encoder` (H.264 name, empty = JPEG), `cpu` (host process, % of the machine), `ramMb` (its working set) | host to viewer, once a second between `stats` on and off |
 
 Peers ignore actions they do not know, so a viewer never gets `host-stats` from a host that predates it.
 
@@ -207,7 +211,7 @@ Framed video (`video-delta`), all integers big-endian:
 0   FF D8 00 4F   magic (starts like a JPEG; 0x00 never follows SOI in a real JPEG)
 4   version = 1
 5   kind: 1 key (payload = JPEG), 2 delta (payload = JPEG atlas), 3 H.264 access unit
-6   flags: bit 0 = H.264 IDR
+6   flags: bit 0 = H.264 IDR, bit 1 = stamped
 7   reserved
 8   seq (u32): a delta applies only on top of seq-1
 12  width, height (u16)
@@ -215,7 +219,13 @@ Framed video (`video-delta`), all integers big-endian:
 20  moves   (src_x, src_y, dst_x, dst_y, w, h) x u16, applied first
     patches (dst_x, dst_y, w, h, atlas_x, atlas_y) x u16, blitted from the payload
     payload
+    stamp trailer, only with flag bit 1 (viewers that list frame-stamp):
+      captured_us (u64): host monotonic clock at capture, µs
+      host_us (u32): capture to hand-off for sending on the host, µs
 ```
+
+The viewer maps `captured_us` onto its own clock with the offset from `stats-ping`/`stats-pong` (`h` taken as
+halfway through the round trip) to split a frame's latency into host, network, decode and display.
 
 Opus voice keeps the `0x02` marker, so every relay version forwards it as audio. `0x4F` is never a rate tag;
 `seq` counts packets so the receiver can rebuild one lost frame from the next packet's in-band FEC and conceal

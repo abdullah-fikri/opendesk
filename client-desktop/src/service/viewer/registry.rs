@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize
 use parking_lot::Mutex;
 
 use crate::domain::keyboard::KeyForwarder;
+use crate::domain::latency::LatencyMeter;
 use crate::infra::power;
 use crate::service::viewer::decoder::VideoInbox;
 use crate::service::viewer::stats::SessionStats;
@@ -56,6 +57,8 @@ pub struct Session {
     /// The stats overlay is shown: the decoder thread refreshes [`Session::stats`] and pings the host.
     pub stats_on: AtomicBool,
     pub stats: Mutex<SessionStats>,
+    /// Latency stages of displayed frames: the decoder thread, the presenter and `stats-pong` feed it.
+    pub latency: Arc<Mutex<LatencyMeter>>,
     /// Full speed (no EcoQoS) from opening the session until it is dropped.
     _awake: power::Awake,
 }
@@ -86,6 +89,7 @@ impl Session {
             keys: Mutex::default(),
             stats_on: AtomicBool::new(false),
             stats: Mutex::default(),
+            latency: Arc::default(),
             _awake: power::awake(),
         }
     }

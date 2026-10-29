@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::domain::performance::Performance;
+
 /// One event. Viewer -> host unless noted.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "action", rename_all = "kebab-case", rename_all_fields = "camelCase")]
@@ -97,6 +99,14 @@ pub enum InputEvent {
     SetAudioQuality {
         quality: u64,
     },
+    /// The viewer's performance preset and the frame-rate cap it stands for (what `perf-*` and `fps-N` say at
+    /// registration, 0 = none): sent at session start and when the user picks another preset, so it applies
+    /// without reconnecting. Older hosts ignore it and keep the registration caps.
+    SetPerformance {
+        preset: Performance,
+        #[serde(default)]
+        max_fps: u32,
+    },
     /// A peer may mute the other side's microphone, never unmute it. Either direction.
     SetMic {
         muted: bool,
@@ -131,9 +141,12 @@ pub enum InputEvent {
     StatsPing {
         t: u64,
     },
-    /// Host -> viewer: answers `stats-ping` at once with the same `t`.
+    /// Host -> viewer: answers `stats-ping` at once with the same `t`, and `h`: the host's monotonic clock in
+    /// microseconds (the viewer's clock offset for `frame-stamp`; absent from hosts up to 1.2.0).
     StatsPong {
         t: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        h: Option<u64>,
     },
     /// Host -> viewer: about once a second while the viewer asked for `stats`.
     HostStats(HostStats),
@@ -177,6 +190,11 @@ pub struct HostStats {
     pub congestion: f32,
     /// H.264 encoder name; empty when the stream is JPEG blocks only.
     pub encoder: String,
+    /// The host process's CPU (percent of the machine) and working set (MiB); absent up to 1.2.0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ram_mb: Option<f32>,
 }
 
 #[cfg(test)]
@@ -196,6 +214,21 @@ mod tests {
             serde_json::to_value(InputEvent::Wheel { norm_x: 0.5, norm_y: 0.25, delta_y: -120 }).unwrap(),
             json!({ "action": "wheel", "normX": 0.5, "normY": 0.25, "deltaY": -120 })
         );
+    }
+
+    #[test]
+    fn performance_event_wire_shape() {
+        let e = InputEvent::SetPerformance { preset: Performance::High, max_fps: 144 };
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            json!({ "action": "set-performance", "preset": "high", "maxFps": 144 })
+        );
+        assert_eq!(
+            InputEvent::parse(&json!({ "action": "set-performance", "preset": "low" })),
+            Some(InputEvent::SetPerformance { preset: Performance::Low, max_fps: 0 })
+        );
+        // A preset from a later release is ignored as a whole.
+        assert_eq!(InputEvent::parse(&json!({ "action": "set-performance", "preset": "ultra", "maxFps": 60 })), None);
     }
 
     #[test]
@@ -222,9 +255,18 @@ mod tests {
             serde_json::to_value(InputEvent::StatsPing { t: 1234 }).unwrap(),
             json!({ "action": "stats-ping", "t": 1234 })
         );
+        // Hosts up to 1.2.0 answer without their clock; newer ones add it.
         assert_eq!(
             InputEvent::parse(&json!({ "action": "stats-pong", "t": 1234 })),
-            Some(InputEvent::StatsPong { t: 1234 })
+            Some(InputEvent::StatsPong { t: 1234, h: None })
+        );
+        assert_eq!(
+            serde_json::to_value(InputEvent::StatsPong { t: 1234, h: Some(99) }).unwrap(),
+            json!({ "action": "stats-pong", "t": 1234, "h": 99 })
+        );
+        assert_eq!(
+            serde_json::to_value(InputEvent::StatsPong { t: 1, h: None }).unwrap(),
+            json!({ "action": "stats-pong", "t": 1 })
         );
         let stats = HostStats {
             fps: 58.5,
@@ -241,7 +283,12 @@ mod tests {
             (&wire["action"], &wire["targetFps"], &wire["grabMs"], &wire["gateSkips"], &wire["encoder"]),
             (&json!("host-stats"), &json!(60), &json!(1.25), &json!(2), &json!("Intel QSV (hardware MFT)"))
         );
-        assert_eq!(InputEvent::parse(&wire), Some(InputEvent::HostStats(stats)));
+        assert_eq!(InputEvent::parse(&wire), Some(InputEvent::HostStats(stats.clone())));
+        assert!(wire.get("cpu").is_none() && wire.get("ramMb").is_none());
+        let with_usage = HostStats { cpu: Some(3.5), ram_mb: Some(148.0), ..stats };
+        let wire = serde_json::to_value(InputEvent::HostStats(with_usage.clone())).unwrap();
+        assert_eq!((&wire["cpu"], &wire["ramMb"]), (&json!(3.5), &json!(148.0)));
+        assert_eq!(InputEvent::parse(&wire), Some(InputEvent::HostStats(with_usage)));
         // A newer host may add fields, an older one may lack some.
         assert_eq!(
             InputEvent::parse(&json!({ "action": "host-stats", "fps": 30.0, "future": 1 })),

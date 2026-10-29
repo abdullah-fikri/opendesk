@@ -308,6 +308,11 @@ impl DesktopCapturer {
         self.grab(0);
     }
 
+    /// X11 never waits for a change (see `grab`): the whole grab is capture work.
+    pub fn last_wait(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+
     /// The last captured image as BGRX pixels, `width()` per row.
     pub fn pixels(&self) -> &[u32] {
         &self.frame

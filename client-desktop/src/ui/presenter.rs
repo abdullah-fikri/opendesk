@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Image, Weak};
@@ -161,6 +162,7 @@ impl UiPort for SlintUi {
             let path = frame.path;
             let (width, height) = (frame.width as i32, frame.height as i32);
             let fps = frame.fps as i32;
+            let latency = frame.latency;
             // The picture changes every frame; the other fields only rarely, so they are written only on change.
             let found = session_model::update(&id, |r| {
                 r.frame = image;
@@ -182,6 +184,9 @@ impl UiPort for SlintUi {
                     r.status = Default::default();
                 }
             });
+            if found {
+                latency.shown(Instant::now());
+            }
             if found && w.get_focused_session() == id.as_str() && !w.get_hosting() && !transfer_busy() {
                 w.set_status_text(format!("{width}x{height} • {} FPS • {path}", frame.fps).into());
             }

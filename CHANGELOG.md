@@ -3,6 +3,29 @@
 All notable changes to OpenDesk. Versions follow [Semantic Versioning](https://semver.org); the single source of
 truth is `VERSION`. The release workflow copies the section of the tagged version into the GitHub Release.
 
+## [1.2.1] - 2026-10-29
+
+### Added
+- Performance presets: one "Performance" setting (Low / Medium / High) replaces the frame-rate picker in the relay
+  settings dialog. Low streams 30 FPS at half the H.264 bitrate, Medium (the default for new installs) 60 FPS as
+  before, High follows the viewer's monitor refresh rate at twice the bitrate and switches motion to H.264 at
+  once. The congestion governor still lowers rate and bitrate on every preset. A changed preset applies to
+  running sessions without reconnecting (`set-performance`); older hosts keep using the `fps-N` cap. Existing
+  settings carry over: 30 FPS becomes Low, 60 Medium, Auto and Maximum High.
+- Latency in the session stats overlay: Host, Network, Decode, Display and Total per frame, plus CPU and RAM of
+  the viewer and the host process. Hosts stamp frames only for viewers that list `frame-stamp`; with older hosts
+  those rows show "–".
+
+### Changed
+- "Host grab" in the stats overlay counts capture work only; waiting for the desktop to change is logged as
+  `wait=` in `host.perf`.
+- The relay keeps up to 32 client capabilities instead of 16.
+- Above 60 FPS now works over the WebSocket relay too, not only over P2P or the UDP relay; a hardware H.264
+  encoder on the host is still required. `OPENDESK_WS_HIGH_FPS=0` restores the old rule.
+- While a hosted session's video goes over the WebSocket relay, the socket send buffer is 512 KiB
+  (`OPENDESK_WS_SNDBUF`), so frames no longer queue in a multi-megabyte kernel buffer on a slow link.
+- Saving the relay settings dialog with an unchanged address no longer reconnects (and ends running sessions).
+
 ## [1.2.0] - 2026-10-29
 
 ### Added
@@ -187,6 +210,7 @@ First public release.
 - Windows binaries are not code-signed yet (SmartScreen warns on first run); Linux packages are unsigned `.deb`
   files. Verify downloads against `SHA256SUMS.txt`.
 
+[1.2.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.2.1
 [1.2.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.2.0
 [1.1.3]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.1.3
 [1.1.2]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.1.2

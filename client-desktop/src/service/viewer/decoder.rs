@@ -9,31 +9,38 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use core_engine::codec::delta::{Applied, Compositor};
-use core_engine::codec::frame::{FLAG_IDR, FrameHeader, KIND_DELTA, KIND_H264, KIND_KEY, is_framed};
+use core_engine::codec::frame::{FLAG_IDR, FrameHeader, KIND_DELTA, KIND_H264, KIND_KEY, is_framed, read_stamp};
 use core_engine::codec::h264::H264Decoder;
 use image::ImageReader;
 use parking_lot::{Condvar, Mutex};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 use crate::domain::capability;
+use crate::domain::latency;
 use crate::domain::perf_stats::{Counter, PerfWindow, STATS_INTERVAL, Stage, kbps};
 use crate::infra::logger;
+use crate::infra::process_usage::UsageSampler;
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 use crate::service::ui_port::Frame;
 use crate::service::viewer::registry::Session;
-use crate::service::viewer::stats::{ViewerStats, path_label};
+use crate::service::viewer::stats::{FrameLatency, ViewerStats, path_label};
 
 /// Minimum spacing of key-frame requests after a broken delta chain.
 const KEY_REQUEST_INTERVAL: Duration = Duration::from_millis(300);
 
 /// Video capabilities this client advertises at registration. H.264 is advertised only when this machine can
-/// create the Media Foundation decoder (`OPENDESK_VIDEO_H264=0` turns it off).
+/// create the Media Foundation decoder (`OPENDESK_VIDEO_H264=0` turns it off). `frame-stamp` is always listed:
+/// this client parses stamps as a viewer and, as a host, sends them only to viewers that list it.
 pub fn supported_video_caps() -> Vec<&'static str> {
     static H264_OK: OnceLock<bool> = OnceLock::new();
     let h264 = *H264_OK.get_or_init(|| {
         std::env::var("OPENDESK_VIDEO_H264").map_or(true, |v| v != "0") && H264Decoder::new(64, 64).is_ok()
     });
-    if h264 { vec![capability::VIDEO_DELTA, capability::VIDEO_H264] } else { vec![capability::VIDEO_DELTA] }
+    let mut caps = vec![capability::VIDEO_DELTA, capability::FRAME_STAMP];
+    if h264 {
+        caps.push(capability::VIDEO_H264);
+    }
+    caps
 }
 
 pub(crate) fn decode_jpeg_rgba(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
@@ -48,11 +55,11 @@ pub(crate) fn to_pixel_buffer(rgba: &[u8], width: u32, height: u32) -> SharedPix
     buffer
 }
 
-/// Received video messages in arrival order. Deltas must all be applied, so nothing is overwritten; a full
-/// frame makes everything queued before it obsolete.
+/// Received video messages in arrival order, each with its arrival time (the latency rows' "received").
+/// Deltas must all be applied, so nothing is overwritten; a full frame makes everything queued before it obsolete.
 #[derive(Default)]
 pub struct VideoInbox {
-    queue: Mutex<VecDeque<Vec<u8>>>,
+    queue: Mutex<VecDeque<(Vec<u8>, Instant)>>,
     /// Signalled on every push and by [`VideoInbox::wake`], so the decoder thread sleeps while idle.
     ready: Condvar,
 }
@@ -74,25 +81,26 @@ impl VideoInbox {
         if q.len() >= Self::MAX {
             q.pop_front();
         }
-        q.push_back(msg);
+        q.push_back((msg, Instant::now()));
         self.ready.notify_all();
     }
 
     /// Takes every queued message in arrival order.
     #[cfg(test)]
     pub fn drain(&self) -> Vec<Vec<u8>> {
-        self.queue.lock().drain(..).collect()
+        self.queue.lock().drain(..).map(|(m, _)| m).collect()
     }
 
     /// Like [`VideoInbox::drain`], but waits up to `timeout` for a message when the queue is empty. Returns
-    /// empty on timeout or [`VideoInbox::wake`].
-    pub fn drain_wait(&self, timeout: Duration) -> Vec<Vec<u8>> {
+    /// an empty batch on timeout or [`VideoInbox::wake`].
+    pub fn drain_wait(&self, timeout: Duration) -> Batch {
         let mut q = self.queue.lock();
         if q.is_empty() {
             // A single wait, not a loop: a spurious wake-up only costs the caller one extra state check.
             let _ = self.ready.wait_for(&mut q, timeout);
         }
-        q.drain(..).collect()
+        let received = q.back().map(|m| m.1);
+        Batch { msgs: q.drain(..).map(|(m, _)| m).collect(), received }
     }
 
     /// Wakes a waiting decoder thread so it re-checks the session's `alive`/`visible` state at once.
@@ -105,6 +113,13 @@ impl VideoInbox {
     pub fn is_empty(&self) -> bool {
         self.queue.lock().is_empty()
     }
+}
+
+/// Messages taken from the inbox in one go.
+pub struct Batch {
+    pub msgs: Vec<Vec<u8>>,
+    /// Arrival of the newest message: the one the decoded picture shows.
+    pub received: Option<Instant>,
 }
 
 /// What a decoded batch means for the screen.
@@ -287,16 +302,22 @@ impl ViewerPerf {
 
     /// The overlay's numbers since the previous call, independent of the log window.
     fn take_stats(&mut self, secs: f64) -> ViewerStats {
-        let process = self.process.take_lap();
+        self.process.take_lap();
         self.handoff.take_lap();
         self.batches.take_lap();
         ViewerStats {
             fps: (self.shown.take_lap() as f64 / secs) as f32,
             kbps: kbps(self.bytes.take_lap(), secs),
-            decode_ms: process.avg_ms as f32,
-            decode_max_ms: process.max_ms as f32,
+            usage: None,
         }
     }
+}
+
+/// Sends a `stats-ping` and notes when it left, for the RTT row and the clock offset.
+fn ping(sess: &Session, outbox: &Sender<Outgoing>) {
+    let t = crate::service::file_transfer::now_ms();
+    sess.latency.lock().ping_sent(t, latency::mono_us(Instant::now()));
+    let _ = outbox.send(Outgoing::Message(ClientMessage::input(&sess.id, InputEvent::StatsPing { t })));
 }
 
 fn request_key(outbox: &Sender<Outgoing>, id: &str) {
@@ -333,6 +354,9 @@ where
         let mut perf = ViewerPerf::default();
         let mut perf_window = PerfWindow::new(Instant::now());
         let mut stats_window = PerfWindow::every(Instant::now(), STATS_INTERVAL);
+        let (mut perf_usage, mut stats_usage) = (UsageSampler::new(), UsageSampler::new());
+        perf_usage.sample(Instant::now());
+        stats_usage.sample(Instant::now());
 
         while sess.alive.load(Ordering::SeqCst) {
             let visible = sess.visible.load(Ordering::SeqCst);
@@ -346,25 +370,37 @@ where
             // Sleeps until a message arrives; close and visibility changes wake it too (`Registry`), and the
             // timeout bounds the wait should a wake ever be missed.
             let batch = sess.inbox.drain_wait(VideoInbox::IDLE_WAIT);
+            let stats_on = visible && sess.stats_on.load(Ordering::Relaxed);
             if let Some(secs) = perf_window.due(Instant::now()) {
+                let usage = perf_usage.sample(Instant::now());
+                let latency = sess.latency.lock().take_line();
                 // Only windows that decoded something: hidden or idle sessions stay quiet.
                 if perf.batches.in_window() > 0 {
-                    logger::info("viewer.perf", &perf.take_line(&sess.id, secs));
+                    let usage = usage.map_or_else(String::new, |u| format!(" {u}"));
+                    logger::info("viewer.perf", &format!("{} {latency}{usage}", perf.take_line(&sess.id, secs)));
+                    // Keeps the clock offset of the line's network and total stages fresh while the overlay,
+                    // which pings every second, is off.
+                    if !stats_on {
+                        ping(&sess, &outbox);
+                    }
                 }
             }
             if let Some(secs) = stats_window.due(Instant::now()) {
-                let viewer = perf.take_stats(secs);
-                if visible && sess.stats_on.load(Ordering::Relaxed) {
-                    let t = crate::service::file_transfer::now_ms();
-                    let _ = outbox.send(Outgoing::Message(ClientMessage::input(&sess.id, InputEvent::StatsPing { t })));
+                let mut viewer = perf.take_stats(secs);
+                viewer.usage = stats_usage.sample(Instant::now());
+                let latency = sess.latency.lock().take_lap();
+                if stats_on {
+                    ping(&sess, &outbox);
                     let columns = {
                         let mut stats = sess.stats.lock();
                         stats.viewer = viewer;
+                        stats.latency = latency;
                         stats.columns(path_of(&sess), sess.e2e_active())
                     };
                     show_stats(&sess, columns);
                 }
             }
+            let Batch { msgs: batch, received } = batch;
             if batch.is_empty() {
                 continue;
             }
@@ -374,9 +410,12 @@ where
             }
             perf.batches += 1;
             perf.bytes += batch.iter().map(|m| m.len() as u64).sum::<u64>();
+            // The picture shows the newest message; its stamp times the whole frame.
+            let stamp = batch.last().and_then(|m| read_stamp(m));
             let process_start = Instant::now();
             let out = decoder.get_or_insert_with(ViewerDecoder::new).process(batch);
-            perf.process.record(process_start.elapsed());
+            let decoded = Instant::now();
+            perf.process.record(decoded - process_start);
             let (pixels, width, height) = match out {
                 ViewerOutput::Frame(buf, w, h) => (buf, w, h),
                 ViewerOutput::Unchanged => continue,
@@ -398,7 +437,13 @@ where
             }
             let path = path_of(&sess);
             let handoff_start = Instant::now();
-            show(&sess, Frame { pixels, width, height, fps: current_fps, path });
+            let latency = FrameLatency {
+                meter: Arc::clone(&sess.latency),
+                stamp,
+                received: received.unwrap_or(process_start),
+                decoded,
+            };
+            show(&sess, Frame { pixels, width, height, fps: current_fps, path, latency });
             perf.handoff.record(handoff_start.elapsed());
             perf.shown += 1;
         }
@@ -648,7 +693,8 @@ mod tests {
         });
         let start = Instant::now();
         let got = inbox.drain_wait(Duration::from_secs(5));
-        assert_eq!(got.len(), 1);
+        assert_eq!(got.msgs.len(), 1);
+        assert!(got.received.is_some_and(|t| t >= start), "arrival time of the newest message");
         assert!(start.elapsed() < Duration::from_secs(2), "woken by the push, not the timeout");
         t.join().unwrap();
     }
@@ -657,7 +703,7 @@ mod tests {
     fn inbox_drain_wait_times_out_empty_and_wake_returns_early() {
         let inbox = Arc::new(VideoInbox::default());
         let start = Instant::now();
-        assert!(inbox.drain_wait(Duration::from_millis(30)).is_empty());
+        assert!(inbox.drain_wait(Duration::from_millis(30)).msgs.is_empty());
         assert!(start.elapsed() >= Duration::from_millis(25));
 
         let waker = Arc::clone(&inbox);
@@ -666,7 +712,7 @@ mod tests {
             waker.wake();
         });
         let start = Instant::now();
-        assert!(inbox.drain_wait(Duration::from_secs(5)).is_empty());
+        assert!(inbox.drain_wait(Duration::from_secs(5)).msgs.is_empty());
         assert!(start.elapsed() < Duration::from_secs(2), "woken before the timeout");
         t.join().unwrap();
     }
