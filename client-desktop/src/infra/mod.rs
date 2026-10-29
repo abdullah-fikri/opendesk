@@ -13,6 +13,7 @@ pub mod logger;
 pub mod p2p;
 pub mod power;
 pub mod privacy;
+pub mod process_usage;
 pub mod send_gate;
 pub mod storage;
 pub mod system_service;
