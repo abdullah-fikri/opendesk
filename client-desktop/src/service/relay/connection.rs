@@ -55,6 +55,18 @@ const IDLE_AFTER: Duration = Duration::from_secs(2);
 const IDLE_MAX_SLEEP: Duration = Duration::from_millis(20);
 /// How often the loop checks whether the main window is on screen.
 const WINDOW_CHECK: Duration = Duration::from_millis(500);
+/// Kernel send buffer (`SO_SNDBUF`) while the hosted session's video goes over this socket. The video gate
+/// opens once a frame is in the kernel buffer, and an auto-tuned buffer grows to megabytes: on a link slower
+/// than the stream, seconds of video could wait there before `flush` blocks and the congestion meter notices.
+/// The buffer also holds the bytes in flight, so it caps throughput at buffer / RTT: 512 KiB still carries
+/// ~17 Mbps at 234 ms RTT (a far relay), above the High preset at 144 FPS on 1080p (~12 Mbps), while a slow
+/// link queues at most ~0.3 s of such a stream here instead of seconds.
+const HOSTING_SEND_BUFFER: usize = 512 * 1024;
+/// Smallest `OPENDESK_WS_SNDBUF` override honored: below this one key frame needs many round trips.
+const MIN_SEND_BUFFER: usize = 64 * 1024;
+/// Send buffer once such a session is over: file transfers get their throughput back (4 MiB carries
+/// ~140 Mbps at 234 ms RTT). A buffer set once is no longer auto-tuned, so the OS default cannot come back.
+const TRANSFER_SEND_BUFFER: usize = 4 * 1024 * 1024;
 
 /// Starts the connection thread. `outbox` is the receiving end of `ctx.outbox`.
 pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
@@ -157,6 +169,8 @@ impl Connection {
         let mut last_traffic = Instant::now();
         let mut awake: Option<power::Awake> = None;
         let (mut window_shown, mut last_window_check) = (false, Instant::now() - WINDOW_CHECK);
+        let mut send_buffer: Option<usize> = None;
+        let sndbuf_env = std::env::var("OPENDESK_WS_SNDBUF").ok();
 
         while !ctx.relay.reconnect.load(Ordering::SeqCst) && !lost {
             let partner = ctx.partner();
@@ -172,6 +186,13 @@ impl Connection {
                 }
                 let hosted_p2p = self.links.iter().any(|p| p.is_host() && p.is_active());
                 ctx.host.p2p_active.store(hosted_p2p, Ordering::Relaxed);
+                let wanted = wanted_send_buffer(ctx.is_hosting() && !hosted_p2p, send_buffer, sndbuf_env.as_deref());
+                if wanted != send_buffer
+                    && let Some(bytes) = wanted
+                {
+                    set_send_buffer(&mut socket, bytes);
+                    send_buffer = wanted;
+                }
                 for e in self.e2e.iter().filter(|e| !e.is_host()) {
                     if let Some(s) = ctx.viewers.get(&e.partner) {
                         s.e2e_active.store(e.is_on(), Ordering::Relaxed);
@@ -699,9 +720,48 @@ fn set_low_latency(socket: &mut Socket) {
     }
 }
 
+/// The send buffer this socket should have: [`HOSTING_SEND_BUFFER`] (or `OPENDESK_WS_SNDBUF` bytes, `0` = leave
+/// the OS alone) while the hosted session's video goes over it, [`TRANSFER_SEND_BUFFER`] after such a session,
+/// None (the OS default, auto-tuned) before one.
+fn wanted_send_buffer(video_on_socket: bool, current: Option<usize>, env: Option<&str>) -> Option<usize> {
+    let hosting = match env.map(|v| v.trim().parse::<usize>()) {
+        Some(Ok(0)) => return current,
+        Some(Ok(n)) => n.max(MIN_SEND_BUFFER),
+        _ => HOSTING_SEND_BUFFER,
+    };
+    if video_on_socket { Some(hosting) } else { current.map(|_| TRANSFER_SEND_BUFFER) }
+}
+
+/// Sets the kernel send buffer (`SO_SNDBUF`) of the relay socket.
+fn set_send_buffer(socket: &mut Socket, bytes: usize) {
+    let tcp = match socket.get_mut() {
+        MaybeTlsStream::Plain(s) => &*s,
+        MaybeTlsStream::NativeTls(tls) => tls.get_ref(),
+        _ => return,
+    };
+    if let Err(e) = socket2::SockRef::from(tcp).set_send_buffer_size(bytes) {
+        logger::warn("relay", &format!("Could not set the socket send buffer to {bytes} bytes: {e}"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn send_buffer_shrinks_only_while_hosted_video_uses_the_socket() {
+        // Viewers and idle machines keep the OS default until they host over the relay.
+        assert_eq!(wanted_send_buffer(false, None, None), None);
+        assert_eq!(wanted_send_buffer(true, None, None), Some(HOSTING_SEND_BUFFER));
+        // After the session (or once P2P carries the video) transfers get a large buffer back.
+        assert_eq!(wanted_send_buffer(false, Some(HOSTING_SEND_BUFFER), None), Some(TRANSFER_SEND_BUFFER));
+        assert_eq!(wanted_send_buffer(true, Some(TRANSFER_SEND_BUFFER), None), Some(HOSTING_SEND_BUFFER));
+        // OPENDESK_WS_SNDBUF: a size (with a floor), 0 leaves the socket alone, junk is ignored.
+        assert_eq!(wanted_send_buffer(true, None, Some("1048576")), Some(1 << 20));
+        assert_eq!(wanted_send_buffer(true, None, Some("1000")), Some(MIN_SEND_BUFFER));
+        assert_eq!(wanted_send_buffer(true, None, Some("0")), None);
+        assert_eq!(wanted_send_buffer(true, None, Some("big")), Some(HOSTING_SEND_BUFFER));
+    }
 
     #[test]
     fn idle_sleep_stays_at_one_ms_during_sessions_and_recent_traffic() {
