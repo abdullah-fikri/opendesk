@@ -3,6 +3,12 @@
 Read [docs/architecture.md](docs/architecture.md) first: it explains the components and the layering every
 change must respect.
 
+Before your first pull request is merged, sign the [Contributor License Agreement](CLA.md): the CLA bot asks you
+to comment `I have read the CLA Document and I hereby sign the CLA` on the pull request. You keep the copyright;
+the agreement lets the project offer OpenDesk under both the AGPL and commercial licenses.
+
+Found a security problem? Do not open an issue: follow [SECURITY.md](SECURITY.md).
+
 ## Prerequisites
 
 | Component | Tools |
