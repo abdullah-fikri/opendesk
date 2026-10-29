@@ -12,8 +12,14 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
   once. The congestion governor still lowers rate and bitrate on every preset. A changed preset applies to
   running sessions without reconnecting (`set-performance`); older hosts keep using the `fps-N` cap. Existing
   settings carry over: 30 FPS becomes Low, 60 Medium, Auto and Maximum High.
+- Latency in the session stats overlay: Host, Network, Decode, Display and Total per frame, plus CPU and RAM of
+  the viewer and the host process. Hosts stamp frames only for viewers that list `frame-stamp`; with older hosts
+  those rows show "–".
 
 ### Changed
+- "Host grab" in the stats overlay counts capture work only; waiting for the desktop to change is logged as
+  `wait=` in `host.perf`.
+- The relay keeps up to 32 client capabilities instead of 16.
 - Above 60 FPS now works over the WebSocket relay too, not only over P2P or the UDP relay; a hardware H.264
   encoder on the host is still required. `OPENDESK_WS_HIGH_FPS=0` restores the old rule.
 - While a hosted session's video goes over the WebSocket relay, the socket send buffer is 512 KiB

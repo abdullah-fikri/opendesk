@@ -308,7 +308,7 @@ impl Connection {
         caps.push(capability::MONITOR_VIEW);
         let stored = storage::load_settings();
         let mut caps: Vec<String> = caps.into_iter().map(String::from).collect();
-        // Last, so a relay that keeps only its first 16 names drops these (the host then streams 60 on Medium).
+        // Last, so a relay that keeps only its first 16 names (up to 1.2.0) drops these (the host then streams 60 on Medium).
         // The preset goes after the cap older hosts need, and Medium, like 60 FPS, is what listing none means.
         // Hosts that know presets also get both from `set-performance` at session start.
         if edition.can_view() {

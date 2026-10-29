@@ -111,7 +111,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `host-features` | client | The host lists its optional host controls below. Without it the host is a legacy Windows host that has all of them. |
 | `privacy-screen` | client, with `host-features` | `set-privacy` works on this host. |
 | `block-input` | client, with `host-features` | `set-block-input` works on this host. |
-| `fps-N` (e.g. `fps-144`) | client | The viewer wants at most N frames per second; without it the host streams 60. Listed after every other client capability (a relay keeps only the first 16). |
+| `fps-N` (e.g. `fps-144`) | client | The viewer wants at most N frames per second; without it the host streams 60. Listed after every other client capability (relays up to 1.2.0 keep only the first 16 names, newer ones 32). |
 | `perf-low`, `perf-medium`, `perf-high` | client | The viewer's performance preset: the host halves (Low) or doubles (High) its H.264 bitrate, and on High switches motion to H.264 at once. Without one the host uses Medium. Listed after `fps-N`; Medium is not listed. |
 | `p2p-signal`, `file-grant`, `file-offer`, `file-binary`, `caps`, `monitor`, `device-security`, `host-alias` | relay | Relay features in `registered-ack`. |
 
