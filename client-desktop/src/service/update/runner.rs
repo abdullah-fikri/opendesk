@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use super::fetch::{self, download_installer, fetch_manifest, latest_url, versioned_url};
 use super::health::{self, INSTALL_TIMEOUT_SECS, Observed, Pending, Step};
-use super::manifest::{Decision, Manifest, Version, decide, rollback_allowed};
+use super::manifest::{Decision, Manifest, Version, decide, decide_target, rollback_allowed};
 use super::store::{AgentReport, Request, State, Store};
 use super::{auto_update_env, now_unix, secure_dir, update_url_env};
 use crate::domain::edition::Edition;
@@ -40,8 +40,10 @@ pub struct Updater {
     store: Store,
     current: Version,
     next_check: u64,
-    /// `opendesk --update-now`: ignore rollout and bad marks on the next check.
+    /// `opendesk update`: ignore rollout and bad marks on the next check.
     forced: bool,
+    /// `opendesk update <version> [--force]`: the next check fetches that release's manifest instead of the latest.
+    target: Option<(Version, bool)>,
     worker: Option<Receiver<Result<Option<Ready>, String>>>,
     ready: Option<Ready>,
     early_exit: bool,
@@ -62,6 +64,7 @@ impl Updater {
             current: Version::current(),
             next_check: now_unix() + FIRST_CHECK_SECS,
             forced: false,
+            target: None,
             worker: None,
             ready: None,
             early_exit: false,
@@ -128,10 +131,15 @@ impl Updater {
         let url = latest_url(&update_url_env().unwrap_or_else(|| report.update_url.clone()), Edition::current());
         let (tx, rx) = mpsc::channel();
         let root = self.store.root().to_path_buf();
-        let (current, desk_id, state, forced) =
-            (self.current, report.desk_id.clone(), self.store.state(), std::mem::take(&mut self.forced));
+        let (current, desk_id, state, forced, target) = (
+            self.current,
+            report.desk_id.clone(),
+            self.store.state(),
+            std::mem::take(&mut self.forced),
+            self.target.take(),
+        );
         crate::infra::thread::spawn_named("update-check", move || {
-            let _ = tx.send(check(&Store::new(root), &url, current, &desk_id, &state, forced));
+            let _ = tx.send(check(&Store::new(root), &url, current, &desk_id, &state, forced, target));
         });
         self.worker = Some(rx);
     }
@@ -170,6 +178,20 @@ impl Updater {
                 state.pinned = None;
                 self.save(&state);
             }
+            Request::Install { version, force } => {
+                let Some(target) = Version::parse(&version) else { return };
+                // Stay on the chosen release: automatic checks offer nothing else until `opendesk update latest`.
+                state.pinned = Some(target.to_string());
+                self.save(&state);
+                if target == self.current {
+                    logger::info("update", &format!("Already on {target}; pinned to it."));
+                    return;
+                }
+                self.ready = None;
+                self.forced = true;
+                self.target = Some((target, force));
+                self.next_check = now;
+            }
             Request::Rollback { version, force } => {
                 let target = match version.as_deref().map(Version::parse) {
                     Some(Some(v)) => Some(v),
@@ -188,7 +210,7 @@ impl Updater {
                     logger::warn("update", &format!("Rollback: no kept installer of {target}."));
                     return;
                 }
-                // Not offered again automatically; `--update-now` still installs it.
+                // Not offered again automatically; `opendesk update` still installs it.
                 mark_bad(&mut state, self.current);
                 self.save(&state);
                 self.ready = None;
@@ -323,9 +345,21 @@ fn check(
     desk_id: &str,
     state: &State,
     forced: bool,
+    target: Option<(Version, bool)>,
 ) -> Result<Option<Ready>, String> {
-    let manifest = fetch_manifest(url)?;
-    let version = match decide(&manifest, current, desk_id, &state.bad, state.pinned.as_deref(), forced) {
+    let (decision, manifest) = match target {
+        Some((version, force)) => {
+            let url = versioned_url(url, version).ok_or("the update URL has no per-release layout")?;
+            let manifest = fetch_manifest(&url)?;
+            let floor = state.min_version.as_deref().and_then(Version::parse);
+            (decide_target(&manifest, current, version, floor, force), manifest)
+        }
+        None => {
+            let manifest = fetch_manifest(url)?;
+            (decide(&manifest, current, desk_id, &state.bad, state.pinned.as_deref(), forced), manifest)
+        }
+    };
+    let version = match decision {
         Decision::Install(v) => v,
         other => {
             logger::info("update", &format!("No update ({other:?}, manifest {}).", manifest.version));

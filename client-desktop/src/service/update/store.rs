@@ -5,7 +5,7 @@
 //! pending_health.json     see `health`
 //! agent.json              heartbeat of the agent (idle, relay online, its settings)
 //! healthy                 version of the agent that reached the relay after an update
-//! requests\*.json         commands from `opendesk --rollback|--update-now|--pin-version|--unpin`
+//! requests\*.json         commands from `opendesk update|rollback|pin|unpin`
 //! download\               installers being downloaded and verified
 //! installed\<v>\setup.exe verified installer of each installed version (the newest KEEP_VERSIONS)
 //! backup-<v>\             the user's config, history and identity files when leaving <v>
@@ -89,6 +89,12 @@ pub enum Request {
         version: String,
     },
     Unpin,
+    /// `opendesk update <version>`: download, verify and install that release (newer or older), then stay on it.
+    Install {
+        version: String,
+        #[serde(default)]
+        force: bool,
+    },
 }
 
 pub struct Store {
