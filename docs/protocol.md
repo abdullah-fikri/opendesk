@@ -110,6 +110,8 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `host-features` | client | The host lists its optional host controls below. Without it the host is a legacy Windows host that has all of them. |
 | `privacy-screen` | client, with `host-features` | `set-privacy` works on this host. |
 | `block-input` | client, with `host-features` | `set-block-input` works on this host. |
+| `fps-N` (e.g. `fps-144`) | client | The viewer wants at most N frames per second; without it the host streams 60. Listed after every other client capability (a relay keeps only the first 16). |
+| `perf-low`, `perf-medium`, `perf-high` | client | The viewer's performance preset: the host halves (Low) or doubles (High) its H.264 bitrate, and on High switches motion to H.264 at once. Without one the host uses Medium. Listed after `fps-N`; Medium is not listed. |
 | `p2p-signal`, `file-grant`, `file-offer`, `file-binary`, `caps`, `monitor`, `device-security`, `host-alias` | relay | Relay features in `registered-ack`. |
 
 Per platform (see [platforms.md](platforms.md)):
@@ -147,6 +149,7 @@ Per platform (see [platforms.md](platforms.md)):
 | `set-block-input` | `blocked` | viewer to host |
 | `video-keyframe` | | viewer to host: delta chain broken |
 | `set-audio-quality` | `quality`: 0 = 16 kHz, 1 = 24 kHz, 2 = 48 kHz | either |
+| `set-performance` | `preset` (`low`, `medium`, `high`), `maxFps` (0 = none) | viewer to host: at session start and when the preset changes; replaces the registration's `perf-*` and `fps-N` for this session |
 | `set-mic` | `muted` | either; only `muted: true` is honored |
 | `cursor-shape` | `shape` (0 hidden, 1 arrow, 2 text, 3 hand, ...) | host to viewer |
 | `monitors` | `list[]` (`index`, `width`, `height`, `primary`), `active` | host to viewer |
