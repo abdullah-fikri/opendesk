@@ -12,6 +12,7 @@ use slint::{ComponentHandle, Timer, TimerMode};
 use super::{MainWindow, transfer_model};
 use crate::domain::desk_id;
 use crate::domain::keyboard::Mods;
+use crate::domain::performance::Performance;
 use crate::protocol::ClientMessage;
 use crate::service::context::Ctx;
 use crate::service::history::History;
@@ -110,9 +111,10 @@ fn bind_dashboard(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {
     });
     on!(win, ctx, on_refresh_hosts, |_w, c| c.send(ClientMessage::GetHosts));
     on!(win, ctx, on_save_gateway_url, |_w, c, url| settings::set_gateway(c, &url));
-    on!(win, ctx, on_save_max_fps, |w, _c, fps| {
-        settings::set_max_fps(fps.max(0) as u32);
-        w.set_max_fps(fps);
+    on!(win, ctx, on_save_performance, |w, c, index| {
+        let preset = Performance::from_index(index);
+        settings::set_performance(c, preset);
+        w.set_performance(preset.index());
     });
     on!(win, ctx, on_open_rename, |w, _c, id, alias| {
         w.set_rename_target_id(id);

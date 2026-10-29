@@ -19,6 +19,7 @@ use slint::ComponentHandle;
 
 use crate::domain::desk_id;
 use crate::domain::edition::Edition;
+use crate::domain::performance::Performance;
 use crate::infra::tray::{SystemTray, TrayAction, bring_main_window_to_front};
 use crate::infra::{autostart, logger, privacy, window};
 use crate::service::context::Ctx;
@@ -31,10 +32,10 @@ pub use presenter::SlintUi;
 slint::include_modules!();
 
 /// Fills the window with its initial state and binds every callback.
-pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, gateway_url: &str, max_fps: u32) {
+pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, gateway_url: &str, performance: Performance) {
     win.set_local_desk_id(desk_id::format(&ctx.local_id).into());
     win.set_gateway_url(gateway_url.into());
-    win.set_max_fps(max_fps as i32);
+    win.set_performance(performance.index());
     win.set_is_admin(ctx.edition == Edition::Admin);
     win.set_active_dashboard_tab(if ctx.edition == Edition::Admin { 1 } else { 0 });
     win.set_history_items(view_model::history_items(&history.records()));

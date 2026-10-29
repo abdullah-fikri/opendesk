@@ -9,13 +9,13 @@ use std::sync::atomic::Ordering;
 use crate::domain::capability::PeerCaps;
 use crate::domain::keyboard::{KeyOut, Mods};
 use crate::domain::{desk_id, resolution};
-use crate::infra::{logger, privacy, user_clipboard, virtual_clipboard, window};
+use crate::infra::{logger, privacy, storage, user_clipboard, virtual_clipboard, window};
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 use crate::service::context::{AppContext, Ctx};
-use crate::service::file_transfer;
 use crate::service::ui_port::SessionChange;
 use crate::service::viewer::decoder;
 use crate::service::viewer::registry::{Open, Session, clipboard_push_needed};
+use crate::service::{file_transfer, settings};
 
 const MSG_FULL_MULTI: &str = "At most 4 sessions can be open at once. Close one first.";
 const MSG_FULL_SINGLE: &str = "This relay supports one session at a time. Close the running session first.";
@@ -202,6 +202,8 @@ pub fn on_connected(ctx: &Ctx, id: &str, caps: PeerCaps) -> Option<Arc<Session>>
     // the new canvas reports again if it differs.
     ctx.send_input(id, resolution_event(&sess));
     ctx.send_input(id, InputEvent::SetAudioQuality { quality: sess.audio_quality.load(Ordering::SeqCst) as u64 });
+    // The registration caps may predate a preset change; this one is current.
+    ctx.send_input(id, settings::performance_event(storage::load_settings().performance()));
     ctx.ui.session_connected(id.to_string(), desk_id::format(id));
     ctx.ui.focus_changed(ctx.viewers.focused_id());
     Some(sess)

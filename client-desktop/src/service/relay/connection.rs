@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
+use crate::domain::performance::Performance;
 use crate::domain::settings::{self, normalize_gateway_url};
 use crate::domain::{capability, frame_rate};
 use crate::infra::e2e::{self, E2e};
@@ -286,11 +287,17 @@ impl Connection {
         caps.push(capability::MONITOR_VIEW);
         let stored = storage::load_settings();
         let mut caps: Vec<String> = caps.into_iter().map(String::from).collect();
-        // Last, so a relay that keeps only its first 16 names drops this one (the host then streams 60).
+        // Last, so a relay that keeps only its first 16 names drops these (the host then streams 60 on Medium).
+        // The preset goes after the cap older hosts need, and Medium, like 60 FPS, is what listing none means.
+        // Hosts that know presets also get both from `set-performance` at session start.
         if edition.can_view() {
-            let fps = viewer_fps_cap(stored.max_fps);
+            let preset = stored.performance();
+            let fps = crate::service::settings::viewer_fps_cap(preset);
             if fps != frame_rate::DEFAULT_FPS {
                 caps.push(capability::max_fps_cap(fps));
+            }
+            if preset != Performance::Medium {
+                caps.push(preset.cap().to_string());
             }
         }
         let gateway = self.ctx.relay.gateway_url.lock().clone();
@@ -665,15 +672,6 @@ fn idle_sleep(idle_for: Duration, session_active: bool) -> Duration {
 
 /// Uses the loopback relay when one runs on this machine and the configured URL is a remote `wss://` one
 /// (the relay machine itself would otherwise hairpin through its own tunnel).
-/// The frame-rate cap this viewer advertises: `setting` (see `Settings::max_fps`), Auto meaning the fastest
-/// monitor's refresh rate, lowered by `OPENDESK_MAX_FPS`.
-fn viewer_fps_cap(setting: u32) -> u32 {
-    use core_engine::capture::{enumerate_monitors, refresh_rate};
-    let monitor_hz = enumerate_monitors().into_iter().map(refresh_rate).max().unwrap_or(frame_rate::DEFAULT_FPS);
-    let env = frame_rate::env_cap(std::env::var(frame_rate::MAX_FPS_ENV).ok().as_deref());
-    frame_rate::viewer_cap(setting, monitor_hz, env)
-}
-
 fn resolve_url(configured: &str) -> String {
     let url = normalize_gateway_url(configured);
     if url.starts_with("wss://")
