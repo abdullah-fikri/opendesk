@@ -64,5 +64,5 @@ Detection: `XDG_SESSION_TYPE=wayland`, or `WAYLAND_DISPLAY` without `DISPLAY`.
 
 The Android app is a viewer only; see [client-android/README.md](../client-android/README.md) for gestures, the
 permission list and why it no longer asks for Accessibility or screen capture. It advertises `viewer-only`,
-receives plain JPEG frames (no video capabilities), sends text and Win32 key codes, can talk over voice and can
-receive files.
+`video-delta` and `e2e`: it receives framed JPEG key and delta video (no H.264), encrypts the session end to end
+with hosts that offer it, sends text and Win32 key codes, can talk over voice and can receive files.

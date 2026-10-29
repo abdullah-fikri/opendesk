@@ -46,10 +46,17 @@ class DomainTest {
     }
 
     @Test
-    fun registersAsViewerOnlyWithoutVideoCapabilities() {
-        assertEquals(listOf("viewer-only"), Capabilities.advertised)
+    fun registersAsViewerOnlyWithDeltaVideoAndE2e() {
+        // Never `video-h264` (no decoder) and never `multi-session` (one session at a time).
+        assertEquals(listOf("viewer-only", "video-delta", "e2e"), Capabilities.advertised)
         // The relay accepts lowercase letters, digits, '-' and '.', at most 32 characters.
         Capabilities.advertised.forEach { assertTrue(it.matches(Regex("[a-z0-9.-]{1,32}"))) }
+    }
+
+    @Test
+    fun keyFingerprintMatchesTheDesktopFormat() {
+        val key = ByteArray(32) { "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209".substring(2 * it, 2 * it + 2).toInt(16).toByte() }
+        assertEquals("1a92 f238 52dc 908d 9731", KeyFingerprint.of(key))
     }
 
     @Test

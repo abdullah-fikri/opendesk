@@ -46,4 +46,11 @@
     <string name="keyboard">Keyboard</string>
     <string name="fit_screen">Pas</string>
     <string name="incoming_input_label">Input keyboard remote</string>
+    <string name="e2e_key_changed">Peringatan keamanan: kunci %1$s berubah (sekarang %2$s, sebelumnya %3$s). Sesi ditutup. Jika komputer itu diinstal ulang, percayai kunci baru lalu hubungkan lagi.</string>
+    <string name="e2e_downgraded">Peringatan keamanan: %1$s sebelumnya memakai enkripsi end-to-end tetapi sekarang tidak. Sesi ditutup. Percayai hanya jika Anda tahu alasannya.</string>
+    <string name="e2e_failed">Enkripsi end-to-end dengan komputer ini tidak bisa disiapkan. Sesi ditutup; coba lagi.</string>
+    <string name="security_alert_title">Sesi ditutup demi keamanan</string>
+    <string name="trust_and_forget">Percayai kunci baru</string>
+    <string name="host_trusted">Dipercaya. Hubungkan lagi.</string>
+    <string name="this_device_key">Kunci HP ini: %1$s</string>
 </resources>

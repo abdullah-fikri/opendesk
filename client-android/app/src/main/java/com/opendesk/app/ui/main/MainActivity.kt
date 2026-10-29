@@ -149,9 +149,11 @@ class MainActivity : AppCompatActivity(), RelayConnection.Listener {
             setPadding(padding, padding, padding, 0)
             addView(urlInput)
         }
+        val message = getString(R.string.relay_settings_message) +
+            (RelayConnection.keyFingerprint?.let { "\n\n" + getString(R.string.this_device_key, it) } ?: "")
         AlertDialog.Builder(this)
             .setTitle(R.string.relay_settings_title)
-            .setMessage(R.string.relay_settings_message)
+            .setMessage(message)
             .setView(fields)
             .setPositiveButton(R.string.save_and_connect) { _, _ ->
                 val url = GatewayUrl.normalize(urlInput.text.toString())
@@ -209,8 +211,20 @@ class MainActivity : AppCompatActivity(), RelayConnection.Listener {
         Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
     }
 
+    override fun onSecurityAlert(hostClean: String, message: String) {
+        resetConnectButton()
+        if (isFinishing || isDestroyed) return
+        AlertDialog.Builder(this)
+            .setTitle(R.string.security_alert_title)
+            .setMessage(message)
+            .setPositiveButton(R.string.cancel, null)
+            .setNegativeButton(R.string.trust_and_forget) { _, _ ->
+                RelayConnection.trustHost(hostClean)
+                toast(R.string.host_trusted)
+            }
+            .show()
+    }
+
     private fun toast(resId: Int) = Toast.makeText(this, resId, Toast.LENGTH_SHORT).show()
 
-    private companion object {
-    }
 }

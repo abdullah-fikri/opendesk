@@ -72,6 +72,8 @@ dependencies {
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
     // JSON DTOs.
     implementation 'com.google.code.gson:gson:2.10.1'
+    // X25519, ChaCha20-Poly1305 and BLAKE2s for end-to-end encryption (crypto/NoiseXX.kt).
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.85'
 
     testImplementation 'junit:junit:4.13.2'
 }

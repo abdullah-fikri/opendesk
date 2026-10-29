@@ -5,8 +5,8 @@ import com.google.gson.JsonObject
 /*
  * Wire format between the Android client and the relay (see docs/protocol.md at the repository root).
  * Outbound messages are plain data classes serialized by Gson; null fields are omitted.
- * Android is a viewer only. It advertises `viewer-only` and no video or multi-session capability, so it always
- * receives plain JPEG frames and the single-session message shapes.
+ * Android is a viewer only. It advertises `viewer-only`, `video-delta` and `e2e` but no multi-session
+ * capability, so it receives framed JPEG video and the single-session message shapes.
  */
 
 /** Message `type` values. */
@@ -16,6 +16,7 @@ object MessageType {
     const val APPROVAL_RESPONSE = "approval-response"
     const val SESSION_DISCONNECT = "session-disconnect"
     const val RELAY_INPUT = "relay-input"
+    const val P2P_SIGNAL = "p2p-signal"
 
     const val REGISTERED_ACK = "registered-ack"
     const val INCOMING_REQUEST = "incoming-request"
@@ -46,8 +47,11 @@ data class ApprovalResponse(val fromClean: String, val accept: Boolean, val type
 /** Ends the session with `targetClean`. */
 data class SessionDisconnect(val targetClean: String, val type: String = MessageType.SESSION_DISCONNECT)
 
-/** An input event for the viewed host. */
-data class RelayInput(val targetClean: String, val event: InputEvent, val type: String = MessageType.RELAY_INPUT)
+/** An input event for the viewed host: an [InputEvent], or its sealed `{"action":"e2e"}` form. */
+data class RelayInput(val targetClean: String, val event: Any, val type: String = MessageType.RELAY_INPUT)
+
+/** Carries the end-to-end handshake to the session partner (`candidate` is a JSON string). */
+data class P2pSignal(val targetClean: String, val candidate: String, val type: String = MessageType.P2P_SIGNAL)
 
 /**
  * Input or control event. Coordinates are normalized to 0..1 of the remote screen.
@@ -80,6 +84,12 @@ data class ServerMessage(
     val payload: FilePayload? = null,
     /** `device-credential`: the token the relay issued when it enrolled this device. */
     val token: String? = null,
+    /** `registered-ack`: the relay's capabilities. */
+    val caps: List<String>? = null,
+    /** `session-connected`: the partner's capabilities. */
+    val peerCaps: List<String>? = null,
+    /** `p2p-signal`: the partner's signal (JSON text). */
+    val candidate: String? = null,
 )
 
 /** Received control event (`input-command.event`). A viewer only acts on `set-mic`. */
