@@ -11,7 +11,7 @@
   <p>
     <a href="https://github.com/abdullah-fikri/opendesk/actions/workflows/ci.yml"><img src="https://github.com/abdullah-fikri/opendesk/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/License-AGPLv3%20%2F%20Commercial-blue.svg" alt="License: AGPLv3 / Commercial" /></a>
-    <img src="https://img.shields.io/badge/version-1.1.3-informational.svg" alt="Version 1.1.3" />
+    <img src="https://img.shields.io/badge/version-1.2.0-informational.svg" alt="Version 1.2.0" />
     <img src="https://img.shields.io/badge/Stack-Rust%20%7C%20Go%20%7C%20Kotlin-orange.svg" alt="Stack" />
   </p>
 

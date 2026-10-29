@@ -37,7 +37,7 @@ skipped and devices see no update). Repository variables `UPDATE_ROLLOUT_PERCENT
 3. `openssl pkey -in release-update.pem -pubout -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n'`
    and put the 64 hex digits in `RELEASE_PUBLIC_KEY` (`client-desktop/src/service/update/manifest.rs`).
 
-The key is set (since 1.1.4); a build with the all-zero placeholder would reject every manifest. Releases
+The key is set (since 1.2.0); a build with the all-zero placeholder would reject every manifest. Releases
 signed by CI need the `UPDATE_SIGNING_KEY` secret; without it the step is skipped and devices see no update.
 Keep an offline backup of the PEM: losing it means installed devices can never be updated automatically again.
 Rotating the key means shipping a build with the new public key, signed with the old one, first.
