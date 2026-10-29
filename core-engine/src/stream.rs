@@ -143,6 +143,11 @@ pub struct StreamEncoder {
     /// Above 60 FPS on a hardware encoder, `Auto` switches to H.264 for any non-typing change
     /// (`OPENDESK_H264_HIGH_FPS=0` keeps the 60 FPS rule).
     high_fps_policy: bool,
+    /// Multiplies the H.264 target bitrate (the viewer's performance preset: 0.5, 1 or 2).
+    bitrate_factor: f32,
+    /// The viewer prefers H.264 during motion: on a hardware encoder `Auto` follows the high-frame-rate rule at
+    /// any rate (see [`enters_h264`]).
+    prefer_h264: bool,
 }
 
 impl StreamEncoder {
@@ -175,6 +180,8 @@ impl StreamEncoder {
             h264_hw: false,
             fps: 60,
             high_fps_policy: std::env::var("OPENDESK_H264_HIGH_FPS").map(|v| v != "0").unwrap_or(true),
+            bitrate_factor: 1.0,
+            prefer_h264: false,
         }
     }
 
@@ -228,11 +235,18 @@ impl StreamEncoder {
     }
 
     /// CBR target: ~2 bits per pixel per second at 60 FPS (3.7 Mbps at 1728x1080), scaled by sqrt(fps / 60)
-    /// (consecutive frames differ less at higher rates) and lowered under congestion.
+    /// (consecutive frames differ less at higher rates) and by the preset's factor, and lowered under congestion.
     fn h264_bitrate(&self) -> u32 {
         let base = (self.width as f64 * self.height as f64 * 2.0).clamp(1_500_000.0, 10_000_000.0);
         let rate = (self.fps as f64 / 60.0).sqrt();
-        (base * rate * (1.0 - 0.7 * self.congestion as f64)) as u32
+        (base * rate * self.bitrate_factor as f64 * (1.0 - 0.7 * self.congestion as f64)) as u32
+    }
+
+    /// The viewer's performance preset: `bitrate_factor` scales the H.264 target (from the next H.264 frame on),
+    /// `prefer_h264` lets motion switch to H.264 at once on a hardware encoder.
+    pub fn set_preset(&mut self, bitrate_factor: f32, prefer_h264: bool) {
+        self.bitrate_factor = bitrate_factor.clamp(0.25, 4.0);
+        self.prefer_h264 = prefer_h264;
     }
 
     /// True while H.264 runs on a hardware encoder (also while that encoder is being rebuilt).
@@ -243,6 +257,13 @@ impl StreamEncoder {
     /// True while `Auto` follows the high-frame-rate rule (see [`enters_h264`]).
     fn high_fps(&self) -> bool {
         self.high_fps_policy && self.fps > 60 && self.h264_hardware()
+    }
+
+    /// True while motion enters H.264 at once: the high-frame-rate rule, or a viewer that prefers H.264 on a
+    /// hardware encoder (a software encoder would cost more CPU than the JPEG regions it replaces).
+    /// `OPENDESK_H264_HIGH_FPS=0` turns both off.
+    fn eager_h264(&self) -> bool {
+        self.high_fps() || (self.high_fps_policy && self.prefer_h264 && self.h264_hardware())
     }
 
     /// Frame rate of the capture loop; a change rebuilds the H.264 encoder for the new rate.
@@ -384,7 +405,7 @@ impl StreamEncoder {
         self.poll_h264();
         let light = is_light(heavy, self.last.dirty_blocks, self.lowq.len());
         if !self.in_h264 {
-            let enter = enters_h264(self.h264_mode, self.high_fps(), changed, light, self.motion_streak);
+            let enter = enters_h264(self.h264_mode, self.eager_h264(), changed, light, self.motion_streak);
             // Until the encoder is ready, motion keeps going out as JPEG deltas.
             let enc = self.h264.as_mut().filter(|_| enter)?;
             enc.discard_pending();
@@ -547,6 +568,32 @@ mod tests {
         assert_eq!(enc.h264_bitrate(), 7_464_960);
         enc.set_congestion(1.0);
         assert_eq!(enc.h264_bitrate(), 2_239_488);
+    }
+
+    #[test]
+    fn preset_scales_the_bitrate_and_congestion_still_lowers_it() {
+        let mut enc = StreamEncoder::new(1728, 1080, 80, true);
+        enc.set_preset(0.5, false);
+        assert_eq!(enc.h264_bitrate(), 1_866_240);
+        enc.set_preset(2.0, true);
+        assert_eq!(enc.h264_bitrate(), 7_464_960);
+        enc.set_congestion(1.0);
+        assert_eq!(enc.h264_bitrate(), 2_239_488);
+    }
+
+    #[test]
+    fn preferring_h264_needs_a_hardware_encoder() {
+        let mut enc = StreamEncoder::new(64, 64, 80, true);
+        enc.high_fps_policy = true;
+        enc.set_preset(2.0, true);
+        assert!(!enc.eager_h264(), "software encoder: the 60 FPS rule stays");
+        enc.h264_hw = true;
+        assert!(enc.eager_h264(), "hardware encoder at 60 FPS");
+        enc.set_preset(1.0, false);
+        assert!(!enc.eager_h264());
+        enc.high_fps_policy = false;
+        enc.set_preset(2.0, true);
+        assert!(!enc.eager_h264(), "OPENDESK_H264_HIGH_FPS=0 turns it off too");
     }
 
     #[test]
