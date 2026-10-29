@@ -1,6 +1,7 @@
 //! Capabilities exchanged at registration (`register.caps`, `registered-ack.caps`, `session-connected.peerCaps`).
 
 use super::frame_rate::DEFAULT_FPS;
+use super::performance::Performance;
 
 /// Receiver answers `end` with an ACK/NACK.
 pub const FILE_ACK: &str = "file-ack";
@@ -25,6 +26,8 @@ pub const AUDIO_OPUS: &str = "audio-opus";
 /// Prefix of the viewer's frame-rate cap (`fps-144`): the most frames per second it wants. A dash, not `=`:
 /// the relay forwards only names of `[a-z0-9.-]`. Without it the partner gets 60 (see `domain::frame_rate`).
 pub const MAX_FPS_PREFIX: &str = "fps-";
+// The viewer's performance preset travels as `perf-low` / `perf-medium` / `perf-high` (`Performance::cap`): how
+// the host spends bandwidth. Without one the partner gets Medium. The frame rate still travels as `fps-N`.
 /// Direct encrypted UDP path.
 pub const P2P: &str = "p2p.v1";
 /// Can use the relay server's UDP forwarder for the direct path (`udp-relay-offer`); the relay lists it too.
@@ -81,6 +84,8 @@ pub struct PeerCaps {
     pub block_input: bool,
     /// Frame rate the viewer wants at most (`fps-N`); 60 when it lists none.
     pub max_fps: u32,
+    /// The viewer's performance preset (`perf-*`); Medium when it lists none (older builds, Android).
+    pub performance: Performance,
 }
 
 impl PeerCaps {
@@ -107,6 +112,7 @@ impl PeerCaps {
                 .find_map(|c| c.strip_prefix(MAX_FPS_PREFIX)?.parse().ok())
                 .filter(|&n| n > 0)
                 .unwrap_or(DEFAULT_FPS),
+            performance: peer_caps.iter().find_map(|c| Performance::from_cap(c)).unwrap_or_default(),
         }
     }
 }
@@ -186,6 +192,16 @@ mod tests {
         let old_desktop = PeerCaps::from_list(&[VIDEO_DELTA.to_string(), VIDEO_H264.to_string()], true);
         assert!(!android.frame_stamp && !old_desktop.frame_stamp);
         assert!(PeerCaps::from_list(&[VIDEO_DELTA.to_string(), FRAME_STAMP.to_string()], false).frame_stamp);
+    }
+
+    #[test]
+    fn performance_preset_defaults_to_medium() {
+        // Older desktops and Android list no preset.
+        assert_eq!(PeerCaps::from_list(&[VIDEO_H264.to_string()], true).performance, Performance::Medium);
+        for p in Performance::ALL {
+            assert_eq!(PeerCaps::from_list(&[max_fps_cap(30), p.cap().to_string()], true).performance, p);
+        }
+        assert_eq!(PeerCaps::from_list(&["perf-ultra".to_string()], true).performance, Performance::Medium);
     }
 
     #[test]

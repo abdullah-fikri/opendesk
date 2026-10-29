@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::domain::{latency, resolution};
+use crate::domain::{frame_rate, latency, resolution};
 use crate::infra::{logger, privacy};
 use crate::protocol::InputEvent;
 use crate::service::context::AppContext;
@@ -98,6 +98,13 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
         InputEvent::SetAudioQuality { quality } => {
             ctx.voice.audio_quality.store(quality.min(2) as usize, Ordering::SeqCst);
             logger::info("host.input", &format!("Viewer set voice quality: {}", quality.min(2)));
+        }
+        // The capture loop picks both up on its next tick.
+        InputEvent::SetPerformance { preset, max_fps } => {
+            let mut caps = host.peer_caps.lock();
+            caps.performance = preset;
+            caps.max_fps = if max_fps == 0 { frame_rate::DEFAULT_FPS } else { max_fps };
+            logger::info("host.input", &format!("Viewer set performance: {} (fps cap {})", preset.cap(), caps.max_fps));
         }
         // A remote peer may silence this microphone, but only the local user can enable it.
         InputEvent::SetMic { muted: true } => {

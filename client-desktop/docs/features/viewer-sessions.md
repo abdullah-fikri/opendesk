@@ -34,6 +34,28 @@ The status line shows resolution, frame rate and path (P2P or relay) for the foc
 
 The last chosen mode applies to tabs opened later.
 
+## Performance
+
+One preset in the relay settings dialog, like a game's graphics quality option, for every session this machine
+views (`Settings::performance`, `domain/performance.rs`):
+
+| Preset | Frame rate | H.264 bitrate | Video |
+| --- | --- | --- | --- |
+| Low | 30 | ×0.5 | Auto (sharp JPEG regions, H.264 for sustained motion) |
+| Medium (default) | 60 | ×1 | Auto |
+| High | This machine's fastest monitor refresh rate (up to 240) | ×2 | Auto, but motion switches to H.264 at once (hosts with a hardware encoder) |
+
+The congestion governor lowers frame rate and bitrate on every preset, and hosts without a hardware H.264 encoder
+stay at 60. Resolution and voice quality stay per session in the toolbar. The viewer lists the preset at
+registration (`perf-low`, `perf-high`; Medium lists nothing) after its `fps-N` cap, and sends `set-performance`
+at session start and when the preset changes, so a change applies to running sessions at once. Hosts before
+presets only read the registration's `fps-N`: with no session open, saving a new preset re-registers; with
+sessions open they keep the old cap until the next connection. Saving the dialog with an unchanged relay
+address no longer reconnects.
+
+Configs from before presets keep their frame-rate choice: 30 becomes Low, 60 Medium, Auto and Maximum High. The
+config keeps `max_fps` in step (30, 60, 0) so an older build reads the same frame rate.
+
 ## Toolbar actions
 
 Monitor picker (numbered when the host has several monitors), send files, microphone, privacy mode on the host
