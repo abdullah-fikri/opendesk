@@ -69,7 +69,7 @@ dependencies {
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     // WebSocket transport to the relay.
-    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'com.squareup.okhttp3:okhttp:5.5.1'
     // JSON DTOs.
     implementation 'com.google.code.gson:gson:2.10.1'
     // X25519, ChaCha20-Poly1305 and BLAKE2s for end-to-end encryption (crypto/NoiseXX.kt).
