@@ -11,6 +11,7 @@ pub mod monitor;
 #[cfg(feature = "admin")]
 pub mod monitor_wall;
 pub mod perf_stats;
+pub mod performance;
 pub mod resolution;
 pub mod settings;
 pub mod transfer;

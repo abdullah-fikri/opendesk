@@ -1,8 +1,9 @@
 //! Persistent client settings and gateway URL rules.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::desk_id;
+use super::performance::Performance;
 
 /// Relay URL used until the user configures one.
 pub const DEFAULT_GATEWAY_URL: &str = "ws://127.0.0.1:8088";
@@ -23,8 +24,13 @@ pub struct Settings {
     /// Monitor wall (admin edition). Stored by every edition so switching editions never loses it.
     #[serde(default)]
     pub monitor: MonitorSettings,
-    /// Viewer frame-rate limit: 0 = Auto (this monitor's refresh rate), 30, 60, or
-    /// `frame_rate::FPS_MAXIMUM` for "Maximum".
+    /// Viewer performance preset; read it with [`Settings::performance`]. Absent in configs written before
+    /// presets existed, which keep their `max_fps` choice.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_preset")]
+    pub performance: Option<Performance>,
+    /// Viewer frame-rate limit of builds before presets: 0 = Auto (this monitor's refresh rate), 30, 60, or
+    /// `frame_rate::FPS_MAXIMUM` for "Maximum". Still written (see [`Settings::set_performance`]) so a downgrade
+    /// keeps the same frame rate.
     #[serde(default)]
     pub max_fps: u32,
     /// Let the service install signed updates (Windows, see `docs/auto-update.md`). `OPENDESK_AUTO_UPDATE=0`
@@ -38,6 +44,12 @@ pub struct Settings {
 
 fn yes() -> bool {
     true
+}
+
+/// A preset this build does not know (written by a later release) reads as absent: an unreadable config would
+/// be replaced by a fresh one with a new desk ID.
+fn lenient_preset<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Performance>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(d)?.and_then(|v| serde_json::from_value(v).ok()))
 }
 
 /// Monitor-wall preferences (see `docs/features/monitor-wall.md` at the repository root).
@@ -70,10 +82,22 @@ impl Settings {
             device_token: String::new(),
             device_token_relay: String::new(),
             monitor: MonitorSettings::default(),
-            max_fps: 0,
+            performance: Some(Performance::default()),
+            max_fps: Performance::default().fps_setting(),
             auto_update: true,
             update_url: String::new(),
         }
+    }
+
+    /// The viewer performance preset; a config from before presets maps its `max_fps` choice.
+    pub fn performance(&self) -> Performance {
+        self.performance.unwrap_or_else(|| Performance::from_max_fps(self.max_fps))
+    }
+
+    /// Stores `preset` and the matching `max_fps` an older build reads.
+    pub fn set_performance(&mut self, preset: Performance) {
+        self.performance = Some(preset);
+        self.max_fps = preset.fps_setting();
     }
 
     /// Repairs stored values: an invalid desk ID is replaced by `fresh_id()`, the gateway URL is normalized.
@@ -160,6 +184,44 @@ mod tests {
         let partial: MonitorSettings = serde_json::from_str(r#"{"grid":4}"#).unwrap();
         assert_eq!((partial.grid, partial.all, partial.rotate_secs), (4, true, 10));
         assert!(s.auto_update);
+    }
+
+    #[test]
+    fn new_installs_start_on_medium() {
+        let s = Settings::new("123456789".into());
+        assert_eq!((s.performance(), s.max_fps), (Performance::Medium, 60));
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains(r#""performance":"medium""#) && json.contains(r#""max_fps":60"#), "{json}");
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn configs_without_a_preset_keep_their_frame_rate_choice() {
+        let load = |extra: &str| -> Performance {
+            let s: Settings =
+                serde_json::from_str(&format!(r#"{{"gateway_url":"ws://x","desk_id":"123456789"{extra}}}"#)).unwrap();
+            s.performance()
+        };
+        assert_eq!(load(r#","max_fps":30"#), Performance::Low);
+        assert_eq!(load(r#","max_fps":60"#), Performance::Medium);
+        assert_eq!(load(r#","max_fps":0"#), Performance::High, "Auto");
+        assert_eq!(load(r#","max_fps":240"#), Performance::High, "Maximum");
+        assert_eq!(load(""), Performance::High, "1.2.0's default was Auto");
+        // A stored preset wins over the legacy field.
+        assert_eq!(load(r#","max_fps":0,"performance":"low""#), Performance::Low);
+        // A preset a later release adds falls back to max_fps instead of failing the whole config.
+        assert_eq!(load(r#","max_fps":30,"performance":"ultra""#), Performance::Low);
+        assert_eq!(load(r#","max_fps":60,"performance":null"#), Performance::Medium);
+    }
+
+    #[test]
+    fn setting_a_preset_keeps_max_fps_for_older_builds() {
+        let mut s = Settings::new("123456789".into());
+        for (preset, fps) in [(Performance::Low, 30), (Performance::High, 0), (Performance::Medium, 60)] {
+            s.set_performance(preset);
+            assert_eq!((s.performance(), s.max_fps), (preset, fps));
+        }
     }
 
     /// Rollback rule: an older build must read the config a newer one wrote, so fields are only ever added
