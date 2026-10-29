@@ -28,7 +28,9 @@ Used when both peers list `e2e` and the relay lists `p2p-signal`. Otherwise noth
 4. The host seals what it sends once it has read the last handshake message and answers `{"v":2,"e2e-ready":true}`;
    the viewer seals from that answer on, so nothing sealed reaches a host that cannot open it yet.
 
-A viewer whose host had a pinned key but now does not offer `e2e` is warned in the status line.
+A viewer whose host had a pinned key but now does not offer `e2e` (or whose relay no longer forwards the
+handshake) closes the session, like for a changed key: a relay or an impostor holding the host's ID could strip the
+capability to read the session. `opendesk trust <id>` accepts the change.
 `OPENDESK_E2E=0` turns it off on a client (no capability, no handshake).
 
 ## What is sealed
@@ -64,6 +66,12 @@ Once a stream delivered a sealed message, plain messages on it are dropped (an i
 - File transfer metadata: `relay-file` JSON (`start` name and size, `end` hash, offers) and chunk IDs.
 - Clipboard text (`relay-clipboard`), control messages and P2P candidates.
 - Legacy plain JPEG video and monitor-wall thumbnails (`0x11`, not a session).
+
+## Android
+
+The Android viewer implements the same protocol (`client-android/app/src/main/java/com/opendesk/app/session/E2eChannel.kt`
+and `crypto/NoiseXX.kt`, tested against vectors from this code). It needs `video-delta`: legacy plain JPEGs are
+never sealed. See [client-android/docs/architecture.md](../../../client-android/docs/architecture.md#end-to-end-encryption).
 
 ## Rollout
 

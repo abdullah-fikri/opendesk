@@ -135,7 +135,9 @@ impl Connection {
         });
         self.e2e.retain(|e| multi_viewer && e.partner != target);
         // Before the P2P path, which uses the end-to-end keys when there are any.
-        self.start_e2e(is_host, target, caps.e2e, relay.p2p_signal);
+        if !self.start_e2e(is_host, target, caps.e2e, relay.p2p_signal) {
+            return;
+        }
         let p2p_ok = relay.p2p_signal && caps.p2p && p2p::enabled();
         logger::info("relay", &format!("Session started: partner={target} role={role} p2p={p2p_ok}"));
 
@@ -189,26 +191,36 @@ impl Connection {
     }
 
     /// Starts the end-to-end handshake with a partner that lists `e2e` (the viewer sends the first message).
-    /// A viewer whose host had a pinned key but no longer offers `e2e` is warned: the relay may have removed it.
-    fn start_e2e(&mut self, is_host: bool, partner: &str, peer_e2e: bool, relay_signal: bool) {
+    /// False when the session was refused: a host with a pinned key that no longer offers `e2e` (or a relay that
+    /// no longer forwards the handshake) is treated like a changed key, since a relay or an impostor holding the
+    /// host's ID can strip the capability. Turning end-to-end off on this machine (`OPENDESK_E2E=0`) is a local
+    /// choice and refuses nothing.
+    fn start_e2e(&mut self, is_host: bool, partner: &str, peer_e2e: bool, relay_signal: bool) -> bool {
         let ctx = &self.ctx;
         let id = e2e::enabled().then(identity::local).flatten();
         let (true, true, Some(id)) = (peer_e2e, relay_signal, id) else {
-            if !is_host && key_pins::pinned(partner).is_some() {
+            if !is_host && e2e::enabled() && key_pins::pinned(partner).is_some() {
                 let msg = format!(
-                    "Warning: {} used end-to-end encryption before but does not offer it now; this session is not end-to-end encrypted.",
+                    "Security warning: {} used end-to-end encryption before but does not offer it now. The session was closed. If that is expected (for example the host turned it off), run `opendesk trust {partner}` and connect again.",
                     desk_id::format(partner)
                 );
                 logger::warn("e2e", &msg);
+                if ctx.viewers.get(partner).is_some() {
+                    controller::close(ctx, partner, Some(msg.clone()));
+                } else {
+                    ctx.send(ClientMessage::disconnect(partner));
+                }
                 ctx.ui.status(msg);
+                return false;
             }
-            return;
+            return true;
         };
-        let Some((channel, first)) = E2e::start(is_host, &ctx.local_id, partner, id) else { return };
+        let Some((channel, first)) = E2e::start(is_host, &ctx.local_id, partner, id) else { return true };
         if let Some(candidate) = first {
             ctx.send(ClientMessage::P2pSignal { target_clean: partner.to_string(), candidate });
         }
         self.e2e.push(channel);
+        true
     }
 
     pub(super) fn e2e_for(&self, partner: &str) -> Option<&Arc<E2e>> {
