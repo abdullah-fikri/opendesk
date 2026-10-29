@@ -41,7 +41,7 @@ slint = { version = "1.18", default-features = false, features = ["renderer-soft
 # Single instance (flock), user ID and local time.
 libc = "0.2"
 # Voice through ALSA (PipeWire and PulseAudio provide the ALSA default device).
-cpal = "0.15.3"
+cpal = "0.18.2"
 # Tray icon over D-Bus (StatusNotifierItem); pure Rust, no GTK.
 ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
 # Decodes the tray icon.
