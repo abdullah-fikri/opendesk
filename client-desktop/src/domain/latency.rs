@@ -173,7 +173,8 @@ mod tests {
     fn mono_clock_is_signed_around_its_epoch() {
         let now = Instant::now();
         let a = mono_us(now);
-        assert_eq!(mono_us(now + Duration::from_millis(5)) - a, 5000);
+        // Truncation to whole microseconds may differ by one, depending on which side of the epoch `now` is.
+        assert!((mono_us(now + Duration::from_millis(5)) - a - 5000).abs() <= 1);
         // An instant before the epoch still converts, and round-trips through the u64 wire form.
         if let Some(before) = now.checked_sub(Duration::from_secs(3600)) {
             let us = mono_us(before);
@@ -250,7 +251,8 @@ mod tests {
         });
         let lap = m.take_lap();
         assert_eq!((lap.host.map(|s| s.avg_ms), lap.total), (Some(1.5), None));
-        assert!(m.take_line().starts_with("latency host=1.5/1.5ms net=- decode=4.0/4.0ms"));
+        // The log window spans both frames (decode 4 ms and 0 ms).
+        assert!(m.take_line().starts_with("latency host=1.5/1.5ms net=- decode=2.0/4.0ms"));
     }
 
     #[test]
