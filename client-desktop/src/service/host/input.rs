@@ -125,13 +125,13 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
     warn_if_refused();
 }
 
-/// Logs when Windows refused injected keys (a window of higher integrity has focus, or another desktop).
+/// Logs when Windows refused injected keys or mouse input (another desktop receives input).
 pub fn warn_if_refused() {
     let err = core_engine::input::take_injection_error();
     let now = crate::service::file_transfer::now_ms();
     if err != 0 && now.saturating_sub(LAST_INJECTION_WARN_MS.load(Ordering::Relaxed)) >= INJECTION_WARN_EVERY_MS {
         LAST_INJECTION_WARN_MS.store(now, Ordering::Relaxed);
-        logger::warn("host.input", &format!("Windows refused injected keyboard input (error {err})."));
+        logger::warn("host.input", &format!("Windows refused injected input (error {err})."));
     }
 }
 

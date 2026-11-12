@@ -40,6 +40,18 @@ pointer events are mapped onto the streamed monitor,
 keys are injected with `SendInput` (XTEST on Linux) and tracked so none stays stuck, text is typed as Unicode, and `clipboard` sets
 the local clipboard right before a forwarded Ctrl+V. A viewer may mute this machine's microphone, never unmute it.
 
+On Windows the pointer moves with absolute `SendInput` mouse input over the whole virtual desktop (monitors left
+of or above the primary have negative coordinates; the process is per-monitor DPI aware, so everything is in
+physical pixels). A button press or release is one `SendInput` batch with a move to the event's position. Real
+mouse input is what drag tracking needs: selecting text in Windows Terminal, resizing or moving a window from its
+edge or title bar, and drags in Chromium did not work while the pointer was placed with `SetCursorPos`.
+`OPENDESK_INPUT_ABSOLUTE=0` restores that old injection ([configuration](../configuration.md)). The viewer keeps
+drags intact too: a coalesced mouse move queued before a button event is sent ahead of it.
+
+Windows drops injected input aimed at a window that runs elevated (as Administrator) unless the host app runs
+elevated too (UIPI). Those windows ignore clicks and keys from the viewer whatever the injection method; run the
+host as the service or as Administrator to control them.
+
 ## Privacy
 
 | Mode | On the host's physical screen |
