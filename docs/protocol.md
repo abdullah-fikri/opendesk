@@ -101,6 +101,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `video-h264` | client | H.264 inside the framed format. |
 | `frame-stamp` | client | Framed video to this viewer may end in a capture stamp (below) for the stats overlay's latency rows. |
 | `audio-opus` | client | Decodes Opus voice (`[0x02][0x4F]...`); voice to it is Opus, to everyone else PCM. |
+| `audio-system` | client | Host sound: as a host it streams the sound of its default output device (`[0x02][0x53]...`, below), as a viewer it plays it. Used only when both sides list it; see [Host sound](#host-sound). Listed right before `fps-N` (relays up to 1.2.0 keep only the first 16 names and may drop it, which only turns host sound off). |
 | `p2p.v1` | client | Direct encrypted UDP path. |
 | `udp-relay` | client + relay | The direct path may run through the relay's UDP forwarder (`udp-relay-offer`). |
 | `e2e` | client | End-to-end encryption: `Noise_XX` with device keys over `p2p-signal`, then sealed relay media and input events (see [Binary messages](#binary-messages) and `client-desktop/docs/features/e2e.md`). Needs the relay's `p2p-signal`. |
@@ -118,9 +119,9 @@ Features are used only when both sides (and, where noted, the relay) support the
 Per platform (see [platforms.md](platforms.md)):
 
 - Windows: `file-ack`, `file-offer`, `file-folder`, `file-binary`, `cursor-shape`, `video-delta`, `frame-stamp`,
-  `video-h264` (when the Media Foundation decoder exists), `audio-opus`, `p2p.v1`, `multi-session`. No `host-features`: Windows hosts have every
+  `video-h264` (when the Media Foundation decoder exists), `audio-opus`, `audio-system`, `p2p.v1`, `multi-session`. No `host-features`: Windows hosts have every
   host control.
-- Linux: the same without `file-offer`, with `video-h264` only when Cisco's OpenH264 is installed, plus
+- Linux: the same without `file-offer` and `audio-system`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
 - Android: `viewer-only`, `video-delta` and `e2e`, so it receives framed JPEG video (no H.264) and single-session
   message shapes.
@@ -152,6 +153,7 @@ Per platform (see [platforms.md](platforms.md)):
 | `set-audio-quality` | `quality`: 0 = 16 kHz, 1 = 24 kHz, 2 = 48 kHz | either |
 | `set-performance` | `preset` (`low`, `medium`, `high`), `maxFps` (0 = none) | viewer to host: at session start and when the preset changes; replaces the registration's `perf-*` and `fps-N` for this session |
 | `set-mic` | `muted` | either; only `muted: true` is honored |
+| `set-host-sound` | `on` | viewer to host, both listing `audio-system`: at session start and when the viewer toggles host sound. `on: true` streams the host's sound and pauses voice; `false` stops the capture and resumes voice (see [Host sound](#host-sound)) |
 | `cursor-shape` | `shape` (0 hidden, 1 arrow, 2 text, 3 hand, ...) | host to viewer |
 | `monitors` | `list[]` (`index`, `width`, `height`, `primary`), `active` | host to viewer |
 | `stats` | `on` | viewer to host: stats overlay shown or hidden |
@@ -188,6 +190,7 @@ before it.
 ```text
 voice   [0x02][rate_khz: 16|24|48][PCM 16-bit little-endian mono ...]
 voice   [0x02][0x4F][seq u16 big-endian][Opus packet]   20 ms mono, only when both sides list audio-opus
+sound   [0x02][0x53][seq u16 big-endian][Opus packet]   host sound: 20 ms stereo 48 kHz, host to viewer, only when both list audio-system
 video   [0xFF 0xD8 ...]   a plain JPEG, or a framed message (below)
 tagged  [0x10][9 ASCII digits: host clean ID][voice or video]   multi-session viewers only
 monitor [0x11][JPEG]                                           host to relay: monitor-wall thumbnail
@@ -233,6 +236,30 @@ short gaps. Receivers always accept PCM, and a sender uses Opus only toward a pa
 
 The relay keeps at most 8 queued frames per receiver. A key frame or IDR flushes the queue; a delta that does
 not fit flushes it too, and the viewer then sends `video-keyframe`.
+
+## Host sound
+
+With `audio-system` on both sides the viewer hears what the host's speakers play (videos, music, notifications).
+Host sound and voice **alternate**: a session is always in exactly one of two audio modes.
+
+| Mode | Host | Viewer |
+| --- | --- | --- |
+| Host sound (default) | Captures its default output device (WASAPI loopback) and sends `[0x02][0x53]` packets; its microphone is closed and it plays no voice | Plays host sound; its microphone is closed and voice packets are dropped |
+| Voice call | No capture; voice exactly as without `audio-system` (microphones keep their own on/off state) | Voice as before; host sound packets are dropped |
+
+- The viewer chooses with its "Host sound" toggle and sends `set-host-sound`; a host starts in host-sound mode when
+  the viewer lists `audio-system` and follows every `set-host-sound` after that. Microphone states (`set-mic`) do
+  not change the mode, so a microphone that is on by default never silences host sound; it is simply not opened
+  until the viewer switches to voice call.
+- Because the host plays nothing while it captures, its own output never contains the viewer's voice: there is no
+  echo, so plain loopback of the whole device is enough on every supported Windows.
+- Host sound uses the voice marker `0x02`, so every relay version forwards it through its voice queue (oldest
+  dropped first) and the P2P path carries it as voice. `0x53` is never a rate tag, `0x4F` or the sealed marker.
+  `seq` works as for Opus voice. The host sends nothing while its output is silent.
+- End to end, host sound is sealed exactly like voice (`[0x02 0xE2]`, then nonce and sealed packet).
+- A viewer of several hosts plays the focused host only, like voice.
+- Peers without `audio-system` (older desktops, Linux, Android) never get `set-host-sound` or `0x53` packets and
+  keep voice as before.
 
 ## Monitor wall
 
