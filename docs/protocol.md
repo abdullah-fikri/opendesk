@@ -22,7 +22,7 @@ Type definitions:
 - Largest message: 16 MiB.
 - The first message must be `register`. Everything else is ignored until `registered-ack`.
 - A second connection registering the same desk ID replaces the first; the old one's partners receive
-  `session-closed`.
+  `session-closed`, unless the new connection resumes the old one's sessions (see [Session resume](#session-resume)).
 
 ## Desk IDs
 
@@ -33,7 +33,7 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 
 | `type` | Fields | Meaning |
 | --- | --- | --- |
-| `register` | `deskId`, `deviceToken`, `platform`, `deviceName`, `isAdmin`, `caps[]` | Announce this device. `deviceToken` is checked only when the relay has credentials configured or its device allowlist on; then `isAdmin` is ignored in favor of the relay's own flag (see [Device security](#device-security)). |
+| `register` | `deskId`, `deviceToken`, `platform`, `deviceName`, `isAdmin`, `caps[]`, `resumeToken`* | Announce this device. `deviceToken` is checked only when the relay has credentials configured or its device allowlist on; then `isAdmin` is ignored in favor of the relay's own flag (see [Device security](#device-security)). `resumeToken`: the token of the connection whose sessions this one takes over (see [Session resume](#session-resume)). |
 | `get-hosts` | | Administrators only: request the device registry. |
 | `connect-request` | `targetId` | Open a viewer session to a device. |
 | `approval-response` | `fromClean`, `accept` | Legacy: an Android host (app before the viewer-only release) answers an `incoming-request`. |
@@ -55,8 +55,8 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 
 | `type` | Fields | Meaning |
 | --- | --- | --- |
-| `registered-ack` | `deskId`, `caps[]` | Registration accepted; `caps` lists relay features. |
-| `host-list` | `hosts[]`: `clean_id`, `desk_id`, `device_name`, `alias`, `platform`, `online`, `last_seen` (RFC 3339) | Device registry (administrators). `alias` is the name an administrator gave the device, empty when none. |
+| `registered-ack` | `deskId`, `caps[]`, `resumeToken`*, `resumed[]`* | Registration accepted; `caps` lists relay features. `resumeToken` lets the next connection resume this one's sessions; `resumed` lists the partners (clean IDs) whose sessions this connection took over. |
+| `host-list` | `hosts[]`: `clean_id`, `desk_id`, `device_name`, `alias`, `platform`, `online`, `reconnecting`, `last_seen` (RFC 3339) | Device registry (administrators). `alias` is the name an administrator gave the device, empty when none. `reconnecting` (absent = false): the device lost its connection and its sessions wait for it (`online` stays true). |
 | `incoming-request` | `fromId`, `fromClean`, `deviceName` | Sent to Android peers only: a viewer asks to connect. Current apps are `viewer-only` and never get one; older apps still answer it. |
 | `session-connected` | `targetId`, `targetClean`, `role` (`viewer`/`host`), `peerCaps[]` | The session is live; `role` is the receiver's role. |
 | `input-command` | `event`, `fromClean`* | A relayed `relay-input`. |
@@ -65,6 +65,8 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 | `p2p-signal` | `fromClean`, `candidate` | A relayed signal. |
 | `udp-relay-offer` | `targetClean`, `addr`, `token` | The relay's UDP forwarder for the session with `targetClean`: bind with the 32-hex-digit token at `addr` (`ip:port`). Sent after `session-connected` when both clients list `p2p.v1` and `udp-relay`. See `client-desktop/docs/features/p2p.md`. |
 | `session-closed` | `message`, `targetClean`* | The session ended (partner left, disconnected, or reconnected). |
+| `session-suspended` | `targetClean` | The partner `targetClean` lost its relay connection; the session waits up to 30 s for it (`session-resume` only). |
+| `session-resumed` | `targetClean` | The partner `targetClean` is back and the session continues (`session-resume` only). |
 | `error` | `message`, `targetClean`* | A request failed (invalid ID, target offline or busy, rejected). |
 | `monitor-state` | `targetClean`, `state` (`live`, `offline`, `unsupported`, `denied`) | Monitor wall: what one tile shows (administrators with `monitor-view`). |
 | `monitor-start` | `maxWidth`, `fps` | Monitor wall: an administrator watches this host; stream thumbnails (hosts with `monitor-host`). |
@@ -72,7 +74,8 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 | `device-credential` | `token` | The relay enrolled this device: present `token` as `deviceToken` to this relay from now on. |
 | `security-state` | `enabled`, `managedByEnv`, `devices[]`: `cleanId`, `deskId`, `name`, `admin`, `enrolled`, `enrolledAt` (RFC 3339 or empty), `online` | The device allowlist (administrators), after `security-get` and after every change. |
 
-\* Only for multi-session viewers (see [docs/features/multi-session.md](features/multi-session.md)).
+\* `fromClean`, `targetClean`: only for multi-session viewers (see [docs/features/multi-session.md](features/multi-session.md)).
+`resumeToken`, `resumed`: only for clients that list `session-resume`, against a relay that lists it.
 
 ## Sessions
 
@@ -84,6 +87,52 @@ The digits-only form is called the *clean* ID and is what `targetClean` / `fromC
 - A peer that hosts or views cannot be taken as a host by someone else.
 - Every relayed message is authorized: the relay forwards only between the two connections of an active
   session, checked from both sides.
+
+## Session resume
+
+A lost relay connection no longer ends a session at once when the relay and **both** partners list
+`session-resume`. Design and rationale: [docs/features/session-resume.md](features/session-resume.md).
+
+- **Token.** To a client that lists `session-resume`, the relay's `registered-ack` carries `resumeToken`: 32 hex
+  digits, random, new at every registration. The client keeps it in memory only, for the relay that issued it.
+- **Suspend.** When the relay notices that such a client's connection is gone (read error or missed pings), each
+  of its *active* sessions whose partner lists `session-resume` is suspended, and the partner receives
+  `session-suspended {targetClean}`. Every other session (partner without the capability, pending approval) ends
+  as before with `session-closed`. A client left with no suspended session goes offline as before.
+- **Grace.** 30 s from the moment the relay noticed, fixed, never extended. At its end the relay ends the
+  suspended sessions exactly as a lost connection did before: `session-closed` to the partners, UDP relay pair
+  released, the device offline.
+- **While suspended** the relay forwards nothing to or from the lost connection: video and voice are dropped,
+  and so are input, clipboard, file and `p2p-signal` messages (not queued: input replayed seconds later lands on
+  a screen that has changed). The UDP relay pair stays allocated, so a direct or UDP-relayed path between the
+  clients keeps carrying video, voice and input. The device stays `online` in the host list with
+  `reconnecting: true`; a `connect-request` to it fails as for an offline device. The partner may still end the
+  session with `session-disconnect`, which takes effect at once. File grants of the lost connection are dropped
+  (transfers in flight fail as before). Monitor-wall watches are not sessions and behave as before.
+- **Resume.** The client registers again with the same desk ID, its usual `deviceToken`, `session-resume` in
+  `caps` and the last `resumeToken`. Device authentication runs first, unchanged. If the token matches the last
+  registration of that ID (constant-time comparison), that registration is suspended within its grace **or still
+  connected** (the relay has not noticed the drop yet), and both registrations agree on `multi-session`, the new
+  connection takes over its sessions:
+  - `registered-ack.resumed` lists the partners whose sessions continue; any session not listed is over for the
+    client;
+  - each listed partner that is connected receives `session-resumed {targetClean}`; a partner that is itself
+    suspended stays so, and the resumed client receives `session-suspended` for it right after the ack;
+  - an old connection that is still open is closed without telling anyone;
+  - the sessions forward traffic again only after `registered-ack` is queued, so nothing reaches the client
+    before it knows which sessions survived.
+- **No resume.** Any other registration of the ID (no token, a wrong one, without `session-resume`, a different
+  `multi-session`, or after the grace) replaces the old one as before: its sessions end and the partners receive
+  `session-closed`. The relay keeps sessions in memory: after a relay restart nothing resumes, the ack has no
+  `resumed`, and the client ends its waiting sessions at once.
+- **Revocation.** A device taken off the allowlist (or no longer admitted after `security-set`) while suspended
+  ends its suspension at once; it cannot register again anyway.
+- **End to end.** Clients keep their `e2e` keys across the gap and nonces continue, so there is no new handshake.
+  A client ends a session whose `e2e` handshake had not finished when the connection dropped, so a session never
+  continues unsealed.
+- **After a resume** the viewer asks for a key frame and sends its state again (`set-resolution`,
+  `set-audio-quality`, `set-performance`, `stats`); the host announces `monitors` and `cursor-shape` again; both
+  gather their P2P candidates again and send a new `p2p-signal` (see `client-desktop/docs/features/p2p.md`).
 
 ## Capabilities
 
@@ -105,6 +154,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `udp-relay` | client + relay | The direct path may run through the relay's UDP forwarder (`udp-relay-offer`). |
 | `e2e` | client | End-to-end encryption: `Noise_XX` with device keys over `p2p-signal`, then sealed relay media and input events (see [Binary messages](#binary-messages) and `client-desktop/docs/features/e2e.md`). Needs the relay's `p2p-signal`. |
 | `multi-session` | client + relay | Up to four viewer sessions per connection. |
+| `session-resume` | client + relay | A lost relay connection suspends the client's sessions for 30 s instead of ending them; a new connection with the resume token takes them over (see [Session resume](#session-resume)). Listed before `fps-N`. |
 | `monitor-host` | client | Streams monitor-wall thumbnails on `monitor-start` (every desktop edition). |
 | `monitor-view` | client | Shows the monitor wall: `monitor-state` and the `0x11` tag (admin edition). |
 | `viewer-only` | client | This device never hosts; the relay refuses connect requests to it. |
@@ -118,12 +168,12 @@ Features are used only when both sides (and, where noted, the relay) support the
 Per platform (see [platforms.md](platforms.md)):
 
 - Windows: `file-ack`, `file-offer`, `file-folder`, `file-binary`, `cursor-shape`, `video-delta`, `frame-stamp`,
-  `video-h264` (when the Media Foundation decoder exists), `audio-opus`, `p2p.v1`, `multi-session`. No `host-features`: Windows hosts have every
-  host control.
+  `video-h264` (when the Media Foundation decoder exists), `audio-opus`, `p2p.v1`, `multi-session`, `session-resume`
+  (unless `OPENDESK_SESSION_RESUME=0`). No `host-features`: Windows hosts have every host control.
 - Linux: the same without `file-offer`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
 - Android: `viewer-only`, `video-delta` and `e2e`, so it receives framed JPEG video (no H.264) and single-session
-  message shapes.
+  message shapes. No `session-resume`: its sessions end with its connection.
 
 `register.platform` is `windows-pc`, `windows-admin`, `windows-host`, `linux-pc`, `linux-admin`, `linux-host` or
 `android`; it is informational except for `android`.
