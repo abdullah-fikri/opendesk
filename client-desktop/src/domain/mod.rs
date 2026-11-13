@@ -8,6 +8,7 @@ pub mod frame_rate;
 pub mod history;
 pub mod keyboard;
 pub mod latency;
+pub mod list_search;
 pub mod monitor;
 #[cfg(feature = "admin")]
 pub mod monitor_wall;
