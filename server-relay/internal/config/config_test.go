@@ -16,6 +16,17 @@ func TestLoadDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestMoveCoalescingSwitch(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if cfg, err := Load(missing); err != nil || cfg.MoveCoalescingDisabled {
+		t.Fatalf("coalescing must be on by default: %+v %v", cfg, err)
+	}
+	t.Setenv("OPENDESK_RELAY_COALESCE_MOVES", "0")
+	if cfg, err := Load(missing); err != nil || !cfg.MoveCoalescingDisabled {
+		t.Fatalf("OPENDESK_RELAY_COALESCE_MOVES=0 did not disable coalescing: %+v %v", cfg, err)
+	}
+}
+
 func TestLoadFailsClosed(t *testing.T) {
 	t.Setenv("OPENDESK_DEVICE_CREDENTIALS", "{not json")
 	if _, err := Load("missing.json"); err == nil {

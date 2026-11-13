@@ -43,6 +43,9 @@ type Config struct {
 	UDPRelayAddr string `json:"-"`
 	// UDPRelayMbps caps each session's forwarded rate, both directions together (OPENDESK_UDP_RELAY_MBPS, default 50).
 	UDPRelayMbps int `json:"-"`
+	// MoveCoalescingDisabled keeps every relayed mouse move in its own queue slot (OPENDESK_RELAY_COALESCE_MOVES=0),
+	// an emergency switch should merging queued moves ever misbehave.
+	MoveCoalescingDisabled bool `json:"-"`
 }
 
 // PingInterval is the WebSocket keep-alive period.
@@ -96,6 +99,7 @@ func Load(path string) (Config, error) {
 	cfg.MetricsToken = os.Getenv("OPENDESK_METRICS_TOKEN")
 	cfg.TLSProxy = os.Getenv("OPENDESK_TLS_PROXY") == "1"
 	cfg.P2PDisabled = os.Getenv("OPENDESK_P2P_DISABLED") == "1"
+	cfg.MoveCoalescingDisabled = os.Getenv("OPENDESK_RELAY_COALESCE_MOVES") == "0"
 	cfg.UDPRelayPublic = os.Getenv("OPENDESK_UDP_RELAY_PUBLIC")
 	cfg.UDPRelayAddr = "0.0.0.0:8089"
 	overrideString(&cfg.UDPRelayAddr, "OPENDESK_UDP_RELAY_ADDR")
