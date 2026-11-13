@@ -84,7 +84,7 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
             e2e: Vec::new(),
             monitor_pending: None,
             monitor_in_flight: false,
-            stashed: None,
+            held: VecDeque::new(),
             busy: false,
             signals: SignalPacer::default(),
             resume: Resume::default(),
@@ -130,8 +130,9 @@ pub(super) struct Connection {
     /// Newest monitor-wall thumbnail not sent yet, and whether the previous one is still in the socket.
     monitor_pending: Option<Vec<u8>>,
     monitor_in_flight: bool,
-    /// Message that ended an idle wait; `pump_outbox` sends it before the rest of the queue.
-    stashed: Option<Outgoing>,
+    /// Messages taken off the queue but not sent yet (one that ended an idle wait, or control messages held
+    /// while the socket was down); `pump_outbox` sends them before the rest of the queue.
+    held: VecDeque<Outgoing>,
     /// Something was sent or received this tick.
     busy: bool,
     /// `p2p-signal` messages spaced out per partner (the relay drops ones that follow too closely).
@@ -158,14 +159,11 @@ impl Connection {
         logger::info("relay", &format!("Connecting to relay {url}"));
         ctx.ui.relay_status(RelayStatus::Connecting);
 
-        let mut socket = match tungstenite::connect(&url) {
-            Ok((s, _)) => s,
-            Err(e) => {
-                logger::warn("relay", &format!("Connection failed: {e}"));
-                ctx.ui.relay_status(RelayStatus::Offline { reason: self.reconnecting_status() });
-                thread::sleep(self.resume.next_delay(RETRY_DELAY));
-                return;
-            }
+        let Some(mut socket) = self.connect(&url) else {
+            ctx.ui.relay_status(RelayStatus::Offline { reason: self.reconnecting_status() });
+            let delay = self.resume.next_delay(RETRY_DELAY);
+            self.sleep_offline(delay);
+            return;
         };
         let resume_token = self.resume.token_for(&url);
         self.quiet = resume_token.is_some();
@@ -253,7 +251,6 @@ impl Connection {
             lost = !self.read_all(&mut socket);
             if lost {
                 self.on_connection_lost();
-                thread::sleep(self.resume.next_delay(RECONNECT_DELAY));
                 break;
             }
             let traffic = std::mem::take(&mut self.busy)
@@ -282,6 +279,84 @@ impl Connection {
             }
         }
         self.on_connection_ended();
+        if lost {
+            let delay = self.resume.next_delay(RECONNECT_DELAY);
+            self.sleep_offline(delay);
+        }
+    }
+
+    /// Opens the relay socket. While sessions wait for it, the (blocking) connect runs on its own thread and
+    /// this one keeps their direct paths going meanwhile (see `pump_offline`).
+    fn connect(&mut self, url: &str) -> Option<Socket> {
+        let failed = |e: tungstenite::Error| logger::warn("relay", &format!("Connection failed: {e}"));
+        if !self.resume.any_waiting() {
+            return tungstenite::connect(url).map(|(s, _)| s).map_err(failed).ok();
+        }
+        let (tx, rx) = mpsc::channel();
+        let target = url.to_string();
+        crate::infra::thread::spawn_named("relay-connect", move || {
+            let _ = tx.send(tungstenite::connect(&target).map(|(s, _)| s));
+        });
+        loop {
+            match rx.recv_timeout(BUSY_SLEEP) {
+                Ok(result) => return result.map_err(failed).ok(),
+                Err(mpsc::RecvTimeoutError::Timeout) => self.pump_offline(),
+                Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+            }
+        }
+    }
+
+    /// Sleeps `delay` before the next connect, pumping the waiting sessions' direct paths meanwhile.
+    fn sleep_offline(&mut self, delay: Duration) {
+        let end = Instant::now() + delay;
+        while self.resume.any_waiting() && Instant::now() < end {
+            self.pump_offline();
+            thread::sleep(BUSY_SLEEP);
+        }
+        thread::sleep(end.saturating_duration_since(Instant::now()));
+    }
+
+    /// One tick without a relay socket while sessions wait: input that arrived over P2P is applied, video,
+    /// voice and input go over a live direct path or are dropped (never replayed late), and everything else is
+    /// held for the next connection. Sessions whose grace ran out end.
+    fn pump_offline(&mut self) {
+        for id in self.resume.expire(Instant::now()) {
+            self.end_waiting(&id, resume::EXPIRED);
+        }
+        let partner = self.ctx.partner();
+        self.prune_links(&partner);
+        while let Ok(event) = self.p2p_input.try_recv() {
+            crate::service::host::input::apply(&self.ctx, event);
+        }
+        while let Ok(item) = self.outbox.try_recv() {
+            if !is_live(&item) {
+                self.held.push_back(item);
+                continue;
+            }
+            match item {
+                Outgoing::Message(ClientMessage::RelayInput { target_clean, event }) => {
+                    if let Some(p) = self.direct(&target_clean) {
+                        p.send_input(&event);
+                    }
+                }
+                Outgoing::MouseMove(target, norm_x, norm_y) => {
+                    if let Some(p) = self.direct(&target) {
+                        p.send_input(&InputEvent::MouseMove { norm_x, norm_y });
+                    }
+                }
+                Outgoing::VideoFrame(frame) => {
+                    if let Some(p) = self.direct(&partner) {
+                        p.send_video(&frame);
+                    }
+                }
+                Outgoing::Audio(packet) if !partner.is_empty() => {
+                    if let Some(p) = self.direct(&partner) {
+                        p.send_audio(&packet);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn register_message(&self, resume_token: Option<String>) -> ClientMessage {
@@ -386,7 +461,7 @@ impl Connection {
             return;
         }
         match self.outbox.recv_timeout(pause) {
-            Ok(item) => self.stashed = Some(item),
+            Ok(item) => self.held.push_back(item),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => thread::sleep(pause),
         }
@@ -401,7 +476,7 @@ impl Connection {
     fn pump_outbox(&mut self, socket: &mut Socket, partner: &str) -> bool {
         let mut video: Option<Vec<u8>> = None;
         let mut mouse: Vec<(String, f64, f64)> = Vec::new();
-        while let Some(item) = self.stashed.take().or_else(|| self.outbox.try_recv().ok()) {
+        while let Some(item) = self.held.pop_front().or_else(|| self.outbox.try_recv().ok()) {
             self.busy = true;
             match item {
                 Outgoing::Message(msg) => {
@@ -759,6 +834,19 @@ fn single_id(ctx: &Ctx) -> String {
     ctx.viewers.single().map(|s| s.id.clone()).unwrap_or_default()
 }
 
+/// Input, voice and video: worthless once late, so without a live direct path they are dropped instead of held
+/// for the next relay connection.
+fn is_live(item: &Outgoing) -> bool {
+    matches!(
+        item,
+        Outgoing::Message(ClientMessage::RelayInput { .. })
+            | Outgoing::MouseMove(..)
+            | Outgoing::VideoFrame(_)
+            | Outgoing::Audio(_)
+            | Outgoing::MonitorFrame(_)
+    )
+}
+
 /// Idle backoff of the connection loop: on unless `OPENDESK_IDLE_BACKOFF=0` (a fixed 1 ms tick).
 fn idle_backoff_enabled() -> bool {
     std::env::var("OPENDESK_IDLE_BACKOFF").as_deref() != Ok("0")
@@ -849,6 +937,19 @@ mod tests {
         assert_eq!(wanted_send_buffer(true, None, Some("1000")), Some(MIN_SEND_BUFFER));
         assert_eq!(wanted_send_buffer(true, None, Some("0")), None);
         assert_eq!(wanted_send_buffer(true, None, Some("big")), Some(HOSTING_SEND_BUFFER));
+    }
+
+    #[test]
+    fn offline_drops_late_media_but_holds_control_messages() {
+        assert!(is_live(&Outgoing::MouseMove("1".into(), 0.5, 0.5)));
+        assert!(is_live(&Outgoing::VideoFrame(vec![1])) && is_live(&Outgoing::Audio(vec![1])));
+        assert!(is_live(&Outgoing::Message(ClientMessage::input(
+            "1",
+            InputEvent::MouseMove { norm_x: 0.0, norm_y: 0.0 }
+        ))));
+        assert!(!is_live(&Outgoing::Message(ClientMessage::disconnect("1"))), "closing a tab must reach the relay");
+        let file = Outgoing::FileChunk { target: "1".into(), frame: vec![1], status: None };
+        assert!(!is_live(&file));
     }
 
     #[test]
