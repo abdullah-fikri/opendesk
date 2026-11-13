@@ -210,6 +210,36 @@ fn valid_candidate(addr: &SocketAddr) -> bool {
             || ip.is_link_local())
 }
 
+/// The candidates of a signal (`"c"`), filtered and capped.
+fn parse_candidates(v: &Value) -> Vec<SocketAddr> {
+    v.get("c")
+        .and_then(|c| c.as_array())
+        .map(|list| {
+            list.iter().filter_map(|s| s.as_str()?.parse().ok()).filter(valid_candidate).take(MAX_CANDIDATES).collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A `p2p-signal` payload: v1 carries this path's `Noise_NN` message, v2 (with e2e) only candidates. A refresh
+/// (`"r": 1`, after a session resume) only replaces the candidates of a path whose handshake is done.
+fn signal_json(e2e: bool, hs_msg: &[u8], cands: &[SocketAddr], refresh: bool) -> String {
+    let c: Vec<String> = cands.iter().map(|a| a.to_string()).collect();
+    let v = if refresh {
+        json!({ "v": if e2e { 2 } else { 1 }, "r": 1, "c": c })
+    } else if e2e {
+        json!({ "v": 2, "c": c })
+    } else {
+        json!({ "v": 1, "hs": to_base64(hs_msg), "c": c })
+    };
+    v.to_string()
+}
+
+/// The new candidates of a refresh signal; None for any other signal.
+fn refresh_candidates(candidate: &str) -> Option<Vec<SocketAddr>> {
+    let v = serde_json::from_str::<Value>(candidate).ok()?;
+    (v.get("r").and_then(Value::as_u64) == Some(1)).then(|| parse_candidates(&v))
+}
+
 /// Builds a STUN Binding request (RFC 5389).
 fn stun_request(txid: &[u8; 12]) -> [u8; 20] {
     let mut req = [0u8; 20];
@@ -367,6 +397,8 @@ struct State {
     last_probe: Instant,
     /// Times the candidates were sent again (see [`SIGNAL_RESENDS`]).
     signal_resends: u32,
+    /// The candidates were gathered again after a session resume: resends go out as refresh signals.
+    refreshed: bool,
     /// Datagrams that reached the socket, those that did not open, and the first sender: tells "nothing got
     /// through the NATs" apart from "packets arrive but are rejected".
     rx_datagrams: u64,
@@ -391,6 +423,8 @@ pub struct P2p {
     sock: UdpSocket,
     state: Mutex<State>,
     closed: AtomicBool,
+    /// Gather the candidates again and send them as a refresh (see `refresh`).
+    regather: AtomicBool,
     can_send_frame: Arc<SendGate>,
     tx_out: Sender<Outgoing>,
     sinks: Sinks,
@@ -440,6 +474,7 @@ impl P2p {
                 probe_started: None,
                 last_probe: now,
                 signal_resends: 0,
+                refreshed: false,
                 rx_datagrams: 0,
                 rx_rejected: 0,
                 first_from: None,
@@ -453,6 +488,7 @@ impl P2p {
                 rx_buf: BTreeMap::new(),
             }),
             closed: AtomicBool::new(false),
+            regather: AtomicBool::new(false),
             can_send_frame,
             tx_out,
             sinks,
@@ -467,6 +503,14 @@ impl P2p {
     pub fn close(&self) {
         if !self.closed.swap(true, Ordering::SeqCst) {
             self.can_send_frame.open();
+        }
+    }
+
+    /// The session resumed after a lost relay connection: a path that is down (a network change, say) gathers
+    /// its candidates again and sends them to the partner, which probes them. A live path is left alone.
+    pub fn refresh(&self) {
+        if !self.closed.load(Ordering::SeqCst) && !self.is_active() {
+            self.regather.store(true, Ordering::SeqCst);
         }
     }
 
@@ -522,6 +566,14 @@ impl P2p {
     /// Handles a `p2p-signal` payload from the session partner (the relay already checked the pairing).
     pub fn on_signal(&self, candidate: &str) {
         let mut st = self.state.lock();
+        if let Some(cands) = refresh_candidates(candidate) {
+            if matches!(st.hs, Some(Handshake::Done(_))) {
+                logger::info("anynet.p2p", &format!("Peer refreshed its candidates ({}); probing.", cands.len()));
+                st.peer_cands = cands;
+                st.probe_started = Some(Instant::now());
+            }
+            return;
+        }
         if st.signal_handled {
             return;
         }
@@ -543,17 +595,7 @@ impl P2p {
         {
             return;
         }
-        st.peer_cands = v
-            .get("c")
-            .and_then(|c| c.as_array())
-            .map(|list| {
-                list.iter()
-                    .filter_map(|s| s.as_str()?.parse().ok())
-                    .filter(valid_candidate)
-                    .take(MAX_CANDIDATES)
-                    .collect()
-            })
-            .unwrap_or_default();
+        st.peer_cands = parse_candidates(&v);
         let list: Vec<String> = st.peer_cands.iter().map(|a| a.to_string()).collect();
         logger::info("anynet.p2p", &format!("Peer offered {} candidates: [{}].", list.len(), list.join(", ")));
         if version == 2 {
@@ -571,7 +613,7 @@ impl P2p {
         st.hs = match (reply_bytes, hs.into_stateless_transport_mode()) {
             (Some(r), Ok(t)) => {
                 if self.is_host {
-                    self.send_signal(&r, &st.local_cands);
+                    self.send_signal(&r, &st.local_cands, false);
                 }
                 st.probe_started = Some(Instant::now());
                 logger::info("anynet.p2p", &format!("Handshake complete; probing {} candidates.", st.peer_cands.len()));
@@ -584,13 +626,8 @@ impl P2p {
         };
     }
 
-    fn send_signal(&self, hs_msg: &[u8], cands: &[SocketAddr]) {
-        let c: Vec<String> = cands.iter().map(|a| a.to_string()).collect();
-        let candidate = if self.e2e.is_some() {
-            json!({ "v": 2, "c": c }).to_string()
-        } else {
-            json!({ "v": 1, "hs": to_base64(hs_msg), "c": c }).to_string()
-        };
+    fn send_signal(&self, hs_msg: &[u8], cands: &[SocketAddr], refresh: bool) {
+        let candidate = signal_json(self.e2e.is_some(), hs_msg, cands, refresh);
         let msg = ClientMessage::P2pSignal { target_clean: self.partner.clone(), candidate };
         let _ = self.tx_out.send(Outgoing::Message(msg));
     }
@@ -600,7 +637,7 @@ impl P2p {
         if self.e2e.is_some() {
             let mut st = self.state.lock();
             st.local_cands = cands.clone();
-            self.send_signal(&[], &cands);
+            self.send_signal(&[], &cands, false);
             st.hs = Some(Handshake::Shared);
             if let Some(sig) = st.pending_signal.take() {
                 st.signal_handled = true;
@@ -614,6 +651,9 @@ impl P2p {
         let _ = self.sock.set_read_timeout(Some(Duration::from_millis(50)));
         let mut buf = [0u8; 2048];
         while !self.closed.load(Ordering::SeqCst) {
+            if self.regather.swap(false, Ordering::SeqCst) {
+                self.regather_candidates();
+            }
             if let Ok((n, from)) = self.sock.recv_from(&mut buf) {
                 self.on_datagram(&buf[..n], from);
             }
@@ -630,6 +670,23 @@ impl P2p {
         );
     }
 
+    /// Gathers the candidates again (the network may have changed while the relay connection was down) and
+    /// sends them as a refresh. The path is down meanwhile, so the datagrams STUN skips cost nothing.
+    fn regather_candidates(&self) {
+        let cands = gather_candidates(&self.sock);
+        let _ = self.sock.set_read_timeout(Some(Duration::from_millis(50)));
+        let mut st = self.state.lock();
+        if !matches!(st.hs, Some(Handshake::Done(_))) {
+            return;
+        }
+        logger::info("anynet.p2p", &format!("Session resumed: sending {} fresh candidates.", cands.len()));
+        self.send_signal(&[], &cands, true);
+        st.local_cands = cands;
+        st.refreshed = true;
+        st.signal_resends = 0;
+        st.probe_started = Some(Instant::now());
+    }
+
     /// Starts this path's own `Noise_NN` handshake (partners without `e2e`). False if it cannot start.
     fn start_nn(&self, cands: &[SocketAddr]) -> bool {
         let builder = || snow::Builder::new(NOISE.parse().unwrap()).prologue(&self.prologue);
@@ -641,7 +698,7 @@ impl P2p {
                 if !self.is_host {
                     let mut buf = [0u8; 256];
                     match hs.write_message(&[], &mut buf) {
-                        Ok(n) => self.send_signal(&buf[..n], cands),
+                        Ok(n) => self.send_signal(&buf[..n], cands, false),
                         Err(_) => return false,
                     }
                 }
@@ -828,12 +885,12 @@ impl P2p {
         // Bounded probing: 200 ms for 10 s, then 3 s until 60 s, then stop until the path is lost again.
         let Some(started) = st.probe_started else { return };
         let age = now.duration_since(started);
-        if self.e2e.is_some()
+        if (self.e2e.is_some() || st.refreshed)
             && st.signal_resends < SIGNAL_RESENDS
             && age >= SIGNAL_RESEND_EVERY * (st.signal_resends + 1)
         {
             st.signal_resends += 1;
-            self.send_signal(&[], &st.local_cands);
+            self.send_signal(&[], &st.local_cands, st.refreshed);
         }
         let interval = if age < Duration::from_secs(10) {
             Duration::from_millis(200)
@@ -977,6 +1034,20 @@ mod tests {
         let n = r.write_message(&[], &mut m).unwrap();
         i.read_message(&m[..n], &mut p).unwrap();
         (i.into_stateless_transport_mode().unwrap(), r.into_stateless_transport_mode().unwrap())
+    }
+
+    #[test]
+    fn refresh_signal_carries_only_candidates() {
+        let cands: Vec<SocketAddr> = vec!["203.0.113.9:40000".parse().unwrap(), "192.168.1.5:40000".parse().unwrap()];
+        for e2e in [false, true] {
+            let sig = signal_json(e2e, b"hs", &cands, true);
+            let v: Value = serde_json::from_str(&sig).unwrap();
+            assert!(v.get("hs").is_none() && !crate::infra::e2e::is_signal(&v));
+            // 203.0.113.0/24 is a documentation range, never probed.
+            assert_eq!(refresh_candidates(&sig), Some(vec![cands[1]]));
+            assert_eq!(refresh_candidates(&signal_json(e2e, b"hs", &cands, false)), None);
+        }
+        assert_eq!(refresh_candidates("not json"), None);
     }
 
     #[test]

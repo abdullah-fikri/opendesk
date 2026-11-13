@@ -122,6 +122,10 @@ impl Connection {
         if hosted {
             host::restart_capture(&ctx);
         }
+        // Either side's network may have changed: a direct path that went down offers fresh candidates.
+        if let Some(p) = self.links.iter().find(|p| p.partner == id) {
+            p.refresh();
+        }
         logger::info("relay", &format!("Session with {id} resumed."));
         ctx.ui.status(format!("Reconnected to {}.", desk_id::format(id)));
     }
