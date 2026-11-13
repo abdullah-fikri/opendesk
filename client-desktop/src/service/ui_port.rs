@@ -78,6 +78,11 @@ pub enum SessionChange {
     AudioQuality(i32),
     Privacy(i32),
     BlockInput(bool),
+    /// Host sound: whether both sides support it (else the toggle is hidden) and whether it is on.
+    HostSound {
+        available: bool,
+        on: bool,
+    },
     /// Which host controls the partner supports (privacy screen, input lock).
     HostFeatures {
         privacy: bool,

@@ -44,6 +44,8 @@ export struct SessionView {
     block_input: bool,
     privacy_unavailable: bool,      // the host cannot show a privacy screen (Linux hosts)
     block_input_unavailable: bool,  // the host cannot lock its local input (Linux hosts)
+    host_sound_available: bool,     // both sides list audio-system
+    host_sound: bool,               // host sound plays (voice call paused); off = voice call
     resolution_mode: int,   // 1 = automatic, 0 = native, 1080/720/480 presets
     audio_quality: int,
     monitors: [MonitorItem],

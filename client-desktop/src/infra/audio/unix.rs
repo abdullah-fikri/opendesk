@@ -12,9 +12,12 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, Device, FromSample, SampleRate, SizedSample, Stream, StreamConfig};
 use parking_lot::Mutex;
 
-use super::{VoiceDspState, VoiceReceiver, VoiceSender, quality_to_audio_params};
+use super::{AudioMode, Route, VoiceDspState, VoiceReceiver, VoiceSender, quality_to_audio_params};
 use crate::infra::logger;
 use crate::protocol::Outgoing;
+
+/// No host sound here yet (PulseAudio/PipeWire monitor source later): `audio-system` is not listed.
+pub const HOST_SOUND: bool = false;
 
 /// Mono/stereo and sample formats tried in order; devices without mono or i16 get converted.
 const LAYOUTS: [(u16, bool); 4] = [(1, false), (1, true), (2, false), (2, true)];
@@ -123,6 +126,8 @@ pub struct VoiceEngine {
     pub audio_quality: Arc<AtomicUsize>,
     /// The voice partner listed `audio-opus`: send Opus instead of PCM.
     pub use_opus: Arc<AtomicBool>,
+    /// Always a voice call: without `HOST_SOUND` the services never switch it.
+    pub mode: Arc<AudioMode>,
 }
 
 impl VoiceEngine {
@@ -234,7 +239,15 @@ impl VoiceEngine {
             }
         });
 
-        Arc::new(Self { tx_play, rx: VoiceReceiver::new(), is_session_active, is_mic_muted, audio_quality, use_opus })
+        Arc::new(Self {
+            tx_play,
+            rx: VoiceReceiver::new(),
+            is_session_active,
+            is_mic_muted,
+            audio_quality,
+            use_opus,
+            mode: Arc::new(AudioMode::default()),
+        })
     }
 
     /// Plays an incoming voice packet: PCM (`[0x02, rate_khz, pcm...]` or legacy `[0x02, pcm...]`) or Opus.
@@ -242,8 +255,11 @@ impl VoiceEngine {
         if !self.is_session_active.load(Ordering::Relaxed) || bin.len() <= 2 {
             return;
         }
-        self.rx.receive(bin, |rate_hz, pcm| {
-            let _ = self.tx_play.send((rate_hz, pcm));
-        });
+        // Host sound packets are never played as voice.
+        if super::route(bin, self.mode.get()) == Route::Voice {
+            self.rx.receive(bin, |rate_hz, pcm| {
+                let _ = self.tx_play.send((rate_hz, pcm));
+            });
+        }
     }
 }

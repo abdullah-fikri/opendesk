@@ -906,13 +906,14 @@ impl P2p {
     }
 
     /// Sends a `[0x02, rate_khz, pcm...]` packet, split at even byte boundaries to fit one datagram each; an Opus
-    /// packet goes whole in one datagram.
+    /// packet (voice or host sound) goes whole in one datagram.
     pub fn send_audio(&self, pkt: &[u8]) -> bool {
         let mut st = self.state.lock();
         if !Self::alive(&st) {
             return false;
         }
-        if crate::infra::audio::opus::parse(pkt).is_some() {
+        use crate::infra::audio::opus;
+        if opus::parse(pkt).is_some() || opus::parse_host_sound(pkt).is_some() {
             if pkt.len() + 1 > MAX_PLAIN {
                 return false;
             }

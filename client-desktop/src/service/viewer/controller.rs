@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use crate::domain::capability::PeerCaps;
 use crate::domain::keyboard::{KeyOut, Mods};
 use crate::domain::{desk_id, resolution};
-use crate::infra::{logger, privacy, storage, user_clipboard, virtual_clipboard, window};
+use crate::infra::{audio, logger, privacy, storage, user_clipboard, virtual_clipboard, window};
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 use crate::service::context::{AppContext, Ctx};
 use crate::service::ui_port::SessionChange;
@@ -47,8 +47,12 @@ pub fn apply_focus(ctx: &AppContext) {
         ctx.voice.audio_quality.store(s.audio_quality.load(Ordering::SeqCst), Ordering::SeqCst);
         // While hosting, voice goes to the hosted viewer, whose codec the host session chose.
         if !ctx.is_hosting() {
-            ctx.voice.use_opus.store(file_transfer::caps_of(&s.id).audio_opus, Ordering::SeqCst);
+            let caps = file_transfer::caps_of(&s.id);
+            ctx.voice.use_opus.store(caps.audio_opus, Ordering::SeqCst);
+            ctx.voice.mode.set(audio::session_audio(false, caps.audio_system, s.host_sound.load(Ordering::SeqCst)));
         }
+    } else if !ctx.is_hosting() {
+        ctx.voice.mode.set(audio::SessionAudio::Voice);
     }
 }
 
@@ -170,12 +174,15 @@ pub fn on_connected(ctx: &Ctx, id: &str, caps: PeerCaps, mic_muted: bool) -> Opt
     };
     sess.connected.store(true, Ordering::SeqCst);
     begin_mic(ctx, &sess, mic_muted);
+    sess.host_sound.store(true, Ordering::SeqCst);
+    let host_sound = audio::HOST_SOUND && caps.audio_system;
     sess.clip_seq.store(core_engine::clipboard::sequence_number(), Ordering::SeqCst);
     file_transfer::set_session_caps(id, caps);
     ctx.ui.session_changed(
         id.to_string(),
         SessionChange::HostFeatures { privacy: caps.privacy_screen, block_input: caps.block_input },
     );
+    ctx.ui.session_changed(id.to_string(), SessionChange::HostSound { available: host_sound, on: true });
     if ctx.viewers.focused_id().is_empty() {
         ctx.viewers.set_focus(id);
     }
@@ -203,6 +210,9 @@ pub fn on_connected(ctx: &Ctx, id: &str, caps: PeerCaps, mic_muted: bool) -> Opt
     // the new canvas reports again if it differs.
     ctx.send_input(id, resolution_event(&sess));
     ctx.send_input(id, InputEvent::SetAudioQuality { quality: sess.audio_quality.load(Ordering::SeqCst) as u64 });
+    if host_sound {
+        ctx.send_input(id, InputEvent::SetHostSound { on: true });
+    }
     // The registration caps may predate a preset change; this one is current.
     ctx.send_input(id, settings::performance_event(storage::load_settings().performance()));
     ctx.ui.session_connected(id.to_string(), desk_id::format(id));
@@ -448,6 +458,21 @@ pub fn toggle_mic(ctx: &AppContext, id: &str) {
 /// Turns host `id`'s microphone on or off; the host answers with `host-mic` and the toolbar follows that.
 pub fn set_host_mic(ctx: &AppContext, id: &str, on: bool) {
     ctx.send_input(id, InputEvent::SetHostMic { muted: !on });
+}
+
+/// Switches between host `id`'s sound and the voice call, and tells the host.
+pub fn toggle_host_sound(ctx: &AppContext, id: &str) {
+    let Some(s) = ctx.viewers.get(id) else { return };
+    if !(audio::HOST_SOUND && file_transfer::caps_of(id).audio_system) {
+        return;
+    }
+    let on = !s.host_sound.load(Ordering::SeqCst);
+    s.host_sound.store(on, Ordering::SeqCst);
+    if ctx.viewers.is_focused(id) {
+        apply_focus(ctx);
+    }
+    ctx.ui.session_changed(id.to_string(), SessionChange::HostSound { available: true, on });
+    ctx.send_input(id, InputEvent::SetHostSound { on });
 }
 
 /// Privacy mode on host `id`: 0 normal, 1 frozen screen, 2 maintenance screen, 3 black screen.

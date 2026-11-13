@@ -113,6 +113,11 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
             super::set_mic(ctx, muted);
             logger::info("host.input", &format!("Viewer turned the microphone {}", if muted { "off" } else { "on" }));
         }
+        InputEvent::SetHostSound { on } => {
+            let mode = crate::infra::audio::session_audio(true, host.peer_caps.lock().audio_system, on);
+            ctx.voice.mode.set(mode);
+            logger::info("host.input", &format!("Viewer set host sound: {on} ({mode:?})"));
+        }
         InputEvent::SetPrivacy { mode } => privacy::set_host_privacy_mode(mode.clamp(0, 3)),
         InputEvent::SetBlockInput { blocked } => privacy::set_host_block_input(blocked),
         InputEvent::VideoKeyframe => host.keyframe_requested.store(true, Ordering::SeqCst),
