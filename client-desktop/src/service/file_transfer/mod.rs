@@ -64,6 +64,7 @@ static PARTNER_CAPS: Mutex<PeerCaps> = Mutex::new(PeerCaps {
     e2e: false,
     privacy_screen: false,
     block_input: false,
+    remote_mic: false,
     max_fps: 0,
     performance: crate::domain::performance::Performance::Medium,
 });

@@ -13,6 +13,7 @@ import { TransferPanel } from "views/transfer_panel.slint";
 import { ServerSettingsModal } from "dialogs/server_settings_dialog.slint";
 import { RenameDeviceModal } from "dialogs/rename_device_dialog.slint";
 import { DeleteConfirmModal } from "dialogs/delete_confirm_dialog.slint";
+import { WhatsNewModal } from "dialogs/whats_new_dialog.slint";
 
 export { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem, TransferItem }
 
@@ -88,6 +89,9 @@ export component MainWindow inherits Window {
     in property <[SecurityItem]> security_items: [];
     // The relay stores names given to devices in the host list.
     in property <bool> host_alias_supported: false;
+    // Settings › This device › Audio › Microphone (config.json `mic_on_at_start`).
+    in property <bool> mic_on_at_start: true;
+    callback save_mic_on_at_start(bool);
 
     // ---- Dialogs (UI-owned) ----
     in-out property <bool> show_settings: false;
@@ -99,6 +103,11 @@ export component MainWindow inherits Window {
     in-out property <bool> show_delete_modal: false;
     in-out property <string> delete_target_id: "";
     in-out property <string> delete_target_label: "";
+    // "What's new" after an update (Rust sets it at start; never in the Host edition).
+    in-out property <bool> show_whats_new: false;
+    in property <string> whats_new_title: "";
+    in property <string> whats_new_body: "";
+    callback whats_new_closed(bool);  // true = Don't show again
 
     // ---- Dashboard ----
     callback request_connect(string);
@@ -141,6 +150,7 @@ export component MainWindow inherits Window {
     callback select_monitor(string, int);
     callback session_send_files(string);
     callback session_toggle_mic(string);
+    callback session_set_host_mic(string, bool);
     callback session_set_privacy(string, int);
     callback session_toggle_block_input(string);
     callback session_set_resolution(string, int);
@@ -240,6 +250,7 @@ export component MainWindow inherits Window {
             select_monitor(id, i) => { root.select_monitor(id, i); }
             session_send_files(id) => { root.session_send_files(id); }
             session_toggle_mic(id) => { root.session_toggle_mic(id); }
+            session_set_host_mic(id, on) => { root.session_set_host_mic(id, on); }
             session_set_privacy(id, m) => { root.session_set_privacy(id, m); }
             session_toggle_block_input(id) => { root.session_toggle_block_input(id); }
             session_set_resolution(id, m) => { root.session_set_resolution(id, m); }
@@ -309,6 +320,8 @@ export component MainWindow inherits Window {
                 add_online => { root.security_add_online(); }
                 remove_device(id) => { root.security_remove(id); }
                 reset_device(id) => { root.security_reset(id); }
+                mic_on_at_start: root.mic_on_at_start;
+                set_mic_on_at_start(on) => { root.save_mic_on_at_start(on); }
             }
 
             if is_admin && monitor_open && !settings_open: MonitorWallView {
@@ -422,5 +435,15 @@ export component MainWindow inherits Window {
         delete_target_label: root.delete_target_label;
         show_delete_modal <=> root.show_delete_modal;
         confirm_delete(id) => { root.delete_history(id); }
+    }
+
+    // Waits while a remote session runs, either way.
+    if show_whats_new && !hosting && sessions.length == 0: WhatsNewModal {
+        title: root.whats_new_title;
+        body: root.whats_new_body;
+        closed(dont_show_again) => {
+            root.show_whats_new = false;
+            root.whats_new_closed(dont_show_again);
+        }
     }
 }

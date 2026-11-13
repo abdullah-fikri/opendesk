@@ -111,6 +111,15 @@ pub enum InputEvent {
     SetMic {
         muted: bool,
     },
+    /// The viewer turns the host's microphone on or off (only toward hosts listing `remote-mic`).
+    SetHostMic {
+        muted: bool,
+    },
+    /// Host -> viewer: the host's microphone state, sent at session start and on every change (only toward
+    /// viewers listing `remote-mic`).
+    HostMic {
+        muted: bool,
+    },
     /// 0 normal, 1 frozen screen, 2 maintenance screen, 3 black screen.
     SetPrivacy {
         mode: i32,

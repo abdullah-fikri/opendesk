@@ -18,6 +18,7 @@ export component SessionToolbar inherits Rectangle {
     callback select_monitor(string, int);
     callback send_files(string);
     callback toggle_mic(string);
+    callback set_host_mic(string, bool);
     callback set_privacy(string, int);
     callback toggle_block_input(string);
     callback set_resolution(string, int);
@@ -58,6 +59,17 @@ export component SessionToolbar inherits Rectangle {
             active: !root.s.mic_muted;
             tip: root.s.mic_muted ? "Unmute the microphone for this session" : "Mute microphone";
             clicked => { root.toggle_mic(root.s.id); }
+        }
+
+        // The host's own microphone; hosts up to 1.2.x do not report it, so the button is hidden for them.
+        ToolButton {
+            visible: root.s.host_mic != 0;
+            max-width: self.visible ? 1000px : 0px;
+            y: (parent.height - self.height) / 2;
+            label: root.s.host_mic == 2 ? "Host mic off" : "Host mic on";
+            active: root.s.host_mic == 1;
+            tip: root.s.host_mic == 2 ? "Turn on the remote computer's microphone" : "Turn off the remote computer's microphone";
+            clicked => { root.set_host_mic(root.s.id, root.s.host_mic == 2); }
         }
 
         kb-btn := ToolButton {

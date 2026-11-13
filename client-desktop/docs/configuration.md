@@ -6,7 +6,7 @@ All under `%APPDATA%\OpenDesk` on Windows and `~/.config/opendesk` (`$XDG_CONFIG
 
 | File | Contents |
 | --- | --- |
-| `config.json` | `gateway_url`, `desk_id`, `device_token`, `performance` (`low`, `medium`, `high`; see [viewer sessions](features/viewer-sessions.md#performance)). Created on first run with a new desk ID. |
+| `config.json` | `gateway_url`, `desk_id`, `device_token`, `performance` (`low`, `medium`, `high`; see [viewer sessions](features/viewer-sessions.md#performance)), `mic_on_at_start` (`true`/`false`, absent = on; see [voice](features/voice.md)), `last_seen_version` and `show_whats_new` (see [auto-update](../../docs/auto-update.md#whats-new-after-an-update)). Created on first run with a new desk ID. |
 | `history.json` | Recently contacted devices: `desk_id`, `alias`, `last_connected` (date). |
 | `opendesk.trace` | Log. |
 | `user_exit.flag`, `watchdog.lock`, `opendesk-watchdog.vbs` | Watchdog state (Windows, non-installed builds only). |

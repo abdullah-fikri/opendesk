@@ -148,9 +148,10 @@ pub fn request_connect(ctx: &AppContext, clean: &str, title: String, subtitle: S
     }
 }
 
-/// The relay connected session `id`. Returns the session, or `None` when there is no room for it (the relay
-/// enforces the same limit, so this is a stale session and it is ended).
-pub fn on_connected(ctx: &Ctx, id: &str, caps: PeerCaps) -> Option<Arc<Session>> {
+/// The relay connected session `id`; this machine's microphone starts muted when `mic_muted` (the local
+/// setting). Returns the session, or `None` when there is no room for it (the relay enforces the same limit, so
+/// this is a stale session and it is ended).
+pub fn on_connected(ctx: &Ctx, id: &str, caps: PeerCaps, mic_muted: bool) -> Option<Arc<Session>> {
     let res_mode = ctx.viewers.default_resolution();
     let viewport = ctx.viewers.default_viewport();
     let quality = ctx.voice.audio_quality.load(Ordering::SeqCst);
@@ -168,7 +169,7 @@ pub fn on_connected(ctx: &Ctx, id: &str, caps: PeerCaps) -> Option<Arc<Session>>
         }
     };
     sess.connected.store(true, Ordering::SeqCst);
-    sess.mic_muted.store(false, Ordering::SeqCst);
+    begin_mic(ctx, &sess, mic_muted);
     sess.clip_seq.store(core_engine::clipboard::sequence_number(), Ordering::SeqCst);
     file_transfer::set_session_caps(id, caps);
     ctx.ui.session_changed(
@@ -277,6 +278,8 @@ pub fn on_host_event(ctx: &AppContext, sess: &Session, event: InputEvent) {
             }
             ctx.ui.session_changed(id, SessionChange::MicMuted(true));
         }
+        // The host's own microphone (hosts listing `remote-mic`): the toolbar shows it and can switch it.
+        InputEvent::HostMic { muted } => ctx.ui.session_changed(id, SessionChange::HostMic(muted)),
         InputEvent::SetAudioQuality { quality } => {
             let q = quality.min(2) as usize;
             sess.audio_quality.store(q, Ordering::SeqCst);
@@ -423,6 +426,13 @@ pub fn mouse(ctx: &AppContext, id: &str, kind: Mouse, x_10000: i32, y_10000: i32
 
 // ---- Per-session settings ----
 
+/// Sets the microphone state a session starts with and shows it on its toolbar. The voice engine follows once
+/// `apply_focus` runs, and only for the focused session.
+fn begin_mic(ctx: &AppContext, sess: &Session, muted: bool) {
+    sess.mic_muted.store(muted, Ordering::SeqCst);
+    ctx.ui.session_changed(sess.id.clone(), SessionChange::MicMuted(muted));
+}
+
 /// Toggles this machine's microphone toward host `id` and tells the host.
 pub fn toggle_mic(ctx: &AppContext, id: &str) {
     let Some(s) = ctx.viewers.get(id) else { return };
@@ -433,6 +443,11 @@ pub fn toggle_mic(ctx: &AppContext, id: &str) {
     }
     ctx.ui.session_changed(id.to_string(), SessionChange::MicMuted(muted));
     ctx.send_input(id, InputEvent::SetMic { muted });
+}
+
+/// Turns host `id`'s microphone on or off; the host answers with `host-mic` and the toolbar follows that.
+pub fn set_host_mic(ctx: &AppContext, id: &str, on: bool) {
+    ctx.send_input(id, InputEvent::SetHostMic { muted: !on });
 }
 
 /// Privacy mode on host `id`: 0 normal, 1 frozen screen, 2 maintenance screen, 3 black screen.
@@ -553,6 +568,7 @@ pub fn pick_and_send_files(ctx: &Ctx, target: &str) {
 mod tests {
     use super::*;
     use crate::domain::keyboard::{VK_CONTROL, VK_SHIFT};
+    use crate::service::test_support::{MicRecorder, context_with_ui};
     use crate::service::viewer::registry::Registry;
 
     #[test]
@@ -588,5 +604,19 @@ mod tests {
             InputEvent::SetResolution { mode: 720, auto: None, width: None, height: None }
         );
         assert_eq!(b.last_sent_box.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn sessions_start_with_the_microphone_setting_and_the_toolbar_shows_it() {
+        let ui = Arc::new(MicRecorder::default());
+        let (ctx, _outbox) = context_with_ui(ui.clone());
+        let Open::Opened(muted) = ctx.viewers.open("222222222", 1, 0, 2) else { panic!() };
+        begin_mic(&ctx, &muted, true);
+        assert!(muted.mic_muted.load(Ordering::SeqCst));
+        assert_eq!(ui.shown.lock().last(), Some(&("222222222".to_string(), true)));
+        // The toolbar button still turns it on for this session.
+        toggle_mic(&ctx, "222222222");
+        assert!(!muted.mic_muted.load(Ordering::SeqCst));
+        assert_eq!(ui.shown.lock().last(), Some(&("222222222".to_string(), false)));
     }
 }

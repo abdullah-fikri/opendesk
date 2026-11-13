@@ -73,6 +73,8 @@ pub enum SessionChange {
     Monitors(Vec<Monitor>, i32),
     ActiveMonitor(i32),
     MicMuted(bool),
+    /// The host's microphone state (muted), reported by hosts the viewer can switch it on.
+    HostMic(bool),
     AudioQuality(i32),
     Privacy(i32),
     BlockInput(bool),

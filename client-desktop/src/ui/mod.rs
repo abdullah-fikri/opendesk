@@ -20,7 +20,7 @@ use slint::ComponentHandle;
 
 use crate::domain::desk_id;
 use crate::domain::edition::Edition;
-use crate::domain::performance::Performance;
+use crate::domain::settings::Settings;
 use crate::infra::tray::{SystemTray, TrayAction, bring_main_window_to_front};
 use crate::infra::{autostart, logger, privacy, window};
 use crate::service::context::Ctx;
@@ -33,10 +33,11 @@ pub use presenter::SlintUi;
 slint::include_modules!();
 
 /// Fills the window with its initial state and binds every callback.
-pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, gateway_url: &str, performance: Performance) {
+pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, settings: &Settings) {
     win.set_local_desk_id(desk_id::format(&ctx.local_id).into());
-    win.set_gateway_url(gateway_url.into());
-    win.set_performance(performance.index());
+    win.set_gateway_url(settings.gateway_url.as_str().into());
+    win.set_performance(settings.performance().index());
+    win.set_mic_on_at_start(settings.mic_on_at_start());
     win.set_is_admin(ctx.edition == Edition::Admin);
     win.set_active_dashboard_tab(if ctx.edition == Edition::Admin { 1 } else { 0 });
     dashboard_model::set_history(view_model::history_items(&history.records()));
@@ -44,6 +45,12 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, gateway_url: &s
     win.set_system_keys_menu(!privacy::SYSTEM_KEY_HOOK);
     if let HostSupport::Unsupported(reason) = core_engine::capture::host_support() {
         win.set_host_notice(reason.into());
+    }
+    // Shown once the window is visible and no session runs (the dialog's condition in `app_window.slint`).
+    if let Some((title, body)) = crate::service::settings::whats_new(ctx.edition) {
+        win.set_whats_new_title(title.into());
+        win.set_whats_new_body(body.into());
+        win.set_show_whats_new(true);
     }
     callbacks::bind(win, ctx, history);
 

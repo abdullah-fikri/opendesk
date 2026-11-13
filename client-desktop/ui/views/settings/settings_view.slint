@@ -1,6 +1,8 @@
-// Settings (admin edition): Settings › Security › Client token. The client-token page manages the relay's device
-// allowlist (docs/features/device-security.md at the repository root): listed devices receive their token
-// automatically on their first connection, so clients only need the relay address.
+// Settings (admin edition), in two groups:
+// - Relay, stored on the relay for every device: Security › Client token manages the relay's device allowlist
+//   (docs/features/device-security.md at the repository root): listed devices receive their token automatically
+//   on their first connection, so clients only need the relay address.
+// - This device, stored in the local config.json: Audio › Microphone (client-desktop/docs/features/voice.md).
 
 import { SecurityItem } from "../../types.slint";
 import { Theme } from "../../theme.slint";
@@ -64,6 +66,27 @@ component NavRow inherits Rectangle {
             font-size: 18px;
             vertical-alignment: center;
         }
+    }
+}
+
+// Title and one-line introduction of a group of settings on the first page.
+component GroupHeading inherits VerticalLayout {
+    in property <string> title;
+    in property <string> intro;
+
+    spacing: 3px;
+    padding-bottom: 4px;
+    Text {
+        text: root.title;
+        color: Theme.text-2;
+        font-size: 10px;
+        font-weight: 700;
+    }
+    Text {
+        text: root.intro;
+        color: Theme.text-3;
+        font-size: 11px;
+        wrap: word-wrap;
     }
 }
 
@@ -134,8 +157,11 @@ component ActionButton inherits Rectangle {
 }
 
 export component SettingsView inherits Rectangle {
-    // 0 = Settings, 1 = Security, 2 = Client token.
+    // 0 = Settings, 1 = Security, 2 = Client token, 3 = Audio, 4 = Microphone.
     in-out property <int> page: 0;
+    // This device: the microphone is on when a session starts.
+    in property <bool> mic_on_at_start: true;
+    callback set_mic_on_at_start(bool);
     // The relay supports the device allowlist (known once registered).
     in property <bool> relay_online: false;
     in property <bool> security_supported: false;
@@ -155,6 +181,18 @@ export component SettingsView inherits Rectangle {
     property <bool> confirm_enable: false;
     property <string> confirm_remove: "";
     property <bool> add_admin: false;
+
+    // Where Back goes from each page.
+    pure function parent_page(p: int) -> int {
+        return p == 2 ? 1 : p == 4 ? 3 : 0;
+    }
+    pure function breadcrumb(p: int) -> string {
+        return p == 1 ? "Settings  ›  Security"
+            : p == 2 ? "Settings  ›  Security  ›  Client token"
+            : p == 3 ? "Settings  ›  Audio"
+            : p == 4 ? "Settings  ›  Audio  ›  Microphone"
+            : "Settings";
+    }
 
     background: Theme.bg;
 
@@ -182,12 +220,12 @@ export component SettingsView inherits Rectangle {
                         if (root.page == 0) {
                             root.close();
                         } else {
-                            root.page -= 1;
+                            root.page = root.parent_page(root.page);
                         }
                     }
                 }
                 Text {
-                    text: root.page == 0 ? "Settings" : root.page == 1 ? "Settings  ›  Security" : "Settings  ›  Security  ›  Client token";
+                    text: root.breadcrumb(root.page);
                     color: Theme.text-2;
                     font-size: 11px;
                     font-weight: 600;
@@ -213,18 +251,116 @@ export component SettingsView inherits Rectangle {
                 font-size: 16px;
                 font-weight: 700;
             }
-            Text {
-                text: "Relay-wide settings for every device. Only administrators see this page.";
-                color: Theme.text-3;
-                font-size: 11px;
-            }
             Rectangle { height: 6px; }
+            GroupHeading {
+                title: "RELAY";
+                intro: "Stored on the relay and shared by every device. Only administrators can change it.";
+            }
             NavRow {
                 title: "Security";
                 subtitle: "Who may connect to this relay";
                 clicked => {
                     root.page = 1;
                     root.refresh();
+                }
+            }
+            Rectangle { height: 14px; }
+            GroupHeading {
+                title: "THIS DEVICE";
+                intro: "Stored on this computer only.";
+            }
+            NavRow {
+                title: "Audio";
+                subtitle: "Microphone when a session starts";
+                clicked => { root.page = 3; }
+            }
+        }
+
+        // ---- Audio: items
+        if root.page == 3: VerticalLayout {
+            vertical-stretch: 1;
+            padding: 20px;
+            spacing: 8px;
+            alignment: start;
+            Text {
+                text: "Audio";
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            Rectangle { height: 6px; }
+            NavRow {
+                title: "Microphone";
+                subtitle: "Whether your microphone is on when a session starts";
+                status: root.mic_on_at_start ? "ON" : "OFF";
+                status_on: root.mic_on_at_start;
+                clicked => { root.page = 4; }
+            }
+        }
+
+        // ---- Microphone
+        if root.page == 4: VerticalLayout {
+            vertical-stretch: 1;
+            padding: 20px;
+            spacing: 12px;
+            alignment: start;
+            Text {
+                text: "Microphone";
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            Text {
+                text: "Applies to every new session on this computer, whether you control another device or someone controls this one. The microphone button in a session still turns it on or off for that session.";
+                color: Theme.text-3;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+            Rectangle {
+                height: 56px;
+                background: Theme.surface;
+                border-width: 1px;
+                border-color: Theme.border;
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 12px;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        spacing: 3px;
+                        Text {
+                            text: "Microphone when a session starts";
+                            color: Theme.text;
+                            font-size: 12px;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: root.mic_on_at_start
+                                ? "On: the other side hears you as soon as the session starts."
+                                : "Off: turn it on with the microphone button when you want to talk.";
+                            color: Theme.text-3;
+                            font-size: 11px;
+                            overflow: elide;
+                        }
+                    }
+                    HorizontalLayout {
+                        width: 120px;
+                        spacing: 4px;
+                        alignment: center;
+                        padding-top: 15px;
+                        padding-bottom: 15px;
+                        Segment {
+                            label: "On";
+                            selected: root.mic_on_at_start;
+                            clicked => { root.set_mic_on_at_start(true); }
+                        }
+                        Segment {
+                            label: "Off";
+                            selected: !root.mic_on_at_start;
+                            clicked => { root.set_mic_on_at_start(false); }
+                        }
+                    }
                 }
             }
         }
