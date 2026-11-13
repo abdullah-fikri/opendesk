@@ -54,7 +54,10 @@ export component SessionToolbar inherits Rectangle {
             clicked => { root.send_files(root.s.id); }
         }
 
+        // While host sound plays both microphones are closed, so their buttons are hidden.
         ToolButton {
+            visible: !(root.s.host_sound_available && root.s.host_sound);
+            max-width: self.visible ? 1000px : 0px;
             y: (parent.height - self.height) / 2;
             label: root.s.mic_muted ? "Microphone off" : "Microphone on";
             active: !root.s.mic_muted;
@@ -64,7 +67,7 @@ export component SessionToolbar inherits Rectangle {
 
         // The host's own microphone; hosts up to 1.2.x do not report it, so the button is hidden for them.
         ToolButton {
-            visible: root.s.host_mic != 0;
+            visible: root.s.host_mic != 0 && !(root.s.host_sound_available && root.s.host_sound);
             max-width: self.visible ? 1000px : 0px;
             y: (parent.height - self.height) / 2;
             label: root.s.host_mic == 2 ? "Host mic off" : "Host mic on";

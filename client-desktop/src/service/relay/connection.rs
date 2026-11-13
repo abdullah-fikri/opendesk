@@ -88,6 +88,7 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
             busy: false,
             signals: SignalPacer::default(),
             resume: Resume::default(),
+            partner_waits: Vec::new(),
             url: String::new(),
             quiet: false,
         };
@@ -134,6 +135,11 @@ impl PendingMoves {
     }
 }
 
+/// Whole seconds left until `deadline` (at least 1, so the overlay stays until the host is back or closed).
+fn partner_seconds_left(deadline: Instant, now: Instant) -> i32 {
+    deadline.saturating_duration_since(now).as_secs_f64().ceil().max(1.0) as i32
+}
+
 /// State of the relay connection thread.
 pub(super) struct Connection {
     pub(super) ctx: Ctx,
@@ -160,6 +166,8 @@ pub(super) struct Connection {
     signals: SignalPacer,
     /// Sessions waiting for the connection to come back (see `resume.rs`).
     pub(super) resume: Resume,
+    /// Viewed hosts whose own connection dropped (`session-suspended`): host, end of its grace, seconds shown.
+    pub(super) partner_waits: Vec<(String, Instant, i32)>,
     /// The relay URL of the current connection.
     pub(super) url: String,
     /// Set from a reconnect with waiting sessions until `registered-ack`: input, voice and video that have no
@@ -210,6 +218,7 @@ impl Connection {
 
         while !ctx.relay.reconnect.load(Ordering::SeqCst) && !lost {
             self.show_countdown();
+            self.show_partner_countdown();
             let partner = ctx.partner();
             self.prune_links(&partner);
             if last_path_update.elapsed() >= Duration::from_millis(250) {
@@ -839,6 +848,40 @@ impl Connection {
         }
     }
 
+    /// Updates the "Reconnecting… (N s)" overlay of viewed hosts that lost their own connection; one whose
+    /// direct path is still alive keeps its live picture and shows none.
+    fn show_partner_countdown(&mut self) {
+        let now = Instant::now();
+        // The relay closes a host that does not come back; past that, drop the entry if no close arrived.
+        self.partner_waits.retain(|(_, deadline, _)| now < *deadline + Duration::from_secs(5));
+        let mut waits = std::mem::take(&mut self.partner_waits);
+        for (id, deadline, shown) in &mut waits {
+            let secs = if self.direct(id).is_some() { 0 } else { partner_seconds_left(*deadline, now) };
+            if *shown != secs {
+                *shown = secs;
+                self.ctx.ui.session_changed(id.clone(), SessionChange::Reconnecting(secs));
+            }
+        }
+        self.partner_waits = waits;
+    }
+
+    /// Host `id` lost its connection: its tab counts down the relay's grace.
+    pub(super) fn partner_suspended(&mut self, id: &str) {
+        if self.ctx.viewers.get(id).is_none() {
+            return;
+        }
+        self.partner_waits.retain(|w| w.0 != id);
+        self.partner_waits.push((id.to_string(), Instant::now() + resume::GRACE, -1));
+    }
+
+    /// Host `id` is back or gone: its overlay clears.
+    pub(super) fn partner_back(&mut self, id: &str) {
+        if let Some(i) = self.partner_waits.iter().position(|w| w.0 == id) {
+            self.partner_waits.swap_remove(i);
+            self.ctx.ui.session_changed(id.to_string(), SessionChange::Reconnecting(0));
+        }
+    }
+
     /// "Reconnecting… (N s)" while sessions wait.
     fn reconnecting_status(&self) -> Option<String> {
         self.resume
@@ -997,6 +1040,15 @@ mod tests {
         assert_eq!(moves.take("a"), Some((0.2, 0.3)));
         assert_eq!(moves.take("a"), None, "a move already sent before the button is not sent again after it");
         assert_eq!(moves.0, vec![("b".to_string(), 0.5, 0.5)]);
+    }
+
+    #[test]
+    fn partner_countdown_rounds_up_and_never_shows_zero() {
+        let now = Instant::now();
+        assert_eq!(partner_seconds_left(now + Duration::from_secs(30), now), 30);
+        assert_eq!(partner_seconds_left(now + Duration::from_millis(29_100), now), 30);
+        assert_eq!(partner_seconds_left(now + Duration::from_millis(400), now), 1);
+        assert_eq!(partner_seconds_left(now, now + Duration::from_secs(2)), 1);
     }
 
     #[test]

@@ -33,6 +33,7 @@ impl Connection {
             ServerMessage::SessionSuspended { target_clean } => {
                 logger::info("relay", &format!("Partner {target_clean} lost its connection; the session waits."));
                 self.ctx.ui.status(format!("{} lost its connection. Reconnecting…", desk_id::format(&target_clean)));
+                self.partner_suspended(&target_clean);
             }
             ServerMessage::SessionResumed { target_clean } => self.on_session_resumed(&target_clean),
             ServerMessage::HostList { hosts } => self.on_host_list(hosts),
@@ -49,6 +50,9 @@ impl Connection {
                 }
             }
             ServerMessage::SessionClosed { message, target_clean } => {
+                if let Some(id) = target_clean.as_deref() {
+                    self.partner_back(id);
+                }
                 self.on_session_closed(message, target_clean.as_deref())
             }
             ServerMessage::Error { message, target_clean } => self.on_error(message, target_clean.as_deref()),
@@ -113,6 +117,7 @@ impl Connection {
     /// The session with `id` continues after a lost connection (ours or the partner's). A session this
     /// machine already ended is ended at the relay too.
     fn on_session_resumed(&mut self, id: &str) {
+        self.partner_back(id);
         let ctx = Arc::clone(&self.ctx);
         let hosted = ctx.is_hosting() && ctx.partner() == id;
         if !controller::resumed(&ctx, id) && !hosted {
