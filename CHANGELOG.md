@@ -5,7 +5,35 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
 
 ## [Unreleased]
 
+### Highlights
+- Find a computer fast: type in the new search box on the Relay Hosts and Session History lists.
+- Copying several files to a remote computer now brings all of them, not just one.
+- Dragging works on the remote screen: select text in a terminal and resize windows.
+- Hear the remote computer's sound during a session, and turn its microphone on or off.
+- `opendesk update` now shows each step with a progress bar, and `--now` installs right away.
+- The connection holds better when the mouse moves fast on a slow network.
+
+### Added
+- Dashboard: a search field on the Relay Hosts and Session History lists, rows that can be selected with a click
+  or the arrow keys (double-click does not connect), and a wider tab bar.
+- Host sound: a Windows host streams its speaker output (WASAPI loopback, Opus 48 kHz stereo) to viewers that
+  list `audio-system`. A session carries host sound or the voice call, never both; the viewer's "Host sound"
+  toolbar button switches (`set-host-sound`), on by default. Older peers keep the voice call.
+- Settings › This device › Audio › Microphone: whether this device's microphone is on when a session starts (on
+  by default in every edition). Viewers can turn the host's microphone on and off from the toolbar ("Host mic",
+  hosts listing `remote-mic` only).
+- "What's new" modal after an update, built from this changelog's `### Highlights` (Close / Don't show again);
+  not in the Host edition.
+- `opendesk update` shows a banner and live progress (check, download, verify, wait for sessions, install) read
+  from the service's `progress.json`; `--no-wait` keeps the old behaviour, `opendesk update status` shows the
+  last phase. `opendesk update --now` installs right away even while sessions are active (they are disconnected);
+  without it the install still waits until no session runs.
+
 ### Fixed
+- Copying several files from a viewer to a host delivered only one: a second clipboard change from Explorer for
+  the same copy is now recorded, and the host pulls at most 2 files at once.
+- Dragging on a Windows host (terminal text selection, window resize): pointer moves are injected as absolute
+  `SendInput`, and a pending mouse move is sent before its button event.
 - Relay: moving the mouse over a host whose link stalls for a moment no longer closes the connection. Queued
   mouse moves from the same viewer are merged (newest position wins, order with clicks and keys kept), and a
   receiver is closed only after its control queue has been stuck for 5 s (was 500 ms).
