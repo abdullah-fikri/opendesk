@@ -19,13 +19,19 @@ const (
 	TypeDeviceCredential = "device-credential"
 	TypeSecurityState    = "security-state"
 	TypeUDPRelayOffer    = "udp-relay-offer"
+	TypeSessionSuspended = "session-suspended"
+	TypeSessionResumed   = "session-resumed"
 )
 
-// RegisteredAck confirms registration and lists the relay's capabilities.
+// RegisteredAck confirms registration and lists the relay's capabilities. ResumeToken and Resumed are set only
+// for clients that list session-resume: the token lets the next connection take over this one's sessions, and
+// Resumed lists the partners whose sessions this connection took over.
 type RegisteredAck struct {
-	Type   string   `json:"type"`
-	DeskID string   `json:"deskId"`
-	Caps   []string `json:"caps"`
+	Type        string   `json:"type"`
+	DeskID      string   `json:"deskId"`
+	Caps        []string `json:"caps"`
+	ResumeToken string   `json:"resumeToken,omitempty"`
+	Resumed     []string `json:"resumed,omitempty"`
 }
 
 // HostList is sent to administrators on request and whenever a device comes or goes.
@@ -42,7 +48,9 @@ type Host struct {
 	Alias      string `json:"alias"`
 	Platform   string `json:"platform"`
 	Online     bool   `json:"online"`
-	LastSeen   string `json:"last_seen"`
+	// Reconnecting: the device lost its connection and its sessions wait for it to resume (Online stays true).
+	Reconnecting bool   `json:"reconnecting,omitempty"`
+	LastSeen     string `json:"last_seen"`
 }
 
 // IncomingRequest asks an Android host to approve a viewer.
@@ -103,6 +111,19 @@ type SessionClosed struct {
 	Type        string `json:"type"`
 	Message     string `json:"message"`
 	TargetClean string `json:"targetClean,omitempty"`
+}
+
+// SessionSuspended tells a session-resume client that its partner TargetClean lost its connection and the
+// session waits for it.
+type SessionSuspended struct {
+	Type        string `json:"type"`
+	TargetClean string `json:"targetClean"`
+}
+
+// SessionResumed tells a session-resume client that its partner TargetClean is back and the session continues.
+type SessionResumed struct {
+	Type        string `json:"type"`
+	TargetClean string `json:"targetClean"`
 }
 
 // Error reports a failed request. TargetClean names the failed session for multi-session viewers only.

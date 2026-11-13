@@ -19,6 +19,10 @@ const (
 	// CapUDPRelay: the relay forwards direct-path UDP datagrams (udp-relay-offer). As a client capability it
 	// means the client can use one; offers go only to sessions where both clients list it.
 	CapUDPRelay = "udp-relay"
+	// CapSessionResume: a lost connection's sessions wait 30 s for it (see docs/features/session-resume.md at the
+	// repository root). As a client capability it means the client can resume; sessions wait only when both
+	// partners list it.
+	CapSessionResume = "session-resume"
 )
 
 // CapP2P is the client capability of the direct UDP path, which the UDP relay carries.

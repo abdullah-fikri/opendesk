@@ -36,6 +36,10 @@ type Peer struct {
 	FileBinary bool
 	// EnrollToken is the token issued at this registration (the device just enrolled); the caller sends it once.
 	EnrollToken string
+	// Resume is set from the session-resume capability; ResumeToken is issued to such a client in registered-ack
+	// and lets its next connection take over this one's sessions (see resume.go).
+	Resume      bool
+	ResumeToken string
 
 	// Single-session state: hosts, legacy viewers and Android peers (guarded by Relay.mu).
 	sessionWith   string
@@ -44,6 +48,11 @@ type Peer struct {
 	views map[string]*viewSession
 	// watching holds an administrator's monitor-wall tiles keyed by host clean ID (guarded by Relay.mu).
 	watching map[string]*monitorTile
+	// suspendedUntil is set while the connection is gone and its sessions wait for a resume; held is set while
+	// a resumed connection waits for its registered-ack to be queued. Either keeps its sessions quiet (guarded
+	// by Relay.mu).
+	suspendedUntil time.Time
+	held           bool
 
 	conn    Conn
 	metrics FrameMetrics
@@ -96,6 +105,7 @@ func buildPeer(info PeerInfo, deskID string, multi bool, conn Conn, m FrameMetri
 		MonitorHost: slices.Contains(info.Caps, model.CapMonitorHost),
 		MonitorView: slices.Contains(info.Caps, model.CapMonitorView),
 		FileBinary:  slices.Contains(info.Caps, model.CapFileBinary),
+		Resume:      slices.Contains(info.Caps, model.CapSessionResume),
 		conn:        conn,
 		metrics:     m,
 		control:     newMsgRing(controlQueueLen),
