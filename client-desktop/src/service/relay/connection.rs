@@ -308,6 +308,10 @@ impl Connection {
         caps.push(capability::MONITOR_VIEW);
         let stored = storage::load_settings();
         let mut caps: Vec<String> = caps.into_iter().map(String::from).collect();
+        // Right before `fps-N`: a relay that keeps only 16 names drops it first, which only turns host sound off.
+        if crate::infra::audio::HOST_SOUND {
+            caps.push(capability::AUDIO_SYSTEM.to_string());
+        }
         // Last, so a relay that keeps only its first 16 names (up to 1.2.0) drops these (the host then streams 60 on Medium).
         // The preset goes after the cap older hosts need, and Medium, like 60 FPS, is what listing none means.
         // Hosts that know presets also get both from `set-performance` at session start.

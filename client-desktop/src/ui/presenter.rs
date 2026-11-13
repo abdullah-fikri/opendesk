@@ -206,6 +206,10 @@ impl UiPort for SlintUi {
                 SessionChange::AudioQuality(q) => r.audio_quality = q,
                 SessionChange::Privacy(mode) => r.privacy_mode = mode,
                 SessionChange::BlockInput(blocked) => r.block_input = blocked,
+                SessionChange::HostSound { available, on } => {
+                    r.host_sound_available = available;
+                    r.host_sound = on;
+                }
                 SessionChange::HostFeatures { privacy, block_input } => {
                     r.privacy_unavailable = !privacy;
                     r.block_input_unavailable = !block_input;

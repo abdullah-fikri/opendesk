@@ -46,6 +46,8 @@ pub struct Session {
     pub audio_quality: AtomicUsize,
     pub privacy_mode: AtomicI32,
     pub block_input: AtomicBool,
+    /// The user wants this host's sound (on by default); plays only when both sides list `audio-system`.
+    pub host_sound: AtomicBool,
     /// Clipboard sequence number this host last saw (see `clipboard_push_needed`).
     pub clip_seq: AtomicU32,
     /// Clipboard sequence number whose files were offered to this host; Ctrl+V of any other copy sends them.
@@ -83,6 +85,7 @@ impl Session {
             audio_quality: AtomicUsize::new(audio_quality),
             privacy_mode: AtomicI32::new(0),
             block_input: AtomicBool::new(false),
+            host_sound: AtomicBool::new(true),
             clip_seq: AtomicU32::new(0),
             offered_seq: AtomicU32::new(0),
             has_monitors: AtomicBool::new(false),

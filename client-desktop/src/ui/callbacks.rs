@@ -178,6 +178,11 @@ fn bind_sessions(win: &MainWindow, ctx: &Ctx) {
             controller::toggle_mic(c, &id);
         }
     });
+    on!(win, ctx, on_session_toggle_host_sound, |_w, c, id| {
+        if c.viewers.is_live(&id) {
+            controller::toggle_host_sound(c, &id);
+        }
+    });
     on!(win, ctx, on_session_set_privacy, |_w, c, id, mode| {
         if c.viewers.is_live(&id) {
             controller::set_privacy(c, &id, mode);

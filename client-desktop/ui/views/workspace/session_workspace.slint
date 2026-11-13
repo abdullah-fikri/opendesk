@@ -37,6 +37,7 @@ export component SessionWorkspace inherits Rectangle {
     callback select_monitor(string, int);
     callback session_send_files(string);
     callback session_toggle_mic(string);
+    callback session_toggle_host_sound(string);
     callback session_set_privacy(string, int);
     callback session_toggle_block_input(string);
     callback session_set_resolution(string, int);
@@ -247,6 +248,7 @@ export component SessionWorkspace inherits Rectangle {
                     select_monitor(id, idx) => { root.select_monitor(id, idx); }
                     send_files(id) => { root.session_send_files(id); }
                     toggle_mic(id) => { root.session_toggle_mic(id); }
+                    toggle_host_sound(id) => { root.session_toggle_host_sound(id); }
                     set_privacy(id, m) => { root.session_set_privacy(id, m); }
                     toggle_block_input(id) => { root.session_toggle_block_input(id); }
                     set_resolution(id, m) => { root.session_set_resolution(id, m); }

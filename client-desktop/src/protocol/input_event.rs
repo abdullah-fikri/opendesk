@@ -111,6 +111,11 @@ pub enum InputEvent {
     SetMic {
         muted: bool,
     },
+    /// Viewer -> host, both listing `audio-system`: stream the host's sound (`true`, voice paused) or return to
+    /// the voice call (`false`).
+    SetHostSound {
+        on: bool,
+    },
     /// 0 normal, 1 frozen screen, 2 maintenance screen, 3 black screen.
     SetPrivacy {
         mode: i32,
@@ -210,6 +215,10 @@ mod tests {
             .unwrap();
         assert_eq!(e, json!({ "action": "set-resolution", "mode": 1080 }));
         assert_eq!(serde_json::to_value(InputEvent::VideoKeyframe).unwrap(), json!({ "action": "video-keyframe" }));
+        assert_eq!(
+            serde_json::to_value(InputEvent::SetHostSound { on: false }).unwrap(),
+            json!({ "action": "set-host-sound", "on": false })
+        );
         assert_eq!(
             serde_json::to_value(InputEvent::Wheel { norm_x: 0.5, norm_y: 0.25, delta_y: -120 }).unwrap(),
             json!({ "action": "wheel", "normX": 0.5, "normY": 0.25, "deltaY": -120 })

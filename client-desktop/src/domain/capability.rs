@@ -23,6 +23,9 @@ pub const VIDEO_H264: &str = "video-h264";
 pub const FRAME_STAMP: &str = "frame-stamp";
 /// Opus voice packets (`[0x02][0x4F][seq][opus]`); without it the partner gets PCM.
 pub const AUDIO_OPUS: &str = "audio-opus";
+/// Host sound (`[0x02][0x53][seq][opus]`, `set-host-sound`): a host streams its speaker output, a viewer plays
+/// it. Used only when both sides list it.
+pub const AUDIO_SYSTEM: &str = "audio-system";
 /// Prefix of the viewer's frame-rate cap (`fps-144`): the most frames per second it wants. A dash, not `=`:
 /// the relay forwards only names of `[a-z0-9.-]`. Without it the partner gets 60 (see `domain::frame_rate`).
 pub const MAX_FPS_PREFIX: &str = "fps-";
@@ -76,6 +79,8 @@ pub struct PeerCaps {
     pub frame_stamp: bool,
     /// Voice to this partner may be Opus (we always decode it, so the partner's word is enough).
     pub audio_opus: bool,
+    /// The partner streams (as a host) or plays (as a viewer) host sound.
+    pub audio_system: bool,
     pub p2p: bool,
     pub e2e: bool,
     /// The partner can show a privacy screen while hosting.
@@ -103,6 +108,7 @@ impl PeerCaps {
             video_h264: has(VIDEO_H264),
             frame_stamp: has(FRAME_STAMP),
             audio_opus: has(AUDIO_OPUS),
+            audio_system: has(AUDIO_SYSTEM),
             p2p: has(P2P),
             e2e: has(E2E),
             privacy_screen: legacy_host || has(PRIVACY_SCREEN),
@@ -174,6 +180,13 @@ mod tests {
         assert!(!android.audio_opus && !old_desktop.audio_opus);
         // No relay support is needed: Opus keeps the 0x02 audio marker every relay forwards.
         assert!(PeerCaps::from_list(&[AUDIO_OPUS.to_string()], false).audio_opus);
+    }
+
+    #[test]
+    fn host_sound_only_with_partners_that_list_it() {
+        let old_desktop = PeerCaps::from_list(&[AUDIO_OPUS.to_string(), P2P.to_string()], true);
+        assert!(!old_desktop.audio_system);
+        assert!(PeerCaps::from_list(&[AUDIO_SYSTEM.to_string()], false).audio_system);
     }
 
     #[test]

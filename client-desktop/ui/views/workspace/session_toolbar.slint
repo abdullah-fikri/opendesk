@@ -18,6 +18,7 @@ export component SessionToolbar inherits Rectangle {
     callback select_monitor(string, int);
     callback send_files(string);
     callback toggle_mic(string);
+    callback toggle_host_sound(string);
     callback set_privacy(string, int);
     callback toggle_block_input(string);
     callback set_resolution(string, int);
@@ -58,6 +59,17 @@ export component SessionToolbar inherits Rectangle {
             active: !root.s.mic_muted;
             tip: root.s.mic_muted ? "Unmute the microphone for this session" : "Mute microphone";
             clicked => { root.toggle_mic(root.s.id); }
+        }
+
+        // Host sound and the voice call alternate: while host sound plays, both microphones stay closed.
+        ToolButton {
+            visible: root.s.host_sound_available;
+            max-width: self.visible ? 1000px : 0px;
+            y: (parent.height - self.height) / 2;
+            label: root.s.host_sound ? "Host sound on" : "Host sound off";
+            active: root.s.host_sound;
+            tip: root.s.host_sound ? "Mute this device's sound and talk over the microphones instead" : "Hear this device's sound (pauses the voice call)";
+            clicked => { root.toggle_host_sound(root.s.id); }
         }
 
         kb-btn := ToolButton {

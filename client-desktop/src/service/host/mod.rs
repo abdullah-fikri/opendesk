@@ -18,7 +18,7 @@ use parking_lot::Mutex;
 use crate::domain::capability::PeerCaps;
 use crate::domain::{desk_id, resolution};
 use crate::infra::send_gate::SendGate;
-use crate::infra::{logger, privacy};
+use crate::infra::{audio, logger, privacy};
 use crate::service::context::{AppContext, Ctx};
 
 /// State of the hosted session, shared by the relay connection, the capture loop and the UI.
@@ -110,6 +110,8 @@ impl HostState {
 pub fn start(ctx: &Ctx, partner: &str, caps: PeerCaps) {
     ctx.set_partner(partner);
     *ctx.host.peer_caps.lock() = caps;
+    // Host sound by default toward a viewer that plays it; `set-host-sound` switches later.
+    ctx.voice.mode.set(audio::session_audio(true, caps.audio_system, true));
     // The viewer keyboard hook belongs to viewing; this machine is being controlled now.
     privacy::set_viewer_hook_state(false, "");
     ctx.host.monitor_index.store(0, Ordering::SeqCst);
@@ -135,6 +137,7 @@ pub fn stop(ctx: &AppContext) {
     ctx.host.capture_generation.fetch_add(1, Ordering::SeqCst);
     privacy::reset_host_privacy();
     ctx.host.release_all_keys(&ctx.injector);
+    ctx.voice.mode.set(audio::SessionAudio::Voice);
     logger::info("host", "Hosting session ended.");
 }
 
