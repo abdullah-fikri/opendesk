@@ -5,6 +5,8 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-13
+
 ### Highlights
 - Find a computer fast: type in the new search box on the Relay Hosts and Session History lists.
 - Copying several files to a remote computer now brings all of them, not just one.
@@ -253,6 +255,7 @@ First public release.
 - Windows binaries are not code-signed yet (SmartScreen warns on first run); Linux packages are unsigned `.deb`
   files. Verify downloads against `SHA256SUMS.txt`.
 
+[1.3.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.3.0
 [1.2.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.2.1
 [1.2.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.2.0
 [1.1.3]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.1.3
