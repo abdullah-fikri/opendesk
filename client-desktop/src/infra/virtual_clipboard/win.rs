@@ -996,6 +996,27 @@ mod tests {
         }
     }
 
+    /// Same, for several top-level files and no folder (a multi-file copy in Explorer): every file must be
+    /// pulled and pasted, not only the first.
+    #[test]
+    #[ignore]
+    fn explorer_paste_pulls_four_top_level_files() {
+        let names = ["a.txt", "b.bin", "c.dat", "d.log"];
+        let contents: HashMap<u64, Vec<u8>> = (0..names.len() as u64)
+            .map(|i| (i, (0..40_000 + i as u32 * 30_000).map(|b| (b * (i as u32 + 3) % 251) as u8).collect()))
+            .collect();
+        let files: Vec<Value> =
+            names.iter().enumerate().map(|(i, n)| json!({ "name": n, "size": contents[&(i as u64)].len() })).collect();
+        let offer = json!({ "id": "of_four", "files": files });
+        if let Some(dir) = paste_with_explorer("four", offer, &contents) {
+            for (i, name) in names.iter().enumerate() {
+                let pasted = std::fs::read(dir.join(name)).unwrap_or_else(|_| panic!("{name} was not pasted"));
+                assert_eq!(pasted, contents[&(i as u64)], "{name}");
+            }
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
     /// Same, for a nested folder with an empty subfolder; an unsafe entry in the offer must be dropped and the
     /// remaining pulls must still name the partner's own indices.
     #[test]
