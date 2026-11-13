@@ -5,6 +5,19 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-13
+
+### Highlights
+- A computer no longer stays "Offline" after its network drops silently: it reconnects by itself within
+  45 seconds.
+
+### Fixed
+- Relay connection: a socket whose TCP state was dropped on the way (modem or NAT reset, sleep) never reported
+  an error, so the client kept showing Online and never reconnected while the relay had already marked the
+  device offline. Any frame from the relay (keep-alive pings included) now refreshes a timer; 45 s without one
+  (three missed pings, before the relay's own 60 s drop) counts as a lost connection and the client reconnects,
+  replacing its old registration so the device stays online.
+
 ## [1.3.0] - 2026-11-13
 
 ### Highlights
@@ -255,6 +268,7 @@ First public release.
 - Windows binaries are not code-signed yet (SmartScreen warns on first run); Linux packages are unsigned `.deb`
   files. Verify downloads against `SHA256SUMS.txt`.
 
+[1.3.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.3.1
 [1.3.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.3.0
 [1.2.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.2.1
 [1.2.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.2.0
