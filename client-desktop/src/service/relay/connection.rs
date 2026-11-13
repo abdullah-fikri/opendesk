@@ -56,9 +56,10 @@ const IDLE_AFTER: Duration = Duration::from_secs(2);
 const IDLE_MAX_SLEEP: Duration = Duration::from_millis(20);
 /// No frame at all from the relay (its keep-alive pings included) for this long means the socket is dead
 /// even though the OS has not said so (a NAT or modem dropped the TCP state, the PC slept): reconnect. The
-/// relay pings every 15 s and drops a peer after 60 s of silence, so by then it already shows this device
-/// offline; waiting on the OS instead could leave the device offline for good.
-const RELAY_SILENCE_LIMIT: Duration = Duration::from_secs(75);
+/// relay pings every 15 s and drops a peer after 60 s of silence; giving up after 3 missed pings registers
+/// the new connection while the relay still holds the old one, so it replaces it and the device never shows
+/// offline. Waiting on the OS instead could leave the device offline for good.
+const RELAY_SILENCE_LIMIT: Duration = Duration::from_secs(45);
 /// How often the loop checks whether the main window is on screen.
 const WINDOW_CHECK: Duration = Duration::from_millis(500);
 /// Kernel send buffer (`SO_SNDBUF`) while the hosted session's video goes over this socket. The video gate
@@ -1044,11 +1045,12 @@ mod tests {
 
     #[test]
     fn relay_silence_past_the_relays_own_timeout_counts_as_a_dead_socket() {
-        // Pings arrive every 15 s: a few missed ones are not a dead socket...
-        assert!(!relay_silent(Duration::from_secs(45)));
-        // ...but the relay drops a peer after 60 s, so the client must reconnect soon after.
+        // Pings arrive every 15 s: one or two missed ones are not a dead socket...
+        assert!(!relay_silent(Duration::from_secs(30)));
+        // ...three are: reconnect before the relay's own 60 s drop, so the device never shows offline.
+        assert!(!relay_silent(Duration::from_secs(44)));
         assert!(relay_silent(RELAY_SILENCE_LIMIT));
-        assert!(RELAY_SILENCE_LIMIT > Duration::from_secs(60) && RELAY_SILENCE_LIMIT <= Duration::from_secs(90));
+        assert!(RELAY_SILENCE_LIMIT > Duration::from_secs(30) && RELAY_SILENCE_LIMIT < Duration::from_secs(60));
     }
 
     #[test]
