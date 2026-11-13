@@ -39,6 +39,7 @@ export struct SessionView {
     stream_height: int,
     status: string,         // short per-session status line (transfers, errors)
     mic_muted: bool,
+    host_mic: int,          // the host's microphone: 0 = not switchable (older host), 1 = on, 2 = off
     privacy_mode: int,
     block_input: bool,
     privacy_unavailable: bool,      // the host cannot show a privacy screen (Linux hosts)

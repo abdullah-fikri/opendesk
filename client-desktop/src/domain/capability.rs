@@ -60,6 +60,10 @@ pub const PRIVACY_SCREEN: &str = "privacy-screen";
 /// With `host-features`: the host can lock its physical keyboard and mouse (`set-block-input`).
 pub const BLOCK_INPUT: &str = "block-input";
 
+/// The host lets its viewer turn the host's microphone on and off (`set-host-mic`) and reports its state
+/// (`host-mic`). From a viewer: it understands `host-mic`. Hosts up to 1.2.x only let a viewer mute it.
+pub const REMOTE_MIC: &str = "remote-mic";
+
 /// Features a session partner advertised in `peerCaps`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PeerCaps {
@@ -82,6 +86,8 @@ pub struct PeerCaps {
     pub privacy_screen: bool,
     /// The partner can lock its local input while hosting.
     pub block_input: bool,
+    /// The partner speaks `set-host-mic` / `host-mic` ([`REMOTE_MIC`]).
+    pub remote_mic: bool,
     /// Frame rate the viewer wants at most (`fps-N`); 60 when it lists none.
     pub max_fps: u32,
     /// The viewer's performance preset (`perf-*`); Medium when it lists none (older builds, Android).
@@ -107,6 +113,7 @@ impl PeerCaps {
             e2e: has(E2E),
             privacy_screen: legacy_host || has(PRIVACY_SCREEN),
             block_input: legacy_host || has(BLOCK_INPUT),
+            remote_mic: has(REMOTE_MIC),
             max_fps: peer_caps
                 .iter()
                 .find_map(|c| c.strip_prefix(MAX_FPS_PREFIX)?.parse().ok())

@@ -106,10 +106,12 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
             caps.max_fps = if max_fps == 0 { frame_rate::DEFAULT_FPS } else { max_fps };
             logger::info("host.input", &format!("Viewer set performance: {} (fps cap {})", preset.cap(), caps.max_fps));
         }
-        // A remote peer may silence this microphone, but only the local user can enable it.
-        InputEvent::SetMic { muted: true } => {
-            ctx.voice.is_mic_muted.store(true, Ordering::SeqCst);
-            ctx.ui.hosting_mic(true);
+        // Muting this side along with the viewer's own microphone (`set-mic`) only ever mutes.
+        InputEvent::SetMic { muted: true } => super::set_mic(ctx, true),
+        // The viewer switches this machine's microphone on or off from its session toolbar.
+        InputEvent::SetHostMic { muted } => {
+            super::set_mic(ctx, muted);
+            logger::info("host.input", &format!("Viewer turned the microphone {}", if muted { "off" } else { "on" }));
         }
         InputEvent::SetPrivacy { mode } => privacy::set_host_privacy_mode(mode.clamp(0, 3)),
         InputEvent::SetBlockInput { blocked } => privacy::set_host_block_input(blocked),

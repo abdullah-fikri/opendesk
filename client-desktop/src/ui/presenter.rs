@@ -105,8 +105,8 @@ impl UiPort for SlintUi {
 
     fn hosting_started(&self, partner: String) {
         self.apply(move |w| {
+            // The microphone state follows in `hosting_mic` (it starts as the local setting says).
             w.set_hosting_partner(partner.into());
-            w.set_hosting_mic_muted(false);
             w.set_hosting(true);
             w.set_status_text("Session active".into());
         });
@@ -137,11 +137,12 @@ impl UiPort for SlintUi {
     fn session_connected(&self, id: String, title: String) {
         self.apply(move |w| {
             session_model::ensure(&id, title, String::new(), 1, 2);
+            // The microphone state arrives as `SessionChange::MicMuted` (it starts as the local setting says).
             session_model::update(&id, |r| {
                 r.connecting = true;
-                r.mic_muted = false;
                 r.privacy_mode = 0;
                 r.block_input = false;
+                r.host_mic = 0;
                 r.status = session_model::CONNECTING.into();
             });
             w.set_show_new_session(false);
@@ -203,6 +204,7 @@ impl UiPort for SlintUi {
                 }
                 SessionChange::ActiveMonitor(index) => r.active_monitor = index,
                 SessionChange::MicMuted(muted) => r.mic_muted = muted,
+                SessionChange::HostMic(muted) => r.host_mic = if muted { 2 } else { 1 },
                 SessionChange::AudioQuality(q) => r.audio_quality = q,
                 SessionChange::Privacy(mode) => r.privacy_mode = mode,
                 SessionChange::BlockInput(blocked) => r.block_input = blocked,

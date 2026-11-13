@@ -19,6 +19,7 @@ use crate::domain::capability::PeerCaps;
 use crate::domain::{desk_id, resolution};
 use crate::infra::send_gate::SendGate;
 use crate::infra::{logger, privacy};
+use crate::protocol::InputEvent;
 use crate::service::context::{AppContext, Ctx};
 
 /// State of the hosted session, shared by the relay connection, the capture loop and the UI.
@@ -106,8 +107,9 @@ impl HostState {
     }
 }
 
-/// A viewer connected to this machine: start streaming to it.
-pub fn start(ctx: &Ctx, partner: &str, caps: PeerCaps) {
+/// A viewer connected to this machine: start streaming to it, with this machine's microphone muted when
+/// `mic_muted` (the local setting).
+pub fn start(ctx: &Ctx, partner: &str, caps: PeerCaps, mic_muted: bool) {
     ctx.set_partner(partner);
     *ctx.host.peer_caps.lock() = caps;
     // The viewer keyboard hook belongs to viewing; this machine is being controlled now.
@@ -124,6 +126,7 @@ pub fn start(ctx: &Ctx, partner: &str, caps: PeerCaps) {
     let generation = ctx.host.capture_generation.fetch_add(1, Ordering::SeqCst) + 1;
     capture::spawn(Arc::clone(ctx), partner.to_string(), generation);
     ctx.ui.hosting_started(desk_id::format(partner));
+    set_mic(ctx, mic_muted);
     logger::info("host", &format!("Hosting session started for {partner}."));
 }
 
@@ -138,10 +141,53 @@ pub fn stop(ctx: &AppContext) {
     logger::info("host", "Hosting session ended.");
 }
 
+/// Sets this machine's microphone while hosting, shows it in the host panel and reports it to a viewer that
+/// can switch it (`remote-mic`).
+pub(crate) fn set_mic(ctx: &AppContext, muted: bool) {
+    ctx.voice.is_mic_muted.store(muted, Ordering::SeqCst);
+    ctx.ui.hosting_mic(muted);
+    if ctx.host.peer_caps.lock().remote_mic {
+        ctx.send_input(&ctx.partner(), InputEvent::HostMic { muted });
+    }
+}
+
 /// Toggles this machine's microphone toward the hosted viewer and tells it.
 pub fn toggle_mic(ctx: &AppContext) {
     let muted = !ctx.voice.is_mic_muted.load(Ordering::SeqCst);
-    ctx.voice.is_mic_muted.store(muted, Ordering::SeqCst);
-    ctx.ui.hosting_mic(muted);
-    ctx.send_input(&ctx.partner(), crate::protocol::InputEvent::SetMic { muted });
+    set_mic(ctx, muted);
+    ctx.send_input(&ctx.partner(), InputEvent::SetMic { muted });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::test_support::{MicRecorder, context_with_ui};
+
+    #[test]
+    fn hosted_sessions_start_with_the_microphone_setting_and_the_panel_shows_it() {
+        let ui = Arc::new(MicRecorder::default());
+        let (ctx, _outbox) = context_with_ui(ui.clone());
+        set_mic(&ctx, true);
+        assert!(ctx.voice.is_mic_muted.load(Ordering::SeqCst));
+        assert_eq!(ui.shown.lock().last(), Some(&("hosting".to_string(), true)));
+        // The local user can still turn it on.
+        toggle_mic(&ctx);
+        assert!(!ctx.voice.is_mic_muted.load(Ordering::SeqCst));
+        assert_eq!(ui.shown.lock().last(), Some(&("hosting".to_string(), false)));
+    }
+
+    #[test]
+    fn the_host_reports_its_microphone_only_to_viewers_that_can_switch_it() {
+        let (ctx, outbox) = crate::service::test_support::context_with_outbox();
+        ctx.set_partner("222222222");
+        let sent = |outbox: &std::sync::mpsc::Receiver<crate::protocol::Outgoing>| {
+            outbox.try_iter().map(|o| format!("{o:?}")).filter(|o| o.contains("HostMic")).count()
+        };
+        set_mic(&ctx, true);
+        assert_eq!(sent(&outbox), 0, "an older viewer does not know host-mic");
+        ctx.host.peer_caps.lock().remote_mic = true;
+        set_mic(&ctx, false);
+        assert!(!ctx.voice.is_mic_muted.load(Ordering::SeqCst), "the viewer may turn it on");
+        assert_eq!(sent(&outbox), 1);
+    }
 }

@@ -15,10 +15,10 @@ use crate::infra::p2p::{self, P2p, Sinks};
 use crate::infra::{logger, privacy, virtual_clipboard};
 use crate::protocol::{ClientMessage, FileAction, FilePayload, HostEntry, InputEvent, ServerMessage};
 use crate::service::file_transfer::{self, offer};
-use crate::service::host;
 use crate::service::relay::connection::Connection;
 use crate::service::ui_port::{RelayStatus, RemoteHost};
 use crate::service::viewer::controller;
+use crate::service::{host, settings};
 
 /// Fallback text when the relay closes a session without a message.
 const SESSION_ENDED: &str = "Session ended.";
@@ -143,8 +143,9 @@ impl Connection {
 
         privacy::reset_host_privacy();
         ctx.voice.is_session_active.store(true, Ordering::SeqCst);
-        // The microphone is on by default in every session.
-        ctx.voice.is_mic_muted.store(false, Ordering::SeqCst);
+        // The microphone starts as this device's setting says (on unless turned off); the toolbar changes it
+        // per session afterwards.
+        let mic_muted = settings::mic_muted_at_start();
         ctx.host.can_send_frame.open();
 
         if is_host {
@@ -159,10 +160,10 @@ impl Connection {
                 };
                 self.start_link(true, target, sinks);
             }
-            host::start(&ctx, target, caps);
+            host::start(&ctx, target, caps, mic_muted);
             return;
         }
-        let Some(sess) = controller::on_connected(&ctx, target, caps) else { return };
+        let Some(sess) = controller::on_connected(&ctx, target, caps, mic_muted) else { return };
         if p2p_ok {
             let inbox = Arc::clone(&sess.inbox);
             let sinks = Sinks {

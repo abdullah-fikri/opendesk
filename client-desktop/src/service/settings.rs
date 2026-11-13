@@ -1,4 +1,5 @@
-//! Relay address changes from the UI or the CLI (`opendesk server <url>`), and the viewer performance preset.
+//! Relay address changes from the UI or the CLI (`opendesk server <url>`), the viewer performance preset and the
+//! local microphone default.
 
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -6,9 +7,9 @@ use std::time::Duration;
 
 use core_engine::capture::{enumerate_monitors, refresh_rate};
 
-use crate::domain::frame_rate;
 use crate::domain::performance::Performance;
 use crate::domain::settings::normalize_gateway_url;
+use crate::domain::frame_rate;
 use crate::infra::{logger, storage};
 use crate::protocol::InputEvent;
 use crate::service::context::{AppContext, Ctx};
@@ -62,6 +63,23 @@ pub fn viewer_fps_cap(preset: Performance) -> u32 {
     let monitor_hz = enumerate_monitors().into_iter().map(refresh_rate).max().unwrap_or(frame_rate::DEFAULT_FPS);
     let env = frame_rate::env_cap(std::env::var(frame_rate::MAX_FPS_ENV).ok().as_deref());
     frame_rate::viewer_cap(preset.fps_setting(), monitor_hz, env)
+}
+
+/// Whether a session starting now begins with this machine's microphone muted (`mic_on_at_start` in
+/// `config.json`, read at every session start so a change applies to the next session).
+pub fn mic_muted_at_start() -> bool {
+    !storage::load_settings().mic_on_at_start()
+}
+
+/// Stores whether the microphone is on when a session starts. Running sessions keep their current state.
+pub fn set_mic_on_at_start(on: bool) {
+    let mut settings = storage::load_settings();
+    if settings.mic_on_at_start == Some(on) {
+        return;
+    }
+    settings.mic_on_at_start = Some(on);
+    storage::save_settings(&settings);
+    logger::info("settings", &format!("Microphone when a session starts: {}", if on { "on" } else { "off" }));
 }
 
 /// Stores the token the relay issued when it enrolled this device; it is presented to that relay only.

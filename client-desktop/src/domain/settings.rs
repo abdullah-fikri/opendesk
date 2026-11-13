@@ -40,6 +40,10 @@ pub struct Settings {
     /// Manifest URL instead of the GitHub release (`OPENDESK_UPDATE_URL` overrides it). Empty: default.
     #[serde(default)]
     pub update_url: String,
+    /// Microphone state when a session starts, as a host and as a viewer; read it with
+    /// [`Settings::mic_on_at_start`]. Unset (configs before 1.3.0, and every new install) means the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mic_on_at_start: Option<bool>,
 }
 
 fn yes() -> bool {
@@ -86,7 +90,14 @@ impl Settings {
             max_fps: Performance::default().fps_setting(),
             auto_update: true,
             update_url: String::new(),
+            mic_on_at_start: None,
         }
+    }
+
+    /// Whether the microphone is on when a session starts. The default is on in every edition, the Host edition
+    /// included: it has no window, so only `config.json` can turn it off there.
+    pub fn mic_on_at_start(&self) -> bool {
+        self.mic_on_at_start.unwrap_or(true)
     }
 
     /// The viewer performance preset; a config from before presets maps its `max_fps` choice.
@@ -222,6 +233,19 @@ mod tests {
             s.set_performance(preset);
             assert_eq!((s.performance(), s.max_fps), (preset, fps));
         }
+    }
+
+    #[test]
+    fn microphone_starts_on_unless_turned_off() {
+        let load = |extra: &str| -> Settings {
+            serde_json::from_str(&format!(r#"{{"gateway_url":"ws://x","desk_id":"123456789"{extra}}}"#)).unwrap()
+        };
+        assert!(load("").mic_on_at_start(), "configs before the setting keep the microphone on");
+        assert!(Settings::new("123456789".into()).mic_on_at_start());
+        assert!(!load(r#","mic_on_at_start":false"#).mic_on_at_start());
+        assert!(load(r#","mic_on_at_start":true"#).mic_on_at_start());
+        // Unset is not written, so the file only changes when the user picks a value.
+        assert!(!serde_json::to_string(&Settings::new("123456789".into())).unwrap().contains("mic_on_at_start"));
     }
 
     /// Rollback rule: an older build must read the config a newer one wrote, so fields are only ever added

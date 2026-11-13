@@ -47,10 +47,23 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {
     bind_hosting(win, ctx);
     bind_sessions(win, ctx);
     win.on_dismiss_transfer(|id| transfer_model::remove_finished(&id));
+    bind_device_settings(win);
     #[cfg(feature = "admin")]
     bind_monitor_wall(win, ctx);
     #[cfg(feature = "admin")]
     bind_settings(win, ctx);
+}
+
+/// Settings › This device: kept in the local `config.json`. Bound in every edition so the settings stay one
+/// code path; only the admin edition shows the page today.
+fn bind_device_settings(win: &MainWindow) {
+    let weak = win.as_weak();
+    win.on_save_mic_on_at_start(move |on| {
+        settings::set_mic_on_at_start(on);
+        if let Some(w) = weak.upgrade() {
+            w.set_mic_on_at_start(on);
+        }
+    });
 }
 
 /// Admin edition only: Settings › Security › Client token and device names, all kept by the relay.
@@ -176,6 +189,11 @@ fn bind_sessions(win: &MainWindow, ctx: &Ctx) {
     on!(win, ctx, on_session_toggle_mic, |_w, c, id| {
         if c.viewers.is_live(&id) {
             controller::toggle_mic(c, &id);
+        }
+    });
+    on!(win, ctx, on_session_set_host_mic, |_w, c, id, on| {
+        if c.viewers.is_live(&id) {
+            controller::set_host_mic(c, &id, on);
         }
     });
     on!(win, ctx, on_session_set_privacy, |_w, c, id, mode| {
