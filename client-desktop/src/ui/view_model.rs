@@ -11,22 +11,21 @@ use crate::infra::clock;
 use crate::service::ui_port::RemoteHost;
 
 /// History rows; today's entries read "Today".
-pub fn history_items(records: &[HistoryRecord]) -> ModelRc<HistoryItem> {
+pub fn history_items(records: &[HistoryRecord]) -> Vec<HistoryItem> {
     let today = clock::today();
-    let items: Vec<HistoryItem> = records
+    records
         .iter()
         .map(|r| HistoryItem {
             desk_id: r.desk_id.clone().into(),
             alias: r.alias.clone().into(),
             last_connected: if r.last_connected == today { "Today".into() } else { r.last_connected.clone().into() },
         })
-        .collect();
-    ModelRc::from(Rc::new(VecModel::from(items)))
+        .collect()
 }
 
 /// Administrator host list with local last-seen times.
-pub fn host_items(hosts: Vec<RemoteHost>) -> ModelRc<HostItem> {
-    let items: Vec<HostItem> = hosts
+pub fn host_items(hosts: Vec<RemoteHost>) -> Vec<HostItem> {
+    hosts
         .into_iter()
         .map(|h| HostItem {
             desk_id: h.desk_id.into(),
@@ -36,8 +35,7 @@ pub fn host_items(hosts: Vec<RemoteHost>) -> ModelRc<HostItem> {
             online: h.online,
             last_seen: clock::local_short(&h.last_seen).into(),
         })
-        .collect();
-    ModelRc::from(Rc::new(VecModel::from(items)))
+        .collect()
 }
 
 /// Monitor picker entries, labeled 1, 2, ...

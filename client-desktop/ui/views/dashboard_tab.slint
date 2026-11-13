@@ -1,0 +1,77 @@
+// One segment of the dashboard's tab bar (relay hosts, session history, monitor wall).
+
+import { Theme, Icons } from "../theme.slint";
+import { Icon } from "../components/icon.slint";
+
+// Tab segment: icon, label and count badge; the active tab is underlined in red. `external` marks a segment
+// that opens another view instead of switching the list (trailing arrow icon).
+export component DashboardTab inherits Rectangle {
+    in property <string> label;
+    in property <string> icon;
+    // Badge text, e.g. "8" or "3/8" while filtering; hidden when empty.
+    in property <string> badge;
+    in property <bool> active: false;
+    in property <bool> external: false;
+    callback clicked();
+
+    horizontal-stretch: 1;
+    height: 38px;
+    background: ta.has-hover && !root.active ? Theme.hover : transparent;
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 8px;
+        alignment: center;
+
+        Icon {
+            y: (parent.height - self.height) / 2;
+            size: 13px;
+            commands: root.icon;
+            tint: root.active ? #ffffff : Theme.text-3;
+        }
+        Text {
+            text: root.label;
+            color: root.active ? #ffffff : Theme.text-2;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.badge != "": Rectangle {
+            y: (parent.height - self.height) / 2;
+            height: 18px;
+            min-width: 20px;
+            background: root.active ? Theme.accent-soft : Theme.surface-2;
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                Text {
+                    text: root.badge;
+                    color: root.active ? #fca5a5 : Theme.text-3;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+        if root.external: Icon {
+            y: (parent.height - self.height) / 2;
+            size: 11px;
+            commands: Icons.external;
+            tint: Theme.text-3;
+        }
+    }
+
+    if root.active: Rectangle {
+        y: parent.height - self.height;
+        height: 2px;
+        background: Theme.accent;
+    }
+}

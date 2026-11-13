@@ -36,8 +36,16 @@ export component MainWindow inherits Window {
     in property <string> host_notice: "";
     in-out property <int> active_dashboard_tab: 0;
     in-out property <string> target_desk_id: "";
+    // Rows matching the dashboard search; history_total and host_total count every row.
     in property <[HistoryItem]> history_items: [];
     in property <[HostItem]> server_hosts: [];
+    in property <int> history_total: 0;
+    in property <int> host_total: 0;
+    // Dashboard search box text (UI-owned) and the query the lists are filtered by ("" = none).
+    in-out property <string> list_search: "";
+    in property <string> list_query: "";
+    // Desk ID of the selected dashboard row ("" = none); Rust clears it when the row is no longer shown.
+    in-out property <string> list_selected: "";
 
     // ---- Host role: a remote viewer controls this machine ----
     in property <bool> hosting: false;
@@ -96,6 +104,12 @@ export component MainWindow inherits Window {
     callback request_connect(string);
     callback copy_local_id();
     callback refresh_hosts();
+    // Each keystroke in the dashboard search box; Rust filters once typing pauses.
+    callback list_search_edited(string);
+    // Arrow keys: moves list_selected by this many rows through the active tab.
+    callback list_move_selection(int);
+    // Enter: connects to the selected row.
+    callback list_connect_selected();
     callback save_gateway_url(string);
     callback save_performance(int);
     callback open_rename(string, string);
@@ -246,6 +260,14 @@ export component MainWindow inherits Window {
                 target_desk_id <=> root.target_desk_id;
                 history_items: root.history_items;
                 server_hosts: root.server_hosts;
+                history_total: root.history_total;
+                host_total: root.host_total;
+                search_text <=> root.list_search;
+                filter_query: root.list_query;
+                selected_id <=> root.list_selected;
+                search_edited(text) => { root.list_search_edited(text); }
+                move_selection(delta) => { root.list_move_selection(delta); }
+                connect_selected => { root.list_connect_selected(); }
                 copy_local_id => { root.copy_local_id(); }
                 request_connect(id) => { root.request_connect(id); }
                 host_alias_supported: root.host_alias_supported;
@@ -326,6 +348,14 @@ export component MainWindow inherits Window {
                 target_desk_id <=> root.target_desk_id;
                 history_items: root.history_items;
                 server_hosts: root.server_hosts;
+                history_total: root.history_total;
+                host_total: root.host_total;
+                search_text <=> root.list_search;
+                filter_query: root.list_query;
+                selected_id <=> root.list_selected;
+                search_edited(text) => { root.list_search_edited(text); }
+                move_selection(delta) => { root.list_move_selection(delta); }
+                connect_selected => { root.list_connect_selected(); }
                 host_alias_supported: root.host_alias_supported;
                 copy_local_id => { root.copy_local_id(); }
                 request_connect(id) => { root.request_connect(id); }

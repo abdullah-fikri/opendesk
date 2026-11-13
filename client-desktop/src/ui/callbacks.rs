@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use slint::{ComponentHandle, Timer, TimerMode};
 
-use super::{MainWindow, transfer_model};
+use super::{MainWindow, dashboard_model, transfer_model};
 use crate::domain::desk_id;
 use crate::domain::keyboard::Mods;
 use crate::domain::performance::Performance;
@@ -110,6 +110,9 @@ fn bind_dashboard(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {
         }
     });
     on!(win, ctx, on_refresh_hosts, |_w, c| c.send(ClientMessage::GetHosts));
+    win.on_list_search_edited(dashboard_model::search_edited);
+    on!(win, ctx, on_list_move_selection, |w, _c, delta| dashboard_model::move_selection(&w, delta));
+    on!(win, ctx, on_list_connect_selected, |w, _c| dashboard_model::connect_selected(&w));
     on!(win, ctx, on_save_gateway_url, |_w, c, url| settings::set_gateway(c, &url));
     on!(win, ctx, on_save_performance, |w, c, index| {
         let preset = Performance::from_index(index);

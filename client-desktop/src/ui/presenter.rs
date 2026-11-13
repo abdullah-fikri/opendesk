@@ -9,7 +9,7 @@ use std::time::Instant;
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Image, Weak};
 
-use super::{MainWindow, session_model, transfer_model, view_model};
+use super::{MainWindow, dashboard_model, session_model, transfer_model, view_model};
 use crate::domain::history::HistoryRecord;
 use crate::service::file_transfer::{self, IN_FLIGHT_CHUNKS, LAST_RECEIVED_MS};
 use crate::service::ui_port::{Frame, RelayStatus, RemoteHost, SessionChange, TransferUpdate, UiPort};
@@ -39,6 +39,7 @@ impl SlintUi {
     pub fn new(window: &MainWindow) -> Self {
         session_model::install(window);
         transfer_model::install(window);
+        dashboard_model::install(window);
         #[cfg(feature = "admin")]
         super::monitor_wall_model::install(window);
         Self {
@@ -96,11 +97,11 @@ impl UiPort for SlintUi {
     }
 
     fn host_list(&self, hosts: Vec<RemoteHost>) {
-        self.apply(move |w| w.set_server_hosts(view_model::host_items(hosts)));
+        self.apply(move |_| dashboard_model::set_hosts(view_model::host_items(hosts)));
     }
 
     fn history(&self, records: Vec<HistoryRecord>) {
-        self.apply(move |w| w.set_history_items(view_model::history_items(&records)));
+        self.apply(move |_| dashboard_model::set_history(view_model::history_items(&records)));
     }
 
     fn hosting_started(&self, partner: String) {

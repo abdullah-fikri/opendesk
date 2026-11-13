@@ -11,6 +11,15 @@ export component ScrollArea inherits Rectangle {
 
     changed reset_key => { fl.content-y = 0; }
 
+    // Scrolls just enough to show the content span starting `top` (content coordinates) and `span` tall.
+    public function reveal(top: length, span: length) {
+        if (top + fl.content-y < 0) {
+            fl.content-y = -top;
+        } else if (top + span + fl.content-y > fl.height) {
+            fl.content-y = min(0px, fl.height - top - span);
+        }
+    }
+
     fl := Flickable {
         width: parent.width;
         height: parent.height;
