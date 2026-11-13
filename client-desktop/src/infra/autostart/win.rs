@@ -35,8 +35,6 @@ pub const ELEVATED_TASK_NAME: &str = "OpenDesk Autostart";
 pub const STOP_FLAG: &str = "user_exit.flag";
 const WM_LBUTTONUP: isize = 0x0202;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-const ATTACH_PARENT_PROCESS: u32 = 0xFFFFFFFF;
-const STD_OUTPUT_HANDLE: u32 = 0xFFFFFFF5;
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -44,15 +42,6 @@ unsafe extern "system" {
     fn GetLastError() -> u32;
     fn CloseHandle(h_object: HANDLE) -> BOOL;
     fn GetCurrentProcess() -> HANDLE;
-    fn AttachConsole(dw_process_id: u32) -> BOOL;
-    fn GetStdHandle(n_std_handle: u32) -> HANDLE;
-    fn WriteFile(
-        h_file: HANDLE,
-        lp_buffer: *const u8,
-        n_number_of_bytes_to_write: u32,
-        lp_number_of_bytes_written: *mut u32,
-        lp_overlapped: *mut c_void,
-    ) -> BOOL;
 }
 
 #[link(name = "user32")]
@@ -165,22 +154,6 @@ fn delegate_to_service(start_in_background: bool) -> bool {
 /// True when this process is the service's agent, which the service restarts when it exits.
 pub fn supervised_by_service() -> bool {
     system_service::is_local_system() && system_service::installed()
-}
-
-/// Writes `msg` to the console of the terminal that launched this GUI-subsystem process, or to the file or pipe
-/// its output is redirected to. Exactly one write: after `AttachConsole`, `std::io::stdout()` is that same
-/// handle, so writing through both printed everything twice.
-pub fn print_to_console(msg: &str) {
-    let line = format!("\r\n{}\r\n", msg);
-    // SAFETY: attaching to the parent console and writing a byte slice of known length.
-    unsafe {
-        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
-        let h_out = GetStdHandle(STD_OUTPUT_HANDLE);
-        if !h_out.is_null() {
-            let mut written: u32 = 0;
-            WriteFile(h_out, line.as_ptr(), line.len() as u32, &mut written, ptr::null_mut());
-        }
-    }
 }
 
 /// Process names of every OpenDesk build flavor.

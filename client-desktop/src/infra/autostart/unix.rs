@@ -17,13 +17,6 @@ use crate::infra::storage::app_dir;
 const SYSTEM_AUTOSTART: &str = "/etc/xdg/autostart/opendesk.desktop";
 const USER_AUTOSTART: &str = "opendesk.desktop";
 
-/// Writes `msg` to standard output (the CLI shares its messages with Windows, which uses CRLF).
-pub fn print_to_console(msg: &str) {
-    let mut out = std::io::stdout();
-    let _ = writeln!(out, "\n{}\n", msg.replace("\r\n", "\n"));
-    let _ = out.flush();
-}
-
 /// Why stopping the running instance failed.
 #[derive(Debug, PartialEq, Eq)]
 pub enum StopError {

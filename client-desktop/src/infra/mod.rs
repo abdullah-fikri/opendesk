@@ -5,6 +5,7 @@
 pub mod audio;
 pub mod autostart;
 pub mod clock;
+pub mod console;
 pub mod device;
 pub mod e2e;
 pub mod identity;
