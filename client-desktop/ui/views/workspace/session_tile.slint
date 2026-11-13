@@ -83,6 +83,23 @@ export component SessionTile inherits Rectangle {
                 viewport_resized(w, h) => { root.viewport_resized(root.s.id, w, h); }
             }
 
+            // Relay connection lost, no live direct path: the last frame stays under this until the session
+            // resumes or the grace runs out. No TouchArea: the toolbar's Close keeps working.
+            if root.s.reconnecting > 0: Rectangle {
+                width: reconnect-text.preferred-width + 32px;
+                height: 36px;
+                background: #09090bcc;
+                border-width: 1px;
+                border-color: Theme.border;
+                border-radius: 4px;
+                reconnect-text := Text {
+                    text: "Reconnecting… (" + root.s.reconnecting + " s)";
+                    color: Theme.text;
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+            }
+
             // Stats overlay, top right. It has no TouchArea, so pointer input reaches the canvas below.
             if root.show_stats && root.s.stats_labels != "": Rectangle {
                 x: parent.width - self.width - 8px;

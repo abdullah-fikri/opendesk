@@ -91,6 +91,8 @@ pub enum SessionChange {
     Resolution(i32),
     /// Stats overlay text: newline-separated labels and values (`viewer::stats::SessionStats::columns`).
     Stats(String, String),
+    /// Seconds left of the relay reconnect grace while this session has no live path; 0 hides the overlay.
+    Reconnecting(i32),
 }
 
 /// What a monitor-wall tile shows besides its picture (admin edition).

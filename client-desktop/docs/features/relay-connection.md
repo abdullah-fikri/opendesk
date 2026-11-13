@@ -17,6 +17,13 @@ Code: `src/service/relay/connection.rs` (transport loop), `src/service/relay/dis
 4. On a read error: fail every transfer on the connection, end every session, show the reason, wait 1.5 s and
    reconnect. A failed connect retries after 2 s. Changing the relay (UI or CLI) or the tray's "Reconnect"
    reconnects immediately.
+5. Session resume (`src/service/relay/resume.rs`, see `docs/features/session-resume.md` at the repository
+   root): when the relay and a partner list `session-resume` and the session's end-to-end handshake (if any)
+   finished, a read error does not end that session. It waits up to 30 s, keeping its direct path and
+   end-to-end keys; the next `register` carries the last `resumeToken`, reconnects start after 300 ms and back
+   off to 2 s. Until `registered-ack`, input, voice and video without a live direct path are dropped. Sessions
+   in `registered-ack.resumed` continue (the viewer sends its state again, the host restarts capture for a key
+   frame); the others end with "The connection was lost for too long." `OPENDESK_SESSION_RESUME=0` turns it off.
 
 ## Message handling
 

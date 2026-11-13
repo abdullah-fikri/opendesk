@@ -347,3 +347,61 @@ func TestSecurityAndNamesSurviveRestart(t *testing.T) {
 	r.start()
 	dial(t, r, otherID, nil).expect("registered-ack")
 }
+
+// resumePair starts a session between a host and a viewer that both list session-resume, then drops the
+// host's socket for drop and registers it again with its resume token. It returns the new host connection, its
+// registered-ack and the viewer.
+func resumePair(t *testing.T, drop time.Duration) (*peer, map[string]any, *peer) {
+	r := startRelay(t)
+	caps := map[string]any{"caps": []string{"session-resume"}}
+	host := dial(t, r, hostID, caps)
+	token, _ := host.expect("registered-ack")["resumeToken"].(string)
+	if token == "" {
+		t.Fatal("no resume token for a session-resume client")
+	}
+	viewer := dial(t, r, viewerID, caps)
+	viewer.expect("registered-ack")
+	viewer.send(map[string]any{"type": "connect-request", "targetId": hostID})
+	host.expect("session-connected")
+	viewer.expect("session-connected")
+
+	host.ws.Close()
+	if m := viewer.expect("session-suspended"); m["targetClean"] != hostID {
+		t.Fatalf("suspended: %v", m)
+	}
+	time.Sleep(drop)
+	back := dial(t, r, hostID, map[string]any{"caps": []string{"session-resume"}, "resumeToken": token})
+	return back, back.expect("registered-ack"), viewer
+}
+
+// A host back within the 30 s grace keeps its session: both sides hear so and video flows again.
+func TestSessionResumesAfterShortDrop(t *testing.T) {
+	host, ack, viewer := resumePair(t, 5*time.Second)
+	if resumed, _ := ack["resumed"].([]any); len(resumed) != 1 || resumed[0] != viewerID {
+		t.Fatalf("ack: %v", ack)
+	}
+	if m := viewer.expect("session-resumed"); m["targetClean"] != hostID {
+		t.Fatalf("resumed: %v", m)
+	}
+	frame := append([]byte{0xFF, 0xD8}, bytes.Repeat([]byte{0xCD}, 1024)...)
+	if err := host.ws.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+		t.Fatal(err)
+	}
+	if got := viewer.expectBinary(); !bytes.Equal(got, frame) {
+		t.Fatalf("frame after resume: %d bytes", len(got))
+	}
+}
+
+// A host gone longer than the grace finds its session ended: the viewer was told, and the token resumes nothing.
+func TestSessionEndsAfterLongDrop(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out the 30 s grace")
+	}
+	_, ack, viewer := resumePair(t, 35*time.Second)
+	if ack["resumed"] != nil {
+		t.Fatalf("resumed after the grace: %v", ack)
+	}
+	if m := viewer.expect("session-closed"); m["targetClean"] != nil && m["targetClean"] != hostID {
+		t.Fatalf("closed: %v", m)
+	}
+}

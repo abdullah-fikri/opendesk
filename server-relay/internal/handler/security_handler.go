@@ -89,6 +89,11 @@ func (h *Handler) applySecurityChange(change usecase.SecurityChange) {
 		_ = it.Peer.Send(dto.DeviceCredential{Type: dto.TypeDeviceCredential, Token: it.Token})
 	}
 	for _, p := range change.Kicked {
+		if e, ok := h.relay.EndSuspension(p); ok {
+			h.log.Warn("suspended device ended: not on the device allowlist", "id", p.DeskID)
+			h.endSuspension(e)
+			continue
+		}
 		h.log.Warn("device disconnected: not on the device allowlist", "id", p.DeskID)
 		_ = p.Send(dto.Error{Type: dto.TypeError, Message: msgInvalidCredentials})
 		_ = p.Disconnect()

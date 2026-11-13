@@ -31,7 +31,8 @@ type Envelope struct {
 	Type string `json:"type"`
 }
 
-// RegisterRequest announces a device. It must be the first message on a connection.
+// RegisterRequest announces a device. It must be the first message on a connection. ResumeToken is the token the
+// previous connection of this device received in registered-ack, when it wants to take over its sessions.
 type RegisterRequest struct {
 	DeskID      string       `json:"deskId"`
 	DeviceToken string       `json:"deviceToken"`
@@ -39,6 +40,7 @@ type RegisterRequest struct {
 	Platform    string       `json:"platform"`
 	DeviceName  string       `json:"deviceName"`
 	Caps        Capabilities `json:"caps"`
+	ResumeToken string       `json:"resumeToken"`
 }
 
 // Capabilities decodes a JSON array and keeps only its string entries, so one malformed entry

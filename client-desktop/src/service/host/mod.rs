@@ -132,6 +132,19 @@ pub fn start(ctx: &Ctx, partner: &str, caps: PeerCaps, mic_muted: bool) {
     logger::info("host", &format!("Hosting session started for {partner}."));
 }
 
+/// The hosted session resumed after its relay connection came back: capture starts over, so the viewer gets
+/// a key frame, the monitor list and the cursor shape again.
+pub fn restart_capture(ctx: &Ctx) {
+    if !ctx.host.active.load(Ordering::SeqCst) {
+        return;
+    }
+    let partner = ctx.partner();
+    ctx.host.can_send_frame.open();
+    let generation = ctx.host.capture_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    capture::spawn(Arc::clone(ctx), partner, generation);
+    logger::info("host", "Hosted session resumed.");
+}
+
 /// The hosted session ended: stop capturing and undo everything the viewer changed on this machine.
 pub fn stop(ctx: &AppContext) {
     if !ctx.host.active.swap(false, Ordering::SeqCst) {

@@ -44,7 +44,8 @@ func targetUnavailableMessage(clean string) string {
 	return fmt.Sprintf(msgTargetUnavailable, model.FormatDeskID(clean))
 }
 
-func hostListDTO(hosts []model.Host) dto.HostList {
+// hostListDTO maps the registry; reconnecting reports devices whose sessions wait for them to resume.
+func hostListDTO(hosts []model.Host, reconnecting func(string) bool) dto.HostList {
 	out := make([]dto.Host, len(hosts))
 	for i, h := range hosts {
 		out[i] = dto.Host{
@@ -54,7 +55,9 @@ func hostListDTO(hosts []model.Host) dto.HostList {
 			Alias:      h.Alias,
 			Platform:   h.Platform,
 			Online:     h.Online,
-			LastSeen:   h.LastSeen.UTC().Format(time.RFC3339),
+			// Reconnecting devices are still registered, so the registry keeps them online.
+			Reconnecting: h.Online && reconnecting(h.CleanID),
+			LastSeen:     h.LastSeen.UTC().Format(time.RFC3339),
 		}
 	}
 	return dto.HostList{Type: dto.TypeHostList, Hosts: out}

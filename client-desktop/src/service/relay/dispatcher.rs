@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 
 use core_engine::capture::HostSupport;
 
-use crate::domain::capability::{PeerCaps, RelayCaps};
+use crate::domain::capability::{self, PeerCaps, RelayCaps};
 use crate::domain::desk_id;
 use crate::infra::e2e::{self, E2e, Verdict};
 use crate::infra::identity;
@@ -26,7 +26,15 @@ const SESSION_ENDED: &str = "Session ended.";
 impl Connection {
     pub(super) fn on_message(&mut self, msg: ServerMessage) {
         match msg {
-            ServerMessage::RegisteredAck { caps } => self.on_registered(&caps),
+            ServerMessage::RegisteredAck { caps, resume_token, resumed } => {
+                self.on_registered(&caps);
+                self.on_resume_ack(resume_token, &resumed);
+            }
+            ServerMessage::SessionSuspended { target_clean } => {
+                logger::info("relay", &format!("Partner {target_clean} lost its connection; the session waits."));
+                self.ctx.ui.status(format!("{} lost its connection. Reconnecting…", desk_id::format(&target_clean)));
+            }
+            ServerMessage::SessionResumed { target_clean } => self.on_session_resumed(&target_clean),
             ServerMessage::HostList { hosts } => self.on_host_list(hosts),
             ServerMessage::SessionConnected { target_clean, role, peer_caps } => {
                 self.on_session_connected(&target_clean, &role, &peer_caps)
@@ -88,6 +96,40 @@ impl Connection {
         }
     }
 
+    /// After `registered-ack`: keeps the new resume token, continues the sessions the relay gave back and
+    /// ends the waiting ones it did not.
+    fn on_resume_ack(&mut self, token: Option<String>, resumed: &[String]) {
+        self.quiet = false;
+        let url = self.url.clone();
+        self.resume.registered(&url, token);
+        for id in self.resume.resumed(resumed) {
+            self.end_waiting(&id, super::resume::EXPIRED);
+        }
+        for id in resumed {
+            self.on_session_resumed(id);
+        }
+    }
+
+    /// The session with `id` continues after a lost connection (ours or the partner's). A session this
+    /// machine already ended is ended at the relay too.
+    fn on_session_resumed(&mut self, id: &str) {
+        let ctx = Arc::clone(&self.ctx);
+        let hosted = ctx.is_hosting() && ctx.partner() == id;
+        if !controller::resumed(&ctx, id) && !hosted {
+            ctx.send(ClientMessage::disconnect(id));
+            return;
+        }
+        if hosted {
+            host::restart_capture(&ctx);
+        }
+        // Either side's network may have changed: a direct path that went down offers fresh candidates.
+        if let Some(p) = self.links.iter().find(|p| p.partner == id) {
+            p.refresh();
+        }
+        logger::info("relay", &format!("Session with {id} resumed."));
+        ctx.ui.status(format!("Reconnected to {}.", desk_id::format(id)));
+    }
+
     fn on_host_list(&self, hosts: Vec<HostEntry>) {
         let local = desk_id::format(&self.ctx.local_id);
         let hosts: Vec<RemoteHost> = hosts
@@ -111,6 +153,7 @@ impl Connection {
         let ctx = Arc::clone(&self.ctx);
         let relay = *ctx.relay.caps.lock();
         let caps = PeerCaps::from_list(peer_caps, relay.file_offer);
+        self.resume.session_started(target, peer_caps.iter().any(|c| c == capability::SESSION_RESUME));
         let is_host = role == "host";
         // A session that cannot be captured (Linux on Wayland) is ended at once; normally the relay already
         // refused it because registration said `viewer-only`.

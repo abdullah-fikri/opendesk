@@ -262,7 +262,8 @@ func (r *Relay) reconcileLocked() SecurityChange {
 		switch {
 		case !listed:
 			change.Kicked = append(change.Kicked, p)
-		case !dev.Enrolled():
+		case !dev.Enrolled() && !r.Reconnecting(p.CleanID):
+			// A suspended connection could not receive its token; it enrolls when it registers again.
 			change.Issued = append(change.Issued, IssuedToken{Peer: p, Token: r.enrollLocked(&dev)})
 		}
 	}

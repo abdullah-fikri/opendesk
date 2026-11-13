@@ -22,7 +22,7 @@ func (r *Relay) Connect(caller *Peer, targetClean string) (ConnectResult, error)
 		return ConnectResult{}, ErrSelfConnect
 	}
 	target := r.Lookup(targetClean)
-	if target == nil {
+	if target == nil || r.Reconnecting(targetClean) {
 		return ConnectResult{}, ErrTargetUnavailable
 	}
 	if slices.Contains(target.Caps, model.CapViewerOnly) {
@@ -136,7 +136,7 @@ func (r *Relay) openSession(caller, target *Peer, active bool) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if caller == nil || target == nil || caller == target || !r.isCurrentLocked(caller) || !r.isCurrentLocked(target) ||
-		caller.sessionWith != "" || target.busyLocked() {
+		caller.sessionWith != "" || target.busyLocked() || caller.quietLocked() || target.quietLocked() {
 		return false
 	}
 	if caller.Multi {
@@ -159,7 +159,7 @@ func (r *Relay) isCurrentLocked(p *Peer) bool { return p != nil && r.peers[p.Cle
 // activePartnerLocked returns the partner of an active session between sender and targetID, checked from both
 // sides. An empty targetID means the single session of a non-multi peer. Requires mu (read or write).
 func (r *Relay) activePartnerLocked(sender *Peer, targetID string) *Peer {
-	if !r.isCurrentLocked(sender) {
+	if !r.isCurrentLocked(sender) || sender.quietLocked() {
 		return nil
 	}
 	if targetID == "" {
@@ -169,7 +169,7 @@ func (r *Relay) activePartnerLocked(sender *Peer, targetID string) *Peer {
 		return nil
 	}
 	target := r.peers[targetID]
-	if target == nil {
+	if target == nil || target.quietLocked() {
 		return nil
 	}
 	if _, active := target.sessionLocked(sender.CleanID); !active {
