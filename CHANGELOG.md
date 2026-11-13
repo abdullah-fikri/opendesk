@@ -11,7 +11,8 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
 - Dragging works on the remote screen: select text in a terminal and resize windows.
 - Hear the remote computer's sound during a session, and turn its microphone on or off.
 - `opendesk update` now shows each step with a progress bar, and `--now` installs right away.
-- The connection holds better when the mouse moves fast on a slow network.
+- The connection holds better: a session survives a network drop of up to 30 seconds, and fast mouse moves on a
+  slow network no longer cut it.
 
 ### Added
 - Dashboard: a search field on the Relay Hosts and Session History lists, rows that can be selected with a click
@@ -28,6 +29,12 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
   from the service's `progress.json`; `--no-wait` keeps the old behaviour, `opendesk update status` shows the
   last phase. `opendesk update --now` installs right away even while sessions are active (they are disconnected);
   without it the install still waits until no session runs.
+
+- Session resume: when a client's relay connection drops, its sessions wait 30 s instead of ending. The relay
+  hands peers listing `session-resume` a token in `registered-ack`; reconnecting with it restores the sessions
+  (`session-suspended` / `session-resumed` to the partner, host list shows `reconnecting`). During the wait a live
+  P2P path keeps carrying video and input, P2P candidates are gathered again after the resume, and the session tab
+  shows "Reconnecting… (N s)". Older peers end the session as before; `OPENDESK_SESSION_RESUME=0` turns it off.
 
 ### Fixed
 - Copying several files from a viewer to a host delivered only one: a second clipboard change from Explorer for
