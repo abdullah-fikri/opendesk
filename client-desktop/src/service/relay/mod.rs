@@ -2,6 +2,7 @@
 
 mod connection;
 mod dispatcher;
+mod resume;
 mod signal_pacer;
 
 pub use connection::spawn;

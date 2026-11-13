@@ -38,11 +38,17 @@ pub fn disconnect_all(ctx: &AppContext) -> usize {
 /// Ends the hosted session at the local user's request. Viewer sessions of this machine stay open.
 pub fn end_hosting(ctx: &AppContext) {
     let partner = ctx.partner();
-    virtual_clipboard::clear_offer(&partner);
-    host::stop(ctx);
     if !partner.is_empty() {
         ctx.send(ClientMessage::disconnect(&partner));
     }
+    end_hosting_locally(ctx);
+}
+
+/// Ends the hosted session without telling the relay. Viewer sessions of this machine stay open.
+pub fn end_hosting_locally(ctx: &AppContext) {
+    let partner = ctx.partner();
+    virtual_clipboard::clear_offer(&partner);
+    host::stop(ctx);
     if ctx.viewers.is_empty() {
         privacy::set_viewer_hook_state(false, "");
         ctx.voice.is_session_active.store(false, Ordering::SeqCst);

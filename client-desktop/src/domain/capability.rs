@@ -36,6 +36,9 @@ pub const UDP_RELAY: &str = "udp-relay";
 pub const E2E: &str = "e2e";
 /// Up to four viewer sessions per connection.
 pub const MULTI_SESSION: &str = "multi-session";
+/// A lost relay connection suspends the sessions for 30 s instead of ending them (see
+/// `docs/features/session-resume.md`). Used only when the relay and the partner list it too.
+pub const SESSION_RESUME: &str = "session-resume";
 /// The relay forwards P2P signaling.
 pub const RELAY_P2P_SIGNAL: &str = "p2p-signal";
 /// This machine streams monitor-wall thumbnails when the relay asks (every edition).

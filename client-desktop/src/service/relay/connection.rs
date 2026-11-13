@@ -30,6 +30,7 @@ use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS, chunk_
 use crate::service::ui_port::RelayStatus;
 use crate::service::viewer::decoder;
 
+use super::resume::{self, Resume};
 use super::signal_pacer::SignalPacer;
 
 pub(super) type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
@@ -86,6 +87,9 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
             stashed: None,
             busy: false,
             signals: SignalPacer::default(),
+            resume: Resume::default(),
+            url: String::new(),
+            quiet: false,
         };
         // This process idles under EcoQoS until a session or traffic needs full speed.
         power::arm();
@@ -132,6 +136,13 @@ pub(super) struct Connection {
     busy: bool,
     /// `p2p-signal` messages spaced out per partner (the relay drops ones that follow too closely).
     signals: SignalPacer,
+    /// Sessions waiting for the connection to come back (see `resume.rs`).
+    pub(super) resume: Resume,
+    /// The relay URL of the current connection.
+    pub(super) url: String,
+    /// Set from a reconnect with waiting sessions until `registered-ack`: input, voice and video that have no
+    /// live direct path are dropped, never replayed late.
+    pub(super) quiet: bool,
 }
 
 impl Connection {
@@ -140,6 +151,9 @@ impl Connection {
         let ctx = Arc::clone(&self.ctx);
         ctx.relay.reconnect.store(false, Ordering::SeqCst);
         ctx.relay.online.store(false, Ordering::SeqCst);
+        for id in self.resume.expire(Instant::now()) {
+            self.end_waiting(&id, resume::EXPIRED);
+        }
         let url = resolve_url(&ctx.relay.gateway_url.lock());
         logger::info("relay", &format!("Connecting to relay {url}"));
         ctx.ui.relay_status(RelayStatus::Connecting);
@@ -148,12 +162,15 @@ impl Connection {
             Ok((s, _)) => s,
             Err(e) => {
                 logger::warn("relay", &format!("Connection failed: {e}"));
-                ctx.ui.relay_status(RelayStatus::Offline { reason: None });
-                thread::sleep(RETRY_DELAY);
+                ctx.ui.relay_status(RelayStatus::Offline { reason: self.reconnecting_status() });
+                thread::sleep(self.resume.next_delay(RETRY_DELAY));
                 return;
             }
         };
-        let _ = socket.send(Message::Text(self.register_message().to_json().into()));
+        let resume_token = self.resume.token_for(&url);
+        self.quiet = resume_token.is_some();
+        self.url = url;
+        let _ = socket.send(Message::Text(self.register_message(resume_token).to_json().into()));
         let _ = socket.flush();
         set_low_latency(&mut socket);
         logger::info("relay", "Connection established.");
@@ -236,7 +253,7 @@ impl Connection {
             lost = !self.read_all(&mut socket);
             if lost {
                 self.on_connection_lost();
-                thread::sleep(RECONNECT_DELAY);
+                thread::sleep(self.resume.next_delay(RECONNECT_DELAY));
                 break;
             }
             let traffic = std::mem::take(&mut self.busy)
@@ -267,7 +284,7 @@ impl Connection {
         self.on_connection_ended();
     }
 
-    fn register_message(&self) -> ClientMessage {
+    fn register_message(&self, resume_token: Option<String>) -> ClientMessage {
         let edition = self.ctx.edition;
         let mut caps = vec![capability::FILE_ACK];
         // Clipboard file offers need Explorer's virtual files: Windows only, and not from the service's SYSTEM
@@ -292,6 +309,9 @@ impl Connection {
         // Sent before the relay's caps are known; multi-session is used only once `registered-ack` lists it too.
         if edition.can_view() {
             caps.push(capability::MULTI_SESSION);
+        }
+        if resume::enabled() {
+            caps.push(capability::SESSION_RESUME);
         }
         // Hosts list their optional controls; Windows hosts omit the marker and keep the legacy "all of them".
         if !cfg!(windows) {
@@ -331,6 +351,7 @@ impl Connection {
             device_token,
             is_admin: edition.is_admin(),
             caps,
+            resume_token,
         }
     }
 
@@ -386,7 +407,7 @@ impl Connection {
                 Outgoing::Message(msg) => {
                     let text = match &msg {
                         ClientMessage::RelayInput { target_clean, event } => {
-                            if self.direct(target_clean).is_some_and(|p| p.send_input(event)) {
+                            if self.direct(target_clean).is_some_and(|p| p.send_input(event)) || self.quiet {
                                 continue;
                             }
                             self.input_text(target_clean, event)
@@ -429,13 +450,13 @@ impl Connection {
         }
         for (target, norm_x, norm_y) in mouse.into_iter().filter(|m| !m.0.is_empty()) {
             let event = InputEvent::MouseMove { norm_x, norm_y };
-            if !self.direct(&target).is_some_and(|p| p.send_input(&event)) {
+            if !self.direct(&target).is_some_and(|p| p.send_input(&event)) && !self.quiet {
                 let _ = socket.send(Message::Text(self.input_text(&target, &event).into()));
             }
         }
         let Some(frame) = video else { return false };
         // Over P2P the viewer's frame acknowledgement opens the gate instead of the socket flush.
-        if self.direct(partner).is_some_and(|p| p.send_video(&frame)) {
+        if self.direct(partner).is_some_and(|p| p.send_video(&frame)) || self.quiet {
             return false;
         }
         let _ = socket.send(Message::Binary(self.seal(partner, frame).into()));
@@ -482,7 +503,7 @@ impl Connection {
 
     /// Voice goes to the partner; a viewer of several hosts talks to the focused one only (tagged).
     fn send_audio(&self, socket: &mut Socket, partner: &str, packet: Vec<u8>) {
-        if partner.is_empty() || self.direct(partner).is_some_and(|p| p.send_audio(&packet)) {
+        if partner.is_empty() || self.direct(partner).is_some_and(|p| p.send_audio(&packet)) || self.quiet {
             return;
         }
         let packet = self.seal(partner, packet);
@@ -628,9 +649,10 @@ impl Connection {
         }
     }
 
-    /// The socket failed: relay grants died with it, so every transfer and session on it has ended.
+    /// The socket failed: relay grants died with it, so every transfer on it has ended. Sessions that can
+    /// resume wait for the next connection (see `resume.rs`); every other session has ended.
     fn on_connection_lost(&mut self) {
-        let ctx = &self.ctx;
+        let ctx = Arc::clone(&self.ctx);
         file_transfer::abort_pending_sends();
         virtual_clipboard::abort_pulls();
         virtual_clipboard::clear_offer("");
@@ -638,25 +660,91 @@ impl Connection {
             IN_FLIGHT_CHUNKS.fetch_sub(file.units, Ordering::Relaxed);
         }
         let reason = self.receiver.abort_all(ctx.ui.as_ref());
-        crate::service::sessions::end_all(ctx);
-        ctx.ui.relay_status(RelayStatus::Offline { reason });
+        let waiting = self.resumable_sessions();
+        self.resume.suspend(waiting.clone(), Instant::now());
+        if waiting.is_empty() {
+            crate::service::sessions::end_all(&ctx);
+            ctx.ui.relay_status(RelayStatus::Offline { reason });
+            return;
+        }
+        for id in self.live_sessions().into_iter().filter(|id| !waiting.contains(id)) {
+            self.end_session(&id, None);
+        }
+        logger::info("relay", &format!("Connection lost; {} session(s) wait for it to come back.", waiting.len()));
+        ctx.ui.relay_status(RelayStatus::Offline { reason: self.reconnecting_status() });
+    }
+
+    /// Partners of the sessions this machine holds: the viewed hosts and the hosted viewer.
+    fn live_sessions(&self) -> Vec<String> {
+        let ctx = &self.ctx;
+        let mut ids: Vec<String> = ctx.viewers.all().iter().map(|s| s.id.clone()).collect();
+        let partner = ctx.partner();
+        if ctx.is_hosting() && !partner.is_empty() && !ids.contains(&partner) {
+            ids.push(partner);
+        }
+        ids
+    }
+
+    /// Sessions that may wait for a reconnect: connected, with a partner and relay that list `session-resume`,
+    /// and no end-to-end handshake still running (its messages may be lost, so it could never finish).
+    fn resumable_sessions(&self) -> Vec<String> {
+        let connected = |id: &str| self.ctx.viewers.get(id).is_none_or(|s| s.is_connected());
+        self.live_sessions()
+            .into_iter()
+            .filter(|id| connected(id) && self.resume.can_wait(id) && self.e2e_for(id).is_none_or(|e| e.is_on()))
+            .collect()
+    }
+
+    /// Ends the session with `id` locally (the relay ended it, or it cannot continue).
+    pub(super) fn end_session(&mut self, id: &str, status: Option<String>) {
+        let ctx = Arc::clone(&self.ctx);
+        self.resume.ended(id);
+        if ctx.viewers.get(id).is_some() {
+            crate::service::viewer::controller::end(&ctx, id, status.clone());
+        }
+        if ctx.is_hosting() && ctx.partner() == id {
+            crate::service::sessions::end_hosting_locally(&ctx);
+        }
+        if let Some(status) = status {
+            ctx.ui.status(status);
+        }
+    }
+
+    /// A waiting session that did not come back.
+    pub(super) fn end_waiting(&mut self, id: &str, status: &str) {
+        logger::info("relay", &format!("Session with {id} ended: {status}"));
+        self.end_session(id, Some(status.to_string()));
+    }
+
+    /// "Reconnecting… (N s)" while sessions wait.
+    fn reconnecting_status(&self) -> Option<String> {
+        self.resume
+            .any_waiting()
+            .then(|| format!("Reconnecting… ({} s)", self.resume.seconds_left(Instant::now()).max(1)))
     }
 
     /// The connection ended for any reason: the relay owns session authorization, so direct paths and viewer
-    /// sessions end with it (a reconnect starts without them).
+    /// sessions end with it (a reconnect starts without them), except the sessions that wait for a resume,
+    /// which keep their direct path and end-to-end keys.
     fn on_connection_ended(&mut self) {
-        for p in self.links.drain(..) {
-            p.close();
-        }
-        self.e2e.clear();
+        let resume = &self.resume;
+        self.links.retain(|p| {
+            let keep = resume.is_waiting(&p.partner);
+            if !keep {
+                p.close();
+            }
+            keep
+        });
+        self.e2e.retain(|e| resume.is_waiting(&e.partner));
         self.signals.clear();
+        let waiting = self.resume.any_waiting();
         let ctx = &self.ctx;
         // Watches live in the relay: a new connection starts without them until the relay asks again.
         crate::service::host::monitor_stream::stop(ctx);
         (self.monitor_pending, self.monitor_in_flight) = (None, false);
         #[cfg(feature = "admin")]
         crate::service::monitor_wall::relay_lost(ctx);
-        if !ctx.viewers.is_empty() {
+        if !ctx.viewers.is_empty() && !waiting {
             crate::service::viewer::controller::end_all(ctx);
             if !ctx.is_hosting() {
                 ctx.set_partner("");

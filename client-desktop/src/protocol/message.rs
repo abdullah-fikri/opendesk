@@ -17,6 +17,9 @@ pub enum ClientMessage {
         device_token: String,
         is_admin: bool,
         caps: Vec<String>,
+        /// The token of the previous connection, whose sessions this one takes over (`session-resume`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        resume_token: Option<String>,
     },
     /// Administrators only: asks for the device registry.
     GetHosts,
@@ -88,6 +91,19 @@ pub enum ServerMessage {
     RegisteredAck {
         #[serde(default)]
         caps: Vec<String>,
+        /// Lets the next connection resume this one's sessions (relays that list `session-resume`).
+        resume_token: Option<String>,
+        /// Partners whose sessions this connection took over.
+        #[serde(default)]
+        resumed: Vec<String>,
+    },
+    /// The partner `target_clean` lost its relay connection; the session waits for it.
+    SessionSuspended {
+        target_clean: String,
+    },
+    /// The partner `target_clean` is back and the session continues.
+    SessionResumed {
+        target_clean: String,
     },
     HostList {
         #[serde(default)]
@@ -211,9 +227,11 @@ mod tests {
             device_token: String::new(),
             is_admin: false,
             caps: vec!["file-ack".into()],
+            resume_token: None,
         };
         let v: Value = serde_json::from_str(&reg.to_json()).unwrap();
         assert_eq!(v["type"], "register");
+        assert!(v.get("resumeToken").is_none(), "no token unless resuming");
         assert_eq!(v["deskId"], "123456789");
         assert_eq!(v["isAdmin"], false);
         let sig = ClientMessage::P2pSignal { target_clean: "1".into(), candidate: "c".into() };
@@ -277,5 +295,40 @@ mod admin_tests {
         );
         let Some(ServerMessage::SecurityState { enabled, devices, .. }) = state else { panic!("{state:?}") };
         assert!(enabled && devices[0].enrolled && devices[0].online && devices[0].name == "PC");
+    }
+
+    #[test]
+    fn session_resume_messages() {
+        let ack = ServerMessage::parse(
+            r#"{"type":"registered-ack","caps":["session-resume"],"resumeToken":"ab","resumed":["1"]}"#,
+        );
+        assert_eq!(
+            ack,
+            Some(ServerMessage::RegisteredAck {
+                caps: vec!["session-resume".into()],
+                resume_token: Some("ab".into()),
+                resumed: vec!["1".into()],
+            })
+        );
+        let old = ServerMessage::parse(r#"{"type":"registered-ack","caps":[]}"#);
+        assert_eq!(old, Some(ServerMessage::RegisteredAck { caps: vec![], resume_token: None, resumed: vec![] }));
+        assert_eq!(
+            ServerMessage::parse(r#"{"type":"session-suspended","targetClean":"2"}"#),
+            Some(ServerMessage::SessionSuspended { target_clean: "2".into() })
+        );
+        assert_eq!(
+            ServerMessage::parse(r#"{"type":"session-resumed","targetClean":"2"}"#),
+            Some(ServerMessage::SessionResumed { target_clean: "2".into() })
+        );
+        let reg = ClientMessage::Register {
+            desk_id: "1".into(),
+            platform: String::new(),
+            device_name: String::new(),
+            device_token: String::new(),
+            is_admin: false,
+            caps: vec![],
+            resume_token: Some("ab".into()),
+        };
+        assert_eq!(serde_json::to_value(&reg).unwrap()["resumeToken"], "ab");
     }
 }

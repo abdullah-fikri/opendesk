@@ -198,15 +198,30 @@ pub fn on_connected(ctx: &Ctx, id: &str, caps: PeerCaps) -> Option<Arc<Session>>
         request_stats(ctx, &sess, true);
     }
 
-    // Tell the host the preferred resolution and voice quality. Automatic mode uses the last canvas size;
-    // the new canvas reports again if it differs.
-    ctx.send_input(id, resolution_event(&sess));
-    ctx.send_input(id, InputEvent::SetAudioQuality { quality: sess.audio_quality.load(Ordering::SeqCst) as u64 });
-    // The registration caps may predate a preset change; this one is current.
-    ctx.send_input(id, settings::performance_event(storage::load_settings().performance()));
+    send_state(ctx, &sess);
     ctx.ui.session_connected(id.to_string(), desk_id::format(id));
     ctx.ui.focus_changed(ctx.viewers.focused_id());
     Some(sess)
+}
+
+/// Tells the host the preferred resolution, voice quality and preset. Automatic mode uses the last canvas
+/// size; the new canvas reports again if it differs.
+fn send_state(ctx: &AppContext, sess: &Session) {
+    ctx.send_input(&sess.id, resolution_event(sess));
+    ctx.send_input(&sess.id, InputEvent::SetAudioQuality { quality: sess.audio_quality.load(Ordering::SeqCst) as u64 });
+    // The registration caps may predate a preset change; this one is current.
+    ctx.send_input(&sess.id, settings::performance_event(storage::load_settings().performance()));
+}
+
+/// Session `id` survived a lost relay connection: the host may have lost messages, so it gets the state again
+/// (and the stats request when the overlay is on). Returns false when there is no such session.
+pub fn resumed(ctx: &AppContext, id: &str) -> bool {
+    let Some(sess) = ctx.viewers.get(id) else { return false };
+    send_state(ctx, &sess);
+    if ctx.viewers.stats_overlay() {
+        request_stats(ctx, &sess, true);
+    }
+    true
 }
 
 /// Removes session `id` locally (no message to the relay). Returns false if it did not exist.
