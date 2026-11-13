@@ -199,7 +199,8 @@ func (c *connection) onRegister(msg []byte) bool {
 		Caps:       req.Caps,
 		RemoteAddr: c.remoteAddr,
 	}
-	peer, orphans, err := c.h.relay.Register(c.conn, info, req.DeviceToken)
+	res, err := c.h.relay.RegisterResume(c.conn, info, req.DeviceToken, req.ResumeToken)
+	peer := res.Peer
 	switch {
 	case errors.Is(err, usecase.ErrInvalidDeskID):
 		_ = c.ws.WriteJSON(dto.Error{Type: dto.TypeError, Message: msgInvalidDeskID})
@@ -215,13 +216,15 @@ func (c *connection) onRegister(msg []byte) bool {
 	}
 	// From here on other goroutines write through the peer; direct ws writes would race with them.
 	c.peer = peer
-	for _, orphan := range orphans {
+	for _, orphan := range res.Orphans {
 		c.h.releaseUDPRelay(orphan.CleanID, peer.CleanID)
 		_ = orphan.Send(sessionClosed(orphan, peer.CleanID, msgPeerReconnected))
 	}
 	c.h.log.Info("client registered", "id", peer.DeskID, "name", peer.DeviceName, "platform", peer.Platform,
 		"admin", peer.IsAdmin, "addr", c.remoteAddr, "active_peers", c.h.relay.PeerCount())
-	_ = peer.Send(dto.RegisteredAck{Type: dto.TypeRegisteredAck, DeskID: peer.DeskID, Caps: c.h.relay.Capabilities()})
+	_ = peer.Send(dto.RegisteredAck{Type: dto.TypeRegisteredAck, DeskID: peer.DeskID, Caps: c.h.relay.Capabilities(),
+		ResumeToken: peer.ResumeToken, Resumed: res.Resumed})
+	c.announceResume(res)
 	if peer.EnrollToken != "" {
 		// First connection of an allowlisted device: from now on it must present this token.
 		_ = peer.Send(dto.DeviceCredential{Type: dto.TypeDeviceCredential, Token: peer.EnrollToken})
@@ -413,18 +416,26 @@ func (c *connection) unregister() {
 	if c.peer == nil {
 		return
 	}
-	removed, partners := c.h.relay.Unregister(c.peer)
+	res := c.h.relay.Leave(c.peer)
 	// Also for a replaced connection: its own monitor-wall tiles end with it.
 	sendMonitorUpdate(c.h.relay.MonitorDetach(c.peer))
-	if !removed {
+	if !res.Removed && !res.Suspended {
 		return
 	}
 	c.h.broadcastHostList()
-	for _, partner := range partners {
+	for _, partner := range res.Waiting {
+		_ = partner.Send(dto.SessionSuspended{Type: dto.TypeSessionSuspended, TargetClean: c.peer.CleanID})
+	}
+	if res.Suspended {
+		c.h.log.Info("client connection lost, sessions suspended", "id", c.peer.DeskID, "sessions", len(res.Waiting))
+	}
+	for _, partner := range res.Closed {
 		c.h.releaseUDPRelay(partner.CleanID, c.peer.CleanID)
 		_ = partner.Send(sessionClosed(partner, c.peer.CleanID, msgPeerOffline))
 	}
-	c.h.log.Info("client disconnected", "id", c.peer.DeskID, "active_peers", c.h.relay.PeerCount())
+	if res.Removed {
+		c.h.log.Info("client disconnected", "id", c.peer.DeskID, "active_peers", c.h.relay.PeerCount())
+	}
 }
 
 // broadcastHostList pushes the registry to every connected administrator, off the caller's goroutine.
@@ -450,7 +461,7 @@ func (h *Handler) hostList() (dto.HostList, bool) {
 		h.log.Error("host list query failed", "err", err)
 		return dto.HostList{}, false
 	}
-	return hostListDTO(hosts), true
+	return hostListDTO(hosts, h.relay.Reconnecting), true
 }
 
 func valueOr(v, fallback string) string {

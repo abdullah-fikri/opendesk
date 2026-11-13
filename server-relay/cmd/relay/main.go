@@ -93,6 +93,7 @@ func run(configPath string, log *slog.Logger) error {
 	}, log)
 	go h.RunPinger(ctx)
 	go relay.RunJanitor(ctx, cfg.PingInterval())
+	go h.RunResumeExpiry(ctx)
 
 	server := &http.Server{Addr: cfg.Address(), Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	serveErr := make(chan error, 1)
