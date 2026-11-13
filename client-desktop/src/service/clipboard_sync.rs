@@ -55,22 +55,30 @@ pub fn spawn(ctx: Ctx) {
             if offers || ctx.is_hosting() {
                 let files = clip.files;
                 if !files.is_empty() {
-                    let repeat = last_files.as_ref().is_some_and(|(f, at)| *f == files && at.elapsed() < SAME_COPY);
-                    if !repeat && !file_transfer::is_received_clipboard(&files) {
-                        last_files = Some((files.clone(), Instant::now()));
-                        if offers {
-                            mark_seen();
-                            if let Some(s) = &viewed {
-                                s.offered_seq.store(current, Ordering::SeqCst);
-                            }
+                    let received = file_transfer::is_received_clipboard(&files);
+                    let action = files_action(last_files.as_ref(), &files, received, offers, Instant::now());
+                    let mark_offered = || {
+                        mark_seen();
+                        if let Some(s) = &viewed {
+                            s.offered_seq.store(current, Ordering::SeqCst);
+                        }
+                    };
+                    match action {
+                        FilesAction::Offer => {
+                            last_files = Some((files.clone(), Instant::now()));
+                            mark_offered();
                             offer::offer_files(&ctx, files, partner);
-                        } else {
+                        }
+                        FilesAction::AlreadyOffered => mark_offered(),
+                        FilesAction::Send => {
+                            last_files = Some((files.clone(), Instant::now()));
                             logger::info(
                                 "clipboard",
                                 &format!("Host copied {} files; sending them to the viewer.", files.len()),
                             );
                             sender::send_files(&ctx, files, partner, false);
                         }
+                        FilesAction::Skip => {}
                     }
                     continue;
                 }
@@ -86,4 +94,62 @@ pub fn spawn(ctx: Ctx) {
             }
         }
     });
+}
+
+/// What the watcher does with files it found on a changed clipboard.
+#[derive(Debug, PartialEq)]
+enum FilesAction {
+    /// A new copy for a partner with offers: send names and sizes.
+    Offer,
+    /// The copy just offered, seen again under a newer sequence number: the partner already has the offer, so
+    /// only that number is recorded. Without it Ctrl+V in the viewer takes the copy for one the host never got
+    /// and sends the files instead of pasting the offer (auto-pasting each top-level file on its own).
+    AlreadyOffered,
+    /// A new copy for a partner without offers (we host): send the files.
+    Send,
+    /// Files we just received, or the copy just sent: nothing to do.
+    Skip,
+}
+
+/// Decides [`FilesAction`] for `files` given the last copy acted on (`last`, with when).
+fn files_action(
+    last: Option<&(Vec<PathBuf>, Instant)>,
+    files: &[PathBuf],
+    received: bool,
+    offers: bool,
+    now: Instant,
+) -> FilesAction {
+    if received {
+        return FilesAction::Skip;
+    }
+    let repeat = last.is_some_and(|(f, at)| f.as_slice() == files && now.duration_since(*at) < SAME_COPY);
+    match (repeat, offers) {
+        (false, true) => FilesAction::Offer,
+        (false, false) => FilesAction::Send,
+        (true, true) => FilesAction::AlreadyOffered,
+        (true, false) => FilesAction::Skip,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_copy_seen_twice_is_offered_once_and_recorded_both_times() {
+        let t0 = Instant::now();
+        let files = vec![PathBuf::from(r"C:\a.txt"), PathBuf::from(r"C:\b.txt")];
+        assert_eq!(files_action(None, &files, false, true, t0), FilesAction::Offer);
+        let last = (files.clone(), t0);
+        // Explorer changed the clipboard again for the same copy: the new sequence number must still count as
+        // offered, or Ctrl+V sends the files instead of pasting the offer.
+        let again = t0 + Duration::from_millis(400);
+        assert_eq!(files_action(Some(&last), &files, false, true, again), FilesAction::AlreadyOffered);
+        assert_eq!(files_action(Some(&last), &files, false, false, again), FilesAction::Skip);
+        // The same files copied again later are a new copy.
+        assert_eq!(files_action(Some(&last), &files, false, true, t0 + SAME_COPY), FilesAction::Offer);
+        assert_eq!(files_action(Some(&last), &files[..1], false, true, again), FilesAction::Offer);
+        assert_eq!(files_action(None, &files, false, false, t0), FilesAction::Send);
+        assert_eq!(files_action(None, &files, true, true, t0), FilesAction::Skip);
+    }
 }
