@@ -45,6 +45,12 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, settings: &Sett
     if let HostSupport::Unsupported(reason) = core_engine::capture::host_support() {
         win.set_host_notice(reason.into());
     }
+    // Shown once the window is visible and no session runs (the dialog's condition in `app_window.slint`).
+    if let Some((title, body)) = crate::service::settings::whats_new(ctx.edition) {
+        win.set_whats_new_title(title.into());
+        win.set_whats_new_body(body.into());
+        win.set_show_whats_new(true);
+    }
     callbacks::bind(win, ctx, history);
 
     // Closing the window keeps OpenDesk running in the tray, so this device stays reachable.

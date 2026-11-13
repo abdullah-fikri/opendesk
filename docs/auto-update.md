@@ -90,6 +90,19 @@ The older spellings `--update-now`, `--rollback`, `--pin-version` and `--unpin` 
 queued in `requests\` and carried out by the service within seconds; results are in the service's log
 (`opendesk.trace` of the SYSTEM profile).
 
+## What's new after an update
+
+Each `CHANGELOG.md` version may start with a `### Highlights` section: 3 to 6 bullets in plain English, one
+sentence each, no technical terms. The desktop client embeds the changelog (`client-desktop/src/domain/whats_new.rs`)
+and, after an update, shows the highlights of every version since the last one seen (newest first, from the 5
+newest changelog versions) in a modal with **Close** (Esc) and **Don't show again**.
+
+- `config.json`: `last_seen_version` (empty: install before 1.3.0 or new; nothing is shown, the running version is
+  stored) and `show_whats_new` (default `true`; "Don't show again" sets `false`, and only editing the file turns it
+  back on).
+- Not shown after a rollback, for versions without Highlights, or in the Host edition. It waits while a remote
+  session runs and, when the app starts in the tray, until the window opens.
+
 ## Compatibility rules
 
 - The installer runs over a newer install (no version check, `ignoreversion`); keep it that way.

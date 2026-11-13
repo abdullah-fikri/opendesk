@@ -16,3 +16,4 @@ pub mod performance;
 pub mod resolution;
 pub mod settings;
 pub mod transfer;
+pub mod whats_new;

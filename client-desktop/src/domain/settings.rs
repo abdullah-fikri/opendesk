@@ -44,6 +44,13 @@ pub struct Settings {
     /// [`Settings::mic_on_at_start`]. Unset (configs before 1.3.0, and every new install) means the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mic_on_at_start: Option<bool>,
+    /// The version whose "What's new" the user has seen (`domain::whats_new`). Empty: an install from before
+    /// 1.3.0 or a new one; then nothing is shown and the running version is stored.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub last_seen_version: String,
+    /// Show "What's new" after updates; "Don't show again" turns it off.
+    #[serde(default = "yes")]
+    pub show_whats_new: bool,
 }
 
 fn yes() -> bool {
@@ -91,6 +98,8 @@ impl Settings {
             auto_update: true,
             update_url: String::new(),
             mic_on_at_start: None,
+            last_seen_version: String::new(),
+            show_whats_new: true,
         }
     }
 

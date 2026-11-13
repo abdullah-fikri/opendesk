@@ -13,6 +13,7 @@ import { TransferPanel } from "views/transfer_panel.slint";
 import { ServerSettingsModal } from "dialogs/server_settings_dialog.slint";
 import { RenameDeviceModal } from "dialogs/rename_device_dialog.slint";
 import { DeleteConfirmModal } from "dialogs/delete_confirm_dialog.slint";
+import { WhatsNewModal } from "dialogs/whats_new_dialog.slint";
 
 export { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem, TransferItem }
 
@@ -94,6 +95,11 @@ export component MainWindow inherits Window {
     in-out property <bool> show_delete_modal: false;
     in-out property <string> delete_target_id: "";
     in-out property <string> delete_target_label: "";
+    // "What's new" after an update (Rust sets it at start; never in the Host edition).
+    in-out property <bool> show_whats_new: false;
+    in property <string> whats_new_title: "";
+    in property <string> whats_new_body: "";
+    callback whats_new_closed(bool);  // true = Don't show again
 
     // ---- Dashboard ----
     callback request_connect(string);
@@ -399,5 +405,15 @@ export component MainWindow inherits Window {
         delete_target_label: root.delete_target_label;
         show_delete_modal <=> root.show_delete_modal;
         confirm_delete(id) => { root.delete_history(id); }
+    }
+
+    // Waits while a remote session runs, either way.
+    if show_whats_new && !hosting && sessions.length == 0: WhatsNewModal {
+        title: root.whats_new_title;
+        body: root.whats_new_body;
+        closed(dont_show_again) => {
+            root.show_whats_new = false;
+            root.whats_new_closed(dont_show_again);
+        }
     }
 }

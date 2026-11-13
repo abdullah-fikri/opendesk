@@ -58,6 +58,7 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {
 /// code path; only the admin edition shows the page today.
 fn bind_device_settings(win: &MainWindow) {
     let weak = win.as_weak();
+    win.on_whats_new_closed(settings::whats_new_seen);
     win.on_save_mic_on_at_start(move |on| {
         settings::set_mic_on_at_start(on);
         if let Some(w) = weak.upgrade() {

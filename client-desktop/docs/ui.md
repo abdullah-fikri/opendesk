@@ -16,7 +16,7 @@ files contain layout and presentation logic only.
 | `ui/views/monitor/` | Monitor wall (admin edition): `MonitorWallView` with `MonitorTileView`; layout, rotation and the device picker `MonitorPicker` sit in its Settings side panel; Full screen shows tiles only (Esc leaves) |
 | `ui/views/settings/` | Settings (admin edition): `SettingsView` in two groups: Relay (Settings › Security › Client token, stored on the relay) and This device (Settings › Audio › Microphone, stored in `config.json`) |
 | `ui/components/scroll_area.slint` | `ScrollArea`: wheel/drag scrolling with a draggable scrollbar, used by the dashboard lists and the client-token list |
-| `ui/dialogs/` | Relay settings, rename and delete dialogs |
+| `ui/dialogs/` | Relay settings, rename and delete dialogs; `WhatsNewModal` after an update (`show_whats_new`, `whats_new_title`, `whats_new_body`, `whats_new_closed(dont_show_again)`) |
 
 One component per file. A component used by more than one view goes in `components/`; one used by a single
 view stays next to it.

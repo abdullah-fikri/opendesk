@@ -7,9 +7,10 @@ use std::time::Duration;
 
 use core_engine::capture::{enumerate_monitors, refresh_rate};
 
+use crate::domain::edition::Edition;
 use crate::domain::performance::Performance;
 use crate::domain::settings::normalize_gateway_url;
-use crate::domain::frame_rate;
+use crate::domain::{frame_rate, whats_new};
 use crate::infra::{logger, storage};
 use crate::protocol::InputEvent;
 use crate::service::context::{AppContext, Ctx};
@@ -80,6 +81,38 @@ pub fn set_mic_on_at_start(on: bool) {
     settings.mic_on_at_start = Some(on);
     storage::save_settings(&settings);
     logger::info("settings", &format!("Microphone when a session starts: {}", if on { "on" } else { "off" }));
+}
+
+/// "What's new" to show now as (title, body), once per update. Never in the Host edition, which has no window.
+/// When there is nothing to show (new install, rollback, no highlights, turned off), the running version is
+/// stored as seen right away.
+pub fn whats_new(edition: Edition) -> Option<(String, String)> {
+    if edition == Edition::Headless {
+        return None;
+    }
+    let current = env!("CARGO_PKG_VERSION");
+    let mut settings = storage::load_settings();
+    let releases = whats_new::highlights(whats_new::CHANGELOG);
+    let shown = whats_new::to_show(&releases, &settings.last_seen_version, current, settings.show_whats_new);
+    if shown.is_empty() {
+        if settings.last_seen_version != current {
+            settings.last_seen_version = current.to_string();
+            storage::save_settings(&settings);
+        }
+        return None;
+    }
+    Some((format!("What's new in OpenDesk {current}"), whats_new::body(&shown)))
+}
+
+/// The user closed "What's new": it is not shown again for this version, or never with `dont_show_again`.
+pub fn whats_new_seen(dont_show_again: bool) {
+    let mut settings = storage::load_settings();
+    settings.last_seen_version = env!("CARGO_PKG_VERSION").to_string();
+    if dont_show_again {
+        settings.show_whats_new = false;
+        logger::info("settings", "What's new after updates: off");
+    }
+    storage::save_settings(&settings);
 }
 
 /// Stores the token the relay issued when it enrolled this device; it is presented to that relay only.
