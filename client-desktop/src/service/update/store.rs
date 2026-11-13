@@ -4,6 +4,7 @@
 //! state.json              pin, versions marked bad, rollback floor
 //! pending_health.json     see `health`
 //! agent.json              heartbeat of the agent (idle, relay online, its settings)
+//! progress.json           phase of the current or last update, shown by `opendesk update` (see `progress`)
 //! healthy                 version of the agent that reached the relay after an update
 //! requests\*.json         commands from `opendesk update|rollback|pin|unpin`
 //! download\               installers being downloaded and verified
@@ -28,6 +29,7 @@ use super::manifest::Version;
 pub const KEEP_VERSIONS: usize = 2;
 const INSTALLER: &str = "setup.exe";
 const DIGEST: &str = "setup.json";
+const PROGRESS: &str = "progress.json";
 
 /// A kept installer; checked against `size` and `sha256` again before it runs.
 #[derive(Debug, PartialEq)]
@@ -64,6 +66,8 @@ pub struct AgentReport {
     pub desk_id: String,
     /// No hosted and no viewer session.
     pub idle: bool,
+    /// Hosted plus viewer sessions (0 from agents before 1.3.0, which report only `idle`).
+    pub sessions: u32,
     pub online: bool,
     /// From the user's settings and environment.
     pub auto_update: bool,
@@ -74,11 +78,66 @@ pub struct AgentReport {
     pub at: u64,
 }
 
+/// `progress.json`: what the service is doing with an update, rewritten at every phase change and at most
+/// four times a second while downloading. Data only: `progress::Reporter` writes it, `opendesk update` shows it.
+///
+/// SECURITY: written by SYSTEM and read by an administrator's CLI. The file inherits the directory's ACL
+/// (SYSTEM and Administrators), and `error` can carry text from a download server, so readers strip control
+/// characters before printing it.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct Progress {
+    pub phase: Phase,
+    /// The release being downloaded or installed (set once a check found one).
+    pub version: Option<String>,
+    /// Bytes downloaded so far and in total (the rollback copy of the running version included).
+    pub bytes: u64,
+    pub total: u64,
+    /// Sessions the install waits for (`waiting_idle`).
+    pub sessions_active: u32,
+    /// Why the update failed, or why a version was rolled back.
+    pub error: Option<String>,
+    /// Unix milliseconds of this write; the CLI ignores a file older than its own request.
+    pub updated_at: u64,
+    /// Unix seconds when the last check started.
+    pub checked_at: Option<u64>,
+    /// Unix seconds when the next automatic check is due (while the service runs).
+    pub next_check_at: Option<u64>,
+}
+
+/// Phase of [`Progress`].
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Checking,
+    Downloading,
+    /// The download matched the size and SHA-256 of the signed manifest.
+    Verifying,
+    /// Downloaded and verified; the install waits until no session is active.
+    WaitingIdle,
+    /// The installer was started; it stops this service and every `OpenDesk.exe`, the CLI included.
+    Installing,
+    /// The new version runs and has to reach the relay within the health window.
+    Health,
+    Done,
+    Failed,
+    UpToDate,
+    /// Nothing written yet, or a phase only a newer version knows (last: `serde(other)` requires it).
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
 /// One command of `requests\`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Request {
-    UpdateNow,
+    /// `opendesk update [--now]`. `now`: install as soon as the download is verified, ending active sessions
+    /// (absent in requests of older versions, which always waited for an idle moment).
+    UpdateNow {
+        #[serde(default)]
+        now: bool,
+    },
     Rollback {
         #[serde(default)]
         version: Option<String>,
@@ -94,6 +153,9 @@ pub enum Request {
         version: String,
         #[serde(default)]
         force: bool,
+        /// As in `UpdateNow`.
+        #[serde(default)]
+        now: bool,
     },
 }
 
@@ -196,7 +258,22 @@ impl Store {
         }
         let tmp = dir.join(format!("{unique:032}.tmp"));
         fs::write(&tmp, serde_json::to_vec(request).map_err(io::Error::other)?)?;
-        fs::rename(&tmp, dir.join(format!("{unique:032}.json")))
+        fs::rename(&tmp, self.request_path(unique))
+    }
+
+    /// The file of the request queued with `unique`; it disappears once the service has taken it.
+    pub fn request_path(&self, unique: u128) -> PathBuf {
+        self.root.join("requests").join(format!("{unique:032}.json"))
+    }
+
+    /// The last [`Progress`] the service wrote, if readable.
+    pub fn progress(&self) -> Option<Progress> {
+        self.read(PROGRESS)
+    }
+
+    /// Writes `progress.json` (atomically, see [`Store::write`]).
+    pub fn save_progress(&self, progress: &Progress) -> io::Result<()> {
+        self.write(PROGRESS, progress)
     }
 
     /// The kept installer of `version` with the size and SHA-256 it was verified against.
@@ -331,9 +408,12 @@ mod tests {
     fn requests_are_taken_once_in_order() {
         let s = temp("req");
         s.push_request(&Request::Pin { version: "1.0.0".into() }, 2).unwrap();
-        s.push_request(&Request::UpdateNow, 1).unwrap();
+        s.push_request(&Request::UpdateNow { now: false }, 1).unwrap();
         fs::write(s.root().join("requests").join("3.json"), "garbage").unwrap();
-        assert_eq!(s.take_requests(), vec![Request::UpdateNow, Request::Pin { version: "1.0.0".into() }]);
+        assert_eq!(
+            s.take_requests(),
+            vec![Request::UpdateNow { now: false }, Request::Pin { version: "1.0.0".into() }]
+        );
         assert!(s.take_requests().is_empty());
         let _ = fs::remove_dir_all(s.root());
     }
@@ -371,6 +451,41 @@ mod tests {
         assert_eq!(s.restore_user_data(Version(1, 0, 0), &app).unwrap(), 3);
         assert_eq!(fs::read_to_string(app.join("config.json")).unwrap(), "old");
         assert!(!s.root().join("backup-1.0.0").join("x.log").exists());
+        let _ = fs::remove_dir_all(s.root());
+    }
+
+    #[test]
+    fn requests_without_now_still_parse() {
+        let old: Request = serde_json::from_str(r#"{"action":"update_now"}"#).unwrap();
+        assert_eq!(old, Request::UpdateNow { now: false });
+        let old: Request = serde_json::from_str(r#"{"action":"install","version":"1.2.3","force":true}"#).unwrap();
+        assert_eq!(old, Request::Install { version: "1.2.3".into(), force: true, now: false });
+        let new: Request = serde_json::from_str(r#"{"action":"update_now","now":true}"#).unwrap();
+        assert_eq!(new, Request::UpdateNow { now: true });
+        let json =
+            serde_json::to_string(&Request::Install { version: "1.3.0".into(), force: false, now: true }).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Request>(&json).unwrap(),
+            Request::Install { version: "1.3.0".into(), force: false, now: true }
+        );
+    }
+
+    #[test]
+    fn progress_round_trips_and_tolerates_newer_phases() {
+        let s = temp("progress");
+        assert_eq!(s.progress(), None);
+        let p = Progress {
+            phase: Phase::Downloading,
+            version: Some("1.3.0".into()),
+            bytes: 10,
+            total: 20,
+            updated_at: 5,
+            ..Progress::default()
+        };
+        s.save_progress(&p).unwrap();
+        assert_eq!(s.progress(), Some(p));
+        fs::write(s.path("progress.json"), r#"{"phase":"from_the_future","bytes":3}"#).unwrap();
+        assert_eq!(s.progress().map(|p| (p.phase, p.bytes)), Some((Phase::Unknown, 3)));
         let _ = fs::remove_dir_all(s.root());
     }
 

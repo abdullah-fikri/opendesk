@@ -13,6 +13,7 @@
 
 mod app;
 mod cli;
+mod cli_ui;
 mod domain;
 mod infra;
 mod protocol;

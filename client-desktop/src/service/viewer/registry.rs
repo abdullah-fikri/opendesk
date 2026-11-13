@@ -223,6 +223,11 @@ impl Registry {
         self.inner.lock().sessions.is_empty()
     }
 
+    /// Number of open sessions.
+    pub fn len(&self) -> usize {
+        self.inner.lock().sessions.len()
+    }
+
     /// The session with host `id`.
     pub fn get(&self, id: &str) -> Option<Arc<Session>> {
         if id.is_empty() {

@@ -42,6 +42,7 @@ fn report(ctx: &AppContext, online: bool) -> AgentReport {
         version: env!("CARGO_PKG_VERSION").to_string(),
         desk_id: ctx.local_id.clone(),
         idle: !ctx.is_hosting() && ctx.viewers.is_empty(),
+        sessions: u32::from(ctx.is_hosting()) + ctx.viewers.len() as u32,
         online,
         auto_update: settings.auto_update && auto_update_env(),
         update_url: url,
