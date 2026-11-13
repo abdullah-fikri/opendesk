@@ -9,7 +9,8 @@ Code: `src/service/relay/connection.rs` (transport loop), `src/service/relay/dis
 2. Connect and send `register` with the edition's platform tag, device name, token and capabilities.
 3. Switch the socket to non-blocking with `TCP_NODELAY`, then loop every millisecond:
    - drain the outbox (control messages and voice at once, mouse moves coalesced per host, only the newest
-     video frame);
+     video frame); a host's pending move is sent before any other input to that host, so a button event never
+     overtakes the move queued ahead of it;
    - send up to 8 queued file messages (64 when no screen session runs);
    - flush, which re-opens the video backpressure gate once the previous frame has left the socket;
    - read every available message and dispatch it.

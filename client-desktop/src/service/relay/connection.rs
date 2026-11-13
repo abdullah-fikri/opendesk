@@ -109,6 +109,27 @@ struct QueuedFile {
     status: Option<String>,
 }
 
+/// Mouse moves drained in one tick, coalesced to the newest position per host.
+#[derive(Default)]
+struct PendingMoves(Vec<(String, f64, f64)>);
+
+impl PendingMoves {
+    /// Replaces the pending position for `target`.
+    fn set(&mut self, target: String, x: f64, y: f64) {
+        match self.0.iter_mut().find(|m| m.0 == target) {
+            Some(m) => (m.1, m.2) = (x, y),
+            None => self.0.push((target, x, y)),
+        }
+    }
+
+    /// Removes and returns the pending position for `target`.
+    fn take(&mut self, target: &str) -> Option<(f64, f64)> {
+        let i = self.0.iter().position(|m| m.0 == target)?;
+        let (_, x, y) = self.0.swap_remove(i);
+        Some((x, y))
+    }
+}
+
 /// State of the relay connection thread.
 pub(super) struct Connection {
     pub(super) ctx: Ctx,
@@ -379,13 +400,18 @@ impl Connection {
     /// newest video frame. File messages are parked for `pump_files`. Returns true if video went to the socket.
     fn pump_outbox(&mut self, socket: &mut Socket, partner: &str) -> bool {
         let mut video: Option<Vec<u8>> = None;
-        let mut mouse: Vec<(String, f64, f64)> = Vec::new();
+        let mut mouse = PendingMoves::default();
         while let Some(item) = self.stashed.take().or_else(|| self.outbox.try_recv().ok()) {
             self.busy = true;
             match item {
                 Outgoing::Message(msg) => {
                     let text = match &msg {
                         ClientMessage::RelayInput { target_clean, event } => {
+                            // A move queued before a button event must reach the host first: sent after it, the
+                            // pointer would jump back while the button is held and cut the drag's ends.
+                            if let Some((x, y)) = mouse.take(target_clean) {
+                                self.send_move(socket, target_clean, x, y);
+                            }
                             if self.direct(target_clean).is_some_and(|p| p.send_input(event)) {
                                 continue;
                             }
@@ -399,10 +425,7 @@ impl Connection {
                     };
                     let _ = socket.send(Message::Text(text.into()));
                 }
-                Outgoing::MouseMove(target, x, y) => match mouse.iter_mut().find(|m| m.0 == target) {
-                    Some(m) => (m.1, m.2) = (x, y),
-                    None => mouse.push((target, x, y)),
-                },
+                Outgoing::MouseMove(target, x, y) => mouse.set(target, x, y),
                 Outgoing::VideoFrame(frame) => video = Some(frame),
                 Outgoing::MonitorFrame(frame) => self.monitor_pending = Some(frame),
                 Outgoing::Audio(packet) => self.send_audio(socket, partner, packet),
@@ -427,11 +450,8 @@ impl Connection {
         for text in self.signals.due(Instant::now()) {
             let _ = socket.send(Message::Text(text.into()));
         }
-        for (target, norm_x, norm_y) in mouse.into_iter().filter(|m| !m.0.is_empty()) {
-            let event = InputEvent::MouseMove { norm_x, norm_y };
-            if !self.direct(&target).is_some_and(|p| p.send_input(&event)) {
-                let _ = socket.send(Message::Text(self.input_text(&target, &event).into()));
-            }
+        for (target, norm_x, norm_y) in mouse.0 {
+            self.send_move(socket, &target, norm_x, norm_y);
         }
         let Some(frame) = video else { return false };
         // Over P2P the viewer's frame acknowledgement opens the gate instead of the socket flush.
@@ -440,6 +460,17 @@ impl Connection {
         }
         let _ = socket.send(Message::Binary(self.seal(partner, frame).into()));
         true
+    }
+
+    /// Sends a mouse move to host `target` (P2P when up, else the relay); an empty target is dropped.
+    fn send_move(&self, socket: &mut Socket, target: &str, norm_x: f64, norm_y: f64) {
+        if target.is_empty() {
+            return;
+        }
+        let event = InputEvent::MouseMove { norm_x, norm_y };
+        if !self.direct(target).is_some_and(|p| p.send_input(&event)) {
+            let _ = socket.send(Message::Text(self.input_text(target, &event).into()));
+        }
     }
 
     /// Seals a binary message for `partner` on the relay path when the session is end-to-end encrypted.
@@ -761,6 +792,18 @@ mod tests {
         assert_eq!(wanted_send_buffer(true, None, Some("1000")), Some(MIN_SEND_BUFFER));
         assert_eq!(wanted_send_buffer(true, None, Some("0")), None);
         assert_eq!(wanted_send_buffer(true, None, Some("big")), Some(HOSTING_SEND_BUFFER));
+    }
+
+    #[test]
+    fn pending_moves_keep_the_newest_position_per_host_until_taken() {
+        let mut moves = PendingMoves::default();
+        moves.set("a".into(), 0.1, 0.1);
+        moves.set("b".into(), 0.5, 0.5);
+        moves.set("a".into(), 0.2, 0.3);
+        // A button event for "a" takes its move first; "b" stays coalesced for the end of the tick.
+        assert_eq!(moves.take("a"), Some((0.2, 0.3)));
+        assert_eq!(moves.take("a"), None, "a move already sent before the button is not sent again after it");
+        assert_eq!(moves.0, vec![("b".to_string(), 0.5, 0.5)]);
     }
 
     #[test]
