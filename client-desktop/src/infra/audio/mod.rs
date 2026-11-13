@@ -1,11 +1,17 @@
-//! Voice call audio: microphone capture into binary voice packets (`[0x02][rate_khz][pcm16le]`, or Opus, see
-//! `opus`) and playback of received packets, with a light DSP stage (high-pass, noise gate, soft limiter) on
-//! captured audio. The device backend is selected at compile time: waveIn/waveOut on Windows, cpal (ALSA, which
-//! PipeWire and PulseAudio serve) elsewhere.
+//! Session audio: voice call (microphone capture into binary voice packets, `[0x02][rate_khz][pcm16le]` or Opus,
+//! see `opus`, with a light DSP stage: high-pass, noise gate, soft limiter) and host sound (`audio-system`: the
+//! host's speaker output, captured by loopback and sent as stereo Opus), plus playback of both. A session runs
+//! one of them at a time ([`SessionAudio`]). The device backend is selected at compile time: waveIn/waveOut and
+//! WASAPI loopback on Windows; cpal (ALSA, which PipeWire and PulseAudio serve) elsewhere, without host sound.
+
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use parking_lot::Mutex;
 
 pub mod opus;
+
+#[cfg(any(windows, test))]
+mod host_sound;
 
 #[cfg(windows)]
 mod win;
@@ -16,6 +22,67 @@ pub use win::*;
 mod unix;
 #[cfg(not(windows))]
 pub use unix::*;
+
+/// What the current session's audio carries. Host sound and voice alternate: while host sound flows, the
+/// microphone stays closed and voice packets are dropped, so the viewer's voice is never played on the host
+/// while its output is captured (no echo). See `docs/protocol.md#host-sound`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionAudio {
+    /// Two-way voice (microphones per their own mute state).
+    Voice = 0,
+    /// Viewer: play the focused host's sound.
+    PlayHostSound = 1,
+    /// Host: capture this machine's speaker output and send it to the viewer.
+    SendHostSound = 2,
+}
+
+/// [`SessionAudio`] shared between the services and the audio threads.
+#[derive(Debug, Default)]
+pub struct AudioMode(AtomicU8);
+
+impl AudioMode {
+    pub fn get(&self) -> SessionAudio {
+        match self.0.load(Ordering::Relaxed) {
+            1 => SessionAudio::PlayHostSound,
+            2 => SessionAudio::SendHostSound,
+            _ => SessionAudio::Voice,
+        }
+    }
+
+    pub fn set(&self, mode: SessionAudio) {
+        self.0.store(mode as u8, Ordering::Relaxed);
+    }
+}
+
+/// The audio mode of a session: host sound when this build has it, the partner listed `audio-system` and the
+/// viewer wants it (`on`), otherwise a voice call. `hosting` says which side of the session this machine is.
+pub fn session_audio(hosting: bool, peer_audio_system: bool, on: bool) -> SessionAudio {
+    match (HOST_SOUND && peer_audio_system && on, hosting) {
+        (false, _) => SessionAudio::Voice,
+        (true, true) => SessionAudio::SendHostSound,
+        (true, false) => SessionAudio::PlayHostSound,
+    }
+}
+
+/// What a received `0x02` packet is for in the current mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Route {
+    Voice,
+    HostSound,
+    Drop,
+}
+
+/// SECURITY: a peer decides only the packet's bytes, not what this side plays: voice plays only in a voice call,
+/// host sound only on a viewer that asked for it, everything else is dropped.
+fn route(bin: &[u8], mode: SessionAudio) -> Route {
+    // Any packet tagged as host sound (even a truncated one) is never voice, so it can never be played as PCM.
+    let host_sound = bin.get(1) == Some(&opus::HOST_SOUND_TAG);
+    match mode {
+        SessionAudio::Voice if !host_sound => Route::Voice,
+        SessionAudio::PlayHostSound if host_sound => Route::HostSound,
+        _ => Route::Drop,
+    }
+}
 
 /// Maps audio quality tier (0 = 16kHz, 1 = 24kHz, 2 = 48kHz HD) to (sample_rate_hz, rate_tag_khz, frame_bytes_20ms)
 pub fn quality_to_audio_params(quality: usize) -> (u32, u8, usize) {
@@ -165,5 +232,50 @@ mod tests {
         let mut enc = opus::Encoder::new(16_000).unwrap();
         rx.receive(&enc.encode(&[0u8; 640]).unwrap(), |rate, pcm| got.push((rate, pcm.len())));
         assert_eq!(got, [(24_000, 4), (16_000, 4), (48_000, 1920)]);
+    }
+
+    #[test]
+    fn voice_and_host_sound_never_play_together() {
+        let voice = [0x02, 48, 1, 0, 2, 0];
+        let opus_voice = [0x02, opus::OPUS_TAG, 0, 1, 9];
+        let sound = [0x02, opus::HOST_SOUND_TAG, 0, 1, 9];
+        assert_eq!(route(&voice, SessionAudio::Voice), Route::Voice);
+        assert_eq!(route(&opus_voice, SessionAudio::Voice), Route::Voice);
+        assert_eq!(route(&sound, SessionAudio::Voice), Route::Drop, "host sound needs the viewer's consent");
+        // A truncated host sound packet must not be taken for legacy 16 kHz PCM.
+        assert_eq!(route(&[0x02, opus::HOST_SOUND_TAG, 0, 1], SessionAudio::Voice), Route::Drop);
+        assert_eq!(route(&sound, SessionAudio::PlayHostSound), Route::HostSound);
+        assert_eq!(route(&voice, SessionAudio::PlayHostSound), Route::Drop);
+        // A capturing host plays nothing, so its output never carries the viewer's voice back.
+        for pkt in [&voice[..], &opus_voice, &sound] {
+            assert_eq!(route(pkt, SessionAudio::SendHostSound), Route::Drop);
+        }
+    }
+
+    #[test]
+    fn host_sound_needs_the_peer_and_the_viewer() {
+        // An old peer (no `audio-system`) keeps the voice call whatever the toggle says.
+        assert_eq!(session_audio(true, false, true), SessionAudio::Voice);
+        assert_eq!(session_audio(false, false, true), SessionAudio::Voice);
+        // The viewer switched host sound off: voice call on both sides.
+        assert_eq!(session_audio(true, true, false), SessionAudio::Voice);
+        assert_eq!(session_audio(false, true, false), SessionAudio::Voice);
+        let (host, viewer) = if HOST_SOUND {
+            (SessionAudio::SendHostSound, SessionAudio::PlayHostSound)
+        } else {
+            (SessionAudio::Voice, SessionAudio::Voice)
+        };
+        assert_eq!(session_audio(true, true, true), host);
+        assert_eq!(session_audio(false, true, true), viewer);
+    }
+
+    #[test]
+    fn audio_mode_round_trips() {
+        let mode = AudioMode::default();
+        assert_eq!(mode.get(), SessionAudio::Voice);
+        for m in [SessionAudio::PlayHostSound, SessionAudio::SendHostSound, SessionAudio::Voice] {
+            mode.set(m);
+            assert_eq!(mode.get(), m);
+        }
     }
 }

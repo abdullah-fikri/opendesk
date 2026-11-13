@@ -35,6 +35,17 @@ ed25519-dalek = { version = "2", default-features = false }
 ureq = { version = "2.12", default-features = false, features = ["native-tls"] }
 native-tls = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+# Host sound: WASAPI loopback capture (COM). Same pinned version core-engine already builds, so nothing new to
+# download or audit; only these API features are added.
+windows = { version = "=0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+] }
+
 [target.'cfg(not(windows))'.dependencies]
 # Software rendering when OpenGL is missing (VMs without a GPU, VNC/xrdp sessions); Windows keeps femtovg only.
 slint = { version = "1.18", default-features = false, features = ["renderer-software"] }
