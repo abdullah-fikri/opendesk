@@ -2,6 +2,7 @@
 //! events to it, the tray icon and drag-and-drop. Nothing here decides behavior; callbacks call services.
 
 mod callbacks;
+mod dashboard_model;
 #[cfg(feature = "admin")]
 mod monitor_wall_model;
 mod presenter;
@@ -38,7 +39,7 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, gateway_url: &s
     win.set_performance(performance.index());
     win.set_is_admin(ctx.edition == Edition::Admin);
     win.set_active_dashboard_tab(if ctx.edition == Edition::Admin { 1 } else { 0 });
-    win.set_history_items(view_model::history_items(&history.records()));
+    dashboard_model::set_history(view_model::history_items(&history.records()));
     // Windows viewers forward system keys through a keyboard hook; elsewhere a toolbar menu sends them.
     win.set_system_keys_menu(!privacy::SYSTEM_KEY_HOOK);
     if let HostSupport::Unsupported(reason) = core_engine::capture::host_support() {

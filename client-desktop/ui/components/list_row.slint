@@ -1,0 +1,160 @@
+// One row of a dashboard list (session history, relay hosts): clicking it selects it, its buttons act on it.
+
+import { Theme, Icons } from "../theme.slint";
+import { Icon } from "icon.slint";
+
+// Selectable list row: marker, title and subtitle on the left, Name / Connect / delete buttons on the right.
+// Clicking anywhere but a button only selects the row (a double click does not connect).
+export component ListRow inherits Rectangle {
+    in property <string> title;
+    // Second line; hidden when empty.
+    in property <string> subtitle;
+    in property <color> subtitle_color: Theme.text-3;
+    // Greys the title (offline host).
+    in property <bool> muted: false;
+    // Marker left of the title: a short bar, or a status dot when `dot` is set.
+    in property <bool> dot: false;
+    in property <color> marker_color: Theme.accent;
+    in property <bool> show_rename: true;
+    in property <bool> show_delete: false;
+    in property <bool> can_connect: true;
+    in property <string> connect_label: "Connect";
+    in property <bool> selected: false;
+    // Another row is selected: this row's buttons are dimmed (still clickable) so the eye finds the selected pair.
+    in property <bool> dimmed: false;
+
+    callback select();
+    callback rename();
+    callback connect();
+    callback remove();
+
+    property <float> button_opacity: root.dimmed ? 0.45 : 1;
+
+    height: 44px;
+    background: root.selected ? #1a1a20 : row-ta.has-hover ? #131317 : #0d0d10;
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent : root.muted ? Theme.surface-2 : Theme.border;
+
+    // Declared first so the buttons, drawn above it, still receive their own clicks.
+    row-ta := TouchArea {
+        clicked => { root.select(); }
+    }
+
+    if root.selected: Rectangle {
+        x: 0;
+        width: 3px;
+        height: parent.height;
+        background: Theme.accent;
+    }
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 12px;
+        spacing: 12px;
+
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            spacing: 10px;
+            alignment: start;
+
+            Rectangle {
+                width: root.dot ? 7px : 2px;
+                height: root.dot ? 7px : 18px;
+                y: (parent.height - self.height) / 2;
+                background: root.marker_color;
+            }
+
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: root.title;
+                    color: root.selected ? #ffffff : root.muted ? Theme.text-2 : Theme.text;
+                    font-size: 13px;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+                if root.subtitle != "": Text {
+                    text: root.subtitle;
+                    color: root.subtitle_color;
+                    font-size: 11px;
+                    overflow: elide;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            horizontal-stretch: 0;
+            spacing: 6px;
+            y: (parent.height - 26px) / 2;
+
+            if root.show_rename: Rectangle {
+                height: 26px;
+                opacity: ta-ren.has-hover ? 1 : root.button_opacity;
+                background: ta-ren.has-hover ? Theme.border : Theme.surface-2;
+                border-width: 1px;
+                border-color: Theme.border;
+                ta-ren := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.rename(); }
+                }
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    Text {
+                        text: "Name";
+                        color: Theme.text-2;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 26px;
+                opacity: ta-conn.has-hover ? 1 : root.button_opacity;
+                background: !root.can_connect ? Theme.surface-2 : ta-conn.has-hover ? #e11d48 : Theme.accent;
+                border-width: 1px;
+                border-color: root.can_connect ? Theme.accent : Theme.border;
+                ta-conn := TouchArea {
+                    mouse-cursor: root.can_connect ? pointer : default;
+                    clicked => {
+                        if (root.can_connect) {
+                            root.connect();
+                        } else {
+                            root.select();
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    Text {
+                        text: root.connect_label;
+                        color: root.can_connect ? #ffffff : #52525b;
+                        font-size: 11px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            if root.show_delete: Rectangle {
+                width: 26px;
+                height: 26px;
+                opacity: ta-del.has-hover ? 1 : root.button_opacity;
+                background: ta-del.has-hover ? Theme.border : Theme.surface-2;
+                border-width: 1px;
+                border-color: Theme.border;
+                ta-del := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.remove(); }
+                }
+                Icon {
+                    size: 10px;
+                    commands: Icons.close;
+                    tint: Theme.text-3;
+                }
+            }
+        }
+    }
+}

@@ -50,7 +50,7 @@ See [docs/architecture.md](docs/architecture.md) for the dependency rules and th
 ## Documentation
 
 - [Architecture](docs/architecture.md) · [Configuration](docs/configuration.md) · [UI contract](docs/ui.md)
-- Features: [relay connection](docs/features/relay-connection.md), [viewer sessions](docs/features/viewer-sessions.md),
+- Features: [relay connection](docs/features/relay-connection.md), [dashboard](docs/features/dashboard.md), [viewer sessions](docs/features/viewer-sessions.md),
   [hosting](docs/features/hosting.md), [file transfer](docs/features/file-transfer.md),
   [clipboard](docs/features/clipboard.md), [direct P2P path](docs/features/p2p.md), [voice](docs/features/voice.md),
   [autostart and CLI](docs/features/autostart-and-cli.md)
