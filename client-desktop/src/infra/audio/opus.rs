@@ -30,6 +30,7 @@ const HEADER_LEN: usize = 4;
 const MAX_PACKET: usize = 1275;
 const VOICE_BITRATE: i32 = 28_000;
 /// Host sound is music and film soundtracks in stereo: near transparent at about a twelfth of 16-bit PCM.
+#[cfg_attr(not(windows), allow(dead_code))] // host sound plays on Windows only
 const HOST_SOUND_BITRATE: i32 = 128_000;
 const EXPECTED_LOSS_PERCENT: i32 = 5;
 /// Longer gaps are a new stream (sender restarted, call resumed), not loss to conceal.
@@ -72,6 +73,7 @@ impl Encoder {
     }
 
     /// Opens the host sound encoder: 48 kHz stereo, interleaved left/right input.
+    #[cfg_attr(not(windows), allow(dead_code))] // host sound plays on Windows only
     pub fn host_sound() -> Option<Self> {
         Self::open(DECODE_RATE, 2, OPUS_APPLICATION_AUDIO, OPUS_SIGNAL_MUSIC, HOST_SOUND_BITRATE, HOST_SOUND_TAG)
     }
@@ -143,6 +145,7 @@ impl Decoder {
     }
 
     /// Opens a stereo host sound decoder; its PCM is interleaved left/right.
+    #[cfg_attr(not(windows), allow(dead_code))] // host sound plays on Windows only
     pub fn stereo() -> Option<Self> {
         Self::open(2)
     }

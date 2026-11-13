@@ -227,6 +227,7 @@ impl Registry {
     }
 
     /// Number of open sessions.
+    #[cfg_attr(not(windows), allow(dead_code))] // read by the Windows update agent only
     pub fn len(&self) -> usize {
         self.inner.lock().sessions.len()
     }
