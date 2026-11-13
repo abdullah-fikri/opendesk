@@ -4,6 +4,7 @@
 //! - [`manifest`]: the signed release manifest and the install decision (pure)
 //! - [`health`]: health check after an update and the automatic rollback (pure state machine)
 //! - [`store`]: files of the update directory
+//! - [`progress`]: the service's writer of `progress.json`, which `opendesk update` shows
 //! - [`fetch`]: HTTPS download and verification of manifests and installers
 //! - `secure_dir`, `runner`, `agent` (Windows): the protected directory, the service side and the agent's
 //!   heartbeat
@@ -16,6 +17,7 @@ pub mod agent;
 pub mod fetch;
 pub mod health;
 pub mod manifest;
+pub mod progress;
 #[cfg(windows)]
 pub mod runner;
 #[cfg(windows)]
@@ -26,6 +28,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn now_unix() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Unix milliseconds (timestamps of `progress.json`, compared with the time a CLI request was queued).
+pub fn now_unix_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 /// False when `OPENDESK_AUTO_UPDATE` is `0`, `false` or `off`.

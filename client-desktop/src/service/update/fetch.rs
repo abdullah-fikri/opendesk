@@ -73,12 +73,13 @@ pub fn fetch_manifest(url: &str) -> Result<Manifest, String> {
     manifest::verify(&bytes, &String::from_utf8_lossy(&sig), manifest::RELEASE_PUBLIC_KEY).map_err(|e| e.to_string())
 }
 
-/// Downloads the installer of `m` into `dir` and returns its path once size and SHA-256 match.
-pub fn download_installer(m: &Manifest, dir: &Path) -> Result<PathBuf, String> {
+/// Downloads the installer of `m` into `dir` and returns its path once size and SHA-256 match. `on_bytes`
+/// gets the bytes received so far after every chunk (on this thread).
+pub fn download_installer(m: &Manifest, dir: &Path, on_bytes: &mut dyn FnMut(u64)) -> Result<PathBuf, String> {
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let part = dir.join(format!("{}.part", m.version));
     let done = dir.join(format!("OpenDesk-Setup-{}.exe", m.version));
-    let result = get(&m.installer_url).and_then(|body| copy_verified(body, &part, m.size, &m.sha256));
+    let result = get(&m.installer_url).and_then(|body| copy_verified(body, &part, m.size, &m.sha256, on_bytes));
     if let Err(e) = result {
         let _ = fs::remove_file(&part);
         return Err(e);
@@ -88,7 +89,13 @@ pub fn download_installer(m: &Manifest, dir: &Path) -> Result<PathBuf, String> {
 }
 
 /// Streams `body` to `dest`, refusing more than `size` bytes, and checks size and hash.
-fn copy_verified(mut body: impl Read, dest: &Path, size: u64, sha256: &str) -> Result<(), String> {
+fn copy_verified(
+    mut body: impl Read,
+    dest: &Path,
+    size: u64,
+    sha256: &str,
+    on_bytes: &mut dyn FnMut(u64),
+) -> Result<(), String> {
     let mut out = File::create(dest).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
     let mut total = 0u64;
@@ -104,6 +111,7 @@ fn copy_verified(mut body: impl Read, dest: &Path, size: u64, sha256: &str) -> R
         }
         hasher.update(&buf[..n]);
         out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        on_bytes(total);
     }
     out.sync_all().map_err(|e| e.to_string())?;
     check(total, &manifest::hex_encode(&hasher.finalize()), size, sha256)
@@ -155,12 +163,15 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let dest = dir.join("setup.part");
         let data = b"fake installer bytes";
-        assert!(copy_verified(&data[..], &dest, data.len() as u64, &sha(data)).is_ok());
+        let mut seen = 0;
+        assert!(copy_verified(&data[..], &dest, data.len() as u64, &sha(data), &mut |n| seen = n).is_ok());
+        assert_eq!(seen, data.len() as u64);
         assert!(verify_file(&dest, data.len() as u64, &sha(data)).is_ok());
         assert!(verify_file(&dest, data.len() as u64, &sha(b"other")).is_err());
-        assert!(copy_verified(&data[..], &dest, data.len() as u64 - 1, &sha(data)).is_err());
-        assert!(copy_verified(&data[..], &dest, data.len() as u64 + 1, &sha(data)).is_err());
-        assert!(copy_verified(&data[..], &dest, data.len() as u64, &sha(b"other")).is_err());
+        let ignore = &mut |_| {};
+        assert!(copy_verified(&data[..], &dest, data.len() as u64 - 1, &sha(data), ignore).is_err());
+        assert!(copy_verified(&data[..], &dest, data.len() as u64 + 1, &sha(data), ignore).is_err());
+        assert!(copy_verified(&data[..], &dest, data.len() as u64, &sha(b"other"), ignore).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 }
