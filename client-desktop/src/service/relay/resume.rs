@@ -33,6 +33,8 @@ pub struct Resume {
     waiting: Vec<String>,
     deadline: Option<Instant>,
     attempts: u32,
+    /// The countdown last shown (see `countdown`).
+    shown: Option<u64>,
 }
 
 impl Resume {
@@ -86,6 +88,13 @@ impl Resume {
     /// Seconds left of the grace, for "Reconnecting… (N s)".
     pub fn seconds_left(&self, now: Instant) -> u64 {
         self.deadline.map_or(0, |d| d.saturating_duration_since(now).as_secs())
+    }
+
+    /// The "Reconnecting… (N s)" countdown at `now` when it differs from the one last shown: N while sessions
+    /// wait, 0 (hide it) once none does.
+    pub fn countdown(&mut self, now: Instant) -> Option<u64> {
+        let secs = if self.any_waiting() { self.seconds_left(now).max(1) } else { 0 };
+        (self.shown != Some(secs)).then(|| *self.shown.insert(secs))
     }
 
     /// The grace is over at `now`: returns the sessions that must end.
@@ -186,6 +195,20 @@ mod tests {
         r.suspend(ids(&["3"]), Instant::now());
         r.ended("3");
         assert!(!r.any_waiting() && r.expire(Instant::now() + GRACE).is_empty());
+    }
+
+    #[test]
+    fn countdown_changes_once_per_second_and_clears() {
+        let mut r = Resume::default();
+        let t0 = Instant::now();
+        r.suspend(ids(&["1"]), t0);
+        assert_eq!(r.countdown(t0), Some(30));
+        assert_eq!(r.countdown(t0 + Duration::from_millis(500)), Some(29));
+        assert_eq!(r.countdown(t0 + Duration::from_millis(900)), None, "same second");
+        assert_eq!(r.countdown(t0 + Duration::from_millis(29_500)), Some(1));
+        r.resumed(&ids(&["1"]));
+        assert_eq!(r.countdown(t0 + Duration::from_secs(29)), Some(0));
+        assert_eq!(r.countdown(t0 + Duration::from_secs(29)), None);
     }
 
     #[test]

@@ -49,6 +49,7 @@ export struct SessionView {
     active_monitor: int,    // index into the host's monitor list
     stats_labels: string,   // stats overlay: newline-separated labels and values ("" until the first refresh)
     stats_values: string,
+    reconnecting: int,      // seconds left of the relay reconnect grace while the screen is frozen; 0 = none
 }
 
 // ---- File transfers (see client-desktop/docs/features/file-transfer.md). Rust fills these. ----

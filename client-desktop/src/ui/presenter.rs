@@ -215,6 +215,7 @@ impl UiPort for SlintUi {
                     r.stats_labels = labels.into();
                     r.stats_values = values.into();
                 }
+                SessionChange::Reconnecting(secs) => r.reconnecting = secs,
             });
         });
     }

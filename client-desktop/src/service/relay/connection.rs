@@ -27,7 +27,7 @@ use crate::infra::{autostart, device, logger, power, storage, virtual_clipboard,
 use crate::protocol::{ClientMessage, FilePayload, InputEvent, Outgoing, ServerMessage, binary};
 use crate::service::context::Ctx;
 use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS, chunk_units};
-use crate::service::ui_port::RelayStatus;
+use crate::service::ui_port::{RelayStatus, SessionChange};
 use crate::service::viewer::decoder;
 
 use super::resume::{self, Resume};
@@ -188,6 +188,7 @@ impl Connection {
         let sndbuf_env = std::env::var("OPENDESK_WS_SNDBUF").ok();
 
         while !ctx.relay.reconnect.load(Ordering::SeqCst) && !lost {
+            self.show_countdown();
             let partner = ctx.partner();
             self.prune_links(&partner);
             if last_path_update.elapsed() >= Duration::from_millis(250) {
@@ -323,6 +324,7 @@ impl Connection {
         for id in self.resume.expire(Instant::now()) {
             self.end_waiting(&id, resume::EXPIRED);
         }
+        self.show_countdown();
         let partner = self.ctx.partner();
         self.prune_links(&partner);
         while let Ok(event) = self.p2p_input.try_recv() {
@@ -789,6 +791,16 @@ impl Connection {
     pub(super) fn end_waiting(&mut self, id: &str, status: &str) {
         logger::info("relay", &format!("Session with {id} ended: {status}"));
         self.end_session(id, Some(status.to_string()));
+    }
+
+    /// Updates the "Reconnecting… (N s)" overlay of the viewed hosts once a second; one whose direct path is
+    /// still alive keeps its live picture and shows none.
+    fn show_countdown(&mut self) {
+        let Some(secs) = self.resume.countdown(Instant::now()) else { return };
+        for s in self.ctx.viewers.all() {
+            let shown = if self.direct(&s.id).is_some() { 0 } else { secs as i32 };
+            self.ctx.ui.session_changed(s.id.clone(), SessionChange::Reconnecting(shown));
+        }
     }
 
     /// "Reconnecting… (N s)" while sessions wait.
