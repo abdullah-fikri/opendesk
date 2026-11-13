@@ -30,8 +30,10 @@ in-memory fakes and never import transport or storage code.
   view and monitor tile (served round robin); file messages get a turn at least every 8 writes.
 - Overflow: voice drops its oldest packet; video keeps the frame-queue rules; a full control (256 messages)
   or file (16) queue holds its sender back while the writer is making progress. A receiver whose current
-  write has been stuck for 500 ms with a full control queue, or 10 s with a full file queue, is closed, and so
-  is one whose write fails or times out (10 s). Closing ends its read loop and runs the normal cleanup, which
+  write has been stuck for 5 s with a full control queue, or 10 s with a full file queue, is closed, and so
+  is one whose write fails or times out (10 s). A relayed mouse move replaces the sender's newest queued move
+  when nothing else was queued after it, so moves never fill the control queue; clicks, keys, clipboard and
+  session messages are never merged or dropped. Closing ends its read loop and runs the normal cleanup, which
   stops the writer and releases its queues.
 - Storage writes run synchronously with a 5 s timeout. They are an audit trail: a failure is logged and the
   live session continues.

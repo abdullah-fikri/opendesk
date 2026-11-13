@@ -321,7 +321,7 @@ func (c *connection) onRelayInput(msg []byte) {
 		return
 	}
 	if rcpt := c.h.relay.ActivePartner(c.peer, model.CleanDeskID(req.TargetClean)); rcpt != nil {
-		_ = rcpt.Send(dto.InputCommand{Type: dto.TypeInputCommand, Event: req.Event, FromClean: sourceFor(rcpt, c.peer)})
+		_ = c.h.relay.SendInput(c.peer, rcpt, req.Event, dto.InputCommand{Type: dto.TypeInputCommand, Event: req.Event, FromClean: sourceFor(rcpt, c.peer)})
 	}
 }
 

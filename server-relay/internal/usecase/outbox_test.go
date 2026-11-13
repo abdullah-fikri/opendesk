@@ -1,6 +1,7 @@
 package usecase
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -281,15 +282,198 @@ func TestClipboardWaitsBehindSendersFiles(t *testing.T) {
 	}
 }
 
-// The hot text path to a receiver: one relayed mouse move, encoded and handed to the receiver's socket.
+// The hot text path to a receiver: one relayed mouse move, recognized, encoded and handed to the receiver's
+// socket.
 func BenchmarkSendInput(b *testing.B) {
-	p := newPeer(PeerInfo{CleanID: "100000001"}, "", false, nopConn{}, metrics.New())
+	r := newTestRelay(Options{})
+	sender := buildPeer(PeerInfo{CleanID: "100000002"}, "", false, nopConn{}, r.metrics)
+	p := newPeer(PeerInfo{CleanID: "100000001"}, "", false, nopConn{}, r.metrics)
 	defer p.close()
-	msg := map[string]any{"type": "input-command", "event": map[string]any{"action": "mousemove", "normX": 0.5, "normY": 0.5}}
+	event, msg := inputCommand(map[string]any{"action": "mousemove", "normX": 0.5, "normY": 0.5})
 	b.ReportAllocs()
 	for b.Loop() {
-		if err := p.Send(msg); err != nil {
+		if err := r.SendInput(sender, p, event, msg); err != nil {
 			b.Fatal(err)
 		}
 	}
+}
+
+// inputCommand returns a relayed input event and the input-command the handler queues for it.
+func inputCommand(event map[string]any) (json.RawMessage, map[string]any) {
+	raw, _ := json.Marshal(event)
+	return raw, map[string]any{"type": "input-command", "event": event}
+}
+
+func sendInput(t *testing.T, r *Relay, sender, rcpt *Peer, event map[string]any) {
+	t.Helper()
+	raw, v := inputCommand(event)
+	if err := r.SendInput(sender, rcpt, raw, v); err != nil {
+		t.Fatalf("input %v refused: %v", event, err)
+	}
+}
+
+func move(seq int) map[string]any {
+	return map[string]any{"action": "mousemove", "normX": 0.5, "normY": 0.5, "seq": seq}
+}
+
+func button(action string) map[string]any {
+	return map[string]any{"action": action, "normX": 0.5, "normY": 0.5, "button": 0}
+}
+
+// written is how gateConn records v written as text.
+func written(v any) string {
+	data, _ := json.Marshal(v)
+	return "t:" + string(data)
+}
+
+func inputEntry(event map[string]any) string {
+	_, v := inputCommand(event)
+	return written(v)
+}
+
+// A viewer keeps moving the pointer while the host's link takes nothing for 2 s: the moves share one queue
+// slot, the sender never waits, the connection stays up, and the host gets the newest position.
+func TestMouseMovesToStalledReceiverCoalesce(t *testing.T) {
+	t.Parallel()
+	r := newTestRelay(Options{})
+	viewer := buildPeer(PeerInfo{CleanID: "100000001"}, "", false, nopConn{}, r.metrics)
+	conn := newGateConn(true)
+	host := newPeer(PeerInfo{CleanID: "200000001"}, "", false, conn, r.metrics)
+	defer host.close()
+	_ = host.Send("hold") // the writer waits on the gate with this one
+	time.Sleep(20 * time.Millisecond)
+
+	const moves = 2000
+	started := time.Now()
+	for i := range moves {
+		sendInput(t, r, viewer, host, move(i))
+		if i%100 == 99 {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	if stalled := time.Since(started); stalled < 1800*time.Millisecond {
+		t.Fatalf("receiver stalled only %v", stalled)
+	}
+	host.outMu.Lock()
+	slots := host.control.n
+	host.outMu.Unlock()
+	if slots != 1 {
+		t.Fatalf("moves took %d queue slots, want 1", slots)
+	}
+	close(conn.gate)
+	conn.waitEntries(t, 2)
+	time.Sleep(20 * time.Millisecond)
+	want := []string{`t:"hold"`, inputEntry(move(moves - 1))}
+	if got := conn.entries(); fmt.Sprint(got) != fmt.Sprint(want) || conn.isClosed() {
+		t.Fatalf("writes %v closed=%v, want %v", got, conn.isClosed(), want)
+	}
+}
+
+// Moves merge only with a move queued after everything else: clicks, keys and other senders' messages keep
+// their place, so move, down, move, up reaches the host in that order. Sealed (e2e) events are never merged,
+// and the emergency switch keeps every move.
+func TestMouseMoveCoalescingKeepsOrder(t *testing.T) {
+	run := func(t *testing.T, opts Options, events func(r *Relay, a, b, host *Peer)) []string {
+		t.Helper()
+		r := newTestRelay(opts)
+		a := buildPeer(PeerInfo{CleanID: "100000001"}, "", false, nopConn{}, r.metrics)
+		b := buildPeer(PeerInfo{CleanID: "100000002"}, "", false, nopConn{}, r.metrics)
+		conn := newGateConn(true)
+		host := newPeer(PeerInfo{CleanID: "200000001"}, "", false, conn, r.metrics)
+		defer host.close()
+		_ = host.Send("hold") // the writer waits on the gate with this one
+		time.Sleep(20 * time.Millisecond)
+		events(r, a, b, host)
+		host.outMu.Lock()
+		n := host.control.n + 1
+		host.outMu.Unlock()
+		close(conn.gate)
+		got := conn.waitEntries(t, n)
+		time.Sleep(20 * time.Millisecond)
+		if e := conn.entries(); len(e) != len(got) {
+			t.Fatalf("more writes than queued messages: %v", e)
+		}
+		return got
+	}
+	check := func(t *testing.T, got []string, want ...string) {
+		t.Helper()
+		want = append([]string{`t:"hold"`}, want...)
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("writes\n got %v\nwant %v", got, want)
+		}
+	}
+
+	t.Run("clicks split moves", func(t *testing.T) {
+		got := run(t, Options{}, func(r *Relay, a, _, host *Peer) {
+			for _, e := range []map[string]any{move(1), move(2), button("mousedown"), move(3), move(4), button("mouseup"), move(5), move(6)} {
+				sendInput(t, r, a, host, e)
+			}
+		})
+		check(t, got, inputEntry(move(2)), inputEntry(button("mousedown")), inputEntry(move(4)),
+			inputEntry(button("mouseup")), inputEntry(move(6)))
+	})
+	t.Run("other traffic splits moves", func(t *testing.T) {
+		got := run(t, Options{}, func(r *Relay, a, b, host *Peer) {
+			sendInput(t, r, a, host, move(1))
+			sendInput(t, r, b, host, move(2)) // another sender's move
+			sendInput(t, r, a, host, move(3))
+			_ = host.Send(move(4)) // not relayed input: never merged
+			sendInput(t, r, a, host, move(5))
+			sendInput(t, r, a, host, move(6))
+		})
+		check(t, got, inputEntry(move(1)), inputEntry(move(2)), inputEntry(move(3)), written(move(4)),
+			inputEntry(move(6)))
+	})
+	t.Run("sealed events keep their slot", func(t *testing.T) {
+		sealed := func(d string) map[string]any { return map[string]any{"action": "e2e", "d": d} }
+		got := run(t, Options{}, func(r *Relay, a, _, host *Peer) {
+			sendInput(t, r, a, host, sealed("x"))
+			sendInput(t, r, a, host, sealed("y"))
+		})
+		check(t, got, inputEntry(sealed("x")), inputEntry(sealed("y")))
+	})
+	t.Run("switch off", func(t *testing.T) {
+		got := run(t, Options{MoveCoalescingDisabled: true}, func(r *Relay, a, _, host *Peer) {
+			sendInput(t, r, a, host, move(1))
+			sendInput(t, r, a, host, move(2))
+		})
+		check(t, got, inputEntry(move(1)), inputEntry(move(2)))
+	})
+}
+
+// Clicks are never merged or dropped: a receiver whose link stays stalled with a control queue full of them is
+// still open within the stall limit and closed once it is exceeded, before 6 s.
+func TestStalledReceiverWithQueuedClicksIsClosed(t *testing.T) {
+	t.Parallel()
+	r := newTestRelay(Options{})
+	viewer := buildPeer(PeerInfo{CleanID: "100000001"}, "", false, nopConn{}, r.metrics)
+	conn := newGateConn(true)
+	host := newPeer(PeerInfo{CleanID: "200000001"}, "", false, conn, r.metrics)
+	started := time.Now()
+	// One click is with the writer, the rest fill the queue.
+	for i := 0; i <= controlQueueLen; i++ {
+		sendInput(t, r, viewer, host, button([]string{"mousedown", "mouseup"}[i%2]))
+	}
+	overflow := make(chan error, 1)
+	go func() {
+		raw, v := inputCommand(button("mousedown"))
+		overflow <- r.SendInput(viewer, host, raw, v)
+	}()
+	select {
+	case err := <-overflow:
+		t.Fatalf("receiver given up after %v, within the stall limit: %v", time.Since(started), err)
+	case <-time.After(2 * time.Second):
+	}
+	if conn.isClosed() {
+		t.Fatal("receiver closed within the stall limit")
+	}
+	select {
+	case err := <-overflow:
+		if !errors.Is(err, ErrSlowReceiver) || !conn.isClosed() {
+			t.Fatalf("err %v closed=%v", err, conn.isClosed())
+		}
+	case <-time.After(6*time.Second - time.Since(started)):
+		t.Fatal("receiver stalled for 6 s was not closed")
+	}
+	waitWriterDone(t, host)
 }

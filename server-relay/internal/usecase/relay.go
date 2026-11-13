@@ -23,6 +23,9 @@ type Options struct {
 	Security SecurityRepository
 	// UDPRelay advertises the udp-relay capability (the UDP forwarder runs).
 	UDPRelay bool
+	// MoveCoalescingDisabled queues every relayed mouse move in its own slot instead of letting a newer move
+	// replace a queued one (an emergency switch; see SendInput).
+	MoveCoalescingDisabled bool
 }
 
 // Relay is the in-memory session broker. All exported methods are safe for concurrent use.
@@ -42,7 +45,9 @@ type Relay struct {
 	securityRepo SecurityRepository
 	caps         []string
 	p2pDisabled  bool
-	log          *slog.Logger
+	// mergeMoves lets a queued mouse move be replaced by a newer one (see SendInput).
+	mergeMoves bool
+	log        *slog.Logger
 }
 
 // New builds a Relay on top of the given storage.
@@ -71,6 +76,7 @@ func New(hosts HostRepository, sessions SessionRepository, m FrameMetrics, opts 
 		securityRepo: opts.Security,
 		caps:         caps,
 		p2pDisabled:  opts.P2PDisabled,
+		mergeMoves:   !opts.MoveCoalescingDisabled,
 		log:          log.With("component", "relay"),
 	}
 }

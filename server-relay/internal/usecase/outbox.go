@@ -16,14 +16,22 @@ import (
 // A full control or file queue makes the sender wait for room while the writer is making progress (a burst to
 // a healthy receiver, or a file sent faster than the receiver's link takes it). A receiver whose current write
 // has been stuck for the class's stall limit is dead and is closed.
+//
+// Mouse moves are the one kind of input that is safe to merge: only the newest position matters. A relayed
+// plain mouse move replaces the newest queued control message when that is an unwritten move from the same
+// sender (see msgRing.coalesce), so a viewer moving the pointer over a host whose link stalls for a few seconds
+// keeps one queue slot instead of filling the queue. Every other message (clicks, keys, clipboard, session
+// messages) keeps its own slot and is never dropped.
 const (
 	// controlQueueLen and controlQueueBytes bound queued text. One message larger than the byte bound (a large
 	// clipboard text) is still taken when nothing else is queued.
 	controlQueueLen   = 256
 	controlQueueBytes = 16 << 20
 	// controlStallLimit: input must never be dropped silently, so a receiver with a full control queue whose
-	// socket has taken nothing for this long is closed rather than holding its sender back.
-	controlStallLimit = 500 * time.Millisecond
+	// socket has taken nothing for this long is closed rather than holding its sender back. It is long enough to
+	// ride out a few seconds of a shaky link (mouse moves no longer fill the queue, see msgRing.coalesce) and
+	// shorter than the socket write bound (handler.writeTimeout), which closes a dead receiver anyway.
+	controlStallLimit = 5 * time.Second
 	// audioQueueLen bounds queued voice; the oldest packet goes first, since late voice is worse than a gap.
 	audioQueueLen = 16
 	// fileQueueLen and fileQueueBytes bound queued file-transfer messages (JSON chunks carry at most 32 KiB,
@@ -44,8 +52,11 @@ type outMsg struct {
 	bin    []byte
 	marker byte
 	tag    string
-	// from is the sender's clean ID on file traffic.
+	// from is the sender's clean ID on file traffic and on coalescable mouse moves.
 	from string
+	// move marks a relayed plain mouse move from the sender in from, which a newer one may replace while both
+	// are still queued (see msgRing.coalesce).
+	move bool
 	// hangUp closes the connection once everything queued before it is written.
 	hangUp bool
 }
@@ -72,6 +83,24 @@ func (r *msgRing) push(m outMsg) {
 	r.buf[(r.head+r.n)%len(r.buf)] = m
 	r.n++
 	r.bytes += m.size()
+}
+
+// coalesce replaces the newest queued message with m when m is a mouse move and that message is an unwritten
+// mouse move from the same sender, keeping the queue within maxBytes; it reports whether it did. Only the newest
+// message qualifies, so a move never overtakes anything queued after the move it replaces: in
+// move, down, move, up the second move gets its own slot because the click came after the first. The writer
+// pops from the head, so a newest message that is still queued has not been written. O(1); requires outMu.
+func (r *msgRing) coalesce(m outMsg, maxBytes int) bool {
+	if !m.move || r.n == 0 {
+		return false
+	}
+	last := &r.buf[(r.head+r.n-1)%len(r.buf)]
+	if !last.move || last.from != m.from || r.bytes-last.size()+m.size() > maxBytes {
+		return false
+	}
+	r.bytes += m.size() - last.size()
+	*last = m
+	return true
 }
 
 func (r *msgRing) pop() (outMsg, bool) {
@@ -177,6 +206,16 @@ func (p *Peer) SendClipboard(from string, v any) error {
 	return p.enqueue(outMsg{text: data})
 }
 
+// sendInput queues a relayed input event v as control traffic. A non-empty moveFrom marks it as a mouse move
+// from that sender, which a later move from the same sender may replace while both are queued.
+func (p *Peer) sendInput(moveFrom string, v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return p.enqueue(outMsg{text: data, from: moveFrom, move: moveFrom != ""})
+}
+
 // Disconnect closes the connection after everything already queued for it is written (for example the error
 // that explains why); its read loop then ends and the normal disconnect cleanup runs.
 func (p *Peer) Disconnect() error {
@@ -194,8 +233,14 @@ func (p *Peer) enqueue(m outMsg) error {
 	return p.push(&p.control, controlQueueBytes, controlStallLimit, m)
 }
 
-// push adds m to q. While q is full it waits for the writer to take a message; when the writer's current write
-// has been stuck for stall (or the wait exceeds fileStallLimit) the receiver is closed instead.
+// push adds m to q. A mouse move that replaces the queued one (msgRing.coalesce) never waits. While q is full it
+// waits for the writer to take a message; when the writer's current write has been stuck for stall (or the wait
+// exceeds fileStallLimit) the receiver is closed instead.
+//
+// Locking: every queue, including the slot coalesce rewrites, is read and changed only under outMu, which the
+// writer also holds while it pops (nextLocked). A popped message is the writer's own copy, so rewriting a slot
+// can never change a message that is being written. The check for a move to replace and the push run in the
+// same critical section, so nothing can be queued between them.
 func (p *Peer) push(q *msgRing, maxBytes int, stall time.Duration, m outMsg) error {
 	started := time.Now()
 	p.outMu.Lock()
@@ -203,6 +248,11 @@ func (p *Peer) push(q *msgRing, maxBytes int, stall time.Duration, m outMsg) err
 		if p.closed {
 			p.outMu.Unlock()
 			return ErrPeerClosed
+		}
+		if q.coalesce(m, maxBytes) {
+			// The replaced move was already signaled to the writer.
+			p.outMu.Unlock()
+			return nil
 		}
 		if q.n == 0 || (!q.full() && q.bytes+m.size() <= maxBytes) {
 			q.push(m)

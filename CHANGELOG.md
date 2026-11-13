@@ -3,6 +3,14 @@
 All notable changes to OpenDesk. Versions follow [Semantic Versioning](https://semver.org); the single source of
 truth is `VERSION`. The release workflow copies the section of the tagged version into the GitHub Release.
 
+## [Unreleased]
+
+### Fixed
+- Relay: moving the mouse over a host whose link stalls for a moment no longer closes the connection. Queued
+  mouse moves from the same viewer are merged (newest position wins, order with clicks and keys kept), and a
+  receiver is closed only after its control queue has been stuck for 5 s (was 500 ms).
+  `OPENDESK_RELAY_COALESCE_MOVES=0` turns merging off.
+
 ## [1.2.1] - 2026-10-29
 
 ### Added

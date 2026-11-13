@@ -1,5 +1,13 @@
 package usecase
 
+import (
+	"bytes"
+	"encoding/json"
+)
+
+// inputMouseMove is the input event action of a pointer move (docs/protocol.md, Input events).
+const inputMouseMove = "mousemove"
+
 // ActivePartner returns the receiver of a message from sender to targetClean, or nil unless both sides hold an
 // active session with each other. An empty targetClean selects the single session of a non-multi peer.
 func (r *Relay) ActivePartner(sender *Peer, targetClean string) *Peer {
@@ -48,4 +56,32 @@ func (r *Relay) ForwardBinary(sender *Peer, msg []byte) bool {
 		rcpt.deliverVideo(view, msg)
 	}
 	return true
+}
+
+// SendInput queues v, the input-command that carries event from sender, for rcpt (the partner ActivePartner
+// returned). A plain mouse move may be replaced by the sender's next one while both wait in rcpt's control
+// queue, unless coalescing is disabled; every other event keeps its own slot and is never dropped. Events sealed
+// end to end (action "e2e") are opaque to the relay and always keep their own slot.
+func (r *Relay) SendInput(sender, rcpt *Peer, event json.RawMessage, v any) error {
+	moveFrom := ""
+	if r.mergeMoves && isMouseMove(event) {
+		moveFrom = sender.CleanID
+	}
+	return rcpt.sendInput(moveFrom, v)
+}
+
+// isMouseMove reports whether a relayed input event is a plain mouse move.
+//
+// SECURITY: event comes from the sender and is not trusted. Only its action is read, and a move is keyed by the
+// sender's own clean ID, so a forged "mousemove" can at most replace that same sender's queued move: it never
+// touches another sender's messages or any non-move message.
+func isMouseMove(event json.RawMessage) bool {
+	// Most events are not moves (sealed e2e events, keys, clicks): skip the decode unless the word occurs.
+	if !bytes.Contains(event, []byte(inputMouseMove)) {
+		return false
+	}
+	var e struct {
+		Action string `json:"action"`
+	}
+	return json.Unmarshal(event, &e) == nil && e.Action == inputMouseMove
 }

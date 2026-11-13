@@ -9,8 +9,10 @@ import (
 )
 
 // A multi-session viewer controls hosts a and b; a stops reading. Large clipboard texts to a fill its socket and
-// then its relay queue, while input to b must keep arriving promptly: a stalled receiver may not freeze its
-// sender's read loop. a is closed once it falls too far behind.
+// then its relay queue, while input to b must keep arriving: a stalled receiver may hold its sender's read loop
+// back at most for the control stall limit (usecase.controlStallLimit, 5 s), then a is closed.
+//
+// Input to b is key presses, which are never merged, so b must receive every one of them.
 func TestStalledReceiverDoesNotBlockSender(t *testing.T) {
 	h := newTestHandler(usecase.Options{}, Options{})
 	dial := dialer(t, h)
@@ -33,21 +35,22 @@ func TestStalledReceiverDoesNotBlockSender(t *testing.T) {
 	go func() {
 		for i := range rounds {
 			if viewer.WriteJSON(map[string]string{"type": "relay-clipboard", "targetClean": "222222222", "text": text}) != nil ||
-				viewer.WriteJSON(map[string]any{"type": "relay-input", "targetClean": "333333333", "event": map[string]any{"action": "mousemove", "seq": i}}) != nil {
+				viewer.WriteJSON(map[string]any{"type": "relay-input", "targetClean": "333333333", "event": map[string]any{"action": "keydown", "seq": i}}) != nil {
 				return
 			}
 		}
 	}()
 
+	const maxGap = 6 * time.Second // the control stall limit plus scheduling slack
 	last, worst := time.Now(), time.Duration(0)
 	for i := range rounds {
-		_ = b.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_ = b.SetReadDeadline(time.Now().Add(maxGap + 2*time.Second))
 		var m map[string]any
 		if err := b.ReadJSON(&m); err != nil {
 			t.Fatalf("input %d to the healthy host: %v", i, err)
 		}
 		gap := time.Since(last)
-		if gap > time.Second {
+		if gap > maxGap {
 			t.Fatalf("input %d to the healthy host waited %v behind the stalled one", i, gap)
 		}
 		worst, last = max(worst, gap), time.Now()
