@@ -32,7 +32,9 @@ Updates (Windows, run as Administrator):\n\
 \x20 pin <version>          Install only that version from now on\n\
 \x20 unpin                  Follow new releases again\n\
 \x20 Add --force to update or rollback to go below the release's minimum version.\n\
-\x20 Add --no-wait to update or rollback to return at once instead of showing the progress.";
+\x20 Add --no-wait to update or rollback to return at once instead of showing the progress.\n\
+\x20 The install waits until no remote session is active. Add --now to update to install at once;\n\
+\x20 active host and viewer sessions on this device are disconnected.";
 
 /// Handles a CLI command and exits, or returns when the arguments are for the GUI app.
 pub fn run_if_requested() {
@@ -220,25 +222,33 @@ fn uninstall() -> i32 {
     )
 }
 
-/// `update [latest|<version>|status] [--force] [--no-wait]`.
+/// `update [latest|<version>|status] [--force] [--no-wait] [--now]`.
 fn update(rest: &[String]) -> i32 {
     use crate::service::update::store::Request;
 
     let out = Out::open();
     let force = rest.iter().any(|a| a == "--force");
     let wait = !rest.iter().any(|a| a == "--no-wait");
+    let now = rest.iter().any(|a| a == "--now");
+    let start = |out: &Out| {
+        out.banner(true);
+        if now {
+            let warning = "Warning: --now installs as soon as the download is verified; active remote sessions on this device are disconnected.";
+            out.write(&format!("{}\n\n", out.style.bold(warning)));
+        }
+    };
     match rest.iter().find(|a| !a.starts_with("--")).map(|a| a.to_ascii_lowercase()).as_deref() {
         None | Some("latest") | Some("now") => {
-            out.banner(true);
+            start(&out);
             let job = cli_ui::Job::Update { target: None };
-            run_update_job(&out, &[Request::Unpin, Request::UpdateNow], job, wait)
+            run_update_job(&out, &[Request::Unpin, Request::UpdateNow { now }], job, wait)
         }
         Some("status") => update_status(&out),
         Some(v) => match parse_version(&out, v) {
             Some(version) => {
-                out.banner(true);
+                start(&out);
                 let job = cli_ui::Job::Update { target: Some(version.clone()) };
-                run_update_job(&out, &[Request::Install { version, force }], job, wait)
+                run_update_job(&out, &[Request::Install { version, force, now }], job, wait)
             }
             None => 2,
         },
@@ -322,7 +332,7 @@ fn run_update_job(out: &Out, requests: &[crate::service::update::store::Request]
     }
     if !wait {
         return out.done(
-            "Request queued. The OpenDesk service acts within a few seconds and installs once no session is active.\nProgress: opendesk update status",
+            "Request queued. The OpenDesk service acts within a few seconds.\nProgress: opendesk update status",
             0,
         );
     }

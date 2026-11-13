@@ -132,7 +132,12 @@ pub enum Phase {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Request {
-    UpdateNow,
+    /// `opendesk update [--now]`. `now`: install as soon as the download is verified, ending active sessions
+    /// (absent in requests of older versions, which always waited for an idle moment).
+    UpdateNow {
+        #[serde(default)]
+        now: bool,
+    },
     Rollback {
         #[serde(default)]
         version: Option<String>,
@@ -148,6 +153,9 @@ pub enum Request {
         version: String,
         #[serde(default)]
         force: bool,
+        /// As in `UpdateNow`.
+        #[serde(default)]
+        now: bool,
     },
 }
 
@@ -400,9 +408,12 @@ mod tests {
     fn requests_are_taken_once_in_order() {
         let s = temp("req");
         s.push_request(&Request::Pin { version: "1.0.0".into() }, 2).unwrap();
-        s.push_request(&Request::UpdateNow, 1).unwrap();
+        s.push_request(&Request::UpdateNow { now: false }, 1).unwrap();
         fs::write(s.root().join("requests").join("3.json"), "garbage").unwrap();
-        assert_eq!(s.take_requests(), vec![Request::UpdateNow, Request::Pin { version: "1.0.0".into() }]);
+        assert_eq!(
+            s.take_requests(),
+            vec![Request::UpdateNow { now: false }, Request::Pin { version: "1.0.0".into() }]
+        );
         assert!(s.take_requests().is_empty());
         let _ = fs::remove_dir_all(s.root());
     }
@@ -441,6 +452,22 @@ mod tests {
         assert_eq!(fs::read_to_string(app.join("config.json")).unwrap(), "old");
         assert!(!s.root().join("backup-1.0.0").join("x.log").exists());
         let _ = fs::remove_dir_all(s.root());
+    }
+
+    #[test]
+    fn requests_without_now_still_parse() {
+        let old: Request = serde_json::from_str(r#"{"action":"update_now"}"#).unwrap();
+        assert_eq!(old, Request::UpdateNow { now: false });
+        let old: Request = serde_json::from_str(r#"{"action":"install","version":"1.2.3","force":true}"#).unwrap();
+        assert_eq!(old, Request::Install { version: "1.2.3".into(), force: true, now: false });
+        let new: Request = serde_json::from_str(r#"{"action":"update_now","now":true}"#).unwrap();
+        assert_eq!(new, Request::UpdateNow { now: true });
+        let json =
+            serde_json::to_string(&Request::Install { version: "1.3.0".into(), force: false, now: true }).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Request>(&json).unwrap(),
+            Request::Install { version: "1.3.0".into(), force: false, now: true }
+        );
     }
 
     #[test]

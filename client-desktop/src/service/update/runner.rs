@@ -51,6 +51,8 @@ pub struct Updater {
     forced: bool,
     /// `opendesk update <version> [--force]`: the next check fetches that release's manifest instead of the latest.
     target: Option<(Version, bool)>,
+    /// `opendesk update --now`: install the update the next check finds without waiting for sessions to end.
+    install_now: bool,
     worker: Option<Receiver<Result<Option<Ready>, String>>>,
     ready: Option<Ready>,
     early_exit: bool,
@@ -76,6 +78,7 @@ impl Updater {
             next_check,
             forced: false,
             target: None,
+            install_now: false,
             worker: None,
             ready: None,
             early_exit: false,
@@ -126,8 +129,13 @@ impl Updater {
         }
 
         self.collect_worker(now);
-        let idle = fresh.map_or(!agent_running, |r| r.idle);
-        if idle && let Some(ready) = self.ready.take() {
+        if may_install(fresh, agent_running, self.install_now)
+            && let Some(ready) = self.ready.take()
+        {
+            if self.install_now {
+                logger::warn("update", "Installing now as requested (--now); active sessions are ended.");
+            }
+            self.install_now = false;
             self.install(ready, report.as_ref(), now, stop_agent);
             return;
         }
@@ -187,6 +195,10 @@ impl Updater {
             Err(TryRecvError::Disconnected) => self.worker = None,
             Ok(result) => {
                 self.worker = None;
+                // `--now` applies to the update this check found, not to a later automatic one.
+                if !matches!(result, Ok(Some(_))) {
+                    self.install_now = false;
+                }
                 match result {
                     Ok(ready) => self.ready = ready,
                     Err(e) => {
@@ -202,8 +214,9 @@ impl Updater {
         logger::info("update", &format!("Request: {request:?}"));
         let mut state = self.store.state();
         match request {
-            Request::UpdateNow => {
+            Request::UpdateNow { now: install_now } => {
                 self.forced = true;
+                self.install_now = install_now;
                 self.schedule(now);
             }
             Request::Pin { version } => {
@@ -214,7 +227,7 @@ impl Updater {
                 state.pinned = None;
                 self.save(&state);
             }
-            Request::Install { version, force } => {
+            Request::Install { version, force, now: install_now } => {
                 let Some(target) = Version::parse(&version) else { return };
                 // Stay on the chosen release: automatic checks offer nothing else until `opendesk update latest`.
                 state.pinned = Some(target.to_string());
@@ -226,6 +239,7 @@ impl Updater {
                 }
                 self.ready = None;
                 self.forced = true;
+                self.install_now = install_now;
                 self.target = Some((target, force));
                 self.schedule(now);
             }
@@ -400,6 +414,12 @@ impl Updater {
     }
 }
 
+/// Whether a verified installer may run now: no session is active (per a `fresh` agent report, or no agent
+/// at all), or `opendesk update --now` asked to install even while sessions are active.
+fn may_install(fresh: Option<&AgentReport>, agent_running: bool, install_now: bool) -> bool {
+    install_now || fresh.map_or(!agent_running, |r| r.idle)
+}
+
 fn mark_bad(state: &mut State, version: Version) {
     let v = version.to_string();
     if !state.bad.contains(&v) {
@@ -496,4 +516,25 @@ fn launch(installer: &Path, log: &Path) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report(idle: bool, sessions: u32) -> AgentReport {
+        AgentReport { idle, sessions, ..AgentReport::default() }
+    }
+
+    #[test]
+    fn install_waits_for_idle_unless_now_was_requested() {
+        let busy = report(false, 2);
+        let idle = report(true, 0);
+        assert!(!may_install(Some(&busy), true, false), "active sessions: wait");
+        assert!(may_install(Some(&busy), true, true), "--now skips waiting_idle");
+        assert!(may_install(Some(&idle), true, false));
+        assert!(!may_install(None, true, false), "running agent without a fresh report: wait");
+        assert!(may_install(None, true, true));
+        assert!(may_install(None, false, false), "no agent, no sessions");
+    }
 }

@@ -82,13 +82,19 @@ A non-administrator can point `update_url` anywhere, but only manifests signed w
 | --- | --- |
 | `opendesk update` / `opendesk update latest` | Unpin and check now, ignoring the rollout and bad marks; installs when idle |
 | `opendesk update 1.2.3 [--force]` | Fetch that release's signed manifest (`.../download/v1.2.3/`), install it when idle (newer or older) and pin it; below `min_version` needs `--force` |
-| `opendesk update status` | Installed, pinned, kept and bad versions, and the update in progress |
+| `opendesk update [latest\|1.2.3] --now` | As above, but install as soon as the download is verified, without waiting for sessions to end: active host and viewer sessions are disconnected |
+| `opendesk update status` | Installed, pinned, kept and bad versions, the last update phase (`progress.json`) and the last and next check |
 | `opendesk rollback [version] [--force]` | Reinstall the previous kept version (or `version`) now and mark the current one bad |
 | `opendesk pin 1.2.3` / `opendesk unpin` | Install only that version / follow releases again |
 
 The older spellings `--update-now`, `--rollback`, `--pin-version` and `--unpin` still work. The commands are
 queued in `requests\` and carried out by the service within seconds; results are in the service's log
 (`opendesk.trace` of the SYSTEM profile).
+
+`update` and `rollback` then show the service's progress (check, download, verify, wait for sessions, install)
+until the installer starts; the installer replaces `OpenDesk.exe`, so the command exits at that point. `--no-wait`
+returns right after queuing, and Ctrl+C only stops watching. Without `--now` the install always waits until no
+remote session is active; `--now` (the request's `now` field, false when absent) skips that wait.
 
 ## Compatibility rules
 
