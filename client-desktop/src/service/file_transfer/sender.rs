@@ -6,6 +6,7 @@
 //! answer `end` with an ACK/NACK; for them "Sent" means verified on the other side. Folders go only to
 //! `file-folder` receivers, as folder entries plus files carrying their relative path.
 
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
@@ -45,15 +46,13 @@ pub fn is_sending(target: &str, paths: &[PathBuf]) -> bool {
 }
 
 /// Removes its selection from [`ACTIVE_SENDS`] when the send thread ends, however it ends.
-struct ActiveSend(Option<(String, Vec<PathBuf>)>);
+struct ActiveSend((String, Vec<PathBuf>));
 
 impl Drop for ActiveSend {
     fn drop(&mut self) {
-        if let Some(entry) = self.0.take() {
-            let mut all = ACTIVE_SENDS.lock();
-            if let Some(pos) = all.iter().position(|e| *e == entry) {
-                all.swap_remove(pos);
-            }
+        let mut all = ACTIVE_SENDS.lock();
+        if let Some(pos) = all.iter().position(|e| *e == self.0) {
+            all.swap_remove(pos);
         }
     }
 }
@@ -72,13 +71,6 @@ struct SendItem {
     /// Transfer ID chosen by the receiver (pulled offers); generated otherwise.
     id: Option<String>,
     tag: Option<FolderTag>,
-}
-
-enum Job {
-    /// Dropped, picked or pasted paths; may contain folders.
-    Paths(Vec<PathBuf>),
-    /// One offered file pulled under the receiver's transfer ID, so it can route the bytes to its paste stream.
-    Pull(PathBuf, String),
 }
 
 /// Everything a send thread needs.
@@ -128,38 +120,125 @@ impl Link {
 /// them into its focused Explorer window.
 pub fn send_files(ctx: &AppContext, paths: Vec<PathBuf>, target: String, auto_paste: bool) {
     if !paths.is_empty() {
-        run(ctx, Job::Paths(paths), target, auto_paste);
+        run(ctx, paths, target, auto_paste);
     }
 }
 
-/// Sends one offered file the partner pulled, under the transfer ID it chose.
+/// Sends one offered file the partner pulled, under the transfer ID it chose. Pulls wait in [`PULLS`], so a
+/// paste of many files never runs more than [`MAX_PARALLEL_PULLS`] sends (threads, relay grants) at once.
 pub(super) fn send_pulled(ctx: &AppContext, path: PathBuf, tid: String, target: String) {
-    run(ctx, Job::Pull(path, tid), target, false);
-}
-
-fn run(ctx: &AppContext, job: Job, target: String, auto_paste: bool) {
     if target.is_empty() {
         return;
     }
-    let active = match &job {
-        Job::Paths(paths) => {
-            let entry = (target.clone(), paths.clone());
-            ACTIVE_SENDS.lock().push(entry.clone());
-            ActiveSend(Some(entry))
+    let link = link_for(ctx, target);
+    // A pull queued before the relay connection dropped belongs to a dead grant and paste stream.
+    let started = epoch();
+    PULLS.submit(Box::new(move || {
+        if epoch() == started {
+            send_file(&link, SendItem { path, id: Some(tid), tag: None }, started, false);
         }
-        Job::Pull(..) => ActiveSend(None),
-    };
+    }));
+}
+
+fn link_for(ctx: &AppContext, target: String) -> Link {
     let relay_binary = ctx.relay.caps.lock().file_binary;
-    let link = Link { outbox: ctx.outbox.clone(), ui: Arc::clone(&ctx.ui), target, relay_binary };
+    Link { outbox: ctx.outbox.clone(), ui: Arc::clone(&ctx.ui), target, relay_binary }
+}
+
+/// Most pulled files sent at the same time. Explorer reads a multi-file paste one stream after another, so a
+/// second running send only hides the gap between files; more would cost one thread and one relay grant (the
+/// relay allows 8 per peer) each, and a 50-file paste must not open 50 of them.
+const MAX_PARALLEL_PULLS: usize = 2;
+/// Pulled files waiting to be sent, in the order the partner asked for them.
+static PULLS: TaskQueue = TaskQueue::new("files-pull", MAX_PARALLEL_PULLS);
+
+type Task = Box<dyn FnOnce() + Send>;
+
+/// Runs submitted tasks in submission order on at most `limit` threads, which exit when the queue is empty.
+struct TaskQueue {
+    name: &'static str,
+    limit: usize,
+    state: Mutex<QueueState>,
+}
+
+struct QueueState {
+    workers: usize,
+    waiting: VecDeque<Task>,
+}
+
+/// Replaces a worker whose task panicked, so the tasks queued behind it still run.
+struct WorkerSlot(Option<&'static TaskQueue>);
+
+impl Drop for WorkerSlot {
+    fn drop(&mut self) {
+        if let Some(queue) = self.0 {
+            let mut state = queue.state.lock();
+            state.workers -= 1;
+            if !state.waiting.is_empty() {
+                state.workers += 1;
+                drop(state);
+                queue.spawn_worker();
+            }
+        }
+    }
+}
+
+impl TaskQueue {
+    const fn new(name: &'static str, limit: usize) -> Self {
+        Self { name, limit, state: Mutex::new(QueueState { workers: 0, waiting: VecDeque::new() }) }
+    }
+
+    /// Queues `task`; starts a worker unless `limit` are already running.
+    fn submit(&'static self, task: Task) {
+        let mut state = self.state.lock();
+        state.waiting.push_back(task);
+        if state.workers < self.limit {
+            state.workers += 1;
+            drop(state);
+            self.spawn_worker();
+        }
+    }
+
+    /// Starts one worker; the caller has already counted it in `workers`.
+    fn spawn_worker(&'static self) {
+        crate::infra::thread::spawn_named(self.name, move || self.drain());
+    }
+
+    fn drain(&'static self) {
+        let mut slot = WorkerSlot(Some(self));
+        loop {
+            let task = {
+                let mut state = self.state.lock();
+                match state.waiting.pop_front() {
+                    Some(task) => task,
+                    None => {
+                        // Under the same lock as the empty check: a task submitted right now sees one worker
+                        // fewer and starts its own.
+                        state.workers -= 1;
+                        slot.0 = None;
+                        return;
+                    }
+                }
+            };
+            task();
+        }
+    }
+}
+
+fn run(ctx: &AppContext, paths: Vec<PathBuf>, target: String, auto_paste: bool) {
+    if target.is_empty() {
+        return;
+    }
+    let entry = (target.clone(), paths.clone());
+    ACTIVE_SENDS.lock().push(entry.clone());
+    let active = ActiveSend(entry);
+    let link = link_for(ctx, target);
     crate::infra::thread::spawn_named("files-send", move || {
         let _active = active;
         // Folders are walked here, on the worker thread, so a big tree never stalls the UI.
-        let (items, skipped_folders) = match job {
-            Job::Pull(path, tid) => (vec![SendItem { path, id: Some(tid), tag: None }], false),
-            Job::Paths(paths) => match expand(paths, &link.target) {
-                Ok(expanded) => expanded,
-                Err(status) => return link.status(status),
-            },
+        let (items, skipped_folders) = match expand(paths, &link.target) {
+            Ok(expanded) => expanded,
+            Err(status) => return link.status(status),
         };
         let started = epoch();
         for item in items {
@@ -423,6 +502,51 @@ mod tests {
         *TEST_DOWNLOADS.lock() = None;
         let _ = fs::remove_dir_all(src);
         let _ = fs::remove_dir_all(downloads);
+    }
+
+    #[test]
+    fn task_queue_runs_everything_in_order_on_at_most_limit_threads() {
+        use std::sync::atomic::AtomicUsize;
+        static QUEUE: TaskQueue = TaskQueue::new("test-queue", 2);
+        static RUNNING: AtomicUsize = AtomicUsize::new(0);
+        static PEAK: AtomicUsize = AtomicUsize::new(0);
+        let (done_tx, done_rx) = mpsc::channel();
+        for i in 0..12 {
+            let done_tx = done_tx.clone();
+            QUEUE.submit(Box::new(move || {
+                let now = RUNNING.fetch_add(1, Ordering::SeqCst) + 1;
+                PEAK.fetch_max(now, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(20));
+                RUNNING.fetch_sub(1, Ordering::SeqCst);
+                let _ = done_tx.send(i);
+            }));
+        }
+        let mut started: Vec<i32> = (0..12).map(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap()).collect();
+        assert_eq!(PEAK.load(Ordering::SeqCst), 2, "ran more (or fewer) than 2 at once");
+        // Two workers may finish neighbouring tasks in either order, but nothing jumps the queue.
+        for (pos, i) in started.iter().enumerate() {
+            assert!((*i - pos as i32).abs() <= 1, "task {i} finished at {pos}");
+        }
+        started.sort();
+        assert_eq!(started, (0..12).collect::<Vec<_>>());
+        // Idle workers exit; a later task starts a new one.
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(QUEUE.state.lock().workers, 0);
+        QUEUE.submit(Box::new(move || {
+            let _ = done_tx.send(99);
+        }));
+        assert_eq!(done_rx.recv_timeout(Duration::from_secs(5)).unwrap(), 99);
+    }
+
+    #[test]
+    fn task_queue_survives_a_panicking_task() {
+        static QUEUE: TaskQueue = TaskQueue::new("test-queue-panic", 1);
+        QUEUE.submit(Box::new(|| panic!("deliberate")));
+        let (tx, rx) = mpsc::channel();
+        QUEUE.submit(Box::new(move || {
+            let _ = tx.send(());
+        }));
+        rx.recv_timeout(Duration::from_secs(5)).expect("queue stalled after a panic");
     }
 
     /// Sends `data` to `target` and reassembles it from the outbox: (bytes on the wire, binary chunks seen).
