@@ -54,6 +54,12 @@ const BUSY_SLEEP: Duration = Duration::from_millis(1);
 const IDLE_AFTER: Duration = Duration::from_secs(2);
 /// ...up to this (far below the relay's 15 s ping interval).
 const IDLE_MAX_SLEEP: Duration = Duration::from_millis(20);
+/// No frame at all from the relay (its keep-alive pings included) for this long means the socket is dead
+/// even though the OS has not said so (a NAT or modem dropped the TCP state, the PC slept): reconnect. The
+/// relay pings every 15 s and drops a peer after 60 s of silence; giving up after 3 missed pings registers
+/// the new connection while the relay still holds the old one, so it replaces it and the device never shows
+/// offline. Waiting on the OS instead could leave the device offline for good.
+const RELAY_SILENCE_LIMIT: Duration = Duration::from_secs(45);
 /// How often the loop checks whether the main window is on screen.
 const WINDOW_CHECK: Duration = Duration::from_millis(500);
 /// Kernel send buffer (`SO_SNDBUF`) while the hosted session's video goes over this socket. The video gate
@@ -86,6 +92,7 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
             monitor_in_flight: false,
             held: VecDeque::new(),
             busy: false,
+            last_rx: Instant::now(),
             signals: SignalPacer::default(),
             resume: Resume::default(),
             partner_waits: Vec::new(),
@@ -162,6 +169,8 @@ pub(super) struct Connection {
     held: VecDeque<Outgoing>,
     /// Something was sent or received this tick.
     busy: bool,
+    /// When the relay last sent anything (keep-alive pings included); see `RELAY_SILENCE_LIMIT`.
+    last_rx: Instant,
     /// `p2p-signal` messages spaced out per partner (the relay drops ones that follow too closely).
     signals: SignalPacer,
     /// Sessions waiting for the connection to come back (see `resume.rs`).
@@ -194,6 +203,7 @@ impl Connection {
             self.sleep_offline(delay);
             return;
         };
+        self.last_rx = Instant::now();
         let resume_token = self.resume.token_for(&url);
         self.quiet = resume_token.is_some();
         self.url = url;
@@ -280,6 +290,16 @@ impl Connection {
             }
 
             lost = !self.read_all(&mut socket);
+            if !lost && relay_silent(self.last_rx.elapsed()) {
+                logger::warn(
+                    "relay",
+                    &format!(
+                        "No data from the relay for {} s; the connection is dead. Reconnecting.",
+                        self.last_rx.elapsed().as_secs()
+                    ),
+                );
+                lost = true;
+            }
             if lost {
                 self.on_connection_lost();
                 break;
@@ -671,6 +691,9 @@ impl Connection {
         }
         loop {
             let read = socket.read();
+            if read.is_ok() {
+                self.last_rx = Instant::now();
+            }
             // Keep-alive pings are not traffic: an idle connection stays idle.
             if matches!(read, Ok(Message::Binary(_) | Message::Text(_))) {
                 self.busy = true;
@@ -938,6 +961,11 @@ fn is_live(item: &Outgoing) -> bool {
     )
 }
 
+/// Whether the relay has been silent long enough to call the socket dead (see `RELAY_SILENCE_LIMIT`).
+fn relay_silent(since_last_rx: Duration) -> bool {
+    since_last_rx >= RELAY_SILENCE_LIMIT
+}
+
 /// Idle backoff of the connection loop: on unless `OPENDESK_IDLE_BACKOFF=0` (a fixed 1 ms tick).
 fn idle_backoff_enabled() -> bool {
     std::env::var("OPENDESK_IDLE_BACKOFF").as_deref() != Ok("0")
@@ -1014,6 +1042,16 @@ fn set_send_buffer(socket: &mut Socket, bytes: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relay_silence_past_the_relays_own_timeout_counts_as_a_dead_socket() {
+        // Pings arrive every 15 s: one or two missed ones are not a dead socket...
+        assert!(!relay_silent(Duration::from_secs(30)));
+        // ...three are: reconnect before the relay's own 60 s drop, so the device never shows offline.
+        assert!(!relay_silent(Duration::from_secs(44)));
+        assert!(relay_silent(RELAY_SILENCE_LIMIT));
+        assert!(RELAY_SILENCE_LIMIT > Duration::from_secs(30) && RELAY_SILENCE_LIMIT < Duration::from_secs(60));
+    }
 
     #[test]
     fn send_buffer_shrinks_only_while_hosted_video_uses_the_socket() {
