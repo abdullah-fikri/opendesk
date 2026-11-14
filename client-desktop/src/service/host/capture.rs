@@ -284,6 +284,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
                 encoder.h264_name.as_deref(),
                 usage,
             );
+            host.video_link.set_kbps(stats.kbps);
             if host.stats_requested.load(Ordering::Relaxed) {
                 ctx.send_input(partner, InputEvent::HostStats(stats));
             }

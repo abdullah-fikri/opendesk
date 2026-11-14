@@ -17,6 +17,8 @@ pub struct VideoLink {
     target_fps: AtomicU32,
     /// `f32` bits of the congestion level (0..1).
     congestion: AtomicU32,
+    /// Video sent over the last second, kilobits per second.
+    kbps: AtomicU32,
 }
 
 impl VideoLink {
@@ -34,6 +36,16 @@ impl VideoLink {
     /// The congestion level, 0..1.
     pub fn congestion(&self) -> f32 {
         f32::from_bits(self.congestion.load(Ordering::Relaxed))
+    }
+
+    /// The video bitrate of the last second (the P2P path paces fragments by it).
+    pub fn set_kbps(&self, kbps: u64) {
+        self.kbps.store(kbps.min(u64::from(u32::MAX)) as u32, Ordering::Relaxed);
+    }
+
+    /// The video bitrate of the last second, kilobits per second; 0 before the first second.
+    pub fn kbps(&self) -> u64 {
+        u64::from(self.kbps.load(Ordering::Relaxed))
     }
 }
 
@@ -116,6 +128,8 @@ mod tests {
         assert_eq!((link.target_fps(), link.congestion()), (0, 0.0));
         link.set_rate(144, 0.25);
         assert_eq!((link.target_fps(), link.congestion()), (144, 0.25));
+        link.set_kbps(8_000);
+        assert_eq!(link.kbps(), 8_000);
     }
 
     #[test]

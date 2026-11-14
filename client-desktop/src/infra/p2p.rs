@@ -10,10 +10,11 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use core_engine::codec::{from_base64, to_base64};
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex, MutexGuard};
 use serde_json::{Value, json};
 
 use crate::domain::link_quality::LossMeter;
+use crate::domain::pacing::{self, Pacing};
 use crate::domain::udp_window::{self, MIN_FRAMES_IN_FLIGHT, RttEstimator};
 use crate::infra::audio::VoiceEngine;
 use crate::infra::e2e::{E2e, P2P_NONCE_LIMIT};
@@ -369,6 +370,13 @@ impl Reasm {
     }
 }
 
+/// The fragments of a frame still to be sent by the pacer (see `domain::pacing`), each with when it may leave.
+/// They are kept in plain text and sealed as they leave, so nonces stay in sending order.
+struct Paced {
+    started: Instant,
+    pending: VecDeque<(Instant, Vec<u8>)>,
+}
+
 // One handshake per path, replaced once on completion: the size difference between variants costs nothing.
 #[allow(clippy::large_enum_variant)]
 enum Handshake {
@@ -413,6 +421,8 @@ struct State {
     ack_rtt: RttEstimator,
     /// Video frames that may be in flight (`domain::udp_window`).
     window: usize,
+    /// The paced rest of the last frame, sent by the pacer thread.
+    paced: Option<Paced>,
     reasm: Option<Reasm>,
     next_seq: u32,
     unacked: VecDeque<(u32, Vec<u8>, Instant)>,
@@ -439,6 +449,11 @@ pub struct P2p {
     e2e: Option<Arc<E2e>>,
     /// Host side: the window follows the acknowledgement round trip (else fixed at 2, `OPENDESK_DYNAMIC_WINDOW=0`).
     dynamic_window: bool,
+    /// Host side: a frame's fragments are spread over up to half a frame interval (else one burst,
+    /// `OPENDESK_UDP_PACING=0`).
+    pacing: bool,
+    /// Wakes the pacer thread when a frame has fragments to pace.
+    pace_wake: Condvar,
 }
 
 impl P2p {
@@ -465,7 +480,16 @@ impl P2p {
         let (viewer, host) = if is_host { (partner.clone(), local) } else { (local, partner.clone()) };
         let now = Instant::now();
         let dynamic_window = udp_window::dynamic_enabled(std::env::var(udp_window::DYNAMIC_WINDOW_ENV).ok().as_deref());
+        let pacing = is_host && pacing::pacing_enabled(std::env::var(pacing::PACING_ENV).ok().as_deref());
         if is_host {
+            logger::info(
+                "anynet.p2p",
+                if pacing {
+                    "Video pacing: on; frames above the average size spread over at most half a frame interval."
+                } else {
+                    "Video pacing: off; every frame leaves in one burst (OPENDESK_UDP_PACING=0)."
+                },
+            );
             logger::info(
                 "anynet.p2p",
                 if dynamic_window {
@@ -505,6 +529,7 @@ impl P2p {
                 frame_wait: VecDeque::new(),
                 ack_rtt: RttEstimator::default(),
                 window: MIN_FRAMES_IN_FLIGHT,
+                paced: None,
                 reasm: None,
                 next_seq: 0,
                 unacked: VecDeque::new(),
@@ -519,9 +544,15 @@ impl P2p {
             sinks,
             e2e,
             dynamic_window,
+            pacing,
+            pace_wake: Condvar::new(),
         });
         let worker = Arc::clone(&p);
         crate::infra::thread::spawn_named("p2p-worker", move || worker.run());
+        if pacing {
+            let pacer = Arc::clone(&p);
+            crate::infra::thread::spawn_named("p2p-pacer", move || pacer.pace());
+        }
         Some(p)
     }
 
@@ -888,6 +919,7 @@ impl P2p {
             if was_alive && !alive {
                 st.probe_started = Some(now);
                 st.frame_wait.clear();
+                st.paced = None;
                 // shortcut: unacked input is dropped, not replayed on the relay, to avoid double clicks.
                 st.unacked.clear();
                 self.can_send_frame.open();
@@ -980,8 +1012,16 @@ impl P2p {
         if !Self::alive(&st) || count == 0 || count > MAX_FRAGS {
             return false;
         }
+        // The viewer keeps only the newest frame: the previous frame's paced rest must arrive before this one.
+        self.send_paced(&mut st, None);
         st.frame_id = st.frame_id.wrapping_add(1);
         let id = st.frame_id;
+        let plan = if self.pacing {
+            pacing::plan(count, MAX_DATAGRAM, self.video_link.target_fps(), self.video_link.kbps())
+        } else {
+            Pacing::burst(count)
+        };
+        let mut paced = VecDeque::new();
         let mut pkt = Vec::with_capacity(MAX_PLAIN);
         for (idx, chunk) in jpeg.chunks(FRAG_DATA).enumerate() {
             pkt.clear();
@@ -990,7 +1030,11 @@ impl P2p {
             pkt.extend_from_slice(&(idx as u16).to_be_bytes());
             pkt.extend_from_slice(&(count as u16).to_be_bytes());
             pkt.extend_from_slice(chunk);
-            self.send_to_peer(&mut st, &pkt);
+            if idx < plan.burst {
+                self.send_to_peer(&mut st, &pkt);
+            } else {
+                paced.push_back((started + plan.offset(idx), pkt.clone()));
+            }
         }
         // Up to `window` frames in flight; past that the viewer's frame-ack (or a timeout) releases the capture
         // loop. The window follows the stream's rate and the measured round trip, and the capture loop's
@@ -1004,9 +1048,53 @@ impl P2p {
             self.can_send_frame.open();
         }
         let mut link = self.video_link.stats.lock();
-        link.send.record(started.elapsed());
         link.window = Some(st.window);
+        if paced.is_empty() {
+            link.send.record(started.elapsed());
+        } else {
+            st.paced = Some(Paced { started, pending: paced });
+            self.pace_wake.notify_one();
+        }
         true
+    }
+
+    /// Sends the paced fragments that are due by `until` (all with None); records the frame's send time once
+    /// its last fragment left.
+    fn send_paced(&self, st: &mut State, until: Option<Instant>) {
+        let Some(mut p) = st.paced.take() else { return };
+        while let Some((at, _)) = p.pending.front() {
+            if until.is_some_and(|u| *at > u) {
+                break;
+            }
+            if let Some((_, pkt)) = p.pending.pop_front() {
+                self.send_to_peer(st, &pkt);
+            }
+        }
+        if p.pending.is_empty() {
+            self.video_link.stats.lock().send.record(p.started.elapsed());
+        } else {
+            st.paced = Some(p);
+        }
+    }
+
+    /// The pacer thread (host side, pacing on): sends each paced fragment when it is due. It sleeps with the
+    /// state unlocked, so input, audio and acknowledgements are not held up; `std` sleeps on a high-resolution
+    /// timer, and fragments that came due meanwhile leave together.
+    fn pace(&self) {
+        let mut st = self.state.lock();
+        while !self.closed.load(Ordering::SeqCst) {
+            let Some(due) = st.paced.as_ref().and_then(|p| p.pending.front()).map(|f| f.0) else {
+                // The timeout notices a closed path.
+                self.pace_wake.wait_for(&mut st, Duration::from_millis(100));
+                continue;
+            };
+            let now = Instant::now();
+            if due > now {
+                MutexGuard::unlocked(&mut st, || std::thread::sleep(due - now));
+                continue;
+            }
+            self.send_paced(&mut st, Some(now));
+        }
     }
 
     /// Sends a `[0x02, rate_khz, pcm...]` packet, split at even byte boundaries to fit one datagram each; an Opus
@@ -1172,6 +1260,9 @@ mod tests {
     #[test]
     #[ignore]
     fn end_to_end_video_and_input_over_lan_udp() {
+        // A 60 FPS stream of unknown bitrate: the 150 KB frame below is paced over ~8 ms.
+        let link = Arc::new(VideoLink::default());
+        link.set_rate(60, 0.0);
         // SAFETY: set before any thread in this test reads the environment.
         unsafe { std::env::set_var("OPENDESK_STUN", "off") };
         let (tx_v, rx_v) = std::sync::mpsc::channel();
@@ -1204,7 +1295,7 @@ mod tests {
             "222222222",
             "111111111".into(),
             Arc::new(SendGate::new(true)),
-            Arc::default(),
+            link,
             tx_h,
             mk(in_tx, Arc::new(|_| {})),
             None,

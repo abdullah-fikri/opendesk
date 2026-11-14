@@ -62,7 +62,21 @@ trip cannot keep widening it; the frame-rate governor then lowers the rate as be
 changes, so viewers of any version work with it. The host logs once per session which mode it uses;
 `OPENDESK_DYNAMIC_WINDOW=0` on the host keeps the fixed window of 2.
 
-All fragments of a frame are sent back to back.
+Sent back to back, a key frame of a few hundred fragments reaches a home router or the relay's UDP socket as one
+burst that can overflow its queue, and one lost fragment loses the whole frame (then a key frame request, another
+big frame, and so on). The host therefore paces fragments with a token bucket:
+
+- A frame of up to 8 fragments, or of up to the stream's average frame size (last second's bitrate / target FPS),
+  leaves at once, exactly as before. The first fragment of a frame is never delayed.
+- The rest leaves at twice the stream's bitrate, but always within half a frame interval of the first fragment
+  (8.3 ms at 60 FPS, 3.5 ms at 144 FPS), so a frame completes at most half an interval later than in a burst.
+- A pacer thread sends the paced fragments with the path unlocked between them, so input, voice and
+  acknowledgements are not held up. A new frame first sends whatever the previous one still had queued, as the
+  viewer keeps only the newest frame.
+
+The host logs once per session whether pacing is on; `OPENDESK_UDP_PACING=0` on the host sends every frame in one
+burst again. Both the window and pacing apply to every performance preset and to the direct path and the UDP
+relay alike.
 
 The stats overlay shows what the path does ([viewer-sessions.md](viewer-sessions.md#stats-overlay)): the host
 reports the time from sending a frame to its acknowledgement (Ack RTT) and the window in `host-stats`; the viewer
