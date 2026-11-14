@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 
 use crate::domain::keyboard::KeyForwarder;
 use crate::domain::latency::LatencyMeter;
-use crate::infra::power;
+use crate::infra::{power, wifi};
 use crate::service::viewer::decoder::VideoInbox;
 use crate::service::viewer::stats::SessionStats;
 
@@ -63,6 +63,8 @@ pub struct Session {
     pub latency: Arc<Mutex<LatencyMeter>>,
     /// Full speed (no EcoQoS) from opening the session until it is dropped.
     _awake: power::Awake,
+    /// Wi-Fi media streaming mode (no background scans) from opening the session until it is dropped.
+    _wifi: wifi::Streaming,
 }
 
 impl Session {
@@ -94,6 +96,7 @@ impl Session {
             stats: Mutex::default(),
             latency: Arc::default(),
             _awake: power::awake(),
+            _wifi: wifi::streaming(),
         }
     }
 
