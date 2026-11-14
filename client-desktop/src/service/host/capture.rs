@@ -11,6 +11,7 @@ use core_engine::capture::{
     DesktopCapturer, MonitorBounds, cursor_shape, enumerate_monitors, pointer_captured, refresh_rate,
 };
 use core_engine::codec::frame::{self, FrameStamp};
+use core_engine::codec::h264::GpuSource;
 use core_engine::stream::{FrameInput, H264Mode, StreamEncoder};
 
 use crate::domain::frame_rate::{self, FpsGovernor};
@@ -182,6 +183,13 @@ fn params(mode: usize, bounds: MonitorBounds) -> (i32, u32) {
 
 /// H.264 policy: `OPENDESK_VIDEO_H264=0` disables it, `=always` uses it for every changed frame, otherwise it
 /// is used for motion when the viewer supports it.
+/// Zero-copy H.264 source (`OPENDESK_ZERO_COPY=0` turns it off): only with H.264 on and a viewer that draws its
+/// own cursor, since frames that stay on the GPU never get the cursor painted in.
+fn zero_copy_source(capturer: &mut DesktopCapturer, viewer_cursor: bool, h264: H264Mode) -> Option<GpuSource> {
+    let on = std::env::var("OPENDESK_ZERO_COPY").map_or(true, |v| v != "0");
+    if on && viewer_cursor && h264 != H264Mode::Off { capturer.gpu_source() } else { None }
+}
+
 fn h264_mode(viewer_supports: bool) -> H264Mode {
     match std::env::var("OPENDESK_VIDEO_H264").unwrap_or_default().as_str() {
         "0" => H264Mode::Off,
@@ -236,6 +244,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     // The viewer's performance preset; `set-performance` may change it during the session.
     let mut preset = caps.performance;
     encoder.set_preset(preset.bitrate_factor(), preset.prefers_h264());
+    encoder.set_gpu_source(zero_copy_source(&mut capturer, local_cursor, h264));
     encoder.set_h264(h264);
     encoder.set_lossless(caps.tile_lossless);
     let mut h264_logged = false;
@@ -323,6 +332,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             drop(capturer);
             capturer = DesktopCapturer::new_for_monitor(bounds, max_width);
             capturer.set_hide_viewer_cursor(local_cursor);
+            encoder.set_gpu_source(zero_copy_source(&mut capturer, local_cursor, h264));
             encoder.reconfigure(capturer.width(), capturer.height(), base_quality);
             monitors_dirty = true;
             logger::info(
@@ -439,6 +449,9 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             // That wait is recorded apart from the grab's work; the image was captured when it ended.
             let budget = interval.saturating_sub(frame_start.elapsed());
             let backend = capturer.backend();
+            // Zero-copy H.264 running: the image stays on the GPU, no readback to system memory.
+            let gpu_only = encoder.gpu_frames_only();
+            capturer.set_cpu_frames(!gpu_only);
             let grab_start = Instant::now();
             capturer.grab(budget.as_millis() as u32);
             let grabbed = grab_start.elapsed();
@@ -446,17 +459,27 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             let captured = grab_start + waited;
             perf.grab.record(grabbed - waited);
             perf.wait.record(waited);
+            let gpu_only = gpu_only && capturer.backend() == backend;
             if capturer.backend() != backend {
                 logger::warn("host.capture", "DXGI duplication lost for good; falling back to GDI capture.");
+                encoder.set_gpu_source(None);
                 encoder.request_key();
             }
+            encoder.set_gpu_frame(capturer.gpu_texture());
+            let stride = capturer.width() as usize;
             let frame = FrameInput {
-                pixels: capturer.pixels(),
-                stride: capturer.width() as usize,
+                pixels: if gpu_only { &[] } else { capturer.pixels() },
+                stride,
                 dirty_hint: capturer.dirty_hint(),
                 moves: capturer.moves(),
             };
-            let sent = encoder.encode(&frame);
+            let mut sent = encoder.encode(&frame);
+            if encoder.take_want_pixels() {
+                // Leaving zero-copy H.264 (a sharp key frame ends motion): one full readback.
+                capturer.read_back();
+                let frame = FrameInput { pixels: capturer.pixels(), stride, dirty_hint: None, moves: &[] };
+                sent = encoder.encode_with_pixels(&frame);
+            }
             // `encode` times itself; reuse that instead of another clock read.
             perf.encode.record(Duration::from_micros(encoder.last.encode_us));
             perf.convert.record(Duration::from_micros(encoder.last.convert_us));

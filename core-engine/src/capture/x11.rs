@@ -318,6 +318,22 @@ impl DesktopCapturer {
         std::time::Duration::ZERO
     }
 
+    /// No zero-copy source on X11: frames always reach system memory.
+    pub fn gpu_source(&mut self) -> Option<crate::codec::h264::GpuSource> {
+        None
+    }
+
+    /// No GPU frames here.
+    pub fn gpu_texture(&self) -> Option<crate::codec::h264::GpuTexture> {
+        None
+    }
+
+    /// Frames always reach system memory here.
+    pub fn set_cpu_frames(&mut self, _on: bool) {}
+
+    /// Nothing to bring back: every grab reads system memory.
+    pub fn read_back(&mut self) {}
+
     /// The last captured image as BGRX pixels, `width()` per row.
     pub fn pixels(&self) -> &[u32] {
         &self.frame

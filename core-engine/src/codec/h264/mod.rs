@@ -4,6 +4,8 @@
 //! by the helpers below, so every backend pairs with every other.
 
 #[cfg(windows)]
+mod gpu;
+#[cfg(windows)]
 mod mf;
 #[cfg(windows)]
 pub use mf::*;
@@ -12,6 +14,43 @@ pub use mf::*;
 mod cisco;
 #[cfg(not(windows))]
 pub use cisco::*;
+
+/// A captured desktop image on the GPU, for encoders that read it directly (zero-copy).
+#[cfg(windows)]
+pub type GpuTexture = windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
+/// No GPU frames on this platform.
+#[cfg(not(windows))]
+pub type GpuTexture = ();
+
+/// Where zero-copy frames come from: the capture device and the native (source) size.
+#[derive(Clone)]
+pub struct GpuSource {
+    /// The capture device (textures are read on it, never copied to another).
+    #[cfg(windows)]
+    pub device: windows::Win32::Graphics::Direct3D11::ID3D11Device,
+    /// Native width of the captured textures.
+    pub src_w: u32,
+    /// Native height of the captured textures.
+    pub src_h: u32,
+}
+
+// SAFETY: D3D11 devices are free-threaded (the encoder also turns on its multithread protection).
+unsafe impl Send for GpuSource {}
+
+impl GpuSource {
+    /// A zero-copy encoder for this source, None when no hardware encoder takes it.
+    pub fn encoder(&self, w: u32, h: u32, fps: u32, bitrate: u32) -> Option<H264Encoder> {
+        #[cfg(windows)]
+        {
+            H264Encoder::new_gpu(&self.device, self.src_w, self.src_h, w, h, fps, bitrate).ok()
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (w, h, fps, bitrate);
+            None
+        }
+    }
+}
 
 /// NAL unit types present in an Annex-B access unit.
 pub fn nal_types(au: &[u8]) -> Vec<u8> {

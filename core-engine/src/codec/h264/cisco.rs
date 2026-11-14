@@ -194,6 +194,16 @@ impl H264Encoder {
 
     /// Encodes one BGRX frame (`stride` in pixels). Returns the Annex-B access unit and whether it is an IDR,
     /// or None when the encoder skipped the frame.
+    /// Never: this backend has no zero-copy input.
+    pub fn is_gpu(&self) -> bool {
+        false
+    }
+
+    /// Not available here (see [`Self::is_gpu`]).
+    pub fn encode_texture(&mut self, _frame: &super::GpuTexture) -> Result<Option<(Vec<u8>, bool)>> {
+        Err(err("no GPU input"))
+    }
+
     pub fn encode(&mut self, bgra: &[u32], stride: usize) -> Result<Option<(Vec<u8>, bool)>> {
         let (w, h) = (self.width as usize, self.height as usize);
         bgra_to_nv12(bgra, stride, w, h, &mut self.nv12);

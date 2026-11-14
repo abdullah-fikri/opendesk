@@ -29,7 +29,7 @@ use super::{bgra_to_nv12, nal_types, nv12_to_rgba};
 
 type Result<T> = windows::core::Result<T>;
 
-fn fail() -> windows::core::Error {
+pub(super) fn fail() -> windows::core::Error {
     windows::core::Error::from_hresult(windows::Win32::Foundation::E_FAIL)
 }
 
@@ -242,6 +242,8 @@ pub struct H264Encoder {
     ready: VecDeque<Vec<u8>>,
     /// `encode` returns earlier frames' output instead of waiting for its own (see [`Self::set_pipelined`]).
     pipelined: bool,
+    /// Zero-copy input (see [`Self::new_gpu`]): the converter and the device manager the encoder uses.
+    gpu: Option<(super::gpu::GpuConverter, IMFDXGIDeviceManager)>,
 }
 
 unsafe impl Send for H264Encoder {}
@@ -269,7 +271,7 @@ impl H264Encoder {
             // Activated one at a time: each activation allocates driver resources, freed only by ShutdownObject.
             for (act, name) in list {
                 let Ok(mft) = (unsafe { act.ActivateObject::<IMFTransform>() }) else { continue };
-                match Self::configure(mft, Some(act.clone()), name, true, width, height, fps, bitrate) {
+                match Self::configure(mft, Some(act.clone()), name, true, width, height, fps, bitrate, None) {
                     Ok(e) => return Ok(e),
                     Err(_) => unsafe {
                         let _ = act.ShutdownObject();
@@ -278,7 +280,65 @@ impl H264Encoder {
             }
         }
         let mft: IMFTransform = unsafe { CoCreateInstance(&CLSID_MSH264EncoderMFT, None, CLSCTX_INPROC_SERVER)? };
-        Self::configure(mft, None, "Microsoft H.264 (software)".into(), false, width, height, fps, bitrate)
+        Self::configure(mft, None, "Microsoft H.264 (software)".into(), false, width, height, fps, bitrate, None)
+    }
+
+    /// Hardware encoder that reads D3D11 textures of `device` (the capture device): frames go in with
+    /// [`Self::encode_texture`], scaled from `src_w` x `src_h` and converted to NV12 on the GPU. Fails when no
+    /// hardware encoder of that adapter accepts the device; the caller then uses [`Self::new`].
+    pub fn new_gpu(
+        device: &ID3D11Device,
+        src_w: u32,
+        src_h: u32,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate: u32,
+    ) -> Result<Self> {
+        ensure_mf()?;
+        if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
+            return Err(fail());
+        }
+        // The encoder works on the device from its own threads.
+        unsafe {
+            if let Ok(mt) = device.cast::<ID3D11Multithread>() {
+                let _ = mt.SetMultithreadProtected(true);
+            }
+        }
+        let converter = super::gpu::GpuConverter::new(device, src_w, src_h, width, height, fps)?;
+        let manager = unsafe {
+            let mut token = 0u32;
+            let mut manager: Option<IMFDXGIDeviceManager> = None;
+            MFCreateDXGIDeviceManager(&mut token, &mut manager)?;
+            let manager = manager.ok_or_else(fail)?;
+            manager.ResetDevice(device, token)?;
+            manager
+        };
+        for (act, name) in Self::hardware_mfts()? {
+            let Ok(mft) = (unsafe { act.ActivateObject::<IMFTransform>() }) else { continue };
+            let aware = unsafe { mft.GetAttributes().and_then(|a| a.GetUINT32(&MF_SA_D3D11_AWARE)) }.unwrap_or(0) != 0;
+            let made = if aware {
+                Self::configure(mft, Some(act.clone()), name, true, width, height, fps, bitrate, Some(&manager))
+            } else {
+                Err(fail())
+            };
+            match made {
+                Ok(mut e) => {
+                    e.name = format!("{} [zero-copy]", e.name);
+                    e.gpu = Some((converter, manager));
+                    return Ok(e);
+                }
+                Err(_) => unsafe {
+                    let _ = act.ShutdownObject();
+                },
+            }
+        }
+        Err(fail())
+    }
+
+    /// True for an encoder made by [`Self::new_gpu`].
+    pub fn is_gpu(&self) -> bool {
+        self.gpu.is_some()
     }
 
     /// Hardware H.264 encoders, best first, not activated yet.
@@ -324,6 +384,7 @@ impl H264Encoder {
         h: u32,
         fps: u32,
         bitrate: u32,
+        manager: Option<&IMFDXGIDeviceManager>,
     ) -> Result<Self> {
         unsafe {
             let mut events = None;
@@ -333,6 +394,10 @@ impl H264Encoder {
                     events = Some(mft.cast::<IMFMediaEventGenerator>()?);
                 }
                 let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
+            }
+            if let Some(m) = manager {
+                // Before the media types: the encoder then allocates on (and reads textures of) this device.
+                mft.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, m.as_raw() as usize)?;
             }
             let codec = mft.cast::<ICodecAPI>().ok();
             if let Some(c) = &codec {
@@ -390,6 +455,7 @@ impl H264Encoder {
                 out_buf: BufferCache::default(),
                 ready: VecDeque::new(),
                 pipelined: false,
+                gpu: None,
             })
         }
     }
@@ -464,7 +530,32 @@ impl H264Encoder {
         let dur = 10_000_000 / self.fps as i64;
         let sample = sample_from(&nv12, self.frame_index * dur, dur);
         self.nv12 = nv12;
-        let sample = sample?;
+        self.feed(sample?)
+    }
+
+    /// Encodes one captured desktop texture (encoders made by [`Self::new_gpu`] only): scaled and converted on
+    /// the GPU, read by the encoder from video memory. Returns what [`Self::encode`] returns.
+    pub fn encode_texture(&mut self, bgra: &ID3D11Texture2D) -> Result<Option<(Vec<u8>, bool)>> {
+        ensure_mf()?;
+        let (conv, _) = self.gpu.as_mut().ok_or_else(fail)?;
+        let nv12 = conv.convert(bgra)?;
+        let dur = 10_000_000 / self.fps as i64;
+        let sample = unsafe {
+            let buf = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &nv12, 0, false)?;
+            if let Ok(b2) = buf.cast::<IMF2DBuffer>() {
+                buf.SetCurrentLength(b2.GetContiguousLength()?)?;
+            }
+            let s = MFCreateSample()?;
+            s.AddBuffer(&buf)?;
+            s.SetSampleTime(self.frame_index * dur)?;
+            s.SetSampleDuration(dur)?;
+            s
+        };
+        self.feed(sample)
+    }
+
+    /// Hands one input sample to the encoder and collects output (see [`Self::encode`]).
+    fn feed(&mut self, sample: IMFSample) -> Result<Option<(Vec<u8>, bool)>> {
         self.frame_index += 1;
 
         let au = if self.events.is_some() {
@@ -845,6 +936,171 @@ mod tests {
             }
         }
         assert!(compared >= 8, "GPU decoder buffered frames ({compared} of 10 compared)");
+    }
+
+    /// Zero-copy host path on this machine's GPU: the captured desktop texture is encoded without a readback,
+    /// decodes to the same picture as the captured pixels, and costs far less CPU than readback + CPU NV12:
+    /// `cargo test --release zero_copy -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn zero_copy_encode_matches_the_captured_desktop() {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> isize;
+            fn GetProcessTimes(h: isize, c: *mut u64, e: *mut u64, k: *mut u64, u: *mut u64) -> i32;
+        }
+        let cpu = || {
+            let (mut c, mut e, mut k, mut u) = (0, 0, 0, 0);
+            unsafe { GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u) };
+            Duration::from_nanos((k + u) * 100)
+        };
+        let mon = crate::capture::enumerate_monitors()[0];
+        for max_w in [0, 1280] {
+            let mut cap = crate::capture::dxgi::DxgiCapturer::new_for_monitor(mon, max_w).unwrap();
+            let t = Instant::now();
+            while !cap.has_image() && t.elapsed() < Duration::from_secs(2) {
+                cap.grab(100).unwrap();
+            }
+            let device = cap.enable_gpu_frames().unwrap();
+            let (sw, sh, w, h) =
+                (cap.screen_width as u32, cap.screen_height as u32, cap.width as u32, cap.height as u32);
+            let (w, h) = (w & !1, h & !1);
+            let mut enc = H264Encoder::new_gpu(&device, sw, sh, w, h, 60, 12_000_000).unwrap();
+            let tex = cap.gpu_texture().unwrap().clone();
+            // The same GPU image read back (BGRX, scaled on the CPU) is the reference for both paths.
+            // No cursor in the reference: the GPU image never has one painted in.
+            cap.set_cpu_frames(false);
+            cap.read_back_all_for_bench();
+            cap.set_cpu_frames(true);
+            let reference = cap.pixels().to_vec();
+            let stride = cap.width as usize;
+            let psnr = |out: &[u8]| {
+                let (mut se, mut n) = (0f64, 0f64);
+                for y in 0..h as usize {
+                    for x in 0..w as usize {
+                        let p = reference[y * stride + x];
+                        let o = &out[(y * w as usize + x) * 4..][..3];
+                        for (c, shift) in o.iter().zip([16, 8, 0]) {
+                            let d = *c as f64 - ((p >> shift) & 0xFF) as f64;
+                            se += d * d;
+                            n += 1.0;
+                        }
+                    }
+                }
+                10.0 * (255.0f64 * 255.0 / (se / n).max(1e-9)).log10()
+            };
+            let decode_last = |aus: Vec<Vec<u8>>| {
+                let mut dec = H264Decoder::create(w, h, false).unwrap();
+                let mut out = Vec::new();
+                let decoded = aus.iter().filter(|au| dec.decode_into(au, w, h, &mut out).unwrap()).count();
+                assert!(decoded > 0, "no picture came out");
+                psnr(&out)
+            };
+            if (w, h) == (sw, sh) {
+                // Colour check without the codec: GPU NV12 against the CPU conversion of the same pixels, on a
+                // test card with saturated colours (greys alone would hide a wrong matrix).
+                let card: Vec<u32> = (0..(w * h) as usize)
+                    .map(|i| {
+                        let (x, y) = (i % w as usize, i / w as usize);
+                        [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0x00FF_FF00, 0x0000_FFFF, 0x00FF_00FF, 0x00FF_FFFF, 0]
+                            [(x / 64 + y / 64) % 8]
+                            | ((x * 255 / w as usize) as u32 & 0x7F)
+                    })
+                    .collect();
+                let card_tex = upload_bgra(&device, &card, w, h);
+                let (conv, _) = enc.gpu.as_mut().unwrap();
+                let gpu_nv12 = read_nv12(&device, &conv.convert(&card_tex).unwrap(), w, h);
+                let mut cpu_nv12 = Vec::new();
+                bgra_to_nv12(&card, w as usize, w as usize, h as usize, &mut cpu_nv12);
+                let (ys, uvs) = (w as usize * h as usize, w as usize * h as usize / 2);
+                let mean = |a: &[u8], b: &[u8]| {
+                    a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as f64).sum::<f64>() / a.len() as f64
+                };
+                let (dy, duv) =
+                    (mean(&gpu_nv12[..ys], &cpu_nv12[..ys]), mean(&gpu_nv12[ys..ys + uvs], &cpu_nv12[ys..]));
+                println!("NV12 GPU vs CPU on a colour card: mean |dY| {dy:.2}, mean |dUV| {duv:.2}");
+                assert!(dy < 1.5 && duv < 3.0, "GPU colour conversion differs: dY {dy:.2}, dUV {duv:.2}");
+            }
+            let gpu_aus = (0..30).filter_map(|_| enc.encode_texture(&tex).unwrap().map(|(au, _)| au)).collect();
+            let psnr_gpu = decode_last(gpu_aus);
+            let mut old = H264Encoder::new(w, h, 60, 12_000_000, true).unwrap();
+            let cpu_aus = (0..30).filter_map(|_| old.encode(&reference, stride).unwrap().map(|(au, _)| au)).collect();
+            let psnr_cpu = decode_last(cpu_aus);
+
+            let (c0, t0) = (cpu(), Instant::now());
+            for _ in 0..120 {
+                enc.encode_texture(&tex).unwrap();
+            }
+            let gpu_ms = (cpu() - c0).as_secs_f64() * 1000.0 / 120.0;
+            let gpu_wall = t0.elapsed().as_secs_f64() * 1000.0 / 120.0;
+            // The path it replaces: full readback + CPU scaling + CPU NV12 + memory upload.
+            let (c0, t0) = (cpu(), Instant::now());
+            for _ in 0..120 {
+                cap.set_cpu_frames(false);
+                cap.set_cpu_frames(true);
+                cap.read_back_all_for_bench();
+                old.encode(cap.pixels(), stride).unwrap();
+            }
+            let cpu_ms = (cpu() - c0).as_secs_f64() * 1000.0 / 120.0;
+            let cpu_wall = t0.elapsed().as_secs_f64() * 1000.0 / 120.0;
+            println!(
+                "{sw}x{sh} -> {w}x{h} {}: PSNR {psnr_gpu:.1} dB (CPU path {psnr_cpu:.1}); zero-copy CPU {gpu_ms:.2} ms (wall {gpu_wall:.2}) \
+                 vs readback path CPU {cpu_ms:.2} ms (wall {cpu_wall:.2}) per frame",
+                enc.name
+            );
+            // Native size: the same picture within encoder noise (the colour card above checks the conversion
+            // exactly). Scaled, the video processor's filter is softer than the CPU's area average, so the
+            // host only takes this path at native size.
+            if (w, h) == (sw, sh) {
+                assert!(psnr_gpu > psnr_cpu - 3.0, "GPU path {psnr_gpu:.1} dB vs CPU path {psnr_cpu:.1} dB");
+            }
+        }
+    }
+
+    fn upload_bgra(device: &ID3D11Device, px: &[u32], w: u32, h: u32) -> ID3D11Texture2D {
+        use windows::Win32::Graphics::Direct3D11::{
+            D3D11_BIND_RENDER_TARGET, D3D11_SUBRESOURCE_DATA, D3D11_USAGE_DEFAULT,
+        };
+        use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: w,
+            Height: h,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let data = D3D11_SUBRESOURCE_DATA { pSysMem: px.as_ptr().cast(), SysMemPitch: w * 4, SysMemSlicePitch: 0 };
+        let mut t = None;
+        unsafe { device.CreateTexture2D(&desc, Some(&data), Some(&mut t)).unwrap() };
+        t.unwrap()
+    }
+
+    /// Tightly packed NV12 bytes of a GPU texture.
+    fn read_nv12(device: &ID3D11Device, tex: &ID3D11Texture2D, w: u32, h: u32) -> Vec<u8> {
+        unsafe {
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            tex.GetDesc(&mut desc);
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+            let mut st = None;
+            device.CreateTexture2D(&desc, None, Some(&mut st)).unwrap();
+            let st = st.unwrap();
+            let ctx = device.GetImmediateContext().unwrap();
+            ctx.CopyResource(&st, tex);
+            let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+            ctx.Map(&st, 0, D3D11_MAP_READ, 0, Some(&mut m)).unwrap();
+            let pitch = m.RowPitch as usize;
+            let src = std::slice::from_raw_parts(m.pData as *const u8, pitch * h as usize * 3 / 2);
+            let out = src.chunks(pitch).take(h as usize * 3 / 2).flat_map(|row| &row[..w as usize]).copied().collect();
+            ctx.Unmap(&st, 0);
+            out
+        }
     }
 
     /// Process CPU (decoder worker threads included) and wall time per 1080p frame, GPU vs software decode:
