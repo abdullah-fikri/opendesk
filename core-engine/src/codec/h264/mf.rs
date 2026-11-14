@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::VARIANT_BOOL;
+use windows::Win32::Foundation::{S_OK, VARIANT_BOOL};
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
@@ -50,6 +50,56 @@ fn var_bool(v: bool) -> VARIANT {
         inner.Anonymous.boolVal = VARIANT_BOOL(if v { -1 } else { 0 });
     }
     x
+}
+
+/// `CODECAPI_AVEncCommonQualityVsSpeed`: 0 is fastest, 100 best quality. Encoders map the range onto their
+/// own presets, most in three bands (0-33, 34-66, 67-100), so 33 selects the fastest band there while staying
+/// off the extreme on encoders with a finer scale. Speed wins because a frame that takes longer to encode is
+/// latency added to every frame, and an encoder left on its default preset may trade that latency for quality.
+const QUALITY_VS_SPEED: u32 = 33;
+
+/// VBV buffer, in frames of the target bitrate: caps how far one frame (a key frame above all) can exceed the
+/// per-frame budget, so a keyframe stays at about two frames' worth of bits instead of a burst many times that.
+/// `CODECAPI_AVEncCommonMaxBitRate` is not set: in CBR mode the buffer size is what bounds the peaks.
+const VBV_FRAMES: u32 = 2;
+
+/// False when `OPENDESK_ENCODER_TUNING=0` asks for the encoder settings without [`QUALITY_VS_SPEED`] and the
+/// VBV limit (the behaviour before they existed); read once.
+fn tuning_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("OPENDESK_ENCODER_TUNING").map(|v| v != "0").unwrap_or(true))
+}
+
+/// VBV buffer size in bits for `bitrate` bits per second at `fps`.
+fn vbv_bits(bitrate: u32, fps: u32) -> u32 {
+    (bitrate as u64 * VBV_FRAMES as u64 / fps.max(1) as u64).min(u32::MAX as u64) as u32
+}
+
+/// True only when the encoder answers S_OK: the generated `ICodecAPI::IsSupported` wrapper also maps S_FALSE
+/// ("not supported") to `Ok`.
+fn supports(c: &ICodecAPI, api: &GUID) -> bool {
+    // SAFETY: a COM call on a live interface pointer with a GUID that outlives it, as the wrapper itself makes.
+    unsafe { (Interface::vtable(c).IsSupported)(Interface::as_raw(c), api) == S_OK }
+}
+
+/// Applies the tuning settings `c` supports, each one only when `IsSupported` says so; a setting that is
+/// unsupported or rejected is skipped and the encoder runs as without it. Returns a summary for the log and
+/// whether the VBV limit is in place (then it follows bitrate changes).
+fn apply_tuning(c: &ICodecAPI, bitrate: u32, fps: u32) -> (String, bool) {
+    let set = |api: &GUID, value: u32| supports(c, api) && unsafe { c.SetValue(api, &var_u32(value)) }.is_ok();
+    let speed = set(&CODECAPI_AVEncCommonQualityVsSpeed, QUALITY_VS_SPEED);
+    let vbv = set(&CODECAPI_AVEncCommonBufferSize, vbv_bits(bitrate, fps));
+    let (mut applied, mut skipped) = (Vec::new(), Vec::new());
+    for (ok, label) in
+        [(speed, format!("quality-vs-speed {QUALITY_VS_SPEED}")), (vbv, format!("vbv {VBV_FRAMES} frames"))]
+    {
+        if ok { applied.push(label) } else { skipped.push(label) }
+    }
+    let mut summary = format!("tuning: {}", if applied.is_empty() { "none".into() } else { applied.join(", ") });
+    if !skipped.is_empty() {
+        summary += &format!("; not supported: {}", skipped.join(", "));
+    }
+    (summary, vbv)
 }
 
 fn pack(hi: u32, lo: u32) -> u64 {
@@ -156,7 +206,8 @@ pub struct H264Encoder {
     pub width: u32,
     /// Encoded height.
     pub height: u32,
-    /// Name of the transform, for logs.
+    /// Name of the transform, for logs. Unless `OPENDESK_ENCODER_TUNING=0`, followed by the tuning applied
+    /// (" (tuning: ...)"), which the viewer's overlay drops with everything after the first " (".
     pub name: String,
     /// True for a hardware encoder.
     pub hardware: bool,
@@ -171,6 +222,8 @@ pub struct H264Encoder {
     fps: u32,
     frame_index: i64,
     bitrate: u32,
+    /// The VBV buffer was set at creation, so it is resized with the bitrate.
+    vbv: bool,
     sequence_header: Vec<u8>,
     nv12: Vec<u8>,
     out_buf: BufferCache,
@@ -281,6 +334,15 @@ impl H264Encoder {
                 // Long GOP: key frames only on demand (start, viewer request), P-frames otherwise.
                 let _ = c.SetValue(&CODECAPI_AVEncMPVGOPSize, &var_u32(fps * 60));
             }
+            let mut vbv = false;
+            let mut name = name;
+            if let Some(c) = &codec
+                && tuning_enabled()
+            {
+                let (summary, applied) = apply_tuning(c, bitrate, fps);
+                vbv = applied;
+                name = format!("{name} ({summary})");
+            }
             let out_t = video_type(&MFVideoFormat_H264, w, h, fps)?;
             out_t.SetUINT32(&MF_MT_AVG_BITRATE, bitrate)?;
             out_t.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Main.0 as u32)?;
@@ -311,6 +373,7 @@ impl H264Encoder {
                 fps,
                 frame_index: 0,
                 bitrate,
+                vbv,
                 sequence_header,
                 nv12: Vec::new(),
                 out_buf: BufferCache::default(),
@@ -331,6 +394,10 @@ impl H264Encoder {
             && unsafe { c.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var_u32(bps)) }.is_ok()
         {
             self.bitrate = bps;
+            if self.vbv {
+                // Encoders that cannot resize it mid-stream keep the old buffer, which is still a bound.
+                let _ = unsafe { c.SetValue(&CODECAPI_AVEncCommonBufferSize, &var_u32(vbv_bits(bps, self.fps))) };
+            }
         }
     }
 
@@ -605,6 +672,23 @@ mod tests {
             }
         }
         assert!(shown >= 8, "low-latency decode should not buffer ({shown} of 10 shown)");
+    }
+
+    #[test]
+    fn vbv_is_two_frames_of_the_target_bitrate() {
+        assert_eq!(vbv_bits(6_000_000, 60), 200_000);
+        assert_eq!(vbv_bits(10_000_000, 0), 20_000_000, "fps 0 must not divide by zero");
+        assert_eq!(vbv_bits(u32::MAX, 1), u32::MAX, "saturates instead of wrapping");
+    }
+
+    #[test]
+    fn software_encoder_reports_its_tuning_and_still_encodes() {
+        let Ok(mut enc) = H264Encoder::new(320, 192, 30, 2_000_000, false) else { return };
+        assert_eq!(enc.name.contains(" (tuning: "), tuning_enabled(), "{}", enc.name);
+        enc.set_bitrate(1_000_000);
+        assert_eq!(enc.bitrate(), 1_000_000);
+        let frame = pattern(320, 192, 0);
+        assert!(enc.encode(&frame, 320).unwrap().is_some_and(|(_, idr)| idr));
     }
 
     /// Private bytes of this process (PROCESS_MEMORY_COUNTERS.PagefileUsage).
