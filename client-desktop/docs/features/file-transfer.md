@@ -32,7 +32,11 @@ Each file is `start`, chunks and `end` with its SHA-256. Chunks are 128 KiB bina
 and the relay both list `file-binary`, else 32 KiB base64 inside JSON (Android, older peers and relays); pulled
 clipboard offers always use JSON, which the paste stream reads. A 10 MB file takes 10.0 MB on the wire in 79
 messages instead of 13.4 MB in 308. Senders wait while more than 48 chunks' worth (32 KiB units, ~1.5 MB) are
-queued, so progress follows the network. With `file-ack` the receiver confirms; "Sent" then means verified on
+queued. The sent percentage counts only bytes the relay has read (the pong of the pacing ping below confirms
+every file message written before it), not bytes queued, so it no longer sits at 99% while megabytes are still on
+their way; once every byte is there the row says "Finishing" until the receiver has saved, synced and verified
+the file. With pacing off (`OPENDESK_FILE_RATE_LIMIT=0`) it counts bytes handed to the socket. With `file-ack`
+the receiver confirms; "Sent" then means verified on
 the other side, and a missing confirmation fails after 120 s. Without it (Android) "Sent (not confirmed by the
 receiver)" only means every byte left this machine. A lost relay connection fails every transfer on it; there is
 no resume.

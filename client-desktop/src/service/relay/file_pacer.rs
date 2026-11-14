@@ -7,8 +7,13 @@
 //! backpressure from a slow receiver), the same queues that delay the session's P2P datagrams and input. No new
 //! message: pings are part of WebSocket and every relay answers them.
 //!
-//! `OPENDESK_FILE_RATE_LIMIT=0` turns pacing off: files go out as fast as the per-tick budget allows.
+//! The same pong tells senders how far the relay has read their files: every file message written before the
+//! ping has arrived there, so progress follows the network rather than the queue (see `FileMark`).
+//!
+//! `OPENDESK_FILE_RATE_LIMIT=0` turns pacing off: files go out as fast as the per-tick budget allows, and a
+//! file message counts as delivered once it is handed to the socket.
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use tungstenite::Message;
@@ -16,12 +21,16 @@ use tungstenite::Message;
 use super::connection::Socket;
 use crate::domain::file_pacing::{FileRate, TokenBucket};
 use crate::infra::logger;
+use crate::protocol::FileMark;
+use crate::service::file_transfer;
 
 /// Shortest pause between two probes.
 const PROBE_EVERY: Duration = Duration::from_millis(50);
 /// A probe unanswered this long is given up (a relay or proxy that drops pings); the connection's own silence
 /// check handles a dead socket.
 const PROBE_LOST: Duration = Duration::from_secs(10);
+/// Most delivery marks kept; the oldest is reported early when a huge queue exceeds it.
+const MAX_MARKS: usize = 8192;
 /// How often the current rate is logged while files flow.
 const LOG_EVERY: Duration = Duration::from_secs(10);
 
@@ -51,6 +60,8 @@ pub struct FilePacer {
     /// covered.
     written: u64,
     confirmed: u64,
+    /// Transfer progress waiting for a probe to come back: (`written` once its message was written, mark).
+    marks: VecDeque<(u64, FileMark)>,
     last_log: Option<Instant>,
     lost_logged: bool,
 }
@@ -68,6 +79,7 @@ impl FilePacer {
             last_probe: None,
             written: 0,
             confirmed: 0,
+            marks: VecDeque::new(),
             last_log: None,
             lost_logged: false,
         }
@@ -83,9 +95,30 @@ impl FilePacer {
         ok
     }
 
-    /// A file message of `bytes` was handed to the socket.
-    pub fn on_written(&mut self, bytes: usize) {
+    /// A file message of `bytes` was handed to the socket; `mark` says how far its transfer is with it.
+    pub fn on_written(&mut self, bytes: usize, mark: Option<FileMark>) {
         self.written += bytes as u64;
+        let Some(mark) = mark else { return };
+        if !self.enabled {
+            // No probes without pacing: a message counts as delivered once it is in the socket.
+            return file_transfer::set_delivered(&mark);
+        }
+        if self.marks.len() >= MAX_MARKS
+            && let Some((_, oldest)) = self.marks.pop_front()
+        {
+            file_transfer::set_delivered(&oldest);
+        }
+        self.marks.push_back((self.written, mark));
+    }
+
+    /// Every file byte up to `written` has reached the relay: report the marks written by then.
+    fn confirm(&mut self, written: u64) {
+        self.confirmed = written;
+        while self.marks.front().is_some_and(|(end, _)| *end <= written) {
+            if let Some((_, mark)) = self.marks.pop_front() {
+                file_transfer::set_delivered(&mark);
+            }
+        }
     }
 
     /// Sends a probe when one is due: while file messages wait in the connection queue (`queued`) or file
@@ -98,11 +131,16 @@ impl FilePacer {
             let age = now.duration_since(probe.sent);
             self.rate.on_waiting(age, now);
             if age >= PROBE_LOST {
-                self.confirmed = probe.written;
+                let written = probe.written;
                 self.probe = None;
                 if !std::mem::replace(&mut self.lost_logged, true) {
-                    logger::warn("file_transfer", "The relay did not answer a ping in 10 s; pacing on the last rate.");
+                    logger::warn(
+                        "file_transfer",
+                        "The relay did not answer a ping in 10 s; pacing on the last rate, progress estimated.",
+                    );
                 }
+                // Progress must not stall on a relay or proxy that drops pings.
+                self.confirm(written);
             }
             return;
         }
@@ -125,7 +163,7 @@ impl FilePacer {
         let Some(probe) = self.probe.take_if(|p| seq == Some(p.seq)) else { return };
         let rtt = now.duration_since(probe.sent);
         self.rate.on_rtt(rtt, std::mem::take(&mut self.limited), now);
-        self.confirmed = probe.written;
+        self.confirm(probe.written);
         if self.last_log.is_none_or(|at| now.duration_since(at) >= LOG_EVERY) {
             self.last_log = Some(now);
             logger::info(

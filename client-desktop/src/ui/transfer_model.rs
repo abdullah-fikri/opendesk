@@ -82,7 +82,9 @@ fn to_row(u: &TransferUpdate, elapsed: Duration) -> TransferItem {
             let detail = format!("{} / {}{speed}", bytes(u.done as f64), bytes(u.total as f64));
             (ACTIVE, format!("{}%", (progress * 100.0).floor().min(99.0)), detail)
         }
-        TransferState::Verifying => (ACTIVE, "99%".into(), "Waiting for the other device to verify it...".into()),
+        TransferState::Verifying => {
+            (ACTIVE, "Finishing".into(), "The other device is saving and verifying it...".into())
+        }
         TransferState::Done => {
             let detail = if u.outgoing { "Sent and verified" } else { "Saved in Downloads\\OpenDesk" };
             (DONE, "Done".into(), format!("{} · {detail}", bytes(u.total as f64)))

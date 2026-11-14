@@ -25,6 +25,7 @@ use parking_lot::Mutex;
 use crate::domain::capability::PeerCaps;
 use crate::domain::received_files::ReceivedFiles;
 use crate::infra::{autostart, logger};
+use crate::protocol::FileMark;
 
 pub use receiver::FileReceiver;
 
@@ -48,6 +49,8 @@ static TRANSFER_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 /// Items received from each partner, so copy-paste never sends them back to it.
 static RECEIVED: Mutex<ReceivedFiles> = Mutex::new(ReceivedFiles::new());
+/// File bytes of each transfer being sent that the relay has read, keyed `target:id` (see [`set_delivered`]).
+static DELIVERED: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 /// Senders waiting for a receiver ACK, keyed by transfer ID.
 static PENDING_ACKS: Mutex<Vec<(String, Sender<bool>)>> = Mutex::new(Vec::new());
 /// File capabilities of each viewed host (a viewer of several hosts must not mix them up).
@@ -210,6 +213,39 @@ fn remember_received(partner: &str, paths: &[PathBuf]) {
     }
 }
 
+/// Records how far a sent transfer has reached the relay (from the relay connection); transfers no sender
+/// tracks any more are ignored.
+pub fn set_delivered(mark: &FileMark) {
+    if let Some((_, done)) = DELIVERED.lock().iter_mut().find(|(key, _)| *key == mark.key) {
+        *done = (*done).max(mark.done);
+    }
+}
+
+/// File bytes of transfer `key` (`target:id`) the relay has read.
+fn delivered(key: &str) -> u64 {
+    DELIVERED.lock().iter().find(|(k, _)| k == key).map_or(0, |(_, done)| *done)
+}
+
+/// Tracks the delivery of one sent transfer while it lives.
+struct Delivery(String);
+
+impl Delivery {
+    fn track(key: String) -> Self {
+        DELIVERED.lock().push((key.clone(), 0));
+        Self(key)
+    }
+
+    fn bytes(&self) -> u64 {
+        delivered(&self.0)
+    }
+}
+
+impl Drop for Delivery {
+    fn drop(&mut self) {
+        DELIVERED.lock().retain(|(key, _)| *key != self.0);
+    }
+}
+
 /// Delivers a receiver ACK to the waiting sender thread, if any.
 pub fn deliver_ack(id: &str, ok: bool) {
     let mut pending = PENDING_ACKS.lock();
@@ -264,6 +300,19 @@ mod tests {
         assert_eq!(without_echoes("710000009", copied.clone()), vec![PathBuf::from(r"C:\other.txt")]);
         assert_eq!(without_echoes("710000008", copied.clone()), copied, "another partner may get them");
         assert!(without_echoes("710000009", vec![folder]).is_empty());
+    }
+
+    #[test]
+    fn delivery_counts_only_tracked_transfers_and_never_goes_back() {
+        let mark = |done| FileMark { key: "710000007:ft_9".into(), done };
+        set_delivered(&mark(10));
+        assert_eq!(delivered("710000007:ft_9"), 0, "nobody sends it");
+        let delivery = Delivery::track("710000007:ft_9".into());
+        set_delivered(&mark(300));
+        set_delivered(&mark(200)); // an older mark confirmed late
+        assert_eq!(delivery.bytes(), 300);
+        drop(delivery);
+        assert_eq!(delivered("710000007:ft_9"), 0, "forgotten once the send ends");
     }
 
     #[test]

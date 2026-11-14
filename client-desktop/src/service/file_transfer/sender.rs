@@ -12,26 +12,28 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use core_engine::codec::to_base64;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
 use super::{
-    BINARY_CHUNK_SIZE, CHUNK_SIZE, IN_FLIGHT_CHUNKS, caps_of, chunk_units, epoch, expect_ack, forget_ack, hex,
-    now_micros, tree,
+    BINARY_CHUNK_SIZE, CHUNK_SIZE, Delivery, IN_FLIGHT_CHUNKS, caps_of, chunk_units, epoch, expect_ack, forget_ack,
+    hex, now_micros, tree,
 };
 use crate::domain::transfer::{MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, percent, safe_rel_path};
 use crate::infra::logger;
-use crate::protocol::{ClientMessage, FilePayload, Outgoing, binary};
+use crate::protocol::{ClientMessage, FileMark, FilePayload, Outgoing, binary};
 use crate::service::context::AppContext;
 use crate::service::ui_port::{TransferState, TransferUpdate, UiPort};
 
 /// The sender waits this long for the receiver's verdict after queueing `end`.
 const ACK_TIMEOUT: Duration = Duration::from_secs(120);
+/// How often a sender waiting for the verdict refreshes its progress.
+const PROGRESS_POLL: Duration = Duration::from_millis(250);
 /// Most file messages allowed in the connection queue (~1.5 MB), in [`chunk_units`], before the sender waits.
 const MAX_QUEUED_CHUNKS: usize = 48;
 /// Status shown when a selection contained folders the partner cannot receive.
@@ -84,18 +86,25 @@ struct Link {
 
 impl Link {
     fn queue(&self, payload: FilePayload, status: Option<String>) {
+        self.queue_marked(payload, status, None);
+    }
+
+    /// Queues `payload`; `mark` comes back through [`super::set_delivered`] once the relay has read it.
+    fn queue_marked(&self, payload: FilePayload, status: Option<String>, mark: Option<FileMark>) {
         IN_FLIGHT_CHUNKS.fetch_add(1, Ordering::SeqCst);
-        let _ = self.outbox.send(Outgoing::File { message: ClientMessage::file(&self.target, payload), status });
+        let message = ClientMessage::file(&self.target, payload);
+        let _ = self.outbox.send(Outgoing::File { message, status, mark });
     }
 
     /// Queues `data` at `offset` of transfer `id`: binary when `binary`, else base64 JSON.
-    fn queue_chunk(&self, binary: bool, id: &str, offset: u64, data: &[u8], status: Option<String>) {
+    fn queue_chunk(&self, binary: bool, id: &str, offset: u64, data: &[u8], mark: FileMark) {
         match binary.then(|| binary::file_chunk(id, offset, data)).flatten() {
             Some(frame) => {
                 IN_FLIGHT_CHUNKS.fetch_add(chunk_units(frame.len()), Ordering::SeqCst);
-                let _ = self.outbox.send(Outgoing::FileChunk { target: self.target.clone(), frame, status });
+                let target = self.target.clone();
+                let _ = self.outbox.send(Outgoing::FileChunk { target, frame, status: None, mark: Some(mark) });
             }
-            None => self.queue(FilePayload::chunk(id, to_base64(data)), status),
+            None => self.queue_marked(FilePayload::chunk(id, to_base64(data)), None, Some(mark)),
         }
     }
 
@@ -352,6 +361,33 @@ fn send_folder_entry(link: &Link, tag: &FolderTag, auto_paste: bool) {
     }
 }
 
+/// What the transfer list last showed for one sent file, so it is updated only when something changed.
+#[derive(Default, PartialEq)]
+struct Shown {
+    percent: u64,
+    finishing: bool,
+}
+
+impl Shown {
+    /// Shows `delivered` of `size` bytes: active with a percentage, or finishing once every byte reached the
+    /// relay (the receiver still writes and verifies it).
+    fn update(&mut self, link: &Link, id: &str, label: &str, delivered: u64, size: u64) {
+        let delivered = delivered.min(size);
+        let now = Shown { percent: percent(delivered, size), finishing: delivered == size };
+        if now == *self {
+            return;
+        }
+        if now.finishing {
+            link.progress(id, label, size, size, TransferState::Verifying);
+            link.status(format!("Finishing: {label}"));
+        } else {
+            link.progress(id, label, delivered, size, TransferState::Active);
+            link.status(format!("Sending {label} ({}%)...", now.percent));
+        }
+        *self = now;
+    }
+}
+
 /// Sends one file and waits for its verdict.
 fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
     let SendItem { path, id, tag } = item;
@@ -390,15 +426,19 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
         start.group = Some(t.group.clone());
         start.rel = Some(t.rel.clone());
     }
+    // Progress counts what reached the relay, not what was queued: up to the whole queue may still be on its
+    // way, which showed as "stuck at 99%".
+    let key = format!("{}:{id}", link.target);
+    let delivery = Delivery::track(key.clone());
+    let mark = |done: u64| FileMark { key: key.clone(), done };
+    let mut shown = Shown::default();
     link.queue(start, Some(format!("Sending {label} (0%)...")));
     link.progress(&id, &label, 0, size, TransferState::Active);
 
     let mut buf = vec![0u8; chunk_size];
     let mut hash = Sha256::new();
     let mut sent = 0u64;
-    let mut chunks = 0usize;
     let mut aborted = false;
-    let mut shown_percent = 0;
     loop {
         // An early NACK (receiver rejected start) stops sending chunks the relay would drop anyway.
         if epoch() != started || ack_rx.try_recv() == Ok(false) {
@@ -407,6 +447,7 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
         }
         while IN_FLIGHT_CHUNKS.load(Ordering::Relaxed) > MAX_QUEUED_CHUNKS && epoch() == started {
             thread::sleep(Duration::from_millis(8));
+            shown.update(link, &id, &label, delivery.bytes(), size);
         }
         if epoch() != started {
             aborted = true;
@@ -423,14 +464,8 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
                 hash.update(&buf[..n]);
                 let offset = sent;
                 sent += n as u64;
-                chunks += 1;
-                let status = (size > 0 && (binary || chunks.is_multiple_of(4) || sent == size))
-                    .then(|| format!("Sending {label} ({}%)...", percent(sent, size)));
-                link.queue_chunk(binary, &id, offset, &buf[..n], status);
-                if percent(sent, size) != shown_percent {
-                    shown_percent = percent(sent, size);
-                    link.progress(&id, &label, sent, size, TransferState::Active);
-                }
+                link.queue_chunk(binary, &id, offset, &buf[..n], mark(sent));
+                shown.update(link, &id, &label, delivery.bytes(), size);
                 thread::sleep(Duration::from_millis(3));
             }
             Err(e) => {
@@ -446,13 +481,25 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
         return link.fail(&id, &label, size, format!("Could not send {label}"));
     }
 
-    link.queue(
+    link.queue_marked(
         FilePayload::end(&id, &wire_name, hex(&hash.finalize()), auto_paste),
         Some(format!("Waiting for confirmation: {label}")),
+        Some(mark(size)),
     );
     if wants_ack {
-        link.progress(&id, &label, size, size, TransferState::Verifying);
-        match ack_rx.recv_timeout(ACK_TIMEOUT) {
+        // Bytes still on their way keep counting; once all reached the relay the row says "Finishing" while
+        // the receiver writes, syncs and verifies the file.
+        let deadline = Instant::now() + ACK_TIMEOUT;
+        let verdict = loop {
+            match ack_rx.recv_timeout(PROGRESS_POLL) {
+                Ok(ok) => break Ok(ok),
+                Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => {
+                    shown.update(link, &id, &label, delivery.bytes(), size);
+                }
+                Err(e) => break Err(e),
+            }
+        };
+        match verdict {
             Ok(true) => {
                 logger::info("file_transfer", &format!("Sent and confirmed: {label}"));
                 link.progress(&id, &label, size, size, TransferState::Done);

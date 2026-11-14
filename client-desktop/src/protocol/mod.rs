@@ -14,4 +14,4 @@ pub use input_event::{HostStats, InputEvent, MonitorInfo};
 #[cfg(feature = "admin")]
 pub use message::SecurityDevice;
 pub use message::{ClientMessage, HostEntry, ServerMessage};
-pub use outgoing::Outgoing;
+pub use outgoing::{FileMark, Outgoing};

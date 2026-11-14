@@ -24,7 +24,7 @@ use crate::domain::{capability, frame_rate};
 use crate::infra::e2e::{self, E2e};
 use crate::infra::p2p::{self, P2p};
 use crate::infra::{device, logger, power, storage, virtual_clipboard, window};
-use crate::protocol::{ClientMessage, FilePayload, InputEvent, Outgoing, ServerMessage, binary};
+use crate::protocol::{ClientMessage, FileMark, FilePayload, InputEvent, Outgoing, ServerMessage, binary};
 use crate::service::context::Ctx;
 use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS, chunk_units};
 use crate::service::ui_port::{RelayStatus, SessionChange};
@@ -122,6 +122,8 @@ struct QueuedFile {
     units: usize,
     /// Its size on the wire, charged to the file rate.
     bytes: usize,
+    /// Progress of its transfer, reported once the relay has read it.
+    mark: Option<FileMark>,
     status: Option<String>,
 }
 
@@ -569,12 +571,18 @@ impl Connection {
                 Outgoing::VideoFrame(frame) => video = Some(frame),
                 Outgoing::MonitorFrame(frame) => self.monitor_pending = Some(frame),
                 Outgoing::Audio(packet) => self.send_audio(socket, partner, packet),
-                Outgoing::File { message, status } => {
+                Outgoing::File { message, status, mark } => {
                     let text = message.to_json();
                     let bytes = text.len();
-                    self.files.push_back(QueuedFile { message: Message::Text(text.into()), units: 1, bytes, status });
+                    self.files.push_back(QueuedFile {
+                        message: Message::Text(text.into()),
+                        units: 1,
+                        bytes,
+                        status,
+                        mark,
+                    });
                 }
-                Outgoing::FileChunk { target, frame, status } => {
+                Outgoing::FileChunk { target, frame, status, mark } => {
                     let units = chunk_units(frame.len());
                     // Sealed here, in queue order, so the receiver sees its nonces ascending.
                     let frame = self.seal(&target, frame);
@@ -585,7 +593,13 @@ impl Connection {
                         frame
                     };
                     let bytes = frame.len();
-                    self.files.push_back(QueuedFile { message: Message::Binary(frame.into()), units, bytes, status });
+                    self.files.push_back(QueuedFile {
+                        message: Message::Binary(frame.into()),
+                        units,
+                        bytes,
+                        status,
+                        mark,
+                    });
                 }
             }
         }
@@ -692,7 +706,7 @@ impl Connection {
                 }
             }
             IN_FLIGHT_CHUNKS.fetch_sub(file.units, Ordering::Relaxed);
-            self.pacer.on_written(file.bytes);
+            self.pacer.on_written(file.bytes, file.mark);
             budget = budget.saturating_sub(file.units);
             latest = file.status.or(latest);
         }
@@ -1119,7 +1133,7 @@ mod tests {
             InputEvent::MouseMove { norm_x: 0.0, norm_y: 0.0 }
         ))));
         assert!(!is_live(&Outgoing::Message(ClientMessage::disconnect("1"))), "closing a tab must reach the relay");
-        let file = Outgoing::FileChunk { target: "1".into(), frame: vec![1], status: None };
+        let file = Outgoing::FileChunk { target: "1".into(), frame: vec![1], status: None, mark: None };
         assert!(!is_live(&file));
     }
 
