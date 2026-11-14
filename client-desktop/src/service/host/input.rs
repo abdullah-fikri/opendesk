@@ -36,12 +36,12 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
         InputEvent::MouseDown { norm_x, norm_y, button } => {
             let (x, y) = to_screen(ctx, norm_x, norm_y);
             injector.set_cursor_pos(x, y);
-            injector.mouse_down(button);
+            ctx.host.mouse_down(injector, button);
         }
         InputEvent::MouseUp { norm_x, norm_y, button } => {
             let (x, y) = to_screen(ctx, norm_x, norm_y);
             injector.set_cursor_pos(x, y);
-            injector.mouse_up(button);
+            ctx.host.mouse_up(injector, button);
         }
         InputEvent::Click { norm_x, norm_y, button } => {
             let (x, y) = to_screen(ctx, norm_x, norm_y);

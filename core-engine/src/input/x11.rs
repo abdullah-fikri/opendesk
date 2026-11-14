@@ -160,20 +160,24 @@ impl InputInjector {
     }
 
     fn button(&self, button: i32, down: bool) {
+        // X core buttons: 1 left, 2 middle, 3 right, 8 back, 9 forward.
         let detail = match button {
             0 => 1,
+            1 => 2,
             2 => 3,
+            3 => 8,
+            4 => 9,
             _ => return,
         };
         self.with(|t| t.fake(if down { BUTTON_PRESS_EVENT } else { BUTTON_RELEASE_EVENT }, detail, 0, 0));
     }
 
-    /// Presses mouse button `button`: 0 left, 2 right; other values are ignored.
+    /// Presses mouse button `button`: 0 left, 1 middle, 2 right, 3 back, 4 forward; other values are ignored.
     pub fn mouse_down(&self, button: i32) {
         self.button(button, true);
     }
 
-    /// Releases mouse button `button`: 0 left, 2 right; other values are ignored.
+    /// Releases mouse button `button`: 0 left, 1 middle, 2 right, 3 back, 4 forward; other values are ignored.
     pub fn mouse_up(&self, button: i32) {
         self.button(button, false);
     }

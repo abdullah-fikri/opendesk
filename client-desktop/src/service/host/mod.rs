@@ -9,7 +9,7 @@ pub mod input;
 pub mod monitor_stream;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use core_engine::capture::{MonitorBounds, enumerate_monitors};
 use core_engine::input::InputInjector;
@@ -48,6 +48,8 @@ pub struct HostState {
     pub stats_requested: AtomicBool,
     /// Keys injected as down and not yet released, so a session end never leaves one stuck.
     held_keys: Mutex<Vec<u8>>,
+    /// Mouse buttons the viewer holds, one bit per wire button number.
+    held_buttons: AtomicU8,
     /// An administrator's monitor wall shows this machine (see [`monitor_stream`]).
     pub monitored: AtomicBool,
     /// Bumped on every monitor-stream start and stop; a stream thread exits once its generation is stale.
@@ -69,6 +71,7 @@ impl Default for HostState {
             keyframe_requested: AtomicBool::new(false),
             stats_requested: AtomicBool::new(false),
             held_keys: Mutex::new(Vec::new()),
+            held_buttons: AtomicU8::new(0),
             monitored: AtomicBool::new(false),
             monitor_generation: AtomicU64::new(0),
         }
@@ -101,11 +104,33 @@ impl HostState {
         self.held_keys.lock().retain(|&k| k != vk);
     }
 
-    /// Releases every key the viewer left pressed (disconnect, lost relay, viewer crash).
+    /// Presses mouse `button` and remembers it.
+    pub fn mouse_down(&self, injector: &InputInjector, button: i32) {
+        injector.mouse_down(button);
+        if (0..8).contains(&button) {
+            self.held_buttons.fetch_or(1 << button, Ordering::SeqCst);
+        }
+    }
+
+    /// Releases mouse `button`.
+    pub fn mouse_up(&self, injector: &InputInjector, button: i32) {
+        injector.mouse_up(button);
+        if (0..8).contains(&button) {
+            self.held_buttons.fetch_and(!(1 << button), Ordering::SeqCst);
+        }
+    }
+
+    /// Releases every key and mouse button the viewer left pressed (disconnect, lost relay, viewer crash).
     pub fn release_all_keys(&self, injector: &InputInjector) {
         let keys = std::mem::take(&mut *self.held_keys.lock());
         for vk in keys.into_iter().rev() {
             injector.key_up(vk);
+        }
+        let buttons = self.held_buttons.swap(0, Ordering::SeqCst);
+        for b in 0..8 {
+            if buttons & (1 << b) != 0 {
+                injector.mouse_up(b);
+            }
         }
     }
 }

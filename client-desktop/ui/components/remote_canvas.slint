@@ -46,8 +46,8 @@ export component RemoteViewerCanvas inherits Rectangle {
     changed width => { root.viewport_resized(self.width / 1phx, self.height / 1phx); }
     changed height => { root.viewport_resized(self.width / 1phx, self.height / 1phx); }
 
-    property <bool> left-down: false;
-    property <bool> right-down: false;
+    // Buttons pressed on the canvas, one bit per wire button (0 left, 1 middle, 2 right, 3 back, 4 forward).
+    property <int> buttons-down: 0;
     property <float> frame_w: remote_frame.width > 0 ? remote_frame.width : 16;
     property <float> frame_h: remote_frame.height > 0 ? remote_frame.height : 9;
     property <float> scale_x: self.width / (frame_w * 1px);
@@ -133,30 +133,32 @@ export component RemoteViewerCanvas inherits Rectangle {
                     }
                     viewer-focus.focus();
                     if (self.width > 0px && self.height > 0px) {
-                        if (event.kind == PointerEventKind.down) {
-                            if (event.button == PointerEventButton.right) {
-                                root.right-down = true;
-                            } else {
-                                root.left-down = true;
+                        // Wire button numbers: 0 left, 1 middle, 2 right, 3 back, 4 forward (-1: none of them).
+                        let button = event.button == PointerEventButton.left ? 0
+                            : event.button == PointerEventButton.middle ? 1
+                            : event.button == PointerEventButton.right ? 2
+                            : event.button == PointerEventButton.back ? 3
+                            : event.button == PointerEventButton.forward ? 4
+                            : -1;
+                        let bit = button == 0 ? 1 : button == 1 ? 2 : button == 2 ? 4 : button == 3 ? 8 : 16;
+                        if (button >= 0 && event.kind == PointerEventKind.down) {
+                            if (Math.mod(Math.floor(root.buttons-down / bit), 2) == 0) {
+                                root.buttons-down += bit;
                             }
                             send_mouse_down(
                                 (self.mouse-x / self.width) * 10000,
                                 (self.mouse-y / self.height) * 10000,
-                                event.button == PointerEventButton.right ? 2 : 0
+                                button
                             );
-                        } else if (event.kind == PointerEventKind.up
-                            && (event.button == PointerEventButton.right ? root.right-down : root.left-down)) {
+                        } else if (button >= 0 && event.kind == PointerEventKind.up
+                            && Math.mod(Math.floor(root.buttons-down / bit), 2) == 1) {
                             // Only release what was pressed here: a click that closed a popover
                             // delivers just the release, which must not reach the host.
-                            if (event.button == PointerEventButton.right) {
-                                root.right-down = false;
-                            } else {
-                                root.left-down = false;
-                            }
+                            root.buttons-down -= bit;
                             send_mouse_up(
                                 (self.mouse-x / self.width) * 10000,
                                 (self.mouse-y / self.height) * 10000,
-                                event.button == PointerEventButton.right ? 2 : 0
+                                button
                             );
                         }
                     }
