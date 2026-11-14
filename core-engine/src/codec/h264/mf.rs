@@ -1,12 +1,23 @@
 //! H.264 through Media Foundation: hardware encoder MFT when available (NVENC/QSV/AMF expose async MFTs),
-//! the Microsoft software MFT otherwise; the viewer decodes with the Microsoft H.264 decoder MFT.
+//! the Microsoft software MFT otherwise; the viewer decodes with the Microsoft H.264 decoder MFT, on the GPU
+//! (DXVA through a D3D11 device manager) when the driver allows, else in software.
 //! Colour conversion is BT.709 limited range on both ends, done on the CPU.
 
 use std::collections::VecDeque;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{S_OK, VARIANT_BOOL};
+use windows::Win32::Foundation::{HMODULE, S_OK, VARIANT_BOOL};
+use windows::Win32::Graphics::Direct3D::{
+    D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_9_3, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_10_1,
+    D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
+};
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+    ID3D11Multithread, ID3D11Texture2D,
+};
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
@@ -528,9 +539,66 @@ impl H264Encoder {
     }
 }
 
+/// A GPU decode failed once in this process: later decoders go straight to software (a broken driver would
+/// otherwise fail every key frame).
+static HW_DECODE_BROKEN: AtomicBool = AtomicBool::new(false);
+
+/// `OPENDESK_HW_DECODE=0` keeps the software decoder.
+fn hw_decode_enabled() -> bool {
+    !HW_DECODE_BROKEN.load(Ordering::Relaxed) && std::env::var("OPENDESK_HW_DECODE").map_or(true, |v| v != "0")
+}
+
+/// GPU decoding state: the device the decoder MFT renders with, and our staging copy of its output.
+struct Gpu {
+    /// Kept alive for the decoder (it holds the device through it).
+    _manager: IMFDXGIDeviceManager,
+    device: ID3D11Device,
+    context: ID3D11DeviceContext,
+    /// CPU-readable NV12 copy of one decoded picture; recreated when the size changes.
+    staging: Option<(ID3D11Texture2D, u32, u32)>,
+}
+
+/// A D3D11 video device wrapped in an MF device manager, for DXVA decoding.
+fn d3d_manager() -> Result<Gpu> {
+    unsafe {
+        let mut device: Option<ID3D11Device> = None;
+        let mut context: Option<ID3D11DeviceContext> = None;
+        D3D11CreateDevice(
+            None,
+            D3D_DRIVER_TYPE_HARDWARE,
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+            Some(&[
+                D3D_FEATURE_LEVEL_11_1,
+                D3D_FEATURE_LEVEL_11_0,
+                D3D_FEATURE_LEVEL_10_1,
+                D3D_FEATURE_LEVEL_10_0,
+                D3D_FEATURE_LEVEL_9_3,
+            ]),
+            D3D11_SDK_VERSION,
+            Some(&mut device),
+            None,
+            Some(&mut context),
+        )?;
+        let (device, context) = (device.ok_or_else(fail)?, context.ok_or_else(fail)?);
+        // The decoder MFT uses the device from its own threads.
+        if let Ok(mt) = device.cast::<ID3D11Multithread>() {
+            let _ = mt.SetMultithreadProtected(true);
+        }
+        let mut token = 0u32;
+        let mut manager: Option<IMFDXGIDeviceManager> = None;
+        MFCreateDXGIDeviceManager(&mut token, &mut manager)?;
+        let manager = manager.ok_or_else(fail)?;
+        manager.ResetDevice(&device, token)?;
+        Ok(Gpu { _manager: manager, device, context, staging: None })
+    }
+}
+
 /// H.264 decoder (Media Foundation transform) producing RGBA.
 pub struct H264Decoder {
     mft: IMFTransform,
+    /// Device of a GPU (DXVA) decoder; None for the software decoder.
+    gpu: Option<Gpu>,
     out_w: u32,
     out_h: u32,
     pitch: usize,
@@ -542,19 +610,47 @@ pub struct H264Decoder {
 unsafe impl Send for H264Decoder {}
 
 impl H264Decoder {
-    /// Creates a decoder for `width` x `height` streams.
+    /// Creates a decoder for `width` x `height` streams: on the GPU when possible, else in software.
     pub fn new(width: u32, height: u32) -> Result<Self> {
+        if hw_decode_enabled() {
+            match Self::create(width, height, true) {
+                Ok(d) => return Ok(d),
+                Err(_) => HW_DECODE_BROKEN.store(true, Ordering::Relaxed),
+            }
+        }
+        Self::create(width, height, false)
+    }
+
+    /// True when this decoder runs on the GPU (DXVA).
+    pub fn is_hardware(&self) -> bool {
+        self.gpu.is_some()
+    }
+
+    fn create(width: u32, height: u32, gpu: bool) -> Result<Self> {
         ensure_mf()?;
         unsafe {
             let mft: IMFTransform = CoCreateInstance(&CLSID_MSH264DecoderMFT, None, CLSCTX_INPROC_SERVER)?;
-            if let Ok(attrs) = mft.GetAttributes() {
+            let attrs = mft.GetAttributes().ok();
+            if let Some(attrs) = &attrs {
                 // No frame reordering delay: output as soon as a frame is decoded.
                 let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
             }
+            let manager = if gpu {
+                let aware = attrs.as_ref().and_then(|a| a.GetUINT32(&MF_SA_D3D11_AWARE).ok()) == Some(1);
+                if !aware {
+                    return Err(fail());
+                }
+                let gpu = d3d_manager()?;
+                mft.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, gpu._manager.as_raw() as usize)?;
+                Some(gpu)
+            } else {
+                None
+            };
             let in_t = video_type(&MFVideoFormat_H264, width, height, 60)?;
             mft.SetInputType(0, &in_t, 0)?;
             let mut d = Self {
                 mft,
+                gpu: manager,
                 out_w: width,
                 out_h: height,
                 pitch: width as usize,
@@ -613,13 +709,64 @@ impl H264Decoder {
                 }
                 Err(e) if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => break,
                 Err(e) if e.code() == MF_E_TRANSFORM_STREAM_CHANGE => self.pick_output()?,
-                Err(e) => return Err(e),
+                Err(e) => {
+                    if self.gpu.is_some() {
+                        HW_DECODE_BROKEN.store(true, Ordering::Relaxed);
+                    }
+                    return Err(e);
+                }
             }
         }
         Ok(got)
     }
 
-    fn convert(&self, s: &IMFSample, w: u32, h: u32, out: &mut Vec<u8>) -> Result<()> {
+    /// GPU output: copies the decoded surface to our staging texture and converts from there. Reading the
+    /// decoder's surface through `Lock2D` is several times slower (uncached GPU memory).
+    fn convert_gpu(&mut self, s: &IMFSample, w: u32, h: u32, out: &mut Vec<u8>) -> Result<bool> {
+        let Some(gpu) = self.gpu.as_mut() else { return Ok(false) };
+        unsafe {
+            let Ok(dxgi) = s.GetBufferByIndex(0)?.cast::<IMFDXGIBuffer>() else { return Ok(false) };
+            let mut tex: Option<ID3D11Texture2D> = None;
+            dxgi.GetResource(&ID3D11Texture2D::IID, &mut tex as *mut _ as *mut *mut core::ffi::c_void)?;
+            let tex = tex.ok_or_else(fail)?;
+            let index = dxgi.GetSubresourceIndex()?;
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            tex.GetDesc(&mut desc);
+            if gpu.staging.as_ref().is_none_or(|(_, sw, sh)| (*sw, *sh) != (desc.Width, desc.Height)) {
+                let staging_desc = D3D11_TEXTURE2D_DESC {
+                    Width: desc.Width,
+                    Height: desc.Height,
+                    MipLevels: 1,
+                    ArraySize: 1,
+                    Format: desc.Format,
+                    SampleDesc: desc.SampleDesc,
+                    Usage: D3D11_USAGE_STAGING,
+                    BindFlags: 0,
+                    CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                    MiscFlags: 0,
+                };
+                let mut staging = None;
+                gpu.device.CreateTexture2D(&staging_desc, None, Some(&mut staging))?;
+                gpu.staging = Some((staging.ok_or_else(fail)?, desc.Width, desc.Height));
+            }
+            let (staging, _, tex_h) = gpu.staging.as_ref().unwrap();
+            gpu.context.CopySubresourceRegion(staging, 0, 0, 0, 0, &tex, index, None);
+            let mut map = D3D11_MAPPED_SUBRESOURCE::default();
+            gpu.context.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut map))?;
+            let pitch = map.RowPitch as usize;
+            let rows = *tex_h as usize;
+            let data = std::slice::from_raw_parts(map.pData as *const u8, pitch * rows * 3 / 2);
+            let (yp, uv) = data.split_at(pitch * rows);
+            nv12_to_rgba(yp, uv, pitch, w as usize, h as usize, out);
+            gpu.context.Unmap(staging, 0);
+            Ok(true)
+        }
+    }
+
+    fn convert(&mut self, s: &IMFSample, w: u32, h: u32, out: &mut Vec<u8>) -> Result<()> {
+        if self.convert_gpu(s, w, h, out)? {
+            return Ok(());
+        }
         unsafe {
             let buf = s.ConvertToContiguousBuffer()?;
             if let Ok(b2) = buf.cast::<IMF2DBuffer>() {
@@ -672,6 +819,73 @@ mod tests {
             }
         }
         assert!(shown >= 8, "low-latency decode should not buffer ({shown} of 10 shown)");
+    }
+
+    /// GPU and software decoders give the same picture (within rounding) for the same stream.
+    #[test]
+    fn gpu_decoder_matches_software() {
+        let (w, h) = (320u32, 192u32);
+        let Ok(mut enc) = H264Encoder::new(w, h, 30, 2_000_000, false) else { return };
+        let Ok(mut gpu) = H264Decoder::create(w, h, true) else {
+            eprintln!("no DXVA decoder here; skipped");
+            return;
+        };
+        let mut sw = H264Decoder::create(w, h, false).unwrap();
+        assert!(gpu.is_hardware() && !sw.is_hardware());
+        let mut compared = 0;
+        for t in 0..10 {
+            let frame = pattern(w as usize, h as usize, t);
+            let Some((au, _)) = enc.encode(&frame, w as usize).unwrap() else { continue };
+            let a = gpu.decode(&au, w, h).unwrap().map(<[u8]>::to_vec);
+            let b = sw.decode(&au, w, h).unwrap().map(<[u8]>::to_vec);
+            if let (Some(a), Some(b)) = (a, b) {
+                let worst = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+                assert!(worst <= 2, "frame {t}: GPU and software differ by {worst}");
+                compared += 1;
+            }
+        }
+        assert!(compared >= 8, "GPU decoder buffered frames ({compared} of 10 compared)");
+    }
+
+    /// Process CPU (decoder worker threads included) and wall time per 1080p frame, GPU vs software decode:
+    /// `cargo test --release decode_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn decode_cost_gpu_vs_software() {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> isize;
+            fn GetProcessTimes(h: isize, c: *mut u64, e: *mut u64, k: *mut u64, u: *mut u64) -> i32;
+        }
+        let cpu = || {
+            let (mut c, mut e, mut k, mut u) = (0, 0, 0, 0);
+            unsafe { GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u) };
+            Duration::from_nanos((k + u) * 100)
+        };
+        let (w, h) = (1920u32, 1080u32);
+        let mut enc = H264Encoder::new(w, h, 60, 8_000_000, true).unwrap();
+        let mut aus = Vec::new();
+        for t in 0..120 {
+            if let Some((au, _)) = enc.encode(&pattern(w as usize, h as usize, t), w as usize).unwrap() {
+                aus.push(au);
+            }
+        }
+        for gpu in [false, true] {
+            let Ok(mut dec) = H264Decoder::create(w, h, gpu) else { continue };
+            let mut out = Vec::new();
+            let (c0, t0) = (cpu(), Instant::now());
+            let mut n = 0;
+            for au in &aus {
+                n += dec.decode_into(au, w, h, &mut out).unwrap() as u32;
+            }
+            let (c, t) = (cpu() - c0, t0.elapsed());
+            println!(
+                "{}: {n} frames, CPU {:.2} ms/frame, wall {:.2} ms/frame",
+                if gpu { "GPU (DXVA)" } else { "software" },
+                c.as_secs_f64() * 1000.0 / n as f64,
+                t.as_secs_f64() * 1000.0 / n as f64
+            );
+        }
     }
 
     #[test]

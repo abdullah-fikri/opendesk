@@ -332,6 +332,10 @@ impl ViewerDecoder {
         }
         if idr && self.h264.as_ref().is_none_or(|(_, dw, dh)| (*dw, *dh) != (w, hh)) {
             self.h264 = H264Decoder::new(w, hh).ok().map(|d| (d, w, hh));
+            if let Some((d, ..)) = &self.h264 {
+                let kind = if d.is_hardware() { "GPU (DXVA)" } else { "software" };
+                logger::info("viewer", &format!("H.264 decoder for {w}x{hh}: {kind}."));
+            }
         }
         let Some((dec, _, _)) = self.h264.as_mut() else {
             self.comp.invalidate();

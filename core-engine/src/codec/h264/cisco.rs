@@ -221,6 +221,11 @@ pub struct H264Decoder {
 }
 
 impl H264Decoder {
+    /// OpenH264 always decodes on the CPU.
+    pub fn is_hardware(&self) -> bool {
+        false
+    }
+
     /// Creates a decoder; the stream size comes from its SPS.
     pub fn new(_width: u32, _height: u32) -> Result<Self> {
         let dec = Decoder::with_api_config(api()?, DecoderConfig::new()).map_err(err)?;
