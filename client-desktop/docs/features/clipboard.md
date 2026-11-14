@@ -14,3 +14,16 @@ Code: `src/service/clipboard_sync.rs` (watcher), `src/service/relay/dispatcher.r
   Writing works as SYSTEM.
 - Anything the app wrote to the clipboard itself (received text or files) is marked as already synced, so it is
   never echoed back.
+
+## Diagnostics
+
+The file path is never chosen silently. The trace log (`opendesk.trace`) shows:
+
+- at registration, `Not advertising file-offer: <reason>` when this machine cannot take offers (not Windows, or
+  the service's SYSTEM agent);
+- at session start, one `File path with <partner>` line: how our copies and theirs travel (offered, sent on copy,
+  sent on Ctrl+V) and the capabilities behind it (partner, relay and this machine's `file-offer`, folders, binary,
+  ack);
+- for every clipboard file event (a copy seen by the watcher, Ctrl+V in a session, a focus change), one
+  `Clipboard files for <partner>: offer|send|skip (<reason>)` line with the number of files, their bytes and
+  folders, the role and whether this is the service agent.

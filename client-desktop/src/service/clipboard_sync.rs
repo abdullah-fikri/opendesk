@@ -50,10 +50,10 @@ pub fn spawn(ctx: Ctx) {
 
             // A viewer sends its files explicitly on Ctrl+V, so files are only auto-sent from the host side;
             // partners with offers get names and sizes now and pull on paste.
-            let clip = user_clipboard::read();
+            let mut clip = user_clipboard::read();
             let offers = file_transfer::caps_of(&partner).file_offer;
             if offers || ctx.is_hosting() {
-                let files = clip.files;
+                let files = std::mem::take(&mut clip.files);
                 if !files.is_empty() {
                     let received = file_transfer::is_received_clipboard(&files);
                     let action = files_action(last_files.as_ref(), &files, received, offers, Instant::now());
@@ -63,22 +63,28 @@ pub fn spawn(ctx: Ctx) {
                             s.offered_seq.store(current, Ordering::SeqCst);
                         }
                     };
+                    let hosting = ctx.is_hosting();
+                    let log = |decision: &str, reason: &str| {
+                        file_transfer::log_clipboard_files(&partner, &files, decision, reason, hosting)
+                    };
                     match action {
                         FilesAction::Offer => {
+                            log("offer", "new copy; the partner takes offers");
                             last_files = Some((files.clone(), Instant::now()));
                             mark_offered();
                             offer::offer_files(&ctx, files, partner);
                         }
-                        FilesAction::AlreadyOffered => mark_offered(),
+                        FilesAction::AlreadyOffered => {
+                            log("skip", "same copy seen again; already offered");
+                            mark_offered();
+                        }
                         FilesAction::Send => {
+                            log("send", "new copy on the host; the viewer cannot take offers");
                             last_files = Some((files.clone(), Instant::now()));
-                            logger::info(
-                                "clipboard",
-                                &format!("Host copied {} files; sending them to the viewer.", files.len()),
-                            );
                             sender::send_files(&ctx, files, partner, false);
                         }
-                        FilesAction::Skip => {}
+                        FilesAction::Skip if received => log("skip", "files we just received"),
+                        FilesAction::Skip => log("skip", "same copy seen again; already sent"),
                     }
                     continue;
                 }
@@ -90,6 +96,13 @@ pub fn spawn(ctx: Ctx) {
                     logger::info("clipboard", &format!("Sending copied text ({} chars) to {partner}.", text.len()));
                     ctx.send(ClientMessage::RelayClipboard { target_clean: partner, text });
                 }
+                None if !clip.files.is_empty() => file_transfer::log_clipboard_files(
+                    &partner,
+                    &clip.files,
+                    "skip",
+                    "viewer copy for a host without offers; sent on Ctrl+V in the session",
+                    false,
+                ),
                 None => logger::info("clipboard", "Clipboard changed, but it holds no text to send."),
             }
         }

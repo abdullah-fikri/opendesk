@@ -86,7 +86,10 @@ fn push_clipboard(ctx: &AppContext, s: &Arc<Session>) {
         let files = clip.files;
         if !files.is_empty() {
             // Files that came from a host are never offered back.
-            if !file_transfer::is_received_clipboard(&files) {
+            if file_transfer::is_received_clipboard(&files) {
+                file_transfer::log_clipboard_files(&s.id, &files, "skip", "focus change; files we received", false);
+            } else {
+                file_transfer::log_clipboard_files(&s.id, &files, "offer", "focus change; host not offered yet", false);
                 s.offered_seq.store(current, Ordering::SeqCst);
                 file_transfer::offer::offer_files(ctx, files, s.id.clone());
             }
@@ -395,11 +398,18 @@ pub fn key_event(ctx: &AppContext, id: &str, text: &str, pressed: bool, repeat: 
         // before the session or before this host had focus) is sent and pasted, like a drop.
         let seq = core_engine::clipboard::sequence_number();
         let offered = file_transfer::caps_of(id).file_offer && sess.offered_seq.load(Ordering::SeqCst) == seq;
-        if !files.is_empty() && !file_transfer::is_received_clipboard(&files) && !offered {
+        let received = !files.is_empty() && file_transfer::is_received_clipboard(&files);
+        if !files.is_empty() && (received || offered) {
+            let reason = if received { "files we received; host pastes its own copy" } else { "already offered" };
+            file_transfer::log_clipboard_files(id, &files, "skip", &format!("Ctrl+V; {reason}"), false);
+        }
+        if !files.is_empty() && !received && !offered {
             // A second Ctrl+V while the first copy is still on its way would send and paste the files twice.
             if file_transfer::sender::is_sending(id, &files) {
+                file_transfer::log_clipboard_files(id, &files, "skip", "Ctrl+V; still sending these", false);
                 ctx.ui.status("Still sending these files; they are pasted when they arrive".into());
             } else {
+                file_transfer::log_clipboard_files(id, &files, "send", "Ctrl+V; not offered to this host", false);
                 file_transfer::sender::send_files(ctx, files, id.to_string(), true);
             }
             continue;

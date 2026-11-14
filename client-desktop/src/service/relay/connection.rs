@@ -414,11 +414,10 @@ impl Connection {
     fn register_message(&self, resume_token: Option<String>) -> ClientMessage {
         let edition = self.ctx.edition;
         let mut caps = vec![capability::FILE_ACK];
-        // Clipboard file offers need Explorer's virtual files: Windows only, and not from the service's SYSTEM
-        // agent, whose clipboard objects the user's Explorer cannot pull from reliably. Partners then send
-        // copied files as ordinary transfers.
-        if cfg!(windows) && !autostart::supervised_by_service() {
-            caps.push(capability::FILE_OFFER);
+        // Without clipboard file offers, partners send copied files as ordinary transfers.
+        match file_transfer::local_file_offer() {
+            Ok(()) => caps.push(capability::FILE_OFFER),
+            Err(reason) => logger::info("file_transfer", &format!("Not advertising file-offer: {reason}.")),
         }
         caps.extend([capability::FILE_FOLDER, capability::FILE_BINARY, capability::CURSOR_SHAPE]);
         caps.extend(decoder::supported_video_caps());

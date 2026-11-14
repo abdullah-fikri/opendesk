@@ -22,6 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use parking_lot::Mutex;
 
 use crate::domain::capability::PeerCaps;
+use crate::infra::{autostart, logger};
 
 pub use receiver::FileReceiver;
 
@@ -96,6 +97,80 @@ pub fn set_partner_caps(caps: PeerCaps) {
 /// Capabilities of `target`: its viewer session's when it has one, else the single partner's.
 pub fn caps_of(target: &str) -> PeerCaps {
     SESSION_CAPS.lock().iter().find(|(k, _)| k == target).map(|(_, c)| *c).unwrap_or_else(|| *PARTNER_CAPS.lock())
+}
+
+/// Whether this machine advertises `file-offer`, or why not. Offers need Explorer's virtual files: Windows only,
+/// and not from the service's SYSTEM agent, whose clipboard objects the user's Explorer cannot pull from
+/// reliably.
+pub fn local_file_offer() -> Result<(), &'static str> {
+    if !cfg!(windows) {
+        Err("virtual clipboard files need Windows")
+    } else if autostart::supervised_by_service() {
+        Err("SYSTEM service agent; the user's Explorer cannot pull from its clipboard")
+    } else {
+        Ok(())
+    }
+}
+
+/// `on`, or `off (reason)`, for logs.
+fn on_off(state: Result<(), &str>) -> String {
+    match state {
+        Ok(()) => "on".into(),
+        Err(reason) => format!("off ({reason})"),
+    }
+}
+
+/// Logs once per session how copied files travel in each direction with `partner` and why, so a fallback is
+/// never silent. `relay_offer` is whether the relay listed `file-offer`; `hosting` is our role.
+pub fn log_session_path(partner: &str, caps: &PeerCaps, relay_offer: bool, hosting: bool) {
+    let ours = local_file_offer();
+    let out = match (caps.file_offer, hosting) {
+        (true, _) => "offered (names only; pulled on paste)",
+        (false, true) => "sent on copy (fallback: the viewer cannot take offers)",
+        (false, false) => "sent on Ctrl+V in the session",
+    };
+    let incoming = match (ours.is_ok() && relay_offer, hosting) {
+        (true, _) => "offered to us",
+        (false, true) => "sent on Ctrl+V in the session",
+        (false, false) => "sent on copy (fallback: we cannot take offers)",
+    };
+    logger::info(
+        "file_transfer",
+        &format!(
+            "File path with {partner}: our copies are {out}; theirs are {incoming}. Partner file-offer={}, relay \
+             file-offer={relay_offer}, this machine file-offer={}, folders={}, binary={}, ack={}.",
+            caps.file_offer,
+            on_off(ours),
+            caps.file_folder,
+            caps.file_binary,
+            caps.file_ack
+        ),
+    );
+}
+
+/// Logs what happens to copied `files` for `partner` and why: one line per clipboard file event (copy seen by
+/// the watcher, Ctrl+V in a session, focus change). `decision` is `offer`, `send` or `skip`.
+pub fn log_clipboard_files(partner: &str, files: &[PathBuf], decision: &str, reason: &str, hosting: bool) {
+    let (mut count, mut folders, mut bytes) = (0usize, 0usize, 0u64);
+    for meta in files.iter().filter_map(|p| std::fs::metadata(p).ok()) {
+        if meta.is_dir() {
+            folders += 1;
+        } else {
+            count += 1;
+            bytes += meta.len();
+        }
+    }
+    logger::info(
+        "clipboard",
+        &format!(
+            "Clipboard files for {partner}: {decision} ({reason}). {count} files ({bytes} B), {folders} folders; \
+             partner file-offer={}, this machine file-offer={}, role={}, service agent={}.",
+            caps_of(partner).file_offer,
+            on_off(local_file_offer()),
+            if hosting { "host" } else { "viewer" },
+            autostart::supervised_by_service()
+        ),
+    );
 }
 
 /// True if the clipboard holds exactly the files we just received (provenance, not timing).
