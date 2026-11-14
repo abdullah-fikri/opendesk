@@ -12,7 +12,12 @@ Code: `src/service/file_transfer/` (`sender.rs`, `receiver.rs`, `offer.rs`, `tre
 | "Send files" button | File picker, then the same |
 | Ctrl+V in a session with files on the clipboard | Sent and pasted, unless those exact files were already offered to this host in this session |
 | Copy files while a partner supports `file-offer` | Only names and sizes are sent; the partner's clipboard shows virtual files, and each paste pulls one file |
-| Copy files on a host without offers | Sent to the viewer's clipboard |
+| Copy files on a host without offers | Sent to the viewer's clipboard, once per real copy (below) |
+
+A host whose viewer cannot take offers (the viewer runs as the service's SYSTEM agent, or is not on Windows)
+falls back to sending copied files. It sends only files that differ from what the clipboard held at the
+previous look: files copied before the session started, or still there when another program merely touched the
+clipboard (a clipboard manager, an app gaining focus after Alt+Tab), are not sent. The log says which.
 
 ## Progress
 
