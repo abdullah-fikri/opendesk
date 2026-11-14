@@ -17,7 +17,7 @@ use parking_lot::Mutex;
 
 use crate::domain::capability::PeerCaps;
 use crate::domain::{desk_id, resolution};
-use crate::infra::send_gate::SendGate;
+use crate::infra::send_gate::{SendGate, VideoLink};
 use crate::infra::{audio, logger, privacy};
 use crate::protocol::InputEvent;
 use crate::service::context::{AppContext, Ctx};
@@ -36,6 +36,8 @@ pub struct HostState {
     /// Backpressure gate: the capture loop only encodes while the previous frame has left the socket.
     /// Shared with the P2P path, whose frame acknowledgements also open it.
     pub can_send_frame: Arc<SendGate>,
+    /// What the video senders measure (send time, P2P acknowledgements), for `host-stats`.
+    pub video_link: Arc<VideoLink>,
     /// The hosted session's video goes over a direct P2P path (updated by the relay connection).
     pub p2p_active: AtomicBool,
     /// What the hosted viewer supports.
@@ -61,6 +63,7 @@ impl Default for HostState {
             resolution_mode: AtomicUsize::new(resolution::DEFAULT_PRESET),
             monitor_bounds: Mutex::new(enumerate_monitors()[0]),
             can_send_frame: Arc::new(SendGate::new(true)),
+            video_link: Arc::default(),
             p2p_active: AtomicBool::new(false),
             peer_caps: Mutex::default(),
             keyframe_requested: AtomicBool::new(false),

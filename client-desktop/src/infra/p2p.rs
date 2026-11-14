@@ -13,10 +13,11 @@ use core_engine::codec::{from_base64, to_base64};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 
+use crate::domain::link_quality::LossMeter;
 use crate::infra::audio::VoiceEngine;
 use crate::infra::e2e::{E2e, P2P_NONCE_LIMIT};
 use crate::infra::logger;
-use crate::infra::send_gate::SendGate;
+use crate::infra::send_gate::{SendGate, VideoLink};
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 
 const NOISE: &str = "Noise_NN_25519_ChaChaPoly_BLAKE2s";
@@ -124,6 +125,8 @@ pub struct Sinks {
     pub input: Sender<InputEvent>,
     /// Viewer of several hosts: audio plays only while this is true (its tab has focus). None = always.
     pub audio_gate: Option<Arc<AtomicBool>>,
+    /// Viewer side: counts the video fragments received and lost, for the stats overlay.
+    pub loss: Option<Arc<Mutex<LossMeter>>>,
 }
 
 /// Sliding anti-replay window over explicit nonces (bit = nonce % window).
@@ -426,6 +429,8 @@ pub struct P2p {
     /// Gather the candidates again and send them as a refresh (see `refresh`).
     regather: AtomicBool,
     can_send_frame: Arc<SendGate>,
+    /// Host side: send time, acknowledgement round trips and the window, for `host-stats`.
+    video_link: Arc<VideoLink>,
     tx_out: Sender<Outgoing>,
     sinks: Sinks,
     /// Both peers list `e2e`: the path uses the session's `Noise_XX` keys instead of its own `Noise_NN`.
@@ -434,11 +439,13 @@ pub struct P2p {
 
 impl P2p {
     /// Opens the UDP socket and starts candidate gathering in the background. Returns None if no socket is available.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         is_host: bool,
         local_clean: &str,
         partner: String,
         can_send_frame: Arc<SendGate>,
+        video_link: Arc<VideoLink>,
         tx_out: Sender<Outgoing>,
         sinks: Sinks,
         e2e: Option<Arc<E2e>>,
@@ -490,6 +497,7 @@ impl P2p {
             closed: AtomicBool::new(false),
             regather: AtomicBool::new(false),
             can_send_frame,
+            video_link,
             tx_out,
             sinks,
             e2e,
@@ -776,6 +784,13 @@ impl P2p {
                 let id = u32::from_be_bytes(body[0..4].try_into().unwrap());
                 let idx = u16::from_be_bytes([body[4], body[5]]) as usize;
                 let count = u16::from_be_bytes([body[6], body[7]]) as usize;
+                if let Some(loss) = &self.sinks.loss
+                    && count > 0
+                    && count <= MAX_FRAGS
+                    && idx < count
+                {
+                    loss.lock().fragment(id, count);
+                }
                 if let Some(frame) = Reasm::push(&mut st.reasm, id, idx, count, &body[8..]) {
                     (self.sinks.video)(frame);
                     let mut ack = vec![K_FRAME_ACK];
@@ -786,7 +801,8 @@ impl P2p {
             K_FRAME_ACK if self.is_host && body.len() == 4 => {
                 let id = u32::from_be_bytes(body.try_into().unwrap());
                 // An acknowledgement also covers every older frame (their acks may have been lost).
-                if st.frame_wait.iter().any(|(w, _)| *w == id) {
+                if let Some(&(_, sent)) = st.frame_wait.iter().find(|(w, _)| *w == id) {
+                    self.video_link.stats.lock().ack_rtt.record(sent.elapsed());
                     st.frame_wait.retain(|(w, _)| (w.wrapping_sub(id) as i32) > 0);
                     self.can_send_frame.open();
                 }
@@ -936,6 +952,7 @@ impl P2p {
 
     /// Sends one JPEG over P2P. Returns false (caller uses the relay) if the path is down or the frame is too large.
     pub fn send_video(&self, jpeg: &[u8]) -> bool {
+        let started = Instant::now();
         let mut st = self.state.lock();
         let count = jpeg.len().div_ceil(FRAG_DATA);
         if !Self::alive(&st) || count == 0 || count > MAX_FRAGS {
@@ -955,10 +972,13 @@ impl P2p {
         }
         // Up to MAX_FRAMES_IN_FLIGHT frames in flight; past that the viewer's frame-ack (or a timeout) releases the
         // capture loop.
-        st.frame_wait.push_back((id, Instant::now()));
+        st.frame_wait.push_back((id, started));
         if st.frame_wait.len() < MAX_FRAMES_IN_FLIGHT {
             self.can_send_frame.open();
         }
+        let mut link = self.video_link.stats.lock();
+        link.send.record(started.elapsed());
+        link.window = Some(MAX_FRAMES_IN_FLIGHT);
         true
     }
 
@@ -1138,6 +1158,7 @@ mod tests {
             voice: Arc::clone(&voice),
             input,
             audio_gate: None,
+            loss: None,
         };
         let (dummy, _keep) = std::sync::mpsc::channel();
         let viewer = P2p::start(
@@ -1145,6 +1166,7 @@ mod tests {
             "111111111",
             "222222222".into(),
             Arc::new(SendGate::new(true)),
+            Arc::default(),
             tx_v,
             mk(dummy, Arc::new(move |f| sink.lock().push(f))),
             None,
@@ -1155,6 +1177,7 @@ mod tests {
             "222222222",
             "111111111".into(),
             Arc::new(SendGate::new(true)),
+            Arc::default(),
             tx_h,
             mk(in_tx, Arc::new(|_| {})),
             None,
@@ -1255,6 +1278,7 @@ mod tests {
             voice: Arc::clone(&voice),
             input,
             audio_gate: None,
+            loss: None,
         };
         let (dummy, _keep) = std::sync::mpsc::channel();
         let viewer = P2p::start(
@@ -1262,6 +1286,7 @@ mod tests {
             "111111111",
             "222222222".into(),
             Arc::new(SendGate::new(true)),
+            Arc::default(),
             tx_v,
             mk(dummy, Arc::new(move |f| sink.lock().push(f))),
             None,
@@ -1272,6 +1297,7 @@ mod tests {
             "222222222",
             "111111111".into(),
             Arc::new(SendGate::new(true)),
+            Arc::default(),
             tx_h,
             mk(in_tx, Arc::new(|_| {})),
             None,

@@ -217,6 +217,8 @@ impl Connection {
         ctx.viewers.set_multi(false);
         let mut lost = false;
         let mut video_in_flight = false;
+        // When the frame now in flight on this socket was taken from the outbox (the `host-stats` send time).
+        let mut video_taken: Option<Instant> = None;
         let mut last_expire = Instant::now();
         let mut last_path_update = Instant::now();
         let backoff = idle_backoff_enabled();
@@ -256,7 +258,11 @@ impl Connection {
                 }
             }
 
-            video_in_flight |= self.pump_outbox(&mut socket, &partner);
+            let pumped = Instant::now();
+            if self.pump_outbox(&mut socket, &partner) {
+                video_in_flight = true;
+                video_taken.get_or_insert(pumped);
+            }
             if !video_in_flight {
                 // Thumbnails only fill gaps: they never queue in front of the hosted session's video.
                 self.pump_monitor(&mut socket);
@@ -275,6 +281,11 @@ impl Connection {
                 Ok(()) => {
                     if std::mem::take(&mut video_in_flight) {
                         ctx.host.can_send_frame.open();
+                        if let Some(taken) = video_taken.take() {
+                            let mut link = ctx.host.video_link.stats.lock();
+                            link.send.record(taken.elapsed());
+                            link.window = None;
+                        }
                     }
                     self.monitor_in_flight = false;
                 }
@@ -285,6 +296,7 @@ impl Connection {
                 }
                 Err(_) => {
                     ctx.host.can_send_frame.open();
+                    video_taken = None;
                     self.monitor_in_flight = false;
                 }
             }

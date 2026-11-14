@@ -1,9 +1,31 @@
 //! The video backpressure gate: the host's capture loop encodes only while the previous frame has left the
-//! socket (relay flush or P2P acknowledgement). Waiting on it blocks instead of polling.
+//! socket (relay flush or P2P acknowledgement). Waiting on it blocks instead of polling. Also the numbers the
+//! video senders report back to the capture loop ([`VideoLink`]).
 
 use parking_lot::{Condvar, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
+
+use crate::domain::perf_stats::Stage;
+
+/// What the host's video senders (the relay socket, the P2P path) measure, for `host-stats` and the
+/// `host.perf` line. Shared like the gate: senders write, the capture loop reads.
+#[derive(Default)]
+pub struct VideoLink {
+    pub stats: Mutex<LinkStats>,
+}
+
+/// See [`VideoLink`].
+#[derive(Default)]
+pub struct LinkStats {
+    /// From the sender taking a frame until its last byte is in the socket (relay: flushed; P2P: every
+    /// fragment sent, including pacing).
+    pub send: Stage,
+    /// P2P: from sending a frame until the viewer acknowledged it complete.
+    pub ack_rtt: Stage,
+    /// P2P: frames that may be in flight; None while video takes the relay.
+    pub window: Option<usize>,
+}
 
 /// An open/closed flag a thread can wait on until a deadline.
 pub struct SendGate {

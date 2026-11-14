@@ -205,6 +205,7 @@ impl Connection {
                     voice: Arc::clone(&ctx.voice),
                     input: self.p2p_input_tx.clone(),
                     audio_gate: None,
+                    loss: None,
                 };
                 self.start_link(true, target, sinks);
             }
@@ -219,6 +220,7 @@ impl Connection {
                 voice: Arc::clone(&ctx.voice),
                 input: self.p2p_input_tx.clone(),
                 audio_gate: Some(Arc::clone(&sess.audio_on)),
+                loss: Some(Arc::clone(&sess.udp_loss)),
             };
             self.start_link(false, target, sinks);
         }
@@ -232,6 +234,7 @@ impl Connection {
             &ctx.local_id,
             partner.to_string(),
             Arc::clone(&ctx.host.can_send_frame),
+            Arc::clone(&ctx.host.video_link),
             ctx.outbox.clone(),
             sinks,
             e2e,

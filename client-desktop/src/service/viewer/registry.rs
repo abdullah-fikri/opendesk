@@ -12,6 +12,7 @@ use parking_lot::Mutex;
 
 use crate::domain::keyboard::KeyForwarder;
 use crate::domain::latency::LatencyMeter;
+use crate::domain::link_quality::LossMeter;
 use crate::infra::power;
 use crate::service::viewer::decoder::VideoInbox;
 use crate::service::viewer::stats::SessionStats;
@@ -61,6 +62,8 @@ pub struct Session {
     pub stats: Mutex<SessionStats>,
     /// Latency stages of displayed frames: the decoder thread, the presenter and `stats-pong` feed it.
     pub latency: Arc<Mutex<LatencyMeter>>,
+    /// Video fragments received and lost on the UDP path; the P2P link feeds it.
+    pub udp_loss: Arc<Mutex<LossMeter>>,
     /// Full speed (no EcoQoS) from opening the session until it is dropped.
     _awake: power::Awake,
 }
@@ -93,6 +96,7 @@ impl Session {
             stats_on: AtomicBool::new(false),
             stats: Mutex::default(),
             latency: Arc::default(),
+            udp_loss: Arc::default(),
             _awake: power::awake(),
         }
     }

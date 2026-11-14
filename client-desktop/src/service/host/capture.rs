@@ -12,9 +12,10 @@ use core_engine::codec::frame::{self, FrameStamp};
 use core_engine::stream::{FrameInput, H264Mode, StreamEncoder};
 
 use crate::domain::frame_rate::{self, FpsGovernor};
-use crate::domain::perf_stats::{Counter, PerfWindow, ProcessUsage, STATS_INTERVAL, Stage, kbps};
+use crate::domain::perf_stats::{Counter, PerfWindow, ProcessUsage, STATS_INTERVAL, Stage, StageSummary, kbps};
 use crate::domain::{latency, resolution};
 use crate::infra::process_usage::UsageSampler;
+use crate::infra::send_gate::LinkStats;
 use crate::infra::{logger, power};
 use crate::protocol::{HostStats, InputEvent, MonitorInfo, Outgoing};
 use crate::service::context::Ctx;
@@ -65,6 +66,9 @@ struct HostPerf {
     grab: Stage,
     wait: Stage,
     encode: Stage,
+    /// The two parts of `encode`: pixel preparation and the codec.
+    convert: Stage,
+    codec: Stage,
     /// Capture to hand-off of a sent frame.
     latency: Stage,
     gate: Stage,
@@ -75,18 +79,32 @@ struct HostPerf {
 }
 
 impl HostPerf {
-    /// The window's log line (`target` = current target frame rate); resets the counters.
-    fn take_line(&mut self, secs: f64, h264: Option<&str>, target: u32, usage: Option<ProcessUsage>) -> String {
+    /// The window's log line (`target` = current target frame rate); resets the counters, including the
+    /// senders' (`link`).
+    fn take_line(
+        &mut self,
+        link: &mut LinkStats,
+        secs: f64,
+        h264: Option<&str>,
+        target: u32,
+        usage: Option<ProcessUsage>,
+    ) -> String {
         let h264 = h264.map_or_else(|| "off".to_string(), |name| format!("on({name})"));
         let usage = usage.map_or_else(String::new, |u| format!(" {u}"));
+        let measured = |s: StageSummary| if s.count == 0 { "-".to_string() } else { s.to_string() };
+        let window = link.window.map_or_else(|| "-".to_string(), |w| w.to_string());
         format!(
-            "fps={:.1} target={target} grab avg/max={} wait={} encode={} gate={} latency={} kbps={} idle_frames={} gate_skips={} h264={h264}{usage}",
+            "fps={:.1} target={target} grab avg/max={} wait={} encode={} convert={} codec={} gate={} latency={} send={} ack_rtt={} window={window} kbps={} idle_frames={} gate_skips={} h264={h264}{usage}",
             self.sent.take() as f64 / secs,
             self.grab.take_summary(),
             self.wait.take_summary(),
             self.encode.take_summary(),
+            self.convert.take_summary(),
+            self.codec.take_summary(),
             self.gate.take_summary(),
             self.latency.take_summary(),
+            measured(link.send.take_summary()),
+            measured(link.ack_rtt.take_summary()),
             kbps(self.bytes.take(), secs),
             self.idle.take(),
             self.gate_skips.take(),
@@ -96,6 +114,7 @@ impl HostPerf {
     /// The `host-stats` summary since the previous one, independent of the log window.
     fn take_stats(
         &mut self,
+        link: &mut LinkStats,
         secs: f64,
         target: u32,
         congestion: f32,
@@ -103,6 +122,10 @@ impl HostPerf {
         usage: Option<ProcessUsage>,
     ) -> HostStats {
         let (grab, encode) = (self.grab.take_lap(), self.encode.take_lap());
+        let (convert, codec) = (self.convert.take_lap(), self.codec.take_lap());
+        let (send, ack_rtt) = (link.send.take_lap(), link.ack_rtt.take_lap());
+        let avg = |s: &StageSummary| (s.count > 0).then_some(s.avg_ms as f32);
+        let max = |s: &StageSummary| (s.count > 0).then_some(s.max_ms as f32);
         self.wait.take_lap();
         self.latency.take_lap();
         self.gate.take_lap();
@@ -120,6 +143,15 @@ impl HostPerf {
             encoder: encoder.unwrap_or_default().to_string(),
             cpu: usage.map(|u| u.cpu_pct),
             ram_mb: usage.map(|u| u.ram_mb),
+            convert_ms: avg(&convert),
+            convert_max_ms: max(&convert),
+            codec_ms: avg(&codec),
+            codec_max_ms: max(&codec),
+            send_ms: avg(&send),
+            send_max_ms: max(&send),
+            ack_rtt_ms: avg(&ack_rtt),
+            ack_rtt_max_ms: max(&ack_rtt),
+            window: link.window.map(|w| w as u32),
         }
     }
 }
@@ -238,12 +270,20 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
         if let Some(secs) = perf_window.due(frame_start) {
             let h264 = if h264 == H264Mode::Off { None } else { Some(encoder.h264_name.as_deref().unwrap_or("idle")) };
             let usage = perf_usage.sample(frame_start);
-            logger::info("host.perf", &perf.take_line(secs, h264, target_fps, usage));
+            let line = perf.take_line(&mut host.video_link.stats.lock(), secs, h264, target_fps, usage);
+            logger::info("host.perf", &line);
         }
         // Laps run while the overlay is hidden too, so its first summary covers only the last second.
         if let Some(secs) = stats_window.due(frame_start) {
             let usage = stats_usage.sample(frame_start);
-            let stats = perf.take_stats(secs, target_fps, congestion.level(), encoder.h264_name.as_deref(), usage);
+            let stats = perf.take_stats(
+                &mut host.video_link.stats.lock(),
+                secs,
+                target_fps,
+                congestion.level(),
+                encoder.h264_name.as_deref(),
+                usage,
+            );
             if host.stats_requested.load(Ordering::Relaxed) {
                 ctx.send_input(partner, InputEvent::HostStats(stats));
             }
@@ -389,6 +429,8 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             let sent = encoder.encode(&frame);
             // `encode` times itself; reuse that instead of another clock read.
             perf.encode.record(Duration::from_micros(encoder.last.encode_us));
+            perf.convert.record(Duration::from_micros(encoder.last.convert_us));
+            perf.codec.record(Duration::from_micros(encoder.last.encode_us.saturating_sub(encoder.last.convert_us)));
             if let Some(mut msg) = sent {
                 let host_time = captured.elapsed();
                 perf.latency.record(host_time);
@@ -453,14 +495,22 @@ mod tests {
         p.idle += 12;
         p.wait.record(Duration::from_millis(15));
         p.latency.record(Duration::from_micros(4500));
+        p.convert.record(Duration::from_micros(600));
+        p.codec.record(Duration::from_micros(2500));
+        let mut link = LinkStats { window: Some(2), ..Default::default() };
+        link.send.record(Duration::from_micros(800));
+        link.ack_rtt.record(Duration::from_millis(12));
         let usage = ProcessUsage { cpu_pct: 3.3, ram_mb: 148.4 };
-        let line = p.take_line(10.0, Some("Intel QSV (hardware MFT)"), 60, Some(usage));
+        let line = p.take_line(&mut link, 10.0, Some("Intel QSV (hardware MFT)"), 60, Some(usage));
         assert_eq!(
             line,
-            "fps=58.9 target=60 grab avg/max=1.2/4.0ms wait=15.0/15.0ms encode=3.1/3.1ms gate=0.4/0.4ms latency=4.5/4.5ms kbps=2450 idle_frames=12 gate_skips=0 h264=on(Intel QSV (hardware MFT)) cpu=3.3% ram=148MB"
+            "fps=58.9 target=60 grab avg/max=1.2/4.0ms wait=15.0/15.0ms encode=3.1/3.1ms convert=0.6/0.6ms codec=2.5/2.5ms gate=0.4/0.4ms latency=4.5/4.5ms send=0.8/0.8ms ack_rtt=12.0/12.0ms window=2 kbps=2450 idle_frames=12 gate_skips=0 h264=on(Intel QSV (hardware MFT)) cpu=3.3% ram=148MB"
         );
-        assert!(p.take_line(10.0, None, 60, None).starts_with("fps=0.0 target=60 grab avg/max=0.0/0.0ms"));
-        assert!(p.take_line(10.0, None, 144, None).starts_with("fps=0.0 target=144 "));
+        link.window = None;
+        let line = p.take_line(&mut link, 10.0, None, 60, None);
+        assert!(line.starts_with("fps=0.0 target=60 grab avg/max=0.0/0.0ms"));
+        assert!(line.contains(" send=- ack_rtt=- window=- "), "{line}");
+        assert!(p.take_line(&mut link, 10.0, None, 144, None).starts_with("fps=0.0 target=144 "));
     }
 
     #[test]
@@ -479,9 +529,15 @@ mod tests {
         p.sent += 30;
         p.bytes += 250_000;
         p.gate_skips += 3;
-        p.take_line(10.0, None, 60, None);
+        p.convert.record(Duration::from_micros(500));
+        p.codec.record(Duration::from_micros(2000));
+        let mut link = LinkStats { window: Some(3), ..Default::default() };
+        link.send.record(Duration::from_micros(1500));
+        p.take_line(&mut link, 10.0, None, 60, None);
+        link.ack_rtt.record(Duration::from_millis(10));
+        link.ack_rtt.record(Duration::from_millis(20));
         let usage = ProcessUsage { cpu_pct: 2.5, ram_mb: 120.0 };
-        let s = p.take_stats(0.5, 60, 0.25, Some("Intel QSV (hardware MFT)"), Some(usage));
+        let s = p.take_stats(&mut link, 0.5, 60, 0.25, Some("Intel QSV (hardware MFT)"), Some(usage));
         assert_eq!(
             s,
             HostStats {
@@ -498,9 +554,22 @@ mod tests {
                 encoder: "Intel QSV (hardware MFT)".into(),
                 cpu: Some(2.5),
                 ram_mb: Some(120.0),
+                convert_ms: Some(0.5),
+                convert_max_ms: Some(0.5),
+                codec_ms: Some(2.0),
+                codec_max_ms: Some(2.0),
+                send_ms: Some(1.5),
+                send_max_ms: Some(1.5),
+                ack_rtt_ms: Some(15.0),
+                ack_rtt_max_ms: Some(20.0),
+                window: Some(3),
             }
         );
-        assert_eq!(p.take_stats(1.0, 60, 0.0, None, None), HostStats { target_fps: 60, ..Default::default() });
+        link.window = None;
+        assert_eq!(
+            p.take_stats(&mut link, 1.0, 60, 0.0, None, None),
+            HostStats { target_fps: 60, ..Default::default() }
+        );
     }
 
     #[test]

@@ -47,6 +47,16 @@ which opens the host's backpressure gate. Input uses a reliable, ordered channel
 Voice is sent as is. Only viewer-to-host input uses the path; host events such as cursor shape and monitors take
 the relay.
 
+## Video window and pacing
+
+The host keeps at most 2 video frames in flight: once two frames are unacknowledged, the capture loop waits for an
+acknowledgement (or 200 ms) before it encodes the next one. All fragments of a frame are sent back to back.
+
+The stats overlay shows what the path does ([viewer-sessions.md](viewer-sessions.md#stats-overlay)): the host
+reports the time from sending a frame to its acknowledgement (Ack RTT) and the window in `host-stats`; the viewer
+counts lost fragments and frames from the frame ids and fragment counts it receives, and the key frames it asked
+for. The `host.perf` log line carries `send`, `ack_rtt` and `window` as well.
+
 ## Lifetime
 
 A link belongs to one session and closes when it ends or the relay connection drops. `OPENDESK_P2P=0` on a client

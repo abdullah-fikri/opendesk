@@ -67,8 +67,9 @@ Monitor picker (numbered when the host has several monitors), send files, microp
 The **Stats** toolbar button shows a translucent panel in the top-right corner of every session view; it is off
 at start and stays as chosen until the app quits. Once a second it shows the `stats-ping` round trip, the path
 (P2P or Relay), received kbps, shown FPS against the host's target, the host's encoder (HW or SW H.264, or JPEG),
-where a frame's latency goes (avg / max), host grab and encode time (avg / max), idle and dropped frames, the
-congestion level, and CPU and RAM of OpenDesk on both machines. Hosts send `host-stats` only while the overlay is
+where a frame's latency goes (avg / max), the host's time per frame split into capture, convert, encode and send
+(avg / max), the UDP path's quality, idle and dropped frames, the congestion level, and CPU and RAM of OpenDesk on
+both machines. Hosts send `host-stats` only while the overlay is
 shown; hosts that predate it show "–" for their rows and the RTT. Over P2P the ping goes direct and the answer
 through the relay (host events always take the relay), so the RTT is that of control messages.
 
@@ -79,11 +80,31 @@ The latency rows follow one frame from capture to screen; together they make up 
 | Host | capture on the host → handed to its send queue (grab work, encode, waiting for the previous frame) |
 | Network | send queue → complete in the viewer (relay or P2P, including all fragments) |
 | Decode | received → decoded (including a wait while the previous frame decodes) |
-| Display | decoded → handed to the UI; the screen's next refresh adds up to one more frame |
-| Total | capture → handed to the UI |
+| Display | decoded → rendered by the UI (Slint's `AfterRendering`, just before the buffer swap); the compositor and the screen's next refresh add up to one more frame |
+| Total | capture → rendered |
 
 Host, Network and Total need hosts that list `frame-stamp` (others show "–"). Network and Total also map the host's
 clock onto the viewer's from the ping, taking the answer as sent halfway through the round trip: accurate to a few
 ms on the relay path, while over P2P the ping and answer take different routes, which can shift up to half that
 difference between Network and the true value. Host grab is the capture work only; waiting for the screen to change
 is not counted (the `host.perf` log shows it as `wait`). CPU is a share of the whole machine, like Task Manager.
+Where the renderer cannot report rendering (the log says "No rendering notifier"), Display and Total end when the
+frame is handed to the UI instead.
+
+The host's own rows split its work per frame:
+
+| Row | What |
+| --- | --- |
+| Host capture | grabbing the screen image (copy and scale), without waiting for a change |
+| Host convert | preparing pixels before the codec: framebuffer moves and the block comparison with the previous frame |
+| Host encode | the codec (JPEG or H.264, including H.264's colour conversion); hosts up to 1.3.1 show their whole encode here and "–" for convert and send |
+| Host send | the sender taking the frame until its last byte is in the socket (relay: flushed; P2P: every fragment sent, pacing included) |
+
+Three more rows describe the video link. Ack RTT and Loss exist on the UDP path only (P2P or Relay (UDP)) and show
+"–" on the relay's WebSocket:
+
+| Row | What |
+| --- | --- |
+| Ack RTT | host: a frame sent → the viewer's acknowledgement that it arrived complete (avg / max), and how many frames the host lets be in flight (`window`, see [p2p.md](p2p.md#video-window-and-pacing)) |
+| Loss | video fragments lost over the last second, as a share of those sent, and the frames they cost. Frames skipped entirely count as one fragment, so this is a lower bound |
+| Key frames | key frames this viewer asked for in the last minute because a lost frame broke the delta chain |

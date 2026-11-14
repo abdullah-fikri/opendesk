@@ -209,9 +209,11 @@ Per platform (see [platforms.md](platforms.md)):
 | `stats` | `on` | viewer to host: stats overlay shown or hidden |
 | `stats-ping` | `t` (viewer clock, ms) | viewer to host, once a second while the overlay is shown |
 | `stats-pong` | `t` (copied from `stats-ping`), `h` (host monotonic clock, µs; absent up to 1.2.0) | host to viewer, at once |
-| `host-stats` | `fps`, `targetFps`, `grabMs`, `grabMaxMs` (capture work, without waiting for a screen change), `encodeMs`, `encodeMaxMs`, `kbps`, `idle`, `gateSkips`, `congestion` (0..1), `encoder` (H.264 name, empty = JPEG), `cpu` (host process, % of the machine), `ramMb` (its working set) | host to viewer, once a second between `stats` on and off |
+| `host-stats` | `fps`, `targetFps`, `grabMs`, `grabMaxMs` (capture work, without waiting for a screen change), `encodeMs`, `encodeMaxMs`, `kbps`, `idle`, `gateSkips`, `congestion` (0..1), `encoder` (H.264 name, empty = JPEG), `cpu` (host process, % of the machine), `ramMb` (its working set); optional, omitted by hosts up to 1.3.1: `convertMs`/`convertMaxMs` and `codecMs`/`codecMaxMs` (the two parts of `encodeMs`: pixel preparation, then the codec), `sendMs`/`sendMaxMs` (sender taking a frame until its last byte is in the socket), and on the UDP path `ackRttMs`/`ackRttMaxMs` (frame sent until the viewer's frame acknowledgement) and `window` (frames allowed in flight) | host to viewer, once a second between `stats` on and off |
 
-Peers ignore actions they do not know, so a viewer never gets `host-stats` from a host that predates it.
+Peers ignore actions they do not know, so a viewer never gets `host-stats` from a host that predates it. Every
+field reads as zero or absent when missing, and the optional ones are left out when unmeasured, so viewers and
+hosts of any version understand each other's `host-stats`; `encodeMs` keeps its meaning (the whole encode).
 
 ## File transfer
 

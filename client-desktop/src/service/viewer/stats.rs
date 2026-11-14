@@ -1,6 +1,6 @@
 //! The session stats overlay: the viewer's own numbers (decoder thread, once a second), the host's
-//! `host-stats` summary, the `stats-ping` round trip and the latency stages of `domain::latency`, formatted as
-//! label and value columns.
+//! `host-stats` summary, the `stats-ping` round trip, the latency stages of `domain::latency` and the UDP
+//! path's quality (`domain::link_quality`), formatted as label and value columns.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -9,6 +9,7 @@ use core_engine::codec::frame::FrameStamp;
 use parking_lot::Mutex;
 
 use crate::domain::latency::{FrameTimes, LatencyMeter, LatencyStats, mono_us};
+use crate::domain::link_quality::LossLap;
 use crate::domain::perf_stats::{ProcessUsage, StageSummary};
 use crate::protocol::HostStats;
 
@@ -31,6 +32,10 @@ pub struct SessionStats {
     pub host: Option<HostStats>,
     pub rtt_ms: Option<u64>,
     pub latency: LatencyStats,
+    /// Video fragment loss over the last second; None while video takes the relay's WebSocket.
+    pub loss: Option<LossLap>,
+    /// Key frames this viewer asked for in the last minute.
+    pub key_requests: u32,
 }
 
 /// The viewer-side instants of one decoded frame on its way to the screen.
@@ -44,7 +49,8 @@ pub struct FrameLatency {
 }
 
 impl FrameLatency {
-    /// Records the frame as handed to the UI toolkit at `at`.
+    /// Records the frame as presented at `at`: rendered by the UI toolkit, or handed to it where the renderer
+    /// cannot report rendering (see `ui::presenter`).
     pub fn shown(self, at: Instant) {
         self.meter.lock().record(&FrameTimes {
             stamp: self.stamp,
@@ -59,7 +65,27 @@ const NONE: &str = "–";
 
 /// `avg / max ms`, or the placeholder when nothing was measured.
 fn stage(s: &Option<StageSummary>) -> String {
-    s.as_ref().map_or_else(|| NONE.to_string(), |s| format!("{:.1} / {:.1} ms", s.avg_ms, s.max_ms))
+    s.as_ref().map_or_else(|| NONE.to_string(), |s| ms_pair(s.avg_ms as f32, s.max_ms as f32))
+}
+
+fn ms_pair(avg: f32, max: f32) -> String {
+    format!("{avg:.1} / {max:.1} ms")
+}
+
+/// An optional `host-stats` pair (absent from older hosts and when unmeasured).
+fn opt_pair(avg: Option<f32>, max: Option<f32>) -> String {
+    match (avg, max) {
+        (Some(avg), Some(max)) => ms_pair(avg, max),
+        _ => NONE.to_string(),
+    }
+}
+
+/// `0.4% · 3 frags · 1 frames`, or the placeholder off the UDP path.
+fn loss(l: &Option<LossLap>) -> String {
+    l.as_ref().map_or_else(
+        || NONE.to_string(),
+        |l| format!("{:.1}% · {} frags · {} frames", l.percent(), l.lost, l.lost_frames),
+    )
 }
 
 /// `3% · 148 MB`, or the placeholder.
@@ -83,7 +109,9 @@ pub fn path_label(p2p: bool, relayed: bool) -> &'static str {
 impl SessionStats {
     /// Overlay rows: (label, value). `e2e`: the session is end-to-end encrypted (both sides list `e2e`).
     /// Host, Network, Decode, Display and Total are the stages of one frame from capture to screen (avg / max);
-    /// Host grab is the capture work only, without waiting for the screen to change.
+    /// Host capture is the capture work only, without waiting for the screen to change; Host convert and Host
+    /// encode split the encoder's time, Host send is the sender's. Ack RTT, window and Loss exist on the UDP
+    /// path only.
     pub fn rows(&self, path: &str, e2e: bool) -> Vec<(&'static str, String)> {
         let v = &self.viewer;
         let l = &self.latency;
@@ -107,8 +135,26 @@ impl SessionStats {
             ("Decode", stage(&l.decode)),
             ("Display", stage(&l.display)),
             ("Total", stage(&l.total)),
-            ("Host grab", host(&|h| format!("{:.1} / {:.1} ms", h.grab_ms, h.grab_max_ms))),
-            ("Host encode", host(&|h| format!("{:.1} / {:.1} ms", h.encode_ms, h.encode_max_ms))),
+            ("Host capture", host(&|h| ms_pair(h.grab_ms, h.grab_max_ms))),
+            ("Host convert", host(&|h| opt_pair(h.convert_ms, h.convert_max_ms))),
+            // Hosts up to 1.3.1 send the whole encode only.
+            (
+                "Host encode",
+                host(&|h| match h.codec_ms {
+                    Some(_) => opt_pair(h.codec_ms, h.codec_max_ms),
+                    None => ms_pair(h.encode_ms, h.encode_max_ms),
+                }),
+            ),
+            ("Host send", host(&|h| opt_pair(h.send_ms, h.send_max_ms))),
+            (
+                "Ack RTT",
+                host(&|h| match (opt_pair(h.ack_rtt_ms, h.ack_rtt_max_ms), h.window) {
+                    (rtt, Some(w)) => format!("{rtt} · window {w}"),
+                    (rtt, None) => rtt,
+                }),
+            ),
+            ("Loss", loss(&self.loss)),
+            ("Key frames", format!("{} requested / min", self.key_requests)),
             ("Frames", host(&|h| format!("{} idle · {} dropped", h.idle, h.gate_skips))),
             ("Congestion", host(&|h| format!("{:.0}%", h.congestion.clamp(0.0, 1.0) * 100.0))),
             ("CPU / RAM", usage(v.usage.map(|u| u.cpu_pct), v.usage.map(|u| u.ram_mb))),
@@ -151,12 +197,12 @@ mod tests {
         let (labels, values) = s.columns(path_label(false, false), false);
         assert_eq!(
             labels,
-            "RTT\nPath\nEncryption\nReceived\nFPS\nEncoder\nHost\nNetwork\nDecode\nDisplay\nTotal\nHost grab\nHost encode\nFrames\nCongestion\nCPU / RAM\nHost CPU / RAM"
+            "RTT\nPath\nEncryption\nReceived\nFPS\nEncoder\nHost\nNetwork\nDecode\nDisplay\nTotal\nHost capture\nHost convert\nHost encode\nHost send\nAck RTT\nLoss\nKey frames\nFrames\nCongestion\nCPU / RAM\nHost CPU / RAM"
         );
         // A host up to 1.2.0 (no stamps, no host stats): only the viewer's own stages.
         assert_eq!(
             values,
-            "–\nRelay\nNot end-to-end\n812 kbps\n30\n–\n–\n–\n2.4 / 9.0 ms\n1.0 / 1.5 ms\n–\n–\n–\n–\n–\n–\n–"
+            "–\nRelay\nNot end-to-end\n812 kbps\n30\n–\n–\n–\n2.4 / 9.0 ms\n1.0 / 1.5 ms\n–\n–\n–\n–\n–\n–\n–\n0 requested / min\n–\n–\n–\n–"
         );
     }
 
@@ -176,9 +222,20 @@ mod tests {
                 encoder: "Intel QSV (hardware MFT)".into(),
                 cpu: Some(12.0),
                 ram_mb: Some(95.6),
+                convert_ms: Some(0.4),
+                convert_max_ms: Some(1.0),
+                codec_ms: Some(2.7),
+                codec_max_ms: Some(6.5),
+                send_ms: Some(0.8),
+                send_max_ms: Some(2.0),
+                ack_rtt_ms: Some(12.0),
+                ack_rtt_max_ms: Some(18.0),
+                window: Some(3),
                 ..Default::default()
             }),
             rtt_ms: Some(23),
+            loss: Some(LossLap { received: 995, lost: 5, lost_frames: 1 }),
+            key_requests: 2,
             latency: LatencyStats {
                 host: summary(5.0, 9.0),
                 network: summary(11.5, 20.0),
@@ -190,8 +247,21 @@ mod tests {
         let (_, values) = s.columns(path_label(true, false), true);
         assert_eq!(
             values,
-            "23 ms\nP2P\nEnd-to-end\n2450 kbps\n58 / 60\nHW · Intel QSV\n5.0 / 9.0 ms\n11.5 / 20.0 ms\n3.1 / 6.2 ms\n2.0 / 4.0 ms\n21.6 / 30.0 ms\n1.2 / 4.0 ms\n3.1 / 7.5 ms\n12 idle · 1 dropped\n25%\n4% · 180 MB\n12% · 96 MB"
+            "23 ms\nP2P\nEnd-to-end\n2450 kbps\n58 / 60\nHW · Intel QSV\n5.0 / 9.0 ms\n11.5 / 20.0 ms\n3.1 / 6.2 ms\n2.0 / 4.0 ms\n21.6 / 30.0 ms\n1.2 / 4.0 ms\n0.4 / 1.0 ms\n2.7 / 6.5 ms\n0.8 / 2.0 ms\n12.0 / 18.0 ms · window 3\n0.5% · 5 frags · 1 frames\n2 requested / min\n12 idle · 1 dropped\n25%\n4% · 180 MB\n12% · 96 MB"
         );
+    }
+
+    #[test]
+    fn hosts_up_to_1_3_1_show_their_whole_encode_time() {
+        let s = SessionStats {
+            host: Some(HostStats { encode_ms: 3.1, encode_max_ms: 7.5, ..Default::default() }),
+            ..Default::default()
+        };
+        let rows = s.rows("Relay", false);
+        let row = |label: &str| rows.iter().find(|r| r.0 == label).map(|r| r.1.clone()).unwrap();
+        assert_eq!(row("Host convert"), "–");
+        assert_eq!(row("Host encode"), "3.1 / 7.5 ms");
+        assert_eq!((row("Host send"), row("Ack RTT")), ("–".to_string(), "–".to_string()));
     }
 
     fn summary(avg_ms: f64, max_ms: f64) -> Option<StageSummary> {

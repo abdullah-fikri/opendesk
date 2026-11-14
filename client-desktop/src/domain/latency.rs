@@ -2,14 +2,15 @@
 //!
 //! A host that sees `frame-stamp` from its viewer appends a [`FrameStamp`] to every framed message: its
 //! monotonic clock at capture and how long capture to hand-off for sending took. The viewer adds its own
-//! instants (message received, batch decoded, image handed to the UI) and maps host time onto its clock with
+//! instants (message received, batch decoded, image rendered by the UI) and maps host time onto its clock with
 //! a [`ClockOffset`] estimated from `stats-ping`/`stats-pong`:
 //!
 //! - Host: capture to hand-off (from the stamp; the send queue holds at most one frame, see `can_send_frame`).
 //! - Network: hand-off on the host to the complete message in the viewer's inbox (all P2P fragments in).
 //! - Decode: inbox to decoded, including a wait while the previous batch decodes.
-//! - Display: decoded to handed to Slint; the compositor adds up to one refresh interval after that.
-//! - Total: capture to handed to Slint.
+//! - Display: decoded to rendered by Slint (its `AfterRendering` notification, just before the buffer swap; handed
+//!   to Slint where the renderer has no notifier); the compositor adds up to one refresh interval after that.
+//! - Total: capture to rendered.
 //!
 //! Without stamps (hosts up to 1.2.0) Host, Network and Total stay empty; without an offset (no pong with
 //! host time yet) Network and Total do.
