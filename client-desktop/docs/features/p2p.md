@@ -42,10 +42,27 @@ session overlay shows `Relay (UDP)` for this route. `OPENDESK_UDP_RELAY=0` on a 
 ## Traffic
 
 Every datagram is at most 1200 bytes, encrypted with an explicit nonce and checked against a 1024-entry replay
-window. Video frames are fragmented and reassembled (latest frame wins); the viewer acknowledges each frame,
+window. Video frames are fragmented and reassembled (latest frame wins, or in order with `video-nack`, below); the viewer acknowledges each frame,
 which opens the host's backpressure gate. Input uses a reliable, ordered channel with retransmission after 80 ms.
 Voice is sent as is. Only viewer-to-host input uses the path; host events such as cursor shape and monitors take
 the relay.
+
+## Lost fragments (`video-nack`)
+
+When both sides list `video-nack`, a lost fragment no longer loses its frame (and, for H.264 or delta video,
+every frame up to the next key frame). Code: `src/domain/nack.rs`.
+
+- The host keeps the plain fragments of its last 4 frames. A `K_NACK` datagram (`[frame id u32][index u16]...`,
+  at most 256 indices) makes it send those fragments again; the host's perf line counts them (`resent=`).
+- The viewer asks as soon as it sees a gap (fragments leave in order: a later index, or a newer frame, shows the
+  loss), asks again after 30 ms for what is still missing (also the lost tail of the newest frame, from its tick),
+  at most 3 times per frame.
+- Frames reach the decoder in order: up to 3 newer frames wait behind a frame being repaired. The viewer stops
+  waiting once that frame is 120 ms old, or at once when a newer complete frame restarts the chain (key frame,
+  IDR, plain JPEG), and then behaves as before (key frame request).
+- Test: `lost_fragments_are_resent_and_frames_stay_in_order` sends twenty 150 KB frames through a loopback
+  relay that drops every 14th fragment (~7%): 0 of 20 arrive without retransmits, 20 of 20 with, in order.
+- `OPENDESK_VIDEO_NACK=0` turns it off on either side (the cap is then not listed).
 
 ## Video window and pacing
 

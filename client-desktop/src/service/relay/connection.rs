@@ -453,6 +453,9 @@ impl Connection {
         caps.push(capability::REMOTE_MIC);
         if p2p::enabled() {
             caps.push(capability::P2P);
+            if crate::infra::p2p::nack_enabled() {
+                caps.push(capability::VIDEO_NACK);
+            }
         }
         if p2p::relay_enabled() {
             caps.push(capability::UDP_RELAY);

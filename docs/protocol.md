@@ -149,6 +149,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `file-pull-bin` | client, with `file-binary` | Bytes of a pulled clipboard offer (a paste stream) may arrive as binary chunks too. Without it pulled offers stay base64 JSON (clients up to 1.3.x). |
 | `cursor-shape` | client | Draws its own cursor from `cursor-shape` events; the host stops painting it. |
 | `video-delta` | client | Framed key/delta video; without it the host sends plain JPEGs. |
+| `video-nack` | client, with `p2p.v1` | Lost P2P video fragments are requested (`K_NACK`) and resent from the host's last frames; a viewer waits for them only from a host that lists it. See `client-desktop/docs/features/p2p.md`. |
 | `tile-lossless` | client, with `video-delta` | Deltas may carry lossless text/UI tiles (flag bit 2, below); the host sends them only to viewers that list it. |
 | `video-h264` | client | H.264 inside the framed format. |
 | `frame-stamp` | client | Framed video to this viewer may end in a capture stamp (below) for the stats overlay's latency rows. |
@@ -173,7 +174,7 @@ Per platform (see [platforms.md](platforms.md)):
 
 - Windows: `file-ack`, `file-offer`, `file-folder`, `file-binary`, `cursor-shape`, `video-delta`, `frame-stamp`,
   `video-h264` (when the Media Foundation decoder exists), `audio-opus`, `audio-system`, `p2p.v1`, `multi-session`,
-  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`), `file-group`, `file-pull-bin`, `tile-lossless`. No `host-features`: Windows hosts have every host control.
+  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`), `file-group`, `file-pull-bin`, `tile-lossless`, `video-nack`. No `host-features`: Windows hosts have every host control.
 - Linux: the same without `file-offer` and `audio-system`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
 - Android: `viewer-only`, `video-delta` and `e2e`, so it receives framed JPEG video (no H.264) and single-session

@@ -207,6 +207,7 @@ impl Connection {
                     input: self.p2p_input_tx.clone(),
                     audio_gate: None,
                     loss: None,
+                    nack: false,
                 };
                 self.start_link(true, target, sinks);
             }
@@ -222,6 +223,7 @@ impl Connection {
                 input: self.p2p_input_tx.clone(),
                 audio_gate: Some(Arc::clone(&sess.audio_on)),
                 loss: Some(Arc::clone(&sess.udp_loss)),
+                nack: caps.video_nack && p2p::nack_enabled(),
             };
             self.start_link(false, target, sinks);
         }

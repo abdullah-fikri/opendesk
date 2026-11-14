@@ -21,6 +21,9 @@ pub const FILE_PULL_BIN: &str = "file-pull-bin";
 /// Framed deltas may carry lossless text/UI tiles (`FLAG_LOSSLESS`, see `core_engine::codec::lossless`). From a
 /// viewer: it decodes them; a host sends them only to viewers that list it.
 pub const TILE_LOSSLESS: &str = "tile-lossless";
+/// P2P video: the viewer asks for lost fragments (`K_NACK`) and the host resends them from its last frames. Both
+/// sides list it; a viewer waits for retransmits only from a host that does.
+pub const VIDEO_NACK: &str = "video-nack";
 /// The viewer draws its own cursor in the host's shape.
 pub const CURSOR_SHAPE: &str = "cursor-shape";
 /// Framed key/delta video.
@@ -97,6 +100,8 @@ pub struct PeerCaps {
     pub video_h264: bool,
     /// Deltas to this viewer may carry lossless tiles ([`TILE_LOSSLESS`]).
     pub tile_lossless: bool,
+    /// The partner resends lost P2P video fragments on request ([`VIDEO_NACK`]).
+    pub video_nack: bool,
     /// Framed video to this viewer may carry capture stamps.
     pub frame_stamp: bool,
     /// Voice to this partner may be Opus (we always decode it, so the partner's word is enough).
@@ -133,6 +138,7 @@ impl PeerCaps {
             video_delta: has(VIDEO_DELTA),
             video_h264: has(VIDEO_H264),
             tile_lossless: has(VIDEO_DELTA) && has(TILE_LOSSLESS),
+            video_nack: has(VIDEO_NACK),
             frame_stamp: has(FRAME_STAMP),
             audio_opus: has(AUDIO_OPUS),
             audio_system: has(AUDIO_SYSTEM),

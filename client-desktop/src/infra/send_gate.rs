@@ -59,6 +59,8 @@ pub struct LinkStats {
     pub ack_rtt: Stage,
     /// P2P: frames that may be in flight; None while video takes the relay.
     pub window: Option<usize>,
+    /// P2P: video fragments resent on the viewer's request (`video-nack`) since the last perf line.
+    pub resent: u64,
 }
 
 /// An open/closed flag a thread can wait on until a deadline.

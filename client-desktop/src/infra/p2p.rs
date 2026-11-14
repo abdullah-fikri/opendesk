@@ -14,6 +14,7 @@ use parking_lot::{Condvar, Mutex, MutexGuard};
 use serde_json::{Value, json};
 
 use crate::domain::link_quality::LossMeter;
+use crate::domain::nack::{self, Pushed, Reassembly};
 use crate::domain::pacing::{self, Pacing};
 use crate::domain::udp_window::{self, MIN_FRAMES_IN_FLIGHT, RttEstimator};
 use crate::infra::audio::VoiceEngine;
@@ -65,6 +66,22 @@ const K_INPUT: u8 = 5;
 const K_INPUT_ACK: u8 = 6;
 const K_FRAME_ACK: u8 = 7;
 const K_KEEPALIVE: u8 = 8;
+/// Viewer to host: resend these fragments of a video frame (`video-nack`, see `domain::nack`).
+const K_NACK: u8 = 9;
+/// Frames whose fragments the host keeps for retransmits.
+const NACK_HISTORY: usize = 4;
+
+/// `OPENDESK_VIDEO_NACK=0` turns lost-fragment retransmits off (1.3.x behavior: a lost fragment drops the frame).
+pub fn nack_enabled() -> bool {
+    std::env::var("OPENDESK_VIDEO_NACK").map_or(true, |v| v != "0")
+}
+
+/// A complete video message that restarts the decoder chain (key frame, IDR, legacy JPEG): nothing older needs
+/// to be waited for.
+fn restarts_chain(frame: &[u8]) -> bool {
+    use core_engine::codec::frame::{FLAG_IDR, KIND_H264, KIND_KEY, is_framed};
+    !is_framed(frame) || frame[5] == KIND_KEY || (frame[5] == KIND_H264 && frame[6] & FLAG_IDR != 0)
+}
 
 /// Client-side kill switch: `OPENDESK_P2P=0` keeps every session on the relay.
 pub fn enabled() -> bool {
@@ -126,6 +143,8 @@ pub struct Sinks {
     pub audio_gate: Option<Arc<AtomicBool>>,
     /// Viewer side: counts the video fragments received and lost, for the stats overlay.
     pub loss: Option<Arc<Mutex<LossMeter>>>,
+    /// Viewer side: the host resends lost fragments (`video-nack`), so ask for them and keep frames in order.
+    pub nack: bool,
 }
 
 /// Sliding anti-replay window over explicit nonces (bit = nonce % window).
@@ -424,6 +443,10 @@ struct State {
     /// The paced rest of the last frame, sent by the pacer thread.
     paced: Option<Paced>,
     reasm: Option<Reasm>,
+    /// Reassembly with retransmit requests (viewer, `video-nack` hosts).
+    nack_reasm: Reassembly,
+    /// Host: plain fragments of the last frames, for retransmits.
+    sent_frames: VecDeque<(u32, Vec<Vec<u8>>)>,
     next_seq: u32,
     unacked: VecDeque<(u32, Vec<u8>, Instant)>,
     rx_next: u32,
@@ -531,6 +554,8 @@ impl P2p {
                 window: MIN_FRAMES_IN_FLIGHT,
                 paced: None,
                 reasm: None,
+                nack_reasm: Reassembly::default(),
+                sent_frames: VecDeque::new(),
                 next_seq: 0,
                 unacked: VecDeque::new(),
                 rx_next: 0,
@@ -840,11 +865,27 @@ impl P2p {
                 {
                     loss.lock().fragment(id, count);
                 }
-                if let Some(frame) = Reasm::push(&mut st.reasm, id, idx, count, &body[8..]) {
+                if self.sinks.nack {
+                    let pushed = st.nack_reasm.push(Instant::now(), id, idx, count, &body[8..], restarts_chain);
+                    self.deliver(&mut st, pushed);
+                } else if let Some(frame) = Reasm::push(&mut st.reasm, id, idx, count, &body[8..]) {
                     (self.sinks.video)(frame);
                     let mut ack = vec![K_FRAME_ACK];
                     ack.extend_from_slice(&id.to_be_bytes());
                     self.send_to_peer(&mut st, &ack);
+                }
+            }
+            K_NACK if self.is_host => {
+                let Some((id, missing)) = nack::decode_nack(body) else { return };
+                let frame =
+                    st.sent_frames.iter().find(|(f, _)| *f == id).map(|(_, pkts)| {
+                        missing.iter().filter_map(|&i| pkts.get(i as usize).cloned()).collect::<Vec<_>>()
+                    });
+                if let Some(pkts) = frame {
+                    self.video_link.stats.lock().resent += pkts.len() as u64;
+                    for pkt in pkts {
+                        self.send_to_peer(&mut st, &pkt);
+                    }
                 }
             }
             K_FRAME_ACK if self.is_host && body.len() == 4 => {
@@ -895,9 +936,31 @@ impl P2p {
         }
     }
 
+    /// Viewer: hands reassembled frames to the decoder in order, acknowledges the newest, and asks for lost
+    /// fragments.
+    fn deliver(&self, st: &mut State, pushed: Pushed) {
+        for frame in pushed.frames {
+            (self.sinks.video)(frame);
+        }
+        if let Some(id) = pushed.last_id {
+            let mut ack = vec![K_FRAME_ACK];
+            ack.extend_from_slice(&id.to_be_bytes());
+            self.send_to_peer(st, &ack);
+        }
+        for (id, missing) in pushed.nacks {
+            let mut pkt = vec![K_NACK];
+            pkt.extend_from_slice(&nack::encode_nack(id, &missing));
+            self.send_to_peer(st, &pkt);
+        }
+    }
+
     fn tick(&self) {
         let mut st = self.state.lock();
         let now = Instant::now();
+        if self.sinks.nack {
+            let pushed = st.nack_reasm.tick(now, restarts_chain);
+            self.deliver(&mut st, pushed);
+        }
         if matches!(st.hs, Some(Handshake::Shared))
             && let Some(t) = self.e2e.as_ref().and_then(|e| e.transport())
         {
@@ -1022,6 +1085,7 @@ impl P2p {
             Pacing::burst(count)
         };
         let mut paced = VecDeque::new();
+        let mut kept = Vec::with_capacity(count);
         let mut pkt = Vec::with_capacity(MAX_PLAIN);
         for (idx, chunk) in jpeg.chunks(FRAG_DATA).enumerate() {
             pkt.clear();
@@ -1030,6 +1094,7 @@ impl P2p {
             pkt.extend_from_slice(&(idx as u16).to_be_bytes());
             pkt.extend_from_slice(&(count as u16).to_be_bytes());
             pkt.extend_from_slice(chunk);
+            kept.push(pkt.clone());
             if idx < plan.burst {
                 self.send_to_peer(&mut st, &pkt);
             } else {
@@ -1042,6 +1107,11 @@ impl P2p {
         if self.dynamic_window {
             let link = &self.video_link;
             st.window = udp_window::frames_in_flight(st.ack_rtt.get(), link.target_fps(), link.congestion());
+        }
+        // Kept for retransmits; a viewer that does not ask never costs more than these few frames.
+        st.sent_frames.push_back((id, kept));
+        if st.sent_frames.len() > NACK_HISTORY {
+            st.sent_frames.pop_front();
         }
         st.frame_wait.push_back((id, started));
         if st.frame_wait.len() < st.window {
@@ -1277,6 +1347,7 @@ mod tests {
             input,
             audio_gate: None,
             loss: None,
+            nack: true,
         };
         let (dummy, _keep) = std::sync::mpsc::channel();
         let viewer = P2p::start(
@@ -1329,13 +1400,15 @@ mod tests {
         host.close();
     }
 
-    /// A stand-in for the relay server's UDP forwarder (`server-relay/internal/udprelay`) on loopback.
-    fn fake_udp_relay(tokens: [[u8; 16]; 2], stop: Arc<AtomicBool>) -> SocketAddr {
+    /// A stand-in for the relay server's UDP forwarder (`server-relay/internal/udprelay`) on loopback. With
+    /// `drop_every` > 0 it loses every n-th full-size datagram (video fragments) it forwards.
+    fn fake_udp_relay(tokens: [[u8; 16]; 2], stop: Arc<AtomicBool>, drop_every: u32) -> SocketAddr {
         let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
         let addr = sock.local_addr().unwrap();
         sock.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
         thread::spawn(move || {
             let mut legs: [Option<SocketAddr>; 2] = [None, None];
+            let mut big = 0u32;
             let mut buf = [0u8; 2048];
             while !stop.load(Ordering::SeqCst) {
                 let Ok((n, from)) = sock.recv_from(&mut buf) else { continue };
@@ -1356,6 +1429,12 @@ mod tests {
                     && let Some(i) = legs.iter().position(|l| *l == Some(from))
                     && let Some(to) = legs[1 - i]
                 {
+                    if n >= 1000 && drop_every > 0 {
+                        big += 1;
+                        if big.is_multiple_of(drop_every) {
+                            continue;
+                        }
+                    }
                     let _ = sock.send_to(pkt, to);
                 }
             }
@@ -1397,6 +1476,7 @@ mod tests {
             input,
             audio_gate: None,
             loss: None,
+            nack: true,
         };
         let (dummy, _keep) = std::sync::mpsc::channel();
         let viewer = P2p::start(
@@ -1436,7 +1516,7 @@ mod tests {
 
         let stop = Arc::new(AtomicBool::new(false));
         let (relay, token_v, token_h) = external.clone().unwrap_or_else(|| {
-            let addr = fake_udp_relay([[1u8; 16], [2u8; 16]], Arc::clone(&stop));
+            let addr = fake_udp_relay([[1u8; 16], [2u8; 16]], Arc::clone(&stop), 0);
             (addr.to_string(), "01".repeat(16), "02".repeat(16))
         });
         viewer.add_relay(&relay, &token_v);
@@ -1474,6 +1554,95 @@ mod tests {
         }
         viewer.close();
         host.close();
+    }
+
+    /// Frames through a path that loses every `drop_every`-th video fragment; returns how many of `frames`
+    /// arrived intact, and whether they arrived in sending order.
+    fn lossy_stream(nack: bool, drop_every: u32, frames: usize) -> (usize, bool) {
+        // SAFETY: set before any thread in this test reads the environment.
+        unsafe { std::env::set_var("OPENDESK_STUN", "off") };
+        let (tx_v, rx_v) = std::sync::mpsc::channel();
+        let (tx_h, rx_h) = std::sync::mpsc::channel();
+        let (in_tx, _in_rx) = std::sync::mpsc::channel();
+        let voice = VoiceEngine::new(tx_v.clone());
+        let inbox: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let sink = Arc::clone(&inbox);
+        let mk = |input: Sender<InputEvent>, video: Arc<dyn Fn(Vec<u8>) + Send + Sync>, nack: bool| Sinks {
+            video,
+            voice: Arc::clone(&voice),
+            input,
+            audio_gate: None,
+            loss: None,
+            nack,
+        };
+        let (dummy, _keep) = std::sync::mpsc::channel();
+        let viewer = P2p::start(
+            false,
+            "111111111",
+            "222222222".into(),
+            Arc::new(SendGate::new(true)),
+            Arc::default(),
+            tx_v,
+            mk(dummy, Arc::new(move |f| sink.lock().push(f)), nack),
+            None,
+        )
+        .unwrap();
+        let host = P2p::start(
+            true,
+            "222222222",
+            "111111111".into(),
+            Arc::new(SendGate::new(true)),
+            Arc::default(),
+            tx_h,
+            mk(in_tx, Arc::new(|_| {}), false),
+            None,
+        )
+        .unwrap();
+        let signal = |rx: &std::sync::mpsc::Receiver<Outgoing>| loop {
+            if let Ok(Outgoing::Message(ClientMessage::P2pSignal { candidate, .. })) =
+                rx.recv_timeout(Duration::from_secs(5))
+            {
+                let mut v: Value = serde_json::from_str(&candidate).unwrap();
+                v["c"] = json!([]);
+                break v.to_string();
+            }
+        };
+        host.on_signal(&signal(&rx_v));
+        viewer.on_signal(&signal(&rx_h));
+        let stop = Arc::new(AtomicBool::new(false));
+        let relay = fake_udp_relay([[1u8; 16], [2u8; 16]], Arc::clone(&stop), drop_every).to_string();
+        viewer.add_relay(&relay, &"01".repeat(16));
+        host.add_relay(&relay, &"02".repeat(16));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !(viewer.is_active() && host.is_active()) {
+            assert!(Instant::now() < deadline, "path never came up through the relay");
+            thread::sleep(Duration::from_millis(20));
+        }
+        // Each frame starts with its number, so order and integrity can be checked.
+        let frame = |n: usize| -> Vec<u8> { (0..150_000u32).map(|i| (i as usize * 7 + n) as u8).collect() };
+        for n in 0..frames {
+            assert!(host.send_video(&frame(n)));
+            thread::sleep(Duration::from_millis(30));
+        }
+        thread::sleep(Duration::from_millis(500));
+        let got = inbox.lock().clone();
+        let ids: Vec<usize> = got.iter().filter_map(|f| (0..frames).find(|&n| *f == frame(n))).collect();
+        stop.store(true, Ordering::SeqCst);
+        viewer.close();
+        host.close();
+        (ids.len(), ids.windows(2).all(|w| w[0] < w[1]) && ids.len() == got.len())
+    }
+
+    /// B12: with ~7% fragment loss a 150 KB frame (127 fragments) almost never arrives whole; with retransmit
+    /// requests every frame does, in order.
+    #[test]
+    fn lost_fragments_are_resent_and_frames_stay_in_order() {
+        let (without, _) = lossy_stream(false, 14, 20);
+        let (with, ordered) = lossy_stream(true, 14, 20);
+        println!("~7% fragment loss: {without}/20 frames without retransmits, {with}/20 with");
+        assert!(without <= 2, "{without} frames survived without retransmits");
+        assert!(with >= 19, "only {with} of 20 frames arrived with retransmits");
+        assert!(ordered, "frames reached the decoder out of order or corrupt");
     }
 
     #[test]

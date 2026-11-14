@@ -93,8 +93,9 @@ impl HostPerf {
         let usage = usage.map_or_else(String::new, |u| format!(" {u}"));
         let measured = |s: StageSummary| if s.count == 0 { "-".to_string() } else { s.to_string() };
         let window = link.window.map_or_else(|| "-".to_string(), |w| w.to_string());
+        let resent = std::mem::take(&mut link.resent);
         format!(
-            "fps={:.1} target={target} grab avg/max={} wait={} encode={} convert={} codec={} gate={} latency={} send={} ack_rtt={} window={window} kbps={} idle_frames={} gate_skips={} h264={h264}{usage}",
+            "fps={:.1} target={target} grab avg/max={} wait={} encode={} convert={} codec={} gate={} latency={} send={} ack_rtt={} window={window} resent={resent} kbps={} idle_frames={} gate_skips={} h264={h264}{usage}",
             self.sent.take() as f64 / secs,
             self.grab.take_summary(),
             self.wait.take_summary(),
@@ -510,12 +511,12 @@ mod tests {
         let line = p.take_line(&mut link, 10.0, Some("Intel QSV (hardware MFT)"), 60, Some(usage));
         assert_eq!(
             line,
-            "fps=58.9 target=60 grab avg/max=1.2/4.0ms wait=15.0/15.0ms encode=3.1/3.1ms convert=0.6/0.6ms codec=2.5/2.5ms gate=0.4/0.4ms latency=4.5/4.5ms send=0.8/0.8ms ack_rtt=12.0/12.0ms window=2 kbps=2450 idle_frames=12 gate_skips=0 h264=on(Intel QSV (hardware MFT)) cpu=3.3% ram=148MB"
+            "fps=58.9 target=60 grab avg/max=1.2/4.0ms wait=15.0/15.0ms encode=3.1/3.1ms convert=0.6/0.6ms codec=2.5/2.5ms gate=0.4/0.4ms latency=4.5/4.5ms send=0.8/0.8ms ack_rtt=12.0/12.0ms window=2 resent=0 kbps=2450 idle_frames=12 gate_skips=0 h264=on(Intel QSV (hardware MFT)) cpu=3.3% ram=148MB"
         );
         link.window = None;
         let line = p.take_line(&mut link, 10.0, None, 60, None);
         assert!(line.starts_with("fps=0.0 target=60 grab avg/max=0.0/0.0ms"));
-        assert!(line.contains(" send=- ack_rtt=- window=- "), "{line}");
+        assert!(line.contains(" send=- ack_rtt=- window=- resent=0 "), "{line}");
         assert!(p.take_line(&mut link, 10.0, None, 144, None).starts_with("fps=0.0 target=144 "));
     }
 

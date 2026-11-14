@@ -14,6 +14,7 @@ pub mod list_search;
 pub mod monitor;
 #[cfg(feature = "admin")]
 pub mod monitor_wall;
+pub mod nack;
 pub mod pacing;
 pub mod perf_stats;
 pub mod performance;
