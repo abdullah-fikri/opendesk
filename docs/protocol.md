@@ -147,6 +147,8 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `file-group` | client, with `file-folder` | Several loose files may arrive as one group, closed by a bare group end (below), and are put on the clipboard and pasted once. Listed late (relays up to 1.2.0 may drop it, which only sends loose files one by one). |
 | `file-binary` | client + relay | File chunks as binary messages (`0x12`, below) instead of base64 JSON. The relay sends them only to clients that list it. |
 | `file-pull-bin` | client, with `file-binary` | Bytes of a pulled clipboard offer (a paste stream) may arrive as binary chunks too. Without it pulled offers stay base64 JSON (clients up to 1.3.x). |
+| `file-deflate` | client, with `file-binary` | Binary file chunks to it may be deflated (raw DEFLATE, level 1): bit 63 of the offset marks them and the data inflates to at most 128 KiB at the offset without that bit. The sender compresses only chunks that shrink by at least 1/8, skips packed formats (zip, mp4, jpg, ...) and stops while the link outruns the compressor. `OPENDESK_FILE_DEFLATE=0` sends raw. |
+| `file-resume` | client, with `file-ack` | A transfer cut by a lost relay connection or P2P path continues where the receiver stands. The sender sends `start` again under a new ID with `resumeOf` (the cut ID); the receiver moves the kept file to the new ID and answers with a `pull` whose `id`/`tid` are the new ID and `resumeAt` is its byte count, and the sender continues from there (the final `sha256` covers the whole file). A receiver that lost its own connection keeps the file for 90 s and asks with a `pull` carrying the cut ID and `resumeAt`. Unknown `resumeOf` starts over (`resumeAt` 0). `OPENDESK_FILE_RESUME=0` turns it off. |
 | `cursor-shape` | client | Draws its own cursor from `cursor-shape` events; the host stops painting it. |
 | `mouse-relative` | client (Windows) | Locks its pointer while a host application captured the mouse (`pointer-lock`) and sends `mouse-delta`; the host sends `pointer-lock` only to viewers listing it. Ctrl+Alt hands the cursor back on the viewer, a click takes it again. |
 | `video-delta` | client | Framed key/delta video; without it the host sends plain JPEGs. |
@@ -177,7 +179,7 @@ Per platform (see [platforms.md](platforms.md)):
 
 - Windows: `file-ack`, `file-offer`, `file-folder`, `file-binary`, `cursor-shape`, `video-delta`, `frame-stamp`,
   `video-h264` (when the Media Foundation decoder exists), `audio-opus`, `audio-system`, `p2p.v1`, `multi-session`,
-  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`), `file-group`, `file-pull-bin`, `tile-lossless`, `mouse-relative`, `clipboard-image`, `file-p2p`, `video-nack`. No `host-features`: Windows hosts have every host control.
+  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`), `file-group`, `file-pull-bin`, `tile-lossless`, `mouse-relative`, `clipboard-image`, `file-p2p`, `file-deflate`, `file-resume`, `video-nack`. No `host-features`: Windows hosts have every host control.
 - Linux: the same without `file-offer` and `audio-system`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
 - Android: `viewer-only`, `video-delta` and `e2e`, so it receives framed JPEG video (no H.264) and single-session
