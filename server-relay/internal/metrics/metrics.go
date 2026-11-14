@@ -63,7 +63,7 @@ func (c *Collector) Egress(size int) {
 	c.egressBytes.Add(uint64(size))
 }
 
-// DroppedFrame counts a video frame discarded by a full or restarted queue.
+// DroppedFrame counts a video frame discarded by a full or restarted queue or for waiting too long.
 func (c *Collector) DroppedFrame() { c.droppedFrames.Add(1) }
 
 // DroppedAudio counts a voice packet discarded because the receiver's voice queue was full.

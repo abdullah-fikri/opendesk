@@ -37,10 +37,15 @@ services:
       OPENDESK_UDP_RELAY_PUBLIC: ${OPENDESK_UDP_RELAY_PUBLIC:-}
       OPENDESK_UDP_RELAY_MBPS: ${OPENDESK_UDP_RELAY_MBPS:-50}
       OPENDESK_RELAY_COALESCE_MOVES: ${OPENDESK_RELAY_COALESCE_MOVES:-1}
+      OPENDESK_WS_FRAME_MAX_AGE_MS: ${OPENDESK_WS_FRAME_MAX_AGE_MS:-50}
+    # 1 CPU as a 10 ms quota per 10 ms period instead of `cpus: "1.0"` (100 ms period): a burst that uses up the
+    # quota freezes the relay for at most one short period, not for tens of milliseconds of video. Docker
+    # refuses `cpus` together with these, so set the CPU limit here only. See server-relay/docs/deployment.md.
+    cpu_period: 10000
+    cpu_quota: 10000
     deploy:
       resources:
         limits:
-          cpus: "1.0"
           memory: 2048M
         reservations:
           cpus: "0.5"

@@ -285,7 +285,8 @@ Opus voice keeps the `0x02` marker, so every relay version forwards it as audio.
 short gaps. Receivers always accept PCM, and a sender uses Opus only toward a partner that listed `audio-opus`.
 
 The relay keeps at most 8 queued frames per receiver. A key frame or IDR flushes the queue; a delta that does
-not fit flushes it too, and the viewer then sends `video-keyframe`.
+not fit flushes it too, and so does a delta that waited longer than the relay's age limit (50 ms by default;
+the deltas behind it up to the next key frame are dropped with it). The viewer then sends `video-keyframe`.
 
 ## Host sound
 

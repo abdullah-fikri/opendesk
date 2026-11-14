@@ -45,6 +45,10 @@ const (
 	sweepEvery = 10 * time.Second
 	// burstSeconds of the per-pair rate may go out at once (a key frame).
 	burstSeconds = 0.25
+	// socketBuffer is the receive and send buffer requested for the socket, so a key frame burst that arrives
+	// while the relay is descheduled (a CPU-throttled container) waits in the kernel instead of being dropped.
+	// Linux caps it at net.core.rmem_max / wmem_max; Listen logs what was granted.
+	socketBuffer = 4 << 20
 )
 
 // Token identifies one side (leg) of an allocation.
@@ -97,12 +101,28 @@ func Listen(addr string, mbps int, log *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	_ = conn.SetReadBuffer(4 << 20)
-	_ = conn.SetWriteBuffer(4 << 20)
+	_ = conn.SetReadBuffer(socketBuffer)
+	_ = conn.SetWriteBuffer(socketBuffer)
 	s := newServer(mbps, log)
+	rcv, snd, ok := socketBuffers(conn)
+	reportBuffers(s.log, socketBuffer, rcv, snd, ok)
 	s.conn = conn
 	s.writeTo = func(b []byte, to netip.AddrPort) { _, _ = conn.WriteToUDPAddrPort(b, to) }
 	return s, nil
+}
+
+// reportBuffers logs the socket buffer sizes the kernel granted against the requested size, as a warning when
+// it capped either one: bursts beyond the capped buffer are dropped by the kernel before the relay sees them.
+func reportBuffers(log *slog.Logger, requested, rcv, snd int, ok bool) {
+	switch {
+	case !ok:
+		log.Info("UDP socket buffers requested", "bytes", requested)
+	case rcv < requested || snd < requested:
+		log.Warn("UDP socket buffers capped by the kernel; raise net.core.rmem_max and net.core.wmem_max on the host",
+			"requested", requested, "rcvbuf", rcv, "sndbuf", snd)
+	default:
+		log.Info("UDP socket buffers", "requested", requested, "rcvbuf", rcv, "sndbuf", snd)
+	}
 }
 
 func newServer(mbps int, log *slog.Logger) *Server {

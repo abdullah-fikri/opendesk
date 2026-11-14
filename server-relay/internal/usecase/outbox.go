@@ -385,11 +385,9 @@ func (p *Peer) nextLocked() (outMsg, bool) {
 	// Round robin over the video queues, so one session's frames never starve another's.
 	for i := range p.streams {
 		s := p.streams[(p.nextStream+i)%len(p.streams)]
-		select {
-		case frame := <-s.q.ch:
+		if frame, ok := s.q.pop(p.frameMaxAge); ok {
 			p.nextStream = (p.nextStream + i + 1) % len(p.streams)
 			return p.notFileLocked(outMsg{bin: frame, marker: s.marker, tag: s.tag}), true
-		default:
 		}
 	}
 	if p.file.n > 0 {
