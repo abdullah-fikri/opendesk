@@ -74,6 +74,7 @@ unsafe extern "system" {
     fn FindWindowW(lp_class_name: *const u16, lp_window_name: *const u16) -> HWND;
     fn GetForegroundWindow() -> HWND;
     fn GetClassNameW(h_wnd: HWND, lp_class_name: *mut u16, n_max_count: i32) -> i32;
+    fn GetWindowTextW(h_wnd: HWND, lp_string: *mut u16, n_max_count: i32) -> i32;
     fn GetWindowThreadProcessId(h_wnd: HWND, lpdw_process_id: *mut u32) -> u32;
     fn GetWindowLongPtrW(h_wnd: HWND, n_index: i32) -> LONG_PTR;
     fn SetWindowLongPtrW(h_wnd: HWND, n_index: i32, dw_new_long: LONG_PTR) -> LONG_PTR;
@@ -239,6 +240,14 @@ pub fn foreground_class() -> String {
     let mut buf = [0u16; 128];
     let len = unsafe { GetClassNameW(GetForegroundWindow(), buf.as_mut_ptr(), buf.len() as i32) };
     if len <= 0 { "(none)".into() } else { String::from_utf16_lossy(&buf[..len as usize]) }
+}
+
+/// Title of the focused window (an Explorer window shows its folder's name); empty when it has none.
+pub fn foreground_title() -> String {
+    let mut buf = [0u16; 256];
+    // SAFETY: the buffer outlives the call and its length is passed; a stale window handle only fails.
+    let len = unsafe { GetWindowTextW(GetForegroundWindow(), buf.as_mut_ptr(), buf.len() as i32) };
+    if len <= 0 { String::new() } else { String::from_utf16_lossy(&buf[..len as usize]) }
 }
 
 /// Shows the multi-select "Choose Files to Send" dialog; empty when cancelled.

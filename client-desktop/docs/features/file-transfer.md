@@ -26,6 +26,13 @@ name, direction, a progress bar, size and speed, then "Done" or the reason it fa
 after 4 s, failed ones after 15 s (or with their close button). A second Ctrl+V while the same files are still
 being sent to that host only shows "Still sending these files"; they are pasted once when they arrive.
 
+A host may have no window to show that panel (the headless edition, the service's agent, a minimized app), and
+files pasted from the viewer used to arrive there silently, then paste 25 s later. While it hosts a session, a
+host shows incoming files on its own screen instead (`src/infra/transfer_badge/`): a small click-through line in
+the bottom-right corner above the taskbar, "Receiving 2 files from 123 456 789... 45%", then "Pasting 2 items into
+Documents" (the focused window's title), "Received ...: ready to paste" or why it failed, for 5 s. It never
+takes focus, and screen capture includes it, so the viewer sees it too. Windows only; elsewhere the panel is all.
+
 ## Sending
 
 Each file is `start`, chunks and `end` with its SHA-256. Chunks are 128 KiB binary messages when the receiver

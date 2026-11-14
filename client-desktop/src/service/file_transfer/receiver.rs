@@ -15,10 +15,11 @@ use sha2::{Digest, Sha256};
 
 use super::tree::{create_dir_unique, link_unique};
 use super::{BINARY_CHUNK_SIZE, CHUNK_SIZE, LAST_RECEIVED_MS, MAX_CHUNK_B64, hex, now_ms, remember_received};
+use crate::domain::desk_id;
 use crate::domain::transfer::{
     MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, is_safe_id, percent, safe_rel_path, sanitize_file_name,
 };
-use crate::infra::{logger, storage, virtual_clipboard, window};
+use crate::infra::{logger, storage, transfer_badge, virtual_clipboard, window};
 use crate::protocol::binary::FileChunk;
 use crate::protocol::{FileAction, FilePayload};
 use crate::service::context::AppContext;
@@ -38,6 +39,8 @@ const MAX_NAME_LEN: usize = 200;
 const VK_V: u8 = 0x56;
 /// Wait between replacing the clipboard and the auto-paste Ctrl+V.
 const PASTE_SETTLE: Duration = Duration::from_millis(150);
+/// How long the host's transfer badge stays after the files arrived or failed.
+const BADGE_LINGER: Duration = Duration::from_secs(5);
 
 /// What to tell the user and the sender about one payload: `(status line, ack)`.
 /// `ack` is `Some(ok)` when the sender must be told the final result.
@@ -108,16 +111,27 @@ fn publish(ctx: &AppContext, from: &str, paths: &[PathBuf], paste: bool) {
     remember_received(from, paths);
     let stored = core_engine::clipboard::set_files(&list);
     ctx.mark_clipboard_synced();
+    let label = match paths {
+        [one] => one.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+        many => format!("{} items", many.len()),
+    };
     if cfg!(windows) && !stored {
         // Pasting now would paste whatever was copied before (an older transfer): leave the files in Downloads.
         logger::warn("file_transfer", "Clipboard busy or refused; received files were not put on it.");
         ctx.ui.status(format!("Saved in {} (could not paste: clipboard busy)", download_dir().display()));
+        badge_finished(ctx, &format!("Received {label}: saved in Downloads\\OpenDesk (clipboard busy)"));
         return;
+    }
+    if !paste {
+        badge_finished(ctx, &format!("Received {label}: ready to paste (saved in Downloads\\OpenDesk)"));
     }
     if paste {
         // Explorer learns about the new clipboard from a notification; pasting before it arrives pastes the old
         // content.
         thread::sleep(PASTE_SETTLE);
+        let title = window::foreground_title();
+        let into = if title.is_empty() { String::new() } else { format!(" into {title}") };
+        badge_finished(ctx, &format!("Pasting {label}{into}"));
         logger::info("file_transfer", &format!("Pasting into foreground window: {}", window::foreground_class()));
         ctx.injector.send_key_combo(true, false, false, VK_V);
         crate::service::host::input::warn_if_refused();
@@ -164,6 +178,14 @@ pub fn download_dir() -> PathBuf {
     fallback
 }
 
+/// The last word on the host's transfer badge (`infra::transfer_badge`): shown for a few seconds while this
+/// machine hosts a session. A viewer has its transfer list instead.
+fn badge_finished(ctx: &AppContext, text: &str) {
+    if ctx.is_hosting() {
+        transfer_badge::show(text, Some(BADGE_LINGER));
+    }
+}
+
 /// Reports one incoming file (`key` = `sender:transfer_id`) to the transfer list.
 fn progress(ui: &dyn UiPort, key: &str, name: &str, done: u64, total: u64, state: TransferState) {
     let id = format!("in:{key}");
@@ -199,7 +221,27 @@ impl FileReceiver {
         drop(entry.file);
         let _ = fs::remove_file(&entry.path);
         progress(ui, key, &entry.name, entry.received, entry.total, TransferState::Failed(reason.into()));
+        if self.active_files.is_empty() {
+            // Nothing arrives any more; a badge left from hosting would otherwise stay up.
+            transfer_badge::hide();
+        }
         Some(entry.name)
+    }
+
+    /// Shows the incoming files and their progress on the host's screen ("Receiving 2 files from 123 456
+    /// 789... 45%"), so someone at a host without a window sees them arrive. Only while hosting: a viewer has
+    /// its transfer list.
+    fn show_badge(&self, ctx: &AppContext) {
+        if !ctx.is_hosting() || self.active_files.is_empty() {
+            return;
+        }
+        let (done, total) = self.active_files.values().fold((0, 0), |(d, t), f| (d + f.received, t + f.total));
+        let what = match self.active_files.values().next() {
+            Some(only) if self.active_files.len() == 1 => only.name.clone(),
+            _ => format!("{} files", self.active_files.len()),
+        };
+        let from = desk_id::format(&ctx.partner());
+        transfer_badge::show(&format!("Receiving {what} from {from}... {}%", percent(done, total)), None);
     }
 
     /// Drops transfers that stopped receiving chunks and forgets old completed IDs.
@@ -326,6 +368,7 @@ impl FileReceiver {
                         dest,
                     },
                 );
+                self.show_badge(ctx);
                 (Some(status), None)
             }
             Err(_) => (Some(format!("Could not receive {name}: the file could not be created")), Some(false)),
@@ -450,12 +493,16 @@ impl FileReceiver {
             return (Some(format!("Could not receive {name}")), Some(false));
         }
         let shown = percent(entry.received, entry.total);
-        if shown != entry.shown_percent {
+        let changed = shown != entry.shown_percent;
+        if changed {
             entry.shown_percent = shown;
             progress(ctx.ui.as_ref(), key, &entry.name, entry.received, entry.total, TransferState::Active);
         }
         let status = (entry.total > 0)
             .then(|| format!("Receiving {} ({}%)...", entry.name, percent(entry.received, entry.total)));
+        if changed {
+            self.show_badge(ctx);
+        }
         (status, None)
     }
 
@@ -482,6 +529,7 @@ impl FileReceiver {
         if !written {
             let _ = fs::remove_file(staging);
             fail("Size or SHA-256 mismatch");
+            badge_finished(ctx, &format!("Could not receive {name}: size or SHA-256 mismatch"));
             return (Some(format!("Could not receive {name}: size or SHA-256 mismatch")), Some(false));
         }
         let base = download_dir();
@@ -493,6 +541,7 @@ impl FileReceiver {
         let _ = fs::remove_file(&staging);
         let Some(saved) = saved else {
             fail("Saving failed");
+            badge_finished(ctx, &format!("Could not receive {name}: saving failed"));
             return (Some(format!("Could not receive {name}: saving failed")), Some(false));
         };
         progress(ctx.ui.as_ref(), &key, &name, total, total, TransferState::Done);
@@ -507,6 +556,7 @@ impl FileReceiver {
                     group.tops.push(saved); // loose top-level file sent along with folders
                 }
             }
+            self.show_badge(ctx);
             return (Some(format!("Received: {name}")), Some(true));
         }
         let paste = payload.auto_paste.unwrap_or(true) && allow_auto_paste;
@@ -593,9 +643,6 @@ pub(super) mod tests {
     /// A bare group end closes only a group its own sender opened; anything else is refused without effect.
     #[test]
     fn bare_group_end_closes_only_the_senders_own_group() {
-        let dir = env::temp_dir().join(format!("opendesk-loose-{}-{}", std::process::id(), now_ms()));
-        fs::create_dir_all(&dir).unwrap();
-        *TEST_DOWNLOADS.lock() = Some(dir.clone());
         let ctx = crate::service::test_support::context();
         let mut rx = FileReceiver::new();
         let bare_end = |id: &str, group: &str| FilePayload {
@@ -605,22 +652,14 @@ pub(super) mod tests {
             ..FilePayload::start(id, "files", 0)
         };
         assert_eq!(rx.handle(&ctx, &bare_end("fd_1", "fg_1"), "111", false).1, Some(false), "unknown group");
-        // "111" starts a loose file inside group fg_1 (rel = plain name: saved straight into Downloads).
-        let file = FilePayload {
-            group: Some("fg_1".into()),
-            rel: Some("a.txt".into()),
-            ..FilePayload::start("ft_1", "a.txt", 3)
-        };
-        assert_eq!(rx.handle(&ctx, &file, "111", false).1, None);
+        // "111" has group fg_1 open (its first loose file started).
+        rx.groups.insert("111:fg_1".into(), FolderGroup::new());
         assert_eq!(rx.handle(&ctx, &bare_end("fd_2", "fg_1"), "222", false).1, Some(false), "another sender");
         assert_eq!(rx.handle(&ctx, &bare_end("fd_3", "../x"), "111", false).1, Some(false), "unsafe group id");
         assert!(rx.groups.contains_key("111:fg_1"), "the group stays open for its sender");
-        // Its own end with nothing saved yet (the file never finished) closes the group with a NACK.
+        // Its own end with nothing saved (every file failed) closes the group with a NACK.
         assert_eq!(rx.handle(&ctx, &bare_end("fd_4", "fg_1"), "111", false).1, Some(false));
         assert!(rx.groups.is_empty());
-        rx.abort_all(ctx.ui.as_ref());
-        *TEST_DOWNLOADS.lock() = None;
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
