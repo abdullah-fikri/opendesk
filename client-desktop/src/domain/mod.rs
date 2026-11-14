@@ -4,6 +4,7 @@
 pub mod capability;
 pub mod desk_id;
 pub mod edition;
+pub mod file_pacing;
 pub mod frame_rate;
 pub mod history;
 pub mod keyboard;

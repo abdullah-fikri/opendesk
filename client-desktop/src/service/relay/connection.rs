@@ -30,6 +30,7 @@ use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS, chunk_
 use crate::service::ui_port::{RelayStatus, SessionChange};
 use crate::service::viewer::decoder;
 
+use super::file_pacer::FilePacer;
 use super::resume::{self, Resume};
 use super::signal_pacer::SignalPacer;
 
@@ -83,6 +84,7 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
             ctx,
             outbox,
             files: VecDeque::new(),
+            pacer: FilePacer::new(),
             receiver: FileReceiver::new(),
             p2p_input_tx: input_tx,
             p2p_input: input_rx,
@@ -118,6 +120,8 @@ struct QueuedFile {
     message: Message,
     /// Its weight in `IN_FLIGHT_CHUNKS`.
     units: usize,
+    /// Its size on the wire, charged to the file rate.
+    bytes: usize,
     status: Option<String>,
 }
 
@@ -153,6 +157,8 @@ pub(super) struct Connection {
     outbox: Receiver<Outgoing>,
     /// File messages waiting their turn behind video and voice.
     files: VecDeque<QueuedFile>,
+    /// Paces `files` by the relay round trip (see `file_pacer.rs`).
+    pacer: FilePacer,
     pub(super) receiver: FileReceiver,
     /// Input that arrived over a P2P path (host side).
     pub(super) p2p_input_tx: Sender<InputEvent>,
@@ -262,6 +268,7 @@ impl Connection {
                 self.pump_monitor(&mut socket);
             }
             let mut status = self.pump_files(&mut socket, partner.is_empty());
+            self.pacer.poll(&mut socket, !self.files.is_empty(), Instant::now());
             if last_expire.elapsed() >= Duration::from_secs(1) {
                 last_expire = Instant::now();
                 status = self.receiver.expire_stale(ctx.ui.as_ref(), last_expire).or(status);
@@ -563,8 +570,9 @@ impl Connection {
                 Outgoing::MonitorFrame(frame) => self.monitor_pending = Some(frame),
                 Outgoing::Audio(packet) => self.send_audio(socket, partner, packet),
                 Outgoing::File { message, status } => {
-                    let message = Message::Text(message.to_json().into());
-                    self.files.push_back(QueuedFile { message, units: 1, status });
+                    let text = message.to_json();
+                    let bytes = text.len();
+                    self.files.push_back(QueuedFile { message: Message::Text(text.into()), units: 1, bytes, status });
                 }
                 Outgoing::FileChunk { target, frame, status } => {
                     let units = chunk_units(frame.len());
@@ -576,7 +584,8 @@ impl Connection {
                     } else {
                         frame
                     };
-                    self.files.push_back(QueuedFile { message: Message::Binary(frame.into()), units, status });
+                    let bytes = frame.len();
+                    self.files.push_back(QueuedFile { message: Message::Binary(frame.into()), units, bytes, status });
                 }
             }
         }
@@ -660,11 +669,16 @@ impl Connection {
         }
     }
 
-    /// Sends a burst of queued file messages and returns the newest status line among them.
+    /// Sends a burst of queued file messages, within the per-tick budget and the paced file rate, and returns
+    /// the newest status line among them.
     fn pump_files(&mut self, socket: &mut Socket, idle: bool) -> Option<String> {
         let mut budget = if idle { FILE_BURST_IDLE } else { FILE_BURST_IN_SESSION };
         let mut latest = None;
+        let now = Instant::now();
         while budget > 0 {
+            if !self.files.front().is_some_and(|f| self.pacer.allow(f.bytes, now)) {
+                break;
+            }
             let Some(file) = self.files.pop_front() else { break };
             // WouldBlock means tungstenite buffered the frame; any other error leaves it queued until the read
             // loop notices the dead socket and fails the transfer. Messages are reference counted: the clone
@@ -678,6 +692,7 @@ impl Connection {
                 }
             }
             IN_FLIGHT_CHUNKS.fetch_sub(file.units, Ordering::Relaxed);
+            self.pacer.on_written(file.bytes);
             budget = budget.saturating_sub(file.units);
             latest = file.status.or(latest);
         }
@@ -703,6 +718,9 @@ impl Connection {
                 Ok(Message::Ping(payload)) => {
                     let _ = socket.send(Message::Pong(payload));
                     let _ = socket.flush();
+                }
+                Ok(Message::Pong(payload)) => {
+                    self.pacer.on_pong(&payload, Instant::now());
                 }
                 Ok(Message::Binary(bin)) => self.on_binary(&bin),
                 Ok(Message::Text(text)) => {
@@ -805,6 +823,8 @@ impl Connection {
         for file in self.files.drain(..) {
             IN_FLIGHT_CHUNKS.fetch_sub(file.units, Ordering::Relaxed);
         }
+        // The next connection may take another route: its pacing starts over.
+        self.pacer = FilePacer::new();
         let reason = self.receiver.abort_all(ctx.ui.as_ref());
         let waiting = self.resumable_sessions();
         self.resume.suspend(waiting.clone(), Instant::now());

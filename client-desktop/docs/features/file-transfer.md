@@ -37,6 +37,25 @@ the other side, and a missing confirmation fails after 120 s. Without it (Androi
 receiver)" only means every byte left this machine. A lost relay connection fails every transfer on it; there is
 no resume.
 
+### Pacing
+
+File bytes share the uplink with the session: a full modem queue held the P2P path's keep-alives and video for
+over 3 s, so the path dropped three times during one 86 MB transfer and video fell to 3-7 FPS. The relay
+connection therefore paces file messages (`src/domain/file_pacing.rs`, `src/service/relay/file_pacer.rs`), LEDBAT
+style:
+
+- While files flow it sends a WebSocket ping after the file bytes, at most every 50 ms; the relay answers it only
+  after reading everything before it, so the round trip includes every queue on the way (socket buffer, modem,
+  the relay's backpressure from a slow receiver). No new message: every relay answers pings.
+- The base round trip is the lowest of the last five minutes. When the round trip (the lowest of the last three
+  samples) is more than 25 ms above it, the file rate halves, at most once per base round trip; an unanswered
+  ping that is already that late counts too. While it stays below, the rate grows by up to 10% per sample, but
+  only when file messages actually waited for the rate.
+- The rate starts at 1 MB/s, never drops below 64 KB/s (transfers always move) and goes up to 256 MB/s. A token
+  bucket spends it, on top of the per-tick budget that keeps file messages behind video and voice.
+- The rate is logged every 10 s while files flow (`File pacing: ... KB/s, round trip ... ms`).
+- `OPENDESK_FILE_RATE_LIMIT=0` turns pacing off (the behavior before it existed).
+
 Folders go only to `file-folder` receivers: folder entries first, then files with their relative path, then a
 repeat of the first folder entry that marks the end. For other receivers folders are skipped with a notice.
 
