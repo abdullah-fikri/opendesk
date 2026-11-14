@@ -164,7 +164,7 @@ export component SettingsView inherits Rectangle {
     in property <bool> mic_on_at_start: true;
     callback set_mic_on_at_start(bool);
     // This device: a game on the host that captures the mouse locks the pointer here (relative motion).
-    in property <bool> pointer_lock: true;
+    in property <bool> pointer_lock: false;
     callback set_pointer_lock(bool);
     // The relay supports the device allowlist (known once registered).
     in property <bool> relay_online: false;

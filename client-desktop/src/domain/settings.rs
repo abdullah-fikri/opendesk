@@ -45,7 +45,7 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mic_on_at_start: Option<bool>,
     /// Pointer lock for games (`mouse-relative`, viewer side); read it with [`Settings::pointer_lock`]. Unset
-    /// means on.
+    /// means off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pointer_lock: Option<bool>,
     /// The version whose "What's new" the user has seen (`domain::whats_new`). Empty: an install from before
@@ -117,7 +117,7 @@ impl Settings {
     /// Whether a game on the host that captures the mouse locks this viewer's pointer (relative motion). Off:
     /// the mouse always sends absolute positions, as before the feature.
     pub fn pointer_lock(&self) -> bool {
-        self.pointer_lock.unwrap_or(true)
+        self.pointer_lock.unwrap_or(false)
     }
 
     /// The viewer performance preset; a config from before presets maps its `max_fps` choice.
@@ -264,8 +264,8 @@ mod tests {
         assert!(Settings::new("123456789".into()).mic_on_at_start());
         assert!(!load(r#","mic_on_at_start":false"#).mic_on_at_start());
         assert!(load(r#","mic_on_at_start":true"#).mic_on_at_start());
-        assert!(load("").pointer_lock(), "pointer lock is on unless turned off");
-        assert!(!load(r#","pointer_lock":false"#).pointer_lock());
+        assert!(!load("").pointer_lock(), "pointer lock is off unless turned on");
+        assert!(load(r#","pointer_lock":true"#).pointer_lock());
         // Unset is not written, so the file only changes when the user picks a value.
         assert!(!serde_json::to_string(&Settings::new("123456789".into())).unwrap().contains("mic_on_at_start"));
     }

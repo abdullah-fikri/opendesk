@@ -93,7 +93,7 @@ export component MainWindow inherits Window {
     in property <bool> mic_on_at_start: true;
     callback save_mic_on_at_start(bool);
     // Settings › This device › Mouse › Pointer lock (config.json `pointer_lock`).
-    in property <bool> pointer_lock: true;
+    in property <bool> pointer_lock: false;
     callback save_pointer_lock(bool);
 
     // ---- Dialogs (UI-owned) ----

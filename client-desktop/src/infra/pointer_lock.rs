@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The user's setting (Settings › Mouse › Pointer lock); off keeps absolute positions, as before the lock.
-static ALLOWED: AtomicBool = AtomicBool::new(true);
+static ALLOWED: AtomicBool = AtomicBool::new(false);
 /// The focused host asked for the lock.
 static LOCKED: AtomicBool = AtomicBool::new(false);
 /// The cursor is confined to the viewer window right now.
