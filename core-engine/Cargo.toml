@@ -16,6 +16,8 @@ miniz_oxide = "0.8.9"
 windows = { version = "=0.62.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
+    # D3DCompile, only in the test that rebuilds the embedded scaler shader (no runtime import).
+    "Win32_Graphics_Direct3D_Fxc",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",

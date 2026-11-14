@@ -128,11 +128,11 @@ impl DesktopCapturer {
         }
     }
 
-    /// Zero-copy source for the H.264 encoder: DXGI at native size only (the GPU scaler is softer than the CPU's
-    /// area average). None for GDI, scaled capture, or a device that cannot keep GPU frames.
+    /// Zero-copy source for the H.264 encoder: DXGI, native or scaled (the encoder scales on the GPU with the same
+    /// area average as the CPU path). None for GDI or a device that cannot keep GPU frames.
     pub fn gpu_source(&mut self) -> Option<crate::codec::h264::GpuSource> {
         match self {
-            DesktopCapturer::Dxgi(d) if d.width == d.screen_width && d.height == d.screen_height => {
+            DesktopCapturer::Dxgi(d) => {
                 let device = d.enable_gpu_frames().ok()?;
                 Some(crate::codec::h264::GpuSource {
                     device,

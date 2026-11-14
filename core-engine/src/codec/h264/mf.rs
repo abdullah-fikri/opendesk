@@ -996,6 +996,26 @@ mod tests {
                 assert!(decoded > 0, "no picture came out");
                 psnr(&out)
             };
+            if (w, h) != (sw, sh) {
+                // Scaler check without the codec: the GPU area average against the CPU's, same source pixels.
+                let mut scaler = super::super::gpu::AreaScaler::new(&device, sw, sh, w, h).unwrap();
+                let scaled = read_bgra(&device, &scaler.run(&tex).unwrap(), w, h);
+                let (mut sum, mut worst) = (0u64, 0u8);
+                for y in 0..h as usize {
+                    for x in 0..w as usize {
+                        let p = reference[y * stride + x];
+                        let g = &scaled[(y * w as usize + x) * 4..][..3];
+                        for (c, shift) in g.iter().zip([16, 8, 0]) {
+                            let d = c.abs_diff(((p >> shift) & 0xFF) as u8);
+                            sum += u64::from(d);
+                            worst = worst.max(d);
+                        }
+                    }
+                }
+                let mean = sum as f64 / (w as f64 * h as f64 * 3.0);
+                println!("GPU area scale vs CPU: mean |d| {mean:.3}, max {worst}");
+                assert!(mean < 0.25 && worst <= 2, "GPU scaler differs: mean {mean:.3}, max {worst}");
+            }
             if (w, h) == (sw, sh) {
                 // Colour check without the codec: GPU NV12 against the CPU conversion of the same pixels, on a
                 // test card with saturated colours (greys alone would hide a wrong matrix).
@@ -1048,12 +1068,9 @@ mod tests {
                  vs readback path CPU {cpu_ms:.2} ms (wall {cpu_wall:.2}) per frame",
                 enc.name
             );
-            // Native size: the same picture within encoder noise (the colour card above checks the conversion
-            // exactly). Scaled, the video processor's filter is softer than the CPU's area average, so the
-            // host only takes this path at native size.
-            if (w, h) == (sw, sh) {
-                assert!(psnr_gpu > psnr_cpu - 3.0, "GPU path {psnr_gpu:.1} dB vs CPU path {psnr_cpu:.1} dB");
-            }
+            // The same picture within encoder noise, native or scaled (the checks above compare the colour
+            // conversion and the scaler exactly).
+            assert!(psnr_gpu > psnr_cpu - 3.0, "GPU path {psnr_gpu:.1} dB vs CPU path {psnr_cpu:.1} dB");
         }
     }
 
@@ -1081,6 +1098,36 @@ mod tests {
     }
 
     /// Tightly packed NV12 bytes of a GPU texture.
+    /// A BGRA or RGBA texture read back as R, G, B, A bytes, `w` x `h`.
+    fn read_bgra(device: &ID3D11Device, tex: &ID3D11Texture2D, w: u32, h: u32) -> Vec<u8> {
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+        unsafe {
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            tex.GetDesc(&mut desc);
+            let bgra = desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM;
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+            desc.MiscFlags = 0;
+            let mut st = None;
+            device.CreateTexture2D(&desc, None, Some(&mut st)).unwrap();
+            let st = st.unwrap();
+            let ctx = device.GetImmediateContext().unwrap();
+            ctx.CopyResource(&st, tex);
+            let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+            ctx.Map(&st, 0, D3D11_MAP_READ, 0, Some(&mut m)).unwrap();
+            let pitch = m.RowPitch as usize;
+            let src = std::slice::from_raw_parts(m.pData as *const u8, pitch * h as usize);
+            let mut out: Vec<u8> =
+                src.chunks(pitch).take(h as usize).flat_map(|row| &row[..w as usize * 4]).copied().collect();
+            ctx.Unmap(&st, 0);
+            if bgra {
+                out.chunks_mut(4).for_each(|p| p.swap(0, 2));
+            }
+            out
+        }
+    }
+
     fn read_nv12(device: &ID3D11Device, tex: &ID3D11Texture2D, w: u32, h: u32) -> Vec<u8> {
         unsafe {
             let mut desc = D3D11_TEXTURE2D_DESC::default();
