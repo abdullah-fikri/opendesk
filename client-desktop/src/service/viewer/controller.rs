@@ -29,7 +29,8 @@ pub enum Mouse {
     Move,
     Down(i32),
     Up(i32),
-    Wheel(i32),
+    /// Horizontal (120 = right) and vertical (120 = up) notches.
+    Wheel(i32, i32),
 }
 
 // ---- Focus ----
@@ -496,7 +497,7 @@ pub fn mouse(ctx: &AppContext, id: &str, kind: Mouse, x_10000: i32, y_10000: i32
         }
         Mouse::Down(button) => InputEvent::MouseDown { norm_x, norm_y, button },
         Mouse::Up(button) => InputEvent::MouseUp { norm_x, norm_y, button },
-        Mouse::Wheel(delta_y) => InputEvent::Wheel { norm_x, norm_y, delta_y },
+        Mouse::Wheel(delta_x, delta_y) => InputEvent::Wheel { norm_x, norm_y, delta_y, delta_x },
     };
     ctx.send_input(id, event);
 }

@@ -205,6 +205,22 @@ impl InputInjector {
         });
     }
 
+    /// Scrolls sideways by `delta_x` (120 = one notch right): X buttons 6 (left) and 7 (right).
+    pub fn mouse_hwheel(&self, delta_x: i32) {
+        if delta_x == 0 {
+            return;
+        }
+        let notches = if delta_x.abs() < 40 { delta_x.abs() } else { (delta_x.abs() / 120).max(1) };
+        let detail = if delta_x > 0 { 7 } else { 6 };
+        self.with(|t| {
+            for _ in 0..notches.min(20) {
+                t.fake(BUTTON_PRESS_EVENT, detail, 0, 0)?;
+                t.fake(BUTTON_RELEASE_EVENT, detail, 0, 0)?;
+            }
+            Ok(())
+        });
+    }
+
     /// Presses virtual key `vk`.
     pub fn key_down(&self, vk: u8) {
         self.with(|t| t.keycode_for_vk(vk).map_or(Ok(()), |kc| t.key(kc, true)));

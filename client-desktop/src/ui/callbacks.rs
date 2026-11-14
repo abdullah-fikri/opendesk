@@ -165,7 +165,13 @@ fn bind_sessions(win: &MainWindow, ctx: &Ctx) {
     on!(win, ctx, on_session_mouse_move, |_w, c, id, x, y| controller::mouse(c, &id, Mouse::Move, x, y));
     on!(win, ctx, on_session_mouse_down, |_w, c, id, x, y, b| controller::mouse(c, &id, Mouse::Down(b), x, y));
     on!(win, ctx, on_session_mouse_up, |_w, c, id, x, y, b| controller::mouse(c, &id, Mouse::Up(b), x, y));
-    on!(win, ctx, on_session_mouse_wheel, |_w, c, id, x, y, d| controller::mouse(c, &id, Mouse::Wheel(d), x, y));
+    on!(win, ctx, on_session_mouse_wheel, |_w, c, id, x, y, dx, d| controller::mouse(
+        c,
+        &id,
+        Mouse::Wheel(dx, d),
+        x,
+        y
+    ));
     on!(win, ctx, on_session_key_event, |_w, c, id, text, pressed, repeat, ctrl, alt, shift| {
         controller::key_event(c, &id, &text, pressed, repeat, Mods { ctrl, alt, shift });
     });

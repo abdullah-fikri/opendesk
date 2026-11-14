@@ -62,9 +62,14 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
                 injector.mouse_up(button);
             }
         }
-        InputEvent::Wheel { norm_x, norm_y, delta_y } => {
+        InputEvent::Wheel { norm_x, norm_y, delta_y, delta_x } => {
             place(ctx, norm_x, norm_y);
-            injector.mouse_wheel(delta_y);
+            if delta_y != 0 {
+                injector.mouse_wheel(delta_y);
+            }
+            if delta_x != 0 {
+                injector.mouse_hwheel(delta_x);
+            }
         }
         InputEvent::MouseDelta { dx, dy } if host.pointer_locked.load(Ordering::SeqCst) => {
             injector.mouse_move_relative(dx, dy)

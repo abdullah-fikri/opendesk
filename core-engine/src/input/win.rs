@@ -34,6 +34,7 @@ const MOUSEEVENTF_XUP: DWORD = 0x0100;
 const XBUTTON1: DWORD = 0x0001;
 const XBUTTON2: DWORD = 0x0002;
 const MOUSEEVENTF_WHEEL: DWORD = 0x0800;
+const MOUSEEVENTF_HWHEEL: DWORD = 0x1000;
 const MOUSEEVENTF_VIRTUALDESK: DWORD = 0x4000;
 const MOUSEEVENTF_ABSOLUTE: DWORD = 0x8000;
 
@@ -305,6 +306,12 @@ impl InputInjector {
             let win_delta = if delta_y.abs() < 40 { delta_y * 120 } else { delta_y };
             mouse_event(MOUSEEVENTF_WHEEL, 0, 0, win_delta as u32, 0);
         }
+    }
+
+    /// Scrolls sideways by `delta_x` (120 = one notch right).
+    pub fn mouse_hwheel(&self, delta_x: i32) {
+        let win_delta = if delta_x.abs() < 40 { delta_x * 120 } else { delta_x };
+        send(&[mouse_input_data(MOUSEEVENTF_HWHEEL, 0, 0, win_delta as u32)]);
     }
 
     /// Presses virtual key `vk`.

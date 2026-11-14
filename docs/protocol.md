@@ -195,7 +195,7 @@ Per platform (see [platforms.md](platforms.md)):
 | --- | --- | --- |
 | `mousemove` | `normX`, `normY` | viewer to host |
 | `mousedown`, `mouseup`, `click`, `dblclick` | `normX`, `normY`, `button` (0 left, 2 right) | viewer to host |
-| `wheel` | `normX`, `normY`, `deltaY` | viewer to host |
+| `wheel` | `normX`, `normY`, `deltaY`, optional `deltaX` (horizontal, 120 = one notch right; older hosts ignore it) | viewer to host |
 | `keydown`, `keyup` | `keyCode` (Win32 virtual-key) | viewer to host |
 | `keycombo` | `keyCode`, `ctrl`, `alt`, `shift` | viewer to host |
 | `text` | `text` | viewer to host (typed characters) |

@@ -16,7 +16,8 @@ export component RemoteViewerCanvas inherits Rectangle {
     callback send_mouse_move(int, int);
     callback send_mouse_down(int, int, int);
     callback send_mouse_up(int, int, int);
-    callback send_mouse_wheel(int, int, int);
+    /// Position (0..10000) and notches: horizontal (120 = right), vertical (120 = up).
+    callback send_mouse_wheel(int, int, int, int);
     // (text, pressed, repeat, ctrl, alt, shift): every physical press AND release goes to the host.
     callback send_key_event(string, bool, bool, bool, bool, bool);
     // Lift every key held on the host (focus lost / window deactivated) so nothing stays stuck.
@@ -168,11 +169,12 @@ export component RemoteViewerCanvas inherits Rectangle {
 
                 scroll-event(event) => {
                     viewer-focus.focus();
-                    if (self.width > 0px && self.height > 0px && event.delta-y != 0px) {
+                    if (self.width > 0px && self.height > 0px && (event.delta-y != 0px || event.delta-x != 0px)) {
                         send_mouse_wheel(
                             (self.mouse-x / self.width) * 10000,
                             (self.mouse-y / self.height) * 10000,
-                            event.delta-y > 0px ? 120 : -120
+                            event.delta-x > 0px ? -120 : event.delta-x < 0px ? 120 : 0,
+                            event.delta-y > 0px ? 120 : event.delta-y < 0px ? -120 : 0
                         );
                     }
                     accept

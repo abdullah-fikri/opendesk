@@ -48,6 +48,9 @@ pub enum InputEvent {
         norm_x: f64,
         norm_y: f64,
         delta_y: i32,
+        /// Horizontal scroll (tilt wheel, touchpad), 120 = one notch right. Older hosts ignore it.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        delta_x: i32,
     },
     /// Physical key down (Win32 virtual-key code); tracked so a session end releases it.
     #[serde(rename = "keydown")]
@@ -245,6 +248,10 @@ pub struct HostStats {
     pub window: Option<u32>,
 }
 
+fn is_zero(v: &i32) -> bool {
+    *v == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,8 +278,12 @@ mod tests {
             json!({ "action": "set-host-sound", "on": false })
         );
         assert_eq!(
-            serde_json::to_value(InputEvent::Wheel { norm_x: 0.5, norm_y: 0.25, delta_y: -120 }).unwrap(),
+            serde_json::to_value(InputEvent::Wheel { norm_x: 0.5, norm_y: 0.25, delta_y: -120, delta_x: 0 }).unwrap(),
             json!({ "action": "wheel", "normX": 0.5, "normY": 0.25, "deltaY": -120 })
+        );
+        assert_eq!(
+            serde_json::to_value(InputEvent::Wheel { norm_x: 0.5, norm_y: 0.25, delta_y: 0, delta_x: 120 }).unwrap(),
+            json!({ "action": "wheel", "normX": 0.5, "normY": 0.25, "deltaY": 0, "deltaX": 120 })
         );
     }
 
