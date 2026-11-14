@@ -63,11 +63,13 @@ fn bgra_to_nv12_columns(src: &[u32], stride: usize, w: usize, h: usize, from: us
     }
 }
 
-/// AVX2 version of [`bgra_to_nv12`]: 8 pixels of two rows per step, the same integer arithmetic in 32-bit lanes.
+/// AVX2 versions of [`bgra_to_nv12`] and [`nv12_to_rgba`].
 #[cfg(target_arch = "x86_64")]
 mod avx2 {
     use std::arch::x86_64::*;
 
+    /// 8 pixels of two rows per step, the same integer arithmetic as the portable loop in 32-bit lanes.
+    ///
     /// # Safety
     /// The CPU must support AVX2; `src` must hold `h` rows of `stride` pixels (the last at least `w`), `ys`
     /// `w * h` bytes and `uv` `w * h / 2` bytes.
@@ -138,14 +140,80 @@ mod avx2 {
             super::bgra_to_nv12_columns(src, stride, w, h, simd_w, ys, uv);
         }
     }
+
+    /// AVX2 version of [`super::nv12_to_rgba`]: 8 pixels per step (4 chroma pairs), the same integer arithmetic
+    /// in 32-bit lanes; clamping to 0..=255 matches the portable `clamp`.
+    ///
+    /// # Safety
+    /// The CPU must support AVX2; `yp` must hold `h` rows of `pitch` bytes (the last at least `w`), `uv`
+    /// `(h + 1) / 2` such rows and `out` `w * h * 4` bytes.
+    #[target_feature(enable = "avx2")]
+    pub unsafe fn nv12_to_rgba(yp: &[u8], uv: &[u8], pitch: usize, w: usize, h: usize, out: &mut [u8]) {
+        let simd_w = w / 8 * 8;
+        let (c16, c128, c255) = (_mm256_set1_epi32(16), _mm256_set1_epi32(128), _mm256_set1_epi32(255));
+        let (c298, c459, c541) = (_mm256_set1_epi32(298), _mm256_set1_epi32(459), _mm256_set1_epi32(541));
+        let (cg_u, cg_v) = (_mm256_set1_epi32(-55), _mm256_set1_epi32(-136));
+        let alpha = _mm256_set1_epi32(0xFF00_0000u32 as i32);
+        let zero = _mm256_setzero_si256();
+        let channel =
+            |l, c| _mm256_min_epi32(_mm256_max_epi32(_mm256_srai_epi32(_mm256_add_epi32(l, c), 8), zero), c255);
+        // SAFETY: the caller guarantees AVX2 and the buffer sizes; every load reads 8 bytes at `x < simd_w <= w`
+        // of its row and every store writes 8 pixels inside the output row.
+        unsafe {
+            for y in 0..h {
+                let yrow = yp.as_ptr().add(y * pitch);
+                let crow = uv.as_ptr().add(y / 2 * pitch);
+                let orow = out.as_mut_ptr().add(y * w * 4);
+                for x in (0..simd_w).step_by(8) {
+                    let luma = _mm256_cvtepu8_epi32(_mm_loadl_epi64(yrow.add(x).cast()));
+                    // [u0 v0 u1 v1 | u2 v2 u3 v3] -> each pair repeated for its two pixels.
+                    let pairs = _mm256_sub_epi32(_mm256_cvtepu8_epi32(_mm_loadl_epi64(crow.add(x).cast())), c128);
+                    let u = _mm256_shuffle_epi32(pairs, 0b10_10_00_00);
+                    let v = _mm256_shuffle_epi32(pairs, 0b11_11_01_01);
+                    let rv = _mm256_add_epi32(_mm256_mullo_epi32(v, c459), c128);
+                    let guv = _mm256_add_epi32(
+                        _mm256_add_epi32(_mm256_mullo_epi32(u, cg_u), _mm256_mullo_epi32(v, cg_v)),
+                        c128,
+                    );
+                    let bu = _mm256_add_epi32(_mm256_mullo_epi32(u, c541), c128);
+                    let l = _mm256_mullo_epi32(_mm256_sub_epi32(luma, c16), c298);
+                    // One RGBA pixel per 32-bit lane, little-endian: R | G << 8 | B << 16 | A << 24.
+                    let px = _mm256_or_si256(
+                        _mm256_or_si256(channel(l, rv), _mm256_slli_epi32(channel(l, guv), 8)),
+                        _mm256_or_si256(_mm256_slli_epi32(channel(l, bu), 16), alpha),
+                    );
+                    _mm256_storeu_si256(orow.add(x * 4).cast(), px);
+                }
+            }
+        }
+        if simd_w < w {
+            super::nv12_to_rgba_columns(yp, uv, pitch, w, h, simd_w, out);
+        }
+    }
 }
 
 /// BT.709 limited-range NV12 -> RGBA, cropping to `w` x `h`. `uv` starts the chroma plane; both use `pitch`.
+/// Uses AVX2 when the CPU has it (byte-identical output), else the portable loop. With an odd `w` the last
+/// column of each row is left as it was (NV12 frames from the decoders always have even sizes).
 pub fn nv12_to_rgba(yp: &[u8], uv: &[u8], pitch: usize, w: usize, h: usize, out: &mut Vec<u8>) {
     out.resize(w * h * 4, 0);
-    for (y, orow) in out.chunks_exact_mut(w * 4).enumerate() {
-        let yrow = &yp[y * pitch..y * pitch + w];
-        let crow = &uv[(y / 2) * pitch..(y / 2) * pitch + w];
+    assert!(h == 0 || yp.len() >= (h - 1) * pitch + w, "luma plane smaller than {w}x{h}");
+    assert!(h == 0 || uv.len() >= (h - 1) / 2 * pitch + w, "chroma plane smaller than {w}x{h}");
+    #[cfg(target_arch = "x86_64")]
+    if std::is_x86_feature_detected!("avx2") {
+        // SAFETY: AVX2 is present; the plane sizes were checked above and `out` holds `w * h` pixels.
+        unsafe { avx2::nv12_to_rgba(yp, uv, pitch, w, h, out) };
+        return;
+    }
+    nv12_to_rgba_columns(yp, uv, pitch, w, h, 0, out);
+}
+
+/// The portable conversion of columns `from..w` (`from` even) into `out` (`w * h` RGBA pixels).
+fn nv12_to_rgba_columns(yp: &[u8], uv: &[u8], pitch: usize, w: usize, h: usize, from: usize, out: &mut [u8]) {
+    for y in 0..h {
+        let orow = &mut out[(y * w + from) * 4..(y + 1) * w * 4];
+        let yrow = &yp[y * pitch + from..y * pitch + w];
+        let crow = &uv[(y / 2) * pitch + from..(y / 2) * pitch + w];
         // Two pixels share one chroma pair: compute its contribution once.
         for ((px, ys), c) in
             orow.as_chunks_mut::<8>().0.iter_mut().zip(yrow.as_chunks::<2>().0).zip(crow.as_chunks::<2>().0)
@@ -271,6 +339,73 @@ mod tests {
         }
         let fast = t.elapsed().as_secs_f64() * 10.0;
         println!("{w}x{h} BGRX -> NV12: portable {slow:.2} ms, selected {fast:.2} ms");
+    }
+
+    /// Random bytes from a fixed-seed xorshift, so failures reproduce.
+    fn noise(n: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed | 1;
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x >> 24) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn simd_nv12_to_rgba_is_identical_to_the_portable_one() {
+        // Widths below, at and past the 8-pixel vector width, odd sizes, and a pitch wider than the frame.
+        let sizes = [
+            (2, 2, 2),
+            (8, 2, 8),
+            (14, 3, 16),
+            (17, 5, 32),
+            (64, 32, 64),
+            (70, 7, 80),
+            (1919, 9, 1920),
+            (1920, 1080, 2048),
+        ];
+        for (seed, (w, h, pitch)) in sizes.into_iter().enumerate() {
+            let mut yp = noise(h * pitch, seed as u64 + 1);
+            let mut uv = noise(h.div_ceil(2) * pitch, seed as u64 + 100);
+            // Extremes so every clamp path is hit: black/white luma with saturated chroma.
+            for (i, b) in yp.iter_mut().enumerate().filter(|(i, _)| i % 5 == 0) {
+                *b = if i % 2 == 0 { 0 } else { 255 };
+            }
+            for (i, b) in uv.iter_mut().enumerate().filter(|(i, _)| i % 3 == 0) {
+                *b = if i % 2 == 0 { 0 } else { 255 };
+            }
+            // Same starting contents, so the column odd widths leave untouched compares equal too.
+            let start = noise(w * h * 4, seed as u64 + 200);
+            let mut fast = start.clone();
+            nv12_to_rgba(&yp, &uv, pitch, w, h, &mut fast);
+            let mut slow = start;
+            nv12_to_rgba_columns(&yp, &uv, pitch, w, h, 0, &mut slow);
+            assert!(fast == slow, "{w}x{h} pitch {pitch}");
+        }
+    }
+
+    /// `cargo test --release nv12_to_rgba_speed -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn nv12_to_rgba_speed() {
+        let (w, h) = (1920, 1080);
+        let (yp, uv) = (noise(w * h, 1), noise(w * h / 2, 2));
+        let mut out = vec![0u8; w * h * 4];
+        let t = std::time::Instant::now();
+        for _ in 0..100 {
+            nv12_to_rgba_columns(&yp, &uv, w, w, h, 0, &mut out);
+        }
+        let slow = t.elapsed().as_secs_f64() * 10.0;
+        let mut out = Vec::new();
+        let t = std::time::Instant::now();
+        for _ in 0..100 {
+            nv12_to_rgba(&yp, &uv, w, w, h, &mut out);
+        }
+        let fast = t.elapsed().as_secs_f64() * 10.0;
+        println!("{w}x{h} NV12 -> RGBA: portable {slow:.2} ms, selected {fast:.2} ms");
     }
 
     #[test]

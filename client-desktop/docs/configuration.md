@@ -35,6 +35,7 @@ Received files go to `%USERPROFILE%\Downloads\OpenDesk` (Windows) or `~/Download
 | `OPENDESK_MAX_FPS` | unset | Caps the frame rate on both sides, whatever the preset (`60` restores the 60 FPS pipeline). |
 | `OPENDESK_WS_HIGH_FPS` | on | Host: `0` keeps sessions on the WebSocket relay at 60 FPS (more only over P2P or the UDP relay). |
 | `OPENDESK_WS_SNDBUF` | 524288 | Host: socket send buffer in bytes while a hosted session's video goes over the WebSocket relay; `0` leaves the OS default ([hosting](features/hosting.md#capture-loop)). |
+| `OPENDESK_ENCODER_TUNING` | on | Windows host: `0` skips the H.264 encoder's speed preset and VBV limit ([hosting](features/hosting.md#capture-loop)). |
 | `OPENDESK_CAPTURE` | DXGI | Windows: `gdi` forces GDI capture (for machines where Desktop Duplication misbehaves). |
 | `OPENDESK_INPUT_ABSOLUTE` | on | Windows host: `0` moves the pointer with `SetCursorPos` instead of absolute `SendInput` (drags then fail in some apps; [hosting](features/hosting.md#input)). |
 | `OPENDESK_OPENH264` | search path | Linux: path of Cisco's `libopenh264-2.6.0-*.so` (see [core-engine](../../core-engine/README.md)). |
