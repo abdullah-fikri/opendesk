@@ -15,6 +15,7 @@ import (
 
 	"opendesk/server-relay/internal/config"
 	"opendesk/server-relay/internal/handler"
+	"opendesk/server-relay/internal/memlimit"
 	"opendesk/server-relay/internal/metrics"
 	"opendesk/server-relay/internal/repository/postgres"
 	"opendesk/server-relay/internal/udprelay"
@@ -44,6 +45,7 @@ func run(configPath string, log *slog.Logger) error {
 	log.Info("starting OpenDesk relay", "version", version.Version, "pid", os.Getpid(), "addr", cfg.Address(),
 		"db", cfg.DBHost, "credentials", len(cfg.DeviceCredentials), "p2p_disabled", cfg.P2PDisabled,
 		"coalesce_moves", !cfg.MoveCoalescingDisabled)
+	memlimit.Apply(log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

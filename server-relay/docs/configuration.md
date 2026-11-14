@@ -31,6 +31,7 @@ environment variables, which win. Invalid values stop the relay at startup inste
 | `OPENDESK_UDP_RELAY_PUBLIC` | `ip:port` clients reach the UDP relay at, e.g. `203.0.113.5:8089`. Empty (default) disables it. The relay cannot learn its public address itself; it must be an IP address. |
 | `OPENDESK_UDP_RELAY_ADDR` | Local UDP listen address of the UDP relay. Default `0.0.0.0:8089`. |
 | `OPENDESK_UDP_RELAY_MBPS` | Rate limit per session in Mbit/s, both directions together. Default `50`. |
+| `GOMEMLIMIT` | Go runtime soft memory limit, e.g. `400MiB`. Unset (default), the relay sets it to 80 % of the container's cgroup memory limit when it has one and logs `GC memory limit set`; an explicit value always wins. |
 
 The UDP relay forwards direct-path datagrams of sessions whose clients cannot reach each other. The datagrams are
 end-to-end encrypted by the clients; the relay only passes them between the two addresses that bound with the
