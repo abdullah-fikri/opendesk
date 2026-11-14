@@ -84,8 +84,11 @@ pub struct FrameStats {
     pub kind: SentKind,
     /// Message size in bytes.
     pub bytes: usize,
-    /// Encoding time in microseconds.
+    /// Encoding time in microseconds, including `convert_us`.
     pub encode_us: u64,
+    /// Part of `encode_us` spent preparing pixels before any codec runs: applying the OS-reported moves and
+    /// comparing blocks against the previous frame. Colour conversion inside the H.264 encoder counts as codec time.
+    pub convert_us: u64,
     /// Changed 32 px blocks.
     pub dirty_blocks: usize,
     /// JPEG quality used.
@@ -333,6 +336,7 @@ impl StreamEncoder {
         let dirty = self.diff.diff(f.pixels, f.stride, if force_key { None } else { f.dirty_hint });
         let total = dirty.len().max(1);
         let n_dirty = dirty.iter().filter(|&&d| d).count();
+        self.last.convert_us = t0.elapsed().as_micros() as u64;
         let changed = n_dirty > 0 || (self.delta && !f.moves.is_empty());
         let heavy = n_dirty * 4 > total;
         self.last.dirty_blocks = n_dirty;
@@ -559,6 +563,15 @@ impl StreamEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn convert_time_is_part_of_the_encode_time() {
+        let mut enc = StreamEncoder::new(64, 64, 80, true);
+        let pixels = vec![0x00FF_8040u32; 64 * 64];
+        let frame = FrameInput { pixels: &pixels, stride: 64, dirty_hint: None, moves: &[] };
+        assert!(enc.encode(&frame).is_some(), "the first frame is a key frame");
+        assert!(enc.last.convert_us <= enc.last.encode_us);
+    }
 
     #[test]
     fn h264_bitrate_scales_with_sqrt_of_fps() {

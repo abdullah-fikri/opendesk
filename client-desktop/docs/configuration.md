@@ -30,6 +30,8 @@ Received files go to `%USERPROFILE%\Downloads\OpenDesk` (Windows) or `~/Download
 | `OPENDESK_P2P` | on | `0` keeps every session on the relay. |
 | `OPENDESK_UDP_RELAY` | on | `0` never routes the P2P path through the relay's UDP forwarder. |
 | `OPENDESK_E2E` | on | `0` turns end-to-end encryption off ([e2e](features/e2e.md)). |
+| `OPENDESK_DYNAMIC_WINDOW` | on | Host: `0` keeps the P2P video window fixed at 2 frames in flight instead of sizing it from the acknowledgement round trip ([p2p](features/p2p.md#video-window-and-pacing)). |
+| `OPENDESK_UDP_PACING` | on | Host: `0` sends each P2P video frame's fragments in one burst instead of pacing large frames over up to half a frame interval ([p2p](features/p2p.md#video-window-and-pacing)). |
 | `OPENDESK_STUN` | `stun.l.google.com:19302` | STUN server for the public P2P candidate; `off` uses LAN candidates only. |
 | `OPENDESK_VIDEO_H264` | auto | `0` disables H.264; `always` uses it for every changed frame. |
 | `OPENDESK_MAX_FPS` | unset | Caps the frame rate on both sides, whatever the preset (`60` restores the 60 FPS pipeline). |

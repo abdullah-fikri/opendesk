@@ -47,6 +47,42 @@ which opens the host's backpressure gate. Input uses a reliable, ordered channel
 Voice is sent as is. Only viewer-to-host input uses the path; host events such as cursor shape and monitors take
 the relay.
 
+## Video window and pacing
+
+Each video frame waits for the viewer's acknowledgement (or 200 ms). With a fixed window of `n` unacknowledged
+frames the frame rate cannot exceed `n / RTT`: two frames allow ~66 FPS at a 30 ms round trip and ~33 FPS at
+60 ms, a typical session through the UDP relay (two legs). So the host sizes the window from the measured round
+trip of its frame acknowledgements (smoothed like TCP's SRTT) and the capture loop's target frame rate:
+
+    frames in flight = clamp(ceil(SRTT x target FPS) + 1, 2, 8)
+
+Before the first acknowledgement, and on a LAN, that is 2 as before. The capture loop's congestion level (its wait
+for this window, `CongestionMeter`) shrinks the window linearly back to 2, so a queue that lengthens the round
+trip cannot keep widening it; the frame-rate governor then lowers the rate as before. Only the host's sender
+changes, so viewers of any version work with it. The host logs once per session which mode it uses;
+`OPENDESK_DYNAMIC_WINDOW=0` on the host keeps the fixed window of 2.
+
+Sent back to back, a key frame of a few hundred fragments reaches a home router or the relay's UDP socket as one
+burst that can overflow its queue, and one lost fragment loses the whole frame (then a key frame request, another
+big frame, and so on). The host therefore paces fragments with a token bucket:
+
+- A frame of up to 8 fragments, or of up to the stream's average frame size (last second's bitrate / target FPS),
+  leaves at once, exactly as before. The first fragment of a frame is never delayed.
+- The rest leaves at twice the stream's bitrate, but always within half a frame interval of the first fragment
+  (8.3 ms at 60 FPS, 3.5 ms at 144 FPS), so a frame completes at most half an interval later than in a burst.
+- A pacer thread sends the paced fragments with the path unlocked between them, so input, voice and
+  acknowledgements are not held up. A new frame first sends whatever the previous one still had queued, as the
+  viewer keeps only the newest frame.
+
+The host logs once per session whether pacing is on; `OPENDESK_UDP_PACING=0` on the host sends every frame in one
+burst again. Both the window and pacing apply to every performance preset and to the direct path and the UDP
+relay alike.
+
+The stats overlay shows what the path does ([viewer-sessions.md](viewer-sessions.md#stats-overlay)): the host
+reports the time from sending a frame to its acknowledgement (Ack RTT) and the window in `host-stats`; the viewer
+counts lost fragments and frames from the frame ids and fragment counts it receives, and the key frames it asked
+for. The `host.perf` log line carries `send`, `ack_rtt` and `window` as well.
+
 ## Lifetime
 
 A link belongs to one session and closes when it ends or the relay connection drops. `OPENDESK_P2P=0` on a client

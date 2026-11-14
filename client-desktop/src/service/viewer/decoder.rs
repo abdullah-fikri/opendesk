@@ -17,6 +17,7 @@ use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 use crate::domain::capability;
 use crate::domain::latency;
+use crate::domain::link_quality::EventRate;
 use crate::domain::perf_stats::{Counter, PerfWindow, STATS_INTERVAL, Stage, kbps};
 use crate::infra::logger;
 use crate::infra::process_usage::UsageSampler;
@@ -350,6 +351,8 @@ where
         let mut current_fps = 0u32;
         let mut decoder: Option<ViewerDecoder> = None;
         let mut last_key_request: Option<Instant> = None;
+        // Key frames asked for because the delta chain broke (loss), for the overlay.
+        let mut key_requests = EventRate::default();
         let mut was_visible = sess.visible.load(Ordering::SeqCst);
         let mut perf = ViewerPerf::default();
         let mut perf_window = PerfWindow::new(Instant::now());
@@ -389,12 +392,15 @@ where
                 let mut viewer = perf.take_stats(secs);
                 viewer.usage = stats_usage.sample(Instant::now());
                 let latency = sess.latency.lock().take_lap();
+                let loss = sess.udp_loss.lock().take_lap();
                 if stats_on {
                     ping(&sess, &outbox);
                     let columns = {
                         let mut stats = sess.stats.lock();
                         stats.viewer = viewer;
                         stats.latency = latency;
+                        stats.loss = sess.p2p_active.load(Ordering::Relaxed).then_some(loss);
+                        stats.key_requests = key_requests.per_minute(Instant::now());
                         stats.columns(path_of(&sess), sess.e2e_active())
                     };
                     show_stats(&sess, columns);
@@ -422,6 +428,7 @@ where
                 ViewerOutput::NeedKey => {
                     if last_key_request.is_none_or(|t| t.elapsed() >= KEY_REQUEST_INTERVAL) {
                         last_key_request = Some(Instant::now());
+                        key_requests.record(Instant::now());
                         logger::info("viewer.video", "Delta chain broken; requesting a key frame.");
                         request_key(&outbox, &sess.id);
                     }

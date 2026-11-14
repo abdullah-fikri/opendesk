@@ -8,13 +8,16 @@ pub mod frame_rate;
 pub mod history;
 pub mod keyboard;
 pub mod latency;
+pub mod link_quality;
 pub mod list_search;
 pub mod monitor;
 #[cfg(feature = "admin")]
 pub mod monitor_wall;
+pub mod pacing;
 pub mod perf_stats;
 pub mod performance;
 pub mod resolution;
 pub mod settings;
 pub mod transfer;
+pub mod udp_window;
 pub mod whats_new;
