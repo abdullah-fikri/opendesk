@@ -21,12 +21,16 @@ use crate::domain::transfer::{
 };
 use crate::infra::{logger, storage, transfer_badge, virtual_clipboard, window};
 use crate::protocol::binary::FileChunk;
-use crate::protocol::{FileAction, FilePayload};
+use crate::protocol::{ClientMessage, FileAction, FilePayload};
 use crate::service::context::AppContext;
 use crate::service::ui_port::{TransferState, TransferUpdate, UiPort};
 
 /// Incoming transfers with no chunk for this long are abandoned and their staging file deleted.
 const RECEIVE_IDLE: Duration = Duration::from_secs(60);
+/// A transfer cut by a lost connection or path waits this long for its sender to resume it (`file-resume`).
+const RESUME_KEEP: Duration = Duration::from_secs(90);
+/// A receiver that lost a transfer asks its sender to resume it this often.
+const RESUME_ASK: Duration = Duration::from_secs(3);
 /// Completed transfer IDs are remembered this long to reject replays.
 const COMPLETED_TTL: Duration = Duration::from_secs(600);
 /// Most files received at once.
@@ -47,6 +51,8 @@ const BADGE_LINGER: Duration = Duration::from_secs(5);
 pub type Outcome = (Option<String>, Option<bool>);
 
 struct Incoming {
+    /// Transfer-list row: the key the transfer started under (a resume moves it to a new key).
+    row: String,
     file: File,
     path: PathBuf,
     name: String,
@@ -194,6 +200,19 @@ fn progress(ui: &dyn UiPort, key: &str, name: &str, done: u64, total: u64, state
     ui.transfer(TransferUpdate { id, name: name.to_string(), outgoing: false, done, total, state });
 }
 
+/// Deletes a partial file that will never finish; the transfer list shows `reason`.
+fn drop_partial(ui: &dyn UiPort, entry: Incoming, reason: &str) {
+    let Incoming { row, file, path, name, received, total, .. } = entry;
+    drop(file);
+    let _ = fs::remove_file(&path);
+    progress(ui, &row, &name, received, total, TransferState::Failed(reason.into()));
+}
+
+/// Kill switch shared with the sender: `OPENDESK_FILE_RESUME=0`.
+fn resume_enabled() -> bool {
+    env::var("OPENDESK_FILE_RESUME").map_or(true, |v| v != "0")
+}
+
 fn done_status(label: &str) -> String {
     if cfg!(windows) {
         format!("Done: {label} (ready to paste, saved in Downloads\\OpenDesk)")
@@ -209,12 +228,27 @@ pub struct FileReceiver {
     completed_ids: HashMap<String, Instant>,
     /// Keyed by `sender:group_id`.
     groups: HashMap<String, FolderGroup>,
+    /// Transfers cut by a lost connection or path, kept for their sender to resume, keyed `sender:id`.
+    parked: HashMap<String, Parked>,
+}
+
+/// A cut transfer waiting to be resumed.
+struct Parked {
+    file: Incoming,
+    since: Instant,
+    /// When this receiver last asked the sender to resume it.
+    asked: Option<Instant>,
 }
 
 impl FileReceiver {
     /// A receiver with no transfers in progress.
     pub fn new() -> Self {
-        Self { active_files: HashMap::new(), completed_ids: HashMap::new(), groups: HashMap::new() }
+        Self {
+            active_files: HashMap::new(),
+            completed_ids: HashMap::new(),
+            groups: HashMap::new(),
+            parked: HashMap::new(),
+        }
     }
 
     /// Drops an incoming file and its staging bytes; the transfer list shows `reason`.
@@ -222,7 +256,7 @@ impl FileReceiver {
         let entry = self.active_files.remove(key)?;
         drop(entry.file);
         let _ = fs::remove_file(&entry.path);
-        progress(ui, key, &entry.name, entry.received, entry.total, TransferState::Failed(reason.into()));
+        progress(ui, &entry.row, &entry.name, entry.received, entry.total, TransferState::Failed(reason.into()));
         if self.active_files.is_empty() {
             // Nothing arrives any more; a badge left from hosting would otherwise stay up.
             transfer_badge::hide();
@@ -263,25 +297,83 @@ impl FileReceiver {
                 status = Some(format!("Could not receive {name}: the sender stopped"));
             }
         }
+        let expired: Vec<String> = self
+            .parked
+            .iter()
+            .filter(|(_, p)| now.duration_since(p.since) >= RESUME_KEEP)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in expired {
+            if let Some(p) = self.parked.remove(&key) {
+                let name = p.file.name.clone();
+                logger::warn("file_transfer", &format!("Cut transfer {key} was not resumed: {name}"));
+                drop_partial(ui, p.file, "Connection lost");
+                status = Some(format!("Could not receive {name}: connection lost"));
+            }
+        }
         // A folder whose sender went quiet keeps what already arrived, just without the clipboard step.
-        let active = &self.active_files;
-        self.groups.retain(|gkey, g| {
-            now.duration_since(g.last_activity) < RECEIVE_IDLE
-                || active.values().any(|f| f.dest.as_ref().is_some_and(|(_, _, k)| k == gkey))
-        });
+        let (active, parked) = (&self.active_files, &self.parked);
+        let in_use = |gkey: &String| {
+            active
+                .values()
+                .chain(parked.values().map(|p| &p.file))
+                .any(|f| f.dest.as_ref().is_some_and(|(_, _, k)| k == gkey))
+        };
+        self.groups.retain(|gkey, g| now.duration_since(g.last_activity) < RECEIVE_IDLE || in_use(gkey));
         status
     }
 
-    /// Deletes every partial file; called when the relay connection drops because grants die with it.
+    /// Keeps transfer `key` for its sender to resume when both sides can (`file-resume`); else deletes it with
+    /// `reason`. Returns the file name and whether it was kept.
+    fn park_or_discard(&mut self, ui: &dyn UiPort, key: &str, reason: &str) -> Option<(String, bool)> {
+        let from = key.split(':').next().unwrap_or_default();
+        if !(super::caps_of(from).file_resume && resume_enabled()) {
+            return self.discard(ui, key, reason).map(|name| (name, false));
+        }
+        let file = self.active_files.remove(key)?;
+        logger::info(
+            "file_transfer",
+            &format!(
+                "Keeping cut transfer {key} ({} of {} bytes) for the sender to resume.",
+                file.received, file.total
+            ),
+        );
+        let name = file.name.clone();
+        self.parked.insert(key.to_string(), Parked { file, since: Instant::now(), asked: None });
+        if self.active_files.is_empty() {
+            transfer_badge::hide();
+        }
+        Some((name, true))
+    }
+
+    /// Asks the senders of cut transfers to resume them (`pull` with `resumeAt`), every [`RESUME_ASK`] while
+    /// they wait. Called while connected; a sender whose own connection dropped asks by itself instead.
+    pub fn ask_resumes(&mut self, ctx: &AppContext, now: Instant) {
+        for (key, p) in &mut self.parked {
+            if p.asked.is_some_and(|t| now.duration_since(t) < RESUME_ASK) {
+                continue;
+            }
+            p.asked = Some(now);
+            if let Some((from, id)) = key.split_once(':') {
+                ctx.send(ClientMessage::file(from, FilePayload::resume_at(id, p.file.received)));
+            }
+        }
+    }
+
+    /// Ends every incoming transfer when the relay connection drops (grants die with it): kept for its sender
+    /// to resume where both sides can, else deleted.
     pub fn abort_all(&mut self, ui: &dyn UiPort) -> Option<String> {
         let keys: Vec<String> = self.active_files.keys().cloned().collect();
         let mut status = None;
         for key in keys {
-            if let Some(name) = self.discard(ui, &key, "Relay connection lost") {
-                status = Some(format!("Could not receive {name}: relay connection lost"));
-            }
+            status = match self.park_or_discard(ui, &key, "Relay connection lost") {
+                Some((name, true)) => Some(format!("Connection lost; {name} resumes when it is back")),
+                Some((name, false)) => Some(format!("Could not receive {name}: relay connection lost")),
+                None => status,
+            };
         }
-        self.groups.clear();
+        let parked = &self.parked;
+        self.groups.retain(|gkey, _| parked.values().any(|p| p.file.dest.as_ref().is_some_and(|(_, _, k)| k == gkey)));
         status
     }
 
@@ -289,9 +381,11 @@ impl FileReceiver {
     pub fn abort_keys(&mut self, ui: &dyn UiPort, keys: &[String]) -> Option<String> {
         let mut status = None;
         for key in keys {
-            if let Some(name) = self.discard(ui, key, "Direct connection lost") {
-                status = Some(format!("Could not receive {name}: direct connection lost"));
-            }
+            status = match self.park_or_discard(ui, key, "Direct connection lost") {
+                Some((name, true)) => Some(format!("Direct connection lost; resuming {name} over the relay")),
+                Some((name, false)) => Some(format!("Could not receive {name}: direct connection lost")),
+                None => status,
+            };
         }
         status
     }
@@ -326,6 +420,9 @@ impl FileReceiver {
         key: String,
         allow_auto_paste: bool,
     ) -> Outcome {
+        if let Some(cut) = payload.resume_of.as_deref() {
+            return self.resume(ctx, payload, from, key, cut, allow_auto_paste);
+        }
         if self.active_files.contains_key(&key) {
             return (None, None);
         }
@@ -368,8 +465,9 @@ impl FileReceiver {
                 let status = format!("Receiving {name}...");
                 progress(ctx.ui.as_ref(), &key, &name, 0, total, TransferState::Active);
                 self.active_files.insert(
-                    key,
+                    key.clone(),
                     Incoming {
+                        row: key,
                         file,
                         path: staging,
                         name,
@@ -386,6 +484,66 @@ impl FileReceiver {
                 (Some(status), None)
             }
             Err(_) => (Some(format!("Could not receive {name}: the file could not be created")), Some(false)),
+        }
+    }
+
+    /// A `start` resuming cut transfer `cut` as `key`: the kept file continues under the new ID, and the
+    /// sender learns where it stands. Nothing to continue (expired, other size) starts over from byte 0.
+    ///
+    /// SECURITY: only the same sender's transfer can be continued (keys carry the relay-stamped sender), and
+    /// the name, folder and size stay those of the original `start`.
+    fn resume(
+        &mut self,
+        ctx: &AppContext,
+        payload: &FilePayload,
+        from: &str,
+        key: String,
+        cut: &str,
+        allow_auto_paste: bool,
+    ) -> Outcome {
+        let answer = |offset: u64| ctx.send(ClientMessage::file(from, FilePayload::resume_at(&payload.id, offset)));
+        if !is_safe_id(&payload.id) {
+            return (None, Some(false));
+        }
+        // A repeated resume `start` (the sender retries until it hears back).
+        if let Some(entry) = self.active_files.get(&key) {
+            answer(entry.received);
+            return (None, None);
+        }
+        let cut_key = format!("{from}:{cut}");
+        let kept = match self.parked.remove(&cut_key) {
+            Some(p) => Some(p.file),
+            // The sender's side dropped while ours stayed up: the transfer is still active here.
+            None => self.active_files.remove(&cut_key),
+        };
+        match kept {
+            Some(mut entry) if Some(entry.total) == payload.size => {
+                logger::info(
+                    "file_transfer",
+                    &format!("Resuming {cut_key} as id={} at byte {} of {}.", payload.id, entry.received, entry.total),
+                );
+                entry.last_activity = Instant::now();
+                let (name, received) = (entry.name.clone(), entry.received);
+                self.active_files.insert(key, entry);
+                answer(received);
+                self.show_badge(ctx);
+                (Some(format!("Resuming {name}...")), None)
+            }
+            other => {
+                if let Some(entry) = other {
+                    drop_partial(ctx.ui.as_ref(), entry, "Changed on the sender");
+                }
+                logger::info(
+                    "file_transfer",
+                    &format!("Nothing to resume for {cut_key}; starting id={} over.", payload.id),
+                );
+                let fresh = FilePayload { resume_of: None, ..payload.clone() };
+                let outcome = self.start(ctx, &fresh, from, key.clone(), allow_auto_paste);
+                if self.active_files.contains_key(&key) {
+                    answer(0);
+                }
+                outcome
+            }
         }
     }
 
@@ -460,6 +618,14 @@ impl FileReceiver {
         finish_group(ctx, from, group, payload, allow_auto_paste)
     }
 
+    /// Staging file of active transfer `key`, once all its bytes arrived.
+    #[cfg(test)]
+    pub fn staged(&mut self, key: &str) -> Option<PathBuf> {
+        let entry = self.active_files.get_mut(key)?;
+        entry.file.flush().ok()?;
+        (entry.received == entry.total).then(|| entry.path.clone())
+    }
+
     /// Handles one binary chunk from `from` (`file-binary`); the transfer itself started and ends with JSON.
     pub fn handle_chunk(&mut self, ctx: &AppContext, chunk: &FileChunk, from: &str) -> Outcome {
         if !is_safe_id(chunk.id) {
@@ -514,7 +680,7 @@ impl FileReceiver {
         let changed = shown != entry.shown_percent;
         if changed {
             entry.shown_percent = shown;
-            progress(ctx.ui.as_ref(), key, &entry.name, entry.received, entry.total, TransferState::Active);
+            progress(ctx.ui.as_ref(), &entry.row, &entry.name, entry.received, entry.total, TransferState::Active);
         }
         let status = (entry.total > 0)
             .then(|| format!("Receiving {} ({}%)...", entry.name, percent(entry.received, entry.total)));
@@ -532,7 +698,7 @@ impl FileReceiver {
         key: String,
         allow_auto_paste: bool,
     ) -> Outcome {
-        let Some(Incoming { mut file, path: staging, name, received, total, hash, dest, stamp, .. }) =
+        let Some(Incoming { row, mut file, path: staging, name, received, total, hash, dest, stamp, .. }) =
             self.active_files.remove(&key)
         else {
             // Unknown transfer (expired or rejected start): NACK so the sender does not wait for a timeout.
@@ -545,7 +711,7 @@ impl FileReceiver {
         }
         drop(file);
         let fail = |reason: &str| {
-            progress(ctx.ui.as_ref(), &key, &name, received, total, TransferState::Failed(reason.into()))
+            progress(ctx.ui.as_ref(), &row, &name, received, total, TransferState::Failed(reason.into()))
         };
         if !written {
             let _ = fs::remove_file(staging);
@@ -566,7 +732,7 @@ impl FileReceiver {
             return (Some(format!("Could not receive {name}: saving failed")), Some(false));
         };
         stamp.apply_attrs(&saved);
-        progress(ctx.ui.as_ref(), &key, &name, total, total, TransferState::Done);
+        progress(ctx.ui.as_ref(), &row, &name, total, total, TransferState::Done);
         self.completed_ids.insert(key, Instant::now());
 
         if let Some((dir, _, gkey)) = dest {

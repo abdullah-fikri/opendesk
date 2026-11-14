@@ -297,6 +297,7 @@ impl Connection {
             if last_expire.elapsed() >= Duration::from_secs(1) {
                 last_expire = Instant::now();
                 status = self.receiver.expire_stale(ctx.ui.as_ref(), last_expire).or(status);
+                self.receiver.ask_resumes(&ctx, last_expire);
             }
             if let Some(status) = status {
                 ctx.ui.status(status);
@@ -512,6 +513,7 @@ impl Connection {
             caps.push(capability::FILE_P2P);
         }
         caps.push(capability::FILE_DEFLATE);
+        caps.push(capability::FILE_RESUME);
         let stored = storage::load_settings();
         let mut caps: Vec<String> = caps.into_iter().map(String::from).collect();
         // Right before `fps-N`: a relay that keeps only 16 names drops it first, which only turns host sound off.

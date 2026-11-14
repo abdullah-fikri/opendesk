@@ -436,6 +436,9 @@ impl Connection {
                     ctx.ui.status(status);
                 }
             }
+            FileAction::Pull if payload.resume_at.is_some() => {
+                file_transfer::deliver_resume(&from, &payload.id, payload.resume_at.unwrap_or(0))
+            }
             FileAction::Pull => offer::serve_pull(&ctx, &from, &payload),
             _ => {
                 let allow_auto_paste = !ctx.partner().is_empty();

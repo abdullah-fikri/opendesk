@@ -68,6 +68,7 @@ static PARTNER_CAPS: Mutex<PeerCaps> = Mutex::new(PeerCaps {
     clipboard_image: false,
     file_p2p: false,
     file_deflate: false,
+    file_resume: false,
     video_delta: false,
     video_h264: false,
     tile_lossless: false,
@@ -272,8 +273,9 @@ fn delivered(key: &str) -> u64 {
 struct Delivery(String);
 
 impl Delivery {
-    fn track(key: String) -> Self {
-        DELIVERED.lock().push((key.clone(), 0));
+    /// Starts tracking `key`, whose first `done` bytes already arrived (a resumed transfer).
+    fn track(key: String, done: u64) -> Self {
+        DELIVERED.lock().push((key.clone(), done));
         Self(key)
     }
 
@@ -294,6 +296,68 @@ pub fn deliver_ack(id: &str, ok: bool) {
     if let Some(pos) = pending.iter().position(|(pid, _)| pid == id) {
         let (_, tx) = pending.swap_remove(pos);
         let _ = tx.send(ok);
+    }
+}
+
+/// Senders of resumable transfers (`file-resume`): (target, first transfer ID, channel for `(id, resumeAt)`).
+static RESUMES: Mutex<Vec<(String, String, ResumeTx)>> = Mutex::new(Vec::new());
+/// Carries `(transfer ID, resumeAt)` to a sender thread.
+type ResumeTx = Sender<(String, u64)>;
+
+/// A receiver's `pull` with `resumeAt`: it lost transfer `id` and asks for it again, or it answers a resume
+/// `start` (`id` is then the new ID). Only the sender of that transfer to `from` hears it.
+pub fn deliver_resume(from: &str, id: &str, offset: u64) {
+    let resumes = RESUMES.lock();
+    let ours = |base: &str| id == base || id.strip_prefix(base).is_some_and(|rest| rest.starts_with("_r"));
+    match resumes.iter().find(|(target, base, _)| target == from && ours(base)) {
+        Some((_, _, tx)) => {
+            let _ = tx.send((id.to_string(), offset));
+        }
+        None => logger::info("file_transfer", &format!("Resume request from {from} for unknown id={id}; ignored.")),
+    }
+}
+
+/// Resume messages for one file being sent, while it lives.
+pub(super) struct Resumes {
+    key: Option<(String, String)>,
+    rx: std::sync::mpsc::Receiver<(String, u64)>,
+}
+
+impl Resumes {
+    /// Listens for resume messages about the file sent as `base` to `target`; `on` false listens to nothing.
+    pub(super) fn listen(target: &str, base: &str, on: bool) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let key = on.then(|| {
+            RESUMES.lock().push((target.to_string(), base.to_string(), tx));
+            (target.to_string(), base.to_string())
+        });
+        Self { key, rx }
+    }
+
+    /// True when the receiver asked to resume transfer `id` (it lost it). Messages about other IDs are stale.
+    pub(super) fn asked(&mut self, id: &str) -> bool {
+        self.rx.try_iter().any(|(got, _)| got == id)
+    }
+
+    /// The receiver's answer to resuming as `id`: where it stands. Waits up to `wait`.
+    pub(super) fn answer(&mut self, id: &str, wait: std::time::Duration) -> Option<u64> {
+        let deadline = Instant::now() + wait;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.rx.recv_timeout(left) {
+                Ok((got, offset)) if got == id => return Some(offset),
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+        }
+    }
+}
+
+impl Drop for Resumes {
+    fn drop(&mut self) {
+        if let Some((target, base)) = &self.key {
+            RESUMES.lock().retain(|(t, b, _)| !(t == target && b == base));
+        }
     }
 }
 
@@ -454,7 +518,7 @@ mod tests {
         let mark = |done| FileMark { key: "710000007:ft_9".into(), done };
         set_delivered(&mark(10));
         assert_eq!(delivered("710000007:ft_9"), 0, "nobody sends it");
-        let delivery = Delivery::track("710000007:ft_9".into());
+        let delivery = Delivery::track("710000007:ft_9".into(), 0);
         set_delivered(&mark(300));
         set_delivered(&mark(200)); // an older mark confirmed late
         assert_eq!(delivery.bytes(), 300);

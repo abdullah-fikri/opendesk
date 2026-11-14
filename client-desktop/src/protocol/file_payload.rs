@@ -79,6 +79,13 @@ pub struct FilePayload {
     /// Windows file attributes the receiver keeps (`start`): read-only, hidden and archive only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attrs: Option<u32>,
+    /// `start` resuming a cut transfer (`file-resume`): the cut transfer's ID. The receiver continues that
+    /// file under this new ID and answers with a `pull` carrying `resumeAt`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_of: Option<String>,
+    /// `pull` from a receiver (`file-resume`): it holds this many bytes of transfer `id` and wants the rest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_at: Option<u64>,
     /// A copied image instead of files (`offer` to partners with `clipboard-image`): base64 PNG, put straight on
     /// the receiver's clipboard.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -145,6 +152,11 @@ impl FilePayload {
     /// Clipboard offer `id` listing `files`.
     pub fn offer(id: &str, files: Vec<OfferEntry>) -> Self {
         Self { files: Some(files), ..Self::new(FileAction::Offer, id) }
+    }
+
+    /// Receiver -> sender (`file-resume`): it holds `offset` bytes of transfer `id`; send the rest.
+    pub fn resume_at(id: &str, offset: u64) -> Self {
+        Self { tid: Some(id.to_string()), resume_at: Some(offset), ..Self::new(FileAction::Pull, id) }
     }
 
     /// Requests entry `index` of offer `offer_id`, to be sent as transfer `tid`.

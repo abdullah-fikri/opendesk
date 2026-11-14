@@ -30,6 +30,9 @@ pub const FILE_P2P: &str = "file-p2p";
 /// With `file-binary`: file chunks may arrive deflated, flagged by `domain::file_squeeze::OFFSET_DEFLATED` in
 /// their offset. Both sides list it; a sender compresses only toward a receiver that does.
 pub const FILE_DEFLATE: &str = "file-deflate";
+/// With `file-ack`: a transfer cut by a lost connection or P2P path continues where the receiver stands (a
+/// `start` with `resumeOf`, answered by a `pull` with `resumeAt`). Both sides list it.
+pub const FILE_RESUME: &str = "file-resume";
 /// The viewer draws its own cursor in the host's shape.
 pub const CURSOR_SHAPE: &str = "cursor-shape";
 /// The viewer locks its pointer and sends relative motion while a host application captured the mouse
@@ -111,6 +114,8 @@ pub struct PeerCaps {
     pub file_p2p: bool,
     /// Binary chunks to the partner may be deflated ([`FILE_DEFLATE`]).
     pub file_deflate: bool,
+    /// Cut transfers to and from the partner resume ([`FILE_RESUME`]).
+    pub file_resume: bool,
     pub cursor_shape: bool,
     /// The viewer can lock its pointer for relative motion ([`MOUSE_RELATIVE`]).
     pub mouse_relative: bool,
@@ -156,6 +161,7 @@ impl PeerCaps {
             file_pull_bin: has(FILE_BINARY) && has(FILE_PULL_BIN),
             file_p2p: has(P2P) && has(FILE_BINARY) && has(FILE_P2P),
             file_deflate: has(FILE_BINARY) && has(FILE_DEFLATE),
+            file_resume: has(FILE_ACK) && has(FILE_RESUME),
             cursor_shape: has(CURSOR_SHAPE),
             mouse_relative: has(MOUSE_RELATIVE),
             clipboard_image: has(CLIPBOARD_IMAGE),
