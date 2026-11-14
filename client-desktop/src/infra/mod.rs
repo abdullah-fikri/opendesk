@@ -4,6 +4,8 @@
 
 pub mod audio;
 pub mod autostart;
+#[cfg(windows)]
+pub mod clipboard_helper;
 pub mod clock;
 pub mod console;
 pub mod device;

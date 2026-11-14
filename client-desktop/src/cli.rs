@@ -77,6 +77,8 @@ pub fn run_if_requested() {
         "--service" => crate::infra::system_service::run(),
         "--pick-files" => pick_files(rest.first()),
         "--clipboard-read" => clipboard_read(rest.first()),
+        #[cfg(windows)]
+        "--clipboard-helper" => crate::infra::clipboard_helper::run_helper(rest.first(), rest.get(1)),
         // A mistyped command must not silently start the app; options (`--background`, `--id=`) and paths do.
         f if is_command_word(f) => {
             let out = Out::open();

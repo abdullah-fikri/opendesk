@@ -2,7 +2,7 @@
 
 Code: `src/service/file_transfer/` (`sender.rs`, `receiver.rs`, `offer.rs`, `tree.rs`), payload type
 `src/protocol/file_payload.rs`, limits and path rules `src/domain/transfer.rs`, paste streams
-`src/infra/virtual_clipboard.rs`. Relay rules: [file grants](../../../server-relay/docs/features/file-grants.md).
+`src/infra/virtual_clipboard/`, clipboard helper of the service agent `src/infra/clipboard_helper.rs`. Relay rules: [file grants](../../../server-relay/docs/features/file-grants.md).
 
 ## Ways to send
 
@@ -14,10 +14,27 @@ Code: `src/service/file_transfer/` (`sender.rs`, `receiver.rs`, `offer.rs`, `tre
 | Copy files while a partner supports `file-offer` | Only names and sizes are sent; the partner's clipboard shows virtual files, and each paste pulls one file |
 | Copy files on a host without offers | Sent to the viewer's clipboard, once per real copy (below) |
 
-A host whose viewer cannot take offers (the viewer runs as the service's SYSTEM agent, or is not on Windows)
-falls back to sending copied files. It sends only files that differ from what the clipboard held at the
+A host whose viewer cannot take offers (not on Windows, a viewer up to 1.3.x running as the service's SYSTEM
+agent, or a service agent whose clipboard helper is not connected) falls back to sending copied files. It sends only files that differ from what the clipboard held at the
 previous look: files copied before the session started, or still there when another program merely touched the
 clipboard (a clipboard manager, an app gaining focus after Alt+Tab), are not sent. The log says which.
+
+## Service agent: clipboard helper
+
+The service runs the app as SYSTEM in the user's session (to reach UAC and the lock screen), but the user's
+Explorer will not pull virtual files from a SYSTEM process. So the agent starts `OpenDesk.exe --clipboard-helper`
+as the logged-on user (`WTSQueryUserToken` + `CreateProcessAsUserW`, like AnyDesk's user frontend) and advertises
+`file-offer` only while it is connected; the first registration waits up to 5 s for it.
+
+- The helper holds only the OLE objects (`IDataObject`, the paste `IStream`s). The agent keeps the network, its
+  own copy of every offer, and the size and SHA-256 checks; it passes each paste stream only verified bytes.
+- Two one-way named pipes (synchronous reads and writes on one handle would block each other), created before
+  the helper starts: first and only instance, local clients only, DACL SYSTEM + the session user. The agent
+  accepts only the PID it started, the helper only the agent PID it was given. Frames are size-limited; the
+  agent refuses pulls for offers or entries it did not hand out.
+- The helper exits when the agent goes (taking its files off the clipboard); the agent restarts a helper that
+  exits, with growing back-off. `OPENDESK_CLIPBOARD_HELPER=0` turns it off (1.3.x behavior: fallback sending).
+- Test across processes: `cargo build --release && cargo test --release explorer_paste_through_helper -- --ignored`.
 
 ## Progress
 
@@ -37,7 +54,9 @@ takes focus, and screen capture includes it, so the viewer sees it too. Windows 
 
 Each file is `start`, chunks and `end` with its SHA-256. Chunks are 128 KiB binary messages when the receiver
 and the relay both list `file-binary`, else 32 KiB base64 inside JSON (Android, older peers and relays); pulled
-clipboard offers always use JSON, which the paste stream reads. A 10 MB file takes 10.0 MB on the wire in 79
+clipboard offers use binary chunks only toward receivers that also list `file-pull-bin` (paste streams up to
+1.3.x read JSON only). Transfer starts and offer entries carry the file's last write time (`mtime`), which the
+receiver keeps as "Date Modified". A 10 MB file takes 10.0 MB on the wire in 79
 messages instead of 13.4 MB in 308. Senders wait while more than 48 chunks' worth (32 KiB units, ~1.5 MB) are
 queued. The sent percentage counts only bytes the relay has read (the pong of the pacing ping below confirms
 every file message written before it), not bytes queued, so it no longer sits at 99% while megabytes are still on

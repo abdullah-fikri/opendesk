@@ -106,17 +106,27 @@ pub fn caps_of(target: &str) -> PeerCaps {
     SESSION_CAPS.lock().iter().find(|(k, _)| k == target).map(|(_, c)| *c).unwrap_or_else(|| *PARTNER_CAPS.lock())
 }
 
-/// Whether this machine advertises `file-offer`, or why not. Offers need Explorer's virtual files: Windows only,
-/// and not from the service's SYSTEM agent, whose clipboard objects the user's Explorer cannot pull from
-/// reliably.
+/// Whether this machine advertises `file-offer`, or why not. Offers need Explorer's virtual files: Windows only.
+/// The service's SYSTEM agent places them through its clipboard helper (the user's Explorer does not pull from
+/// SYSTEM's clipboard objects), so it needs the helper connected.
 pub fn local_file_offer() -> Result<(), &'static str> {
     if !cfg!(windows) {
         Err("virtual clipboard files need Windows")
-    } else if autostart::supervised_by_service() {
-        Err("SYSTEM service agent; the user's Explorer cannot pull from its clipboard")
+    } else if autostart::supervised_by_service() && !helper_ready() {
+        Err("SYSTEM service agent without a connected clipboard helper")
     } else {
         Ok(())
     }
+}
+
+#[cfg(windows)]
+fn helper_ready() -> bool {
+    crate::infra::clipboard_helper::ready()
+}
+
+#[cfg(not(windows))]
+fn helper_ready() -> bool {
+    false
 }
 
 /// `on`, or `off (reason)`, for logs.

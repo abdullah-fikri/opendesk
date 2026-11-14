@@ -15,7 +15,8 @@ use core_engine::codec::from_base64;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
-use crate::domain::transfer::{MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, safe_rel_path};
+use crate::domain::transfer::{MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, is_safe_id, safe_rel_path};
+use crate::infra::clipboard_helper::{ToAgent, ToHelper};
 use crate::infra::logger;
 use crate::protocol::{ClientMessage, FileAction, FilePayload, OfferEntry, Outgoing};
 
@@ -200,12 +201,20 @@ struct OfferFile {
     remote: usize,
 }
 
+/// Where a paste stream's pull request goes.
+enum Route {
+    /// This process talks to the relay: send the pull message here.
+    Local(Sender<Outgoing>),
+    /// This is the clipboard helper: the SYSTEM agent pulls and passes the bytes on.
+    Agent,
+}
+
 /// One file list offered by the partner.
 struct Offer {
     from: String,
     offer_id: String,
     files: Vec<OfferFile>,
-    tx_out: Sender<Outgoing>,
+    route: Route,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -222,7 +231,33 @@ struct Sink {
     size: u64,
     received: u64,
     hash: Sha256,
-    tx: Sender<SinkMsg>,
+    out: SinkOut,
+}
+
+/// Where a pull's verified bytes go.
+enum SinkOut {
+    /// A paste stream in this process.
+    Local(Sender<SinkMsg>),
+    /// A paste stream in the clipboard helper, under this transfer ID.
+    Helper(String),
+}
+
+impl SinkOut {
+    /// Delivers one message; a closed stream means the paste was cancelled and later bytes are dropped.
+    fn send(&self, msg: SinkMsg) {
+        use crate::infra::clipboard_helper;
+        match (self, msg) {
+            (SinkOut::Local(tx), msg) => {
+                let _ = tx.send(msg);
+            }
+            (SinkOut::Helper(tid), SinkMsg::Data(bytes)) => {
+                clipboard_helper::send_data(tid, &bytes);
+            }
+            (SinkOut::Helper(tid), SinkMsg::End(ok)) => {
+                clipboard_helper::send(&ToHelper::End { tid: tid.clone(), ok });
+            }
+        }
+    }
 }
 
 static SINKS: Mutex<Option<HashMap<String, Sink>>> = Mutex::new(None);
@@ -250,7 +285,7 @@ pub fn on_transfer(
                     (None, None)
                 } else {
                     let sink = sinks.remove(id).unwrap();
-                    let _ = sink.tx.send(SinkMsg::End(false));
+                    sink.out.send(SinkMsg::End(false));
                     (Some(format!("Paste failed for {}: the file size changed", sink.name)), Some(false))
                 }
             }
@@ -262,7 +297,7 @@ pub fn on_transfer(
                 let sink = sinks.remove(id).unwrap();
                 let digest: String = sink.hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
                 let ok = sink.received == sink.size && payload.sha256.as_deref() == Some(digest.as_str());
-                let _ = sink.tx.send(SinkMsg::End(ok));
+                sink.out.send(SinkMsg::End(ok));
                 let status = if ok {
                     format!("Pasted: {}", sink.name)
                 } else {
@@ -297,13 +332,12 @@ fn sink_data(sinks: &mut HashMap<String, Sink>, id: &str, bytes: Option<Vec<u8>>
             sink.received += bytes.len() as u64;
             let pct = crate::domain::transfer::percent(sink.received, sink.size);
             let status = format!("Pasting {} ({}%)...", sink.name, pct);
-            // A closed receiver means the paste was cancelled; the remaining bytes are dropped.
-            let _ = sink.tx.send(SinkMsg::Data(bytes));
+            sink.out.send(SinkMsg::Data(bytes));
             (Some(status), None)
         }
         None => {
             let sink = sinks.remove(id).unwrap();
-            let _ = sink.tx.send(SinkMsg::End(false));
+            sink.out.send(SinkMsg::End(false));
             (Some(format!("Paste failed for {}", sink.name)), Some(false))
         }
     }
@@ -313,7 +347,7 @@ fn sink_data(sinks: &mut HashMap<String, Sink>, id: &str, bytes: Option<Vec<u8>>
 pub fn abort_pulls() {
     with_sinks(|sinks| {
         for (_, sink) in sinks.drain() {
-            let _ = sink.tx.send(SinkMsg::End(false));
+            sink.out.send(SinkMsg::End(false));
         }
     });
 }
@@ -402,6 +436,9 @@ unsafe extern "system" fn stream_release(this: *mut c_void) -> u32 {
             let stream = Box::from_raw(this as *mut PullStream);
             // Paste finished or was cancelled: later bytes for this transfer are ignored.
             with_sinks(|sinks| sinks.remove(&stream.tid));
+            if helper_streams(|m| m.remove(&stream.tid)).is_some() {
+                crate::infra::clipboard_helper::to_agent(&ToAgent::Close { tid: stream.tid.clone() });
+            }
         }
         left
     }
@@ -515,15 +552,26 @@ fn open_pull(offer: &Offer, index: usize) -> *mut c_void {
     let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_micros();
     let tid = format!("fp_{}_{}", ts, index);
     let (tx, rx) = mpsc::channel();
-    with_sinks(|sinks| {
-        sinks.insert(
-            tid.clone(),
-            Sink { from: offer.from.clone(), name: name.clone(), size, received: 0, hash: Sha256::new(), tx },
-        )
-    });
     logger::info("app.ft_sink_session", &format!("Pasting {} from offer {} ({}).", name, offer.offer_id, tid));
-    let pull = FilePayload::pull(&offer.offer_id, entry.remote as u64, &tid);
-    let _ = offer.tx_out.send(Outgoing::Message(ClientMessage::file(&offer.from, pull)));
+    match &offer.route {
+        Route::Local(tx_out) => {
+            let out = SinkOut::Local(tx);
+            let sink = Sink { from: offer.from.clone(), name, size, received: 0, hash: Sha256::new(), out };
+            with_sinks(|sinks| sinks.insert(tid.clone(), sink));
+            let pull = FilePayload::pull(&offer.offer_id, entry.remote as u64, &tid);
+            let _ = tx_out.send(Outgoing::Message(ClientMessage::file(&offer.from, pull)));
+        }
+        Route::Agent => {
+            helper_streams(|m| m.insert(tid.clone(), tx));
+            let (from, offer_id) = (offer.from.clone(), offer.offer_id.clone());
+            let pull = ToAgent::Pull { from, offer_id, index, tid: tid.clone() };
+            if !crate::infra::clipboard_helper::to_agent(&pull)
+                && let Some(tx) = helper_streams(|m| m.remove(&tid))
+            {
+                let _ = tx.send(SinkMsg::End(false));
+            }
+        }
+    }
     let stream = Box::new(PullStream {
         vtbl: &STREAM_VTBL,
         refs: AtomicU32::new(1),
@@ -899,13 +947,105 @@ pub fn set_offer(from: &str, payload: &FilePayload, tx_out: Sender<Outgoing>) ->
         _ => format!("Ready to paste: {} items (Ctrl+V)", tops.len()),
     };
     logger::info("clipbrd.capture", &format!("Received file offer {} ({} files).", offer_id, files.len()));
-    post(Cmd::Set(Offer { from: from.to_string(), offer_id, files, tx_out }));
+    if crate::infra::clipboard_helper::ready() {
+        // SYSTEM agent: the helper puts it on the user's clipboard; we keep our copy to check its pulls.
+        let msg = ToHelper::Set { from: from.to_string(), offer_id: offer_id.clone(), files: payload.files.clone()? };
+        let mut offers = AGENT_OFFERS.lock();
+        offers.push(Offer { from: from.to_string(), offer_id, files, route: Route::Local(tx_out) });
+        let excess = offers.len().saturating_sub(KEPT_AGENT_OFFERS);
+        offers.drain(..excess);
+        drop(offers);
+        if crate::infra::clipboard_helper::send(&msg) {
+            return Some(status);
+        }
+        logger::warn("clipbrd.capture", "Clipboard helper unavailable; offer not placed.");
+        return None;
+    }
+    post(Cmd::Set(Offer { from: from.to_string(), offer_id, files, route: Route::Local(tx_out) }));
     Some(status)
 }
 
 /// Session with `partner` ended (empty = any): its offers can no longer be pulled.
 pub fn clear_offer(partner: &str) {
     post(Cmd::Clear(partner.to_string()));
+    AGENT_OFFERS.lock().retain(|o| !partner.is_empty() && o.from != partner);
+    crate::infra::clipboard_helper::send(&ToHelper::Clear { partner: partner.to_string() });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Split between the SYSTEM agent and the clipboard helper (see `infra::clipboard_helper`).
+
+/// Offers the agent passed to the helper, newest last; the helper may pull only from these.
+static AGENT_OFFERS: Mutex<Vec<Offer>> = Mutex::new(Vec::new());
+/// Offers kept for pulls (same as the sender's `KEPT_OFFERS`).
+const KEPT_AGENT_OFFERS: usize = 4;
+/// Helper process: paste streams waiting for bytes from the agent, by transfer ID.
+static HELPER_STREAMS: Mutex<Option<HashMap<String, Sender<SinkMsg>>>> = Mutex::new(None);
+
+fn helper_streams<R>(f: impl FnOnce(&mut HashMap<String, Sender<SinkMsg>>) -> R) -> R {
+    f(HELPER_STREAMS.lock().get_or_insert_with(HashMap::new))
+}
+
+/// Agent: the helper asks to pull or closes a paste stream. Every pull is checked against our own offers.
+pub fn helper_request(msg: ToAgent) {
+    use crate::infra::clipboard_helper::send;
+    match msg {
+        ToAgent::Pull { from, offer_id, index, tid } => {
+            if !is_safe_id(&tid) || !tid.starts_with("fp_") {
+                return;
+            }
+            let offers = AGENT_OFFERS.lock();
+            let offer = offers.iter().find(|o| o.from == from && o.offer_id == offer_id);
+            let entry = offer.and_then(|o| o.files.get(index)).filter(|f| !f.dir);
+            let (Some(offer), Some(entry)) = (offer, entry) else {
+                logger::warn("clipbrd.capture", "Clipboard helper asked for an unknown offer entry; refused.");
+                send(&ToHelper::End { tid, ok: false });
+                return;
+            };
+            let Route::Local(tx_out) = &offer.route else { return };
+            logger::info(
+                "app.ft_sink_session",
+                &format!("Helper pastes {} from offer {offer_id} ({tid}).", entry.name),
+            );
+            let (name, size, out) = (entry.name.clone(), entry.size, SinkOut::Helper(tid.clone()));
+            let sink = Sink { from: from.clone(), name, size, received: 0, hash: Sha256::new(), out };
+            with_sinks(|sinks| sinks.insert(tid.clone(), sink));
+            let pull = FilePayload::pull(&offer_id, entry.remote as u64, &tid);
+            let _ = tx_out.send(Outgoing::Message(ClientMessage::file(&from, pull)));
+        }
+        ToAgent::Close { tid } => {
+            with_sinks(|sinks| sinks.remove(&tid));
+        }
+    }
+}
+
+/// Agent: the helper is gone; its paste streams and offers went with it.
+pub fn helper_lost() {
+    with_sinks(|sinks| sinks.retain(|_, s| matches!(s.out, SinkOut::Local(_))));
+    AGENT_OFFERS.lock().clear();
+}
+
+/// Helper: a command from the agent.
+pub fn helper_command(msg: ToHelper) {
+    match msg {
+        ToHelper::Set { from, offer_id, files } => match parse_offer_files(&files) {
+            Ok(files) if !files.is_empty() => post(Cmd::Set(Offer { from, offer_id, files, route: Route::Agent })),
+            _ => logger::warn("clipbrd.capture", "Agent sent an unusable offer; ignored."),
+        },
+        ToHelper::Clear { partner } => post(Cmd::Clear(partner)),
+        ToHelper::End { tid, ok } => {
+            if let Some(tx) = helper_streams(|m| m.get(&tid).cloned()) {
+                let _ = tx.send(SinkMsg::End(ok));
+            }
+        }
+    }
+}
+
+/// Helper: verified bytes for paste stream `tid`.
+pub fn helper_data(tid: &str, bytes: Vec<u8>) {
+    if let Some(tx) = helper_streams(|m| m.get(tid).cloned()) {
+        let _ = tx.send(SinkMsg::Data(bytes));
+    }
 }
 
 #[cfg(test)]
@@ -1038,6 +1178,35 @@ mod tests {
         }
     }
 
+    /// The service setup: a separate helper process holds the clipboard object and gets the bytes from this
+    /// process (the agent) over its pipes. Needs the app built first:
+    /// `cargo build --release && cargo test --release explorer_paste_through_helper -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn explorer_paste_through_helper_process() {
+        let deps = std::env::current_exe().unwrap();
+        let exe = deps.parent().unwrap().parent().unwrap().join("opendesk-client.exe");
+        let mut helper = crate::infra::clipboard_helper::start_test_helper(&exe);
+        let data: Vec<u8> = (0..3_000_000u32).map(|i| (i * 13 % 251) as u8).collect();
+        let small = b"second file".to_vec();
+        let offer = json!({ "id": "of_h", "files": [
+            { "name": "big.bin", "size": data.len(), "mtime": 1_704_067_200_000u64 },
+            { "name": "small.txt", "size": small.len() }
+        ]});
+        let contents = HashMap::from([(0, data.clone()), (1, small.clone())]);
+        let dir = paste_with_explorer("helper", offer, &contents);
+        let _ = helper.kill();
+        let _ = helper.wait();
+        if let Some(dir) = dir {
+            assert_eq!(std::fs::read(dir.join("big.bin")).expect("big.bin not pasted"), data);
+            assert_eq!(std::fs::read(dir.join("small.txt")).expect("small.txt not pasted"), small);
+            let modified = std::fs::metadata(dir.join("big.bin")).unwrap().modified().unwrap();
+            let ms = modified.duration_since(UNIX_EPOCH).unwrap().as_millis();
+            assert_eq!(ms, 1_704_067_200_000, "Date Modified kept (FN1)");
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
     /// Same, for several top-level files and no folder (a multi-file copy in Explorer): every file must be
     /// pulled and pasted, not only the first.
     #[test]
@@ -1136,7 +1305,7 @@ mod tests {
             from: "111".into(),
             offer_id: "of_d".into(),
             files: vec![OfferFile { name: "d".into(), size: 0, dir: true, mtime: None, remote: 0 }],
-            tx_out,
+            route: Route::Local(tx_out),
         };
         let obj =
             Box::into_raw(Box::new(DataObject { vtbl: &DATA_VTBL, refs: AtomicU32::new(1), offer: Arc::new(offer) }))
@@ -1163,7 +1332,7 @@ mod tests {
             from: "111".into(),
             offer_id: "of_1".into(),
             files: vec![OfferFile { name: "x.bin".into(), size: 4, dir: false, mtime: None, remote: 0 }],
-            tx_out,
+            route: Route::Local(tx_out),
         };
         let stream = open_pull(&offer, 0);
         let tid = unsafe { (*(stream as *const PullStream)).tid.clone() };
@@ -1197,7 +1366,7 @@ mod tests {
             from: "111".into(),
             offer_id: "of_2".into(),
             files: vec![OfferFile { name: "y.bin".into(), size: 6, dir: false, mtime: None, remote: 0 }],
-            tx_out,
+            route: Route::Local(tx_out),
         };
         let stream = open_pull(&offer, 0);
         let tid = unsafe { (*(stream as *const PullStream)).tid.clone() };

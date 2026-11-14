@@ -435,6 +435,12 @@ impl Connection {
     fn register_message(&self, resume_token: Option<String>) -> ClientMessage {
         let edition = self.ctx.edition;
         let mut caps = vec![capability::FILE_ACK];
+        // The service agent's clipboard helper starts with the app; give it a moment so the first registration
+        // already lists file-offer (caps cannot change until the next registration).
+        #[cfg(windows)]
+        if crate::infra::autostart::supervised_by_service() {
+            crate::infra::clipboard_helper::wait_ready(std::time::Duration::from_secs(5));
+        }
         // Without clipboard file offers, partners send copied files as ordinary transfers.
         match file_transfer::local_file_offer() {
             Ok(()) => caps.push(capability::FILE_OFFER),

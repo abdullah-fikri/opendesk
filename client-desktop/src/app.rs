@@ -54,6 +54,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
     autostart::ensure_single_instance(opts.background || edition == Edition::Headless);
     logger::info("app", &format!("OpenDesk {} starting (edition: {}).", env!("CARGO_PKG_VERSION"), edition.name()));
     autostart::init_background_guardian();
+    // The SYSTEM agent puts partner files on the user's clipboard through a helper running as that user.
+    #[cfg(windows)]
+    if autostart::supervised_by_service() {
+        crate::infra::clipboard_helper::start();
+    }
     if let core_engine::capture::HostSupport::Unsupported(reason) = core_engine::capture::host_support() {
         logger::warn("app", &format!("Viewer only, this device cannot be controlled: {reason}"));
     }
