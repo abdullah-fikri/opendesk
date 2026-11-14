@@ -57,6 +57,7 @@ static PARTNER_CAPS: Mutex<PeerCaps> = Mutex::new(PeerCaps {
     file_ack: false,
     file_offer: false,
     file_folder: false,
+    file_group: false,
     file_binary: false,
     cursor_shape: false,
     video_delta: false,
@@ -189,7 +190,10 @@ pub fn without_echoes(partner: &str, paths: Vec<PathBuf>) -> Vec<PathBuf> {
         .into_iter()
         .filter(|path| match received.echo(partner, &path.to_string_lossy(), file_size(path), now) {
             Some(echo) => {
-                logger::info("clipboard", &format!("Not sending {} back to {partner}: {}.", path.display(), echo.reason()));
+                logger::info(
+                    "clipboard",
+                    &format!("Not sending {} back to {partner}: {}.", path.display(), echo.reason()),
+                );
                 false
             }
             None => true,
@@ -255,7 +259,8 @@ mod tests {
     fn received_files_are_left_out_only_for_their_sender() {
         let folder = PathBuf::from(r"C:\Users\a\Downloads\OpenDesk\Project-710000009");
         remember_received("710000009", std::slice::from_ref(&folder));
-        let copied = vec![PathBuf::from(r"c:\users\a\downloads\opendesk\PROJECT-710000009\x.txt"), "C:\\other.txt".into()];
+        let copied =
+            vec![PathBuf::from(r"c:\users\a\downloads\opendesk\PROJECT-710000009\x.txt"), "C:\\other.txt".into()];
         assert_eq!(without_echoes("710000009", copied.clone()), vec![PathBuf::from(r"C:\other.txt")]);
         assert_eq!(without_echoes("710000008", copied.clone()), copied, "another partner may get them");
         assert!(without_echoes("710000009", vec![folder]).is_empty());

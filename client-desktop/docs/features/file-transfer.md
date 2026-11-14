@@ -40,6 +40,11 @@ no resume.
 Folders go only to `file-folder` receivers: folder entries first, then files with their relative path, then a
 repeat of the first folder entry that marks the end. For other receivers folders are skipped with a notice.
 
+Several loose files (no folder) go to `file-group` receivers as one group too, closed by a bare group end
+([protocol](../../../docs/protocol.md#file-transfer)), so the receiver puts them all on its clipboard and pastes
+them once instead of file by file. Older receivers, a single file, and names the folder rules would reject
+(device names, invalid characters) keep one transfer per file.
+
 ## Receiving
 
 SECURITY: everything from the peer is validated before it touches the disk.

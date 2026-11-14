@@ -453,6 +453,8 @@ impl Connection {
         }
         #[cfg(feature = "admin")]
         caps.push(capability::MONITOR_VIEW);
+        // Late in the list: a relay that keeps only 16 names drops it, which only sends loose files one by one.
+        caps.push(capability::FILE_GROUP);
         let stored = storage::load_settings();
         let mut caps: Vec<String> = caps.into_iter().map(String::from).collect();
         // Right before `fps-N`: a relay that keeps only 16 names drops it first, which only turns host sound off.

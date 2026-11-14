@@ -128,6 +128,25 @@ fn publish(ctx: &AppContext, from: &str, paths: &[PathBuf], paste: bool) {
     }
 }
 
+/// A whole group arrived (folder or loose files from `from`): its top-level items go to the clipboard once,
+/// pasted when the end marker `payload` asks for it and a session runs.
+fn finish_group(
+    ctx: &AppContext,
+    from: &str,
+    group: FolderGroup,
+    payload: &FilePayload,
+    allow_auto_paste: bool,
+) -> Outcome {
+    let paste = payload.auto_paste.unwrap_or(true) && allow_auto_paste;
+    publish(ctx, from, &group.tops, paste);
+    let label = match group.tops.as_slice() {
+        [one] => one.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+        many => format!("{} items", many.len()),
+    };
+    logger::info("file_transfer", &format!("Group transfer complete: {:?} (auto_paste={paste})", group.tops));
+    (Some(done_status(&label)), Some(true))
+}
+
 /// Folder that receives files (`Downloads\OpenDesk` in the user's home, else `<app dir>/Downloads`).
 pub fn download_dir() -> PathBuf {
     #[cfg(test)]
@@ -255,6 +274,9 @@ impl FileReceiver {
         if self.active_files.contains_key(&key) {
             return (None, None);
         }
+        if payload.group_end == Some(true) && payload.rel.is_none() {
+            return self.end_loose_group(ctx, payload, from, key, allow_auto_paste);
+        }
         if self.active_files.len() >= MAX_ACTIVE_FILES {
             return (Some("Could not receive files: too many active transfers".into()), Some(false));
         }
@@ -354,14 +376,31 @@ impl FileReceiver {
         }
         // Whole folder arrived: hand the top-level items to the clipboard once.
         let group = self.groups.remove(&gkey).unwrap();
-        let paste = payload.auto_paste.unwrap_or(true) && allow_auto_paste;
-        publish(ctx, from, &group.tops, paste);
-        let label = match group.tops.as_slice() {
-            [one] => one.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
-            many => format!("{} items", many.len()),
-        };
-        logger::info("file_transfer", &format!("Folder transfer complete: {:?} (auto_paste={paste})", group.tops));
-        Err((Some(done_status(&label)), Some(true)))
+        Err(finish_group(ctx, from, group, payload, allow_auto_paste))
+    }
+
+    /// `file-group`: the bare group end (`groupEnd` without `rel`) after loose files sent as one group.
+    ///
+    /// SECURITY: it only closes a group this sender opened on this connection; it names no path and creates
+    /// nothing, so an unknown or foreign group is just refused.
+    fn end_loose_group(
+        &mut self,
+        ctx: &AppContext,
+        payload: &FilePayload,
+        from: &str,
+        key: String,
+        allow_auto_paste: bool,
+    ) -> Outcome {
+        let gid = payload.group.as_deref().unwrap_or("");
+        if !is_safe_id(&payload.id) || !is_safe_id(gid) {
+            return (None, Some(false));
+        }
+        let Some(group) = self.groups.remove(&format!("{from}:{gid}")) else { return (None, Some(false)) };
+        self.completed_ids.insert(key, Instant::now());
+        if group.tops.is_empty() {
+            return (Some("Could not receive the files".into()), Some(false));
+        }
+        finish_group(ctx, from, group, payload, allow_auto_paste)
     }
 
     /// Handles one binary chunk from `from` (`file-binary`); the transfer itself started and ends with JSON.
@@ -547,6 +586,39 @@ pub(super) mod tests {
         }
         assert!(rx.active_files.is_empty());
         assert_eq!(rx.handle_chunk(&ctx, &FileChunk { id: "../x", offset: 0, data: b"" }, "111"), (None, None));
+        *TEST_DOWNLOADS.lock() = None;
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A bare group end closes only a group its own sender opened; anything else is refused without effect.
+    #[test]
+    fn bare_group_end_closes_only_the_senders_own_group() {
+        let dir = env::temp_dir().join(format!("opendesk-loose-{}-{}", std::process::id(), now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        *TEST_DOWNLOADS.lock() = Some(dir.clone());
+        let ctx = crate::service::test_support::context();
+        let mut rx = FileReceiver::new();
+        let bare_end = |id: &str, group: &str| FilePayload {
+            dir: Some(true),
+            group: Some(group.into()),
+            group_end: Some(true),
+            ..FilePayload::start(id, "files", 0)
+        };
+        assert_eq!(rx.handle(&ctx, &bare_end("fd_1", "fg_1"), "111", false).1, Some(false), "unknown group");
+        // "111" starts a loose file inside group fg_1 (rel = plain name: saved straight into Downloads).
+        let file = FilePayload {
+            group: Some("fg_1".into()),
+            rel: Some("a.txt".into()),
+            ..FilePayload::start("ft_1", "a.txt", 3)
+        };
+        assert_eq!(rx.handle(&ctx, &file, "111", false).1, None);
+        assert_eq!(rx.handle(&ctx, &bare_end("fd_2", "fg_1"), "222", false).1, Some(false), "another sender");
+        assert_eq!(rx.handle(&ctx, &bare_end("fd_3", "../x"), "111", false).1, Some(false), "unsafe group id");
+        assert!(rx.groups.contains_key("111:fg_1"), "the group stays open for its sender");
+        // Its own end with nothing saved yet (the file never finished) closes the group with a NACK.
+        assert_eq!(rx.handle(&ctx, &bare_end("fd_4", "fg_1"), "111", false).1, Some(false));
+        assert!(rx.groups.is_empty());
+        rx.abort_all(ctx.ui.as_ref());
         *TEST_DOWNLOADS.lock() = None;
         let _ = fs::remove_dir_all(dir);
     }

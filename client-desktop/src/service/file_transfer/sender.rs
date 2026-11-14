@@ -24,7 +24,7 @@ use super::{
     BINARY_CHUNK_SIZE, CHUNK_SIZE, IN_FLIGHT_CHUNKS, caps_of, chunk_units, epoch, expect_ack, forget_ack, hex,
     now_micros, tree,
 };
-use crate::domain::transfer::{MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, percent};
+use crate::domain::transfer::{MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, percent, safe_rel_path};
 use crate::infra::logger;
 use crate::protocol::{ClientMessage, FilePayload, Outgoing, binary};
 use crate::service::context::AppContext;
@@ -257,11 +257,11 @@ fn run(ctx: &AppContext, paths: Vec<PathBuf>, target: String, auto_paste: bool) 
 }
 
 /// Turns selected paths into send items: `(items, folders_skipped)` or an error status. Without folders the
-/// list is exactly the selection.
+/// list is the selection: one group for `file-group` receivers (several files), else one transfer per file.
 fn expand(paths: Vec<PathBuf>, target: &str) -> Result<(Vec<SendItem>, bool), String> {
     let plain = |path: PathBuf| SendItem { path, id: None, tag: None };
     if !paths.iter().any(|p| p.is_dir()) {
-        return Ok((paths.into_iter().map(plain).collect(), false));
+        return Ok((group_loose(paths, caps_of(target).file_group), false));
     }
     if !caps_of(target).file_folder {
         logger::info("file_transfer", "Partner lacks file-folder; skipping folders in the selection.");
@@ -286,11 +286,43 @@ fn expand(paths: Vec<PathBuf>, target: &str) -> Result<(Vec<SendItem>, bool), St
     Ok((items, false))
 }
 
-/// Sends a folder entry: one `start` with `dir`, answered by an ACK; no bytes follow.
+/// Loose files as send items. With `grouped` (the receiver lists `file-group`) several files travel as one
+/// group whose items carry their plain name as `rel`, closed by a bare group end (no `rel`), so the receiver
+/// publishes and pastes them once instead of each on its own. Names the receiver's folder rules would reject
+/// keep the old one-by-one path, where they are only sanitized.
+fn group_loose(paths: Vec<PathBuf>, grouped: bool) -> Vec<SendItem> {
+    let name = |p: &PathBuf| p.file_name().and_then(|n| n.to_str()).map(str::to_string);
+    let groupable = grouped
+        && paths.len() > 1
+        && paths.iter().all(|p| name(p).is_some_and(|n| safe_rel_path(&n).is_some_and(|c| c.len() == 1)));
+    if !groupable {
+        return paths.into_iter().map(|path| SendItem { path, id: None, tag: None }).collect();
+    }
+    let group = format!("fg_{}", now_micros());
+    let marker = paths[0].clone();
+    let mut items: Vec<SendItem> = paths
+        .into_iter()
+        .map(|path| {
+            let rel = name(&path).unwrap_or_default();
+            SendItem { path, id: None, tag: Some(FolderTag { group: group.clone(), rel, dir: false, end: false }) }
+        })
+        .collect();
+    items.push(SendItem {
+        path: marker,
+        id: None,
+        tag: Some(FolderTag { group, rel: String::new(), dir: true, end: true }),
+    });
+    logger::info("file_transfer", &format!("Sending {} loose files as one group.", items.len() - 1));
+    items
+}
+
+/// Sends a folder entry: one `start` with `dir`, answered by an ACK; no bytes follow. An end marker with an
+/// empty `rel` is the bare group end of loose files.
 fn send_folder_entry(link: &Link, tag: &FolderTag, auto_paste: bool) {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let id = format!("fd_{}_{}", now_micros(), SEQ.fetch_add(1, Ordering::Relaxed));
-    let name = tag.rel.rsplit('\\').next().unwrap_or(&tag.rel);
+    let bare = tag.rel.is_empty();
+    let name = if bare { "files" } else { tag.rel.rsplit('\\').next().unwrap_or(&tag.rel) };
     let wants_ack = caps_of(&link.target).file_ack;
     let (ack_tx, ack_rx) = mpsc::channel();
     if wants_ack {
@@ -299,7 +331,7 @@ fn send_folder_entry(link: &Link, tag: &FolderTag, auto_paste: bool) {
     let payload = FilePayload {
         dir: Some(true),
         group: Some(tag.group.clone()),
-        rel: Some(tag.rel.clone()),
+        rel: (!bare).then(|| tag.rel.clone()),
         group_end: Some(tag.end),
         auto_paste: Some(auto_paste),
         ..FilePayload::start(&id, name, 0)
@@ -309,6 +341,7 @@ fn send_folder_entry(link: &Link, tag: &FolderTag, auto_paste: bool) {
         return;
     }
     match ack_rx.recv_timeout(ACK_TIMEOUT) {
+        Ok(true) if tag.end && bare => link.status("Sent: all files".into()),
         Ok(true) if tag.end => link.status(format!("Sent: {}", tag.rel)),
         Ok(true) => {}
         Ok(false) => link.status(format!("Could not send folder {}", tag.rel)),
@@ -533,6 +566,23 @@ mod tests {
             let _ = done_tx.send(99);
         }));
         assert_eq!(done_rx.recv_timeout(Duration::from_secs(5)).unwrap(), 99);
+    }
+
+    /// Several loose files go to a `file-group` receiver as one group closed by a bare end; one file, older
+    /// receivers and names the folder rules reject keep the one-by-one path.
+    #[test]
+    fn loose_files_travel_as_one_group_only_to_receivers_that_know_it() {
+        let paths = vec![PathBuf::from("x").join("a.txt"), PathBuf::from("y").join("b.pdf")];
+        let items = group_loose(paths.clone(), true);
+        let tags: Vec<(&str, bool, bool)> =
+            items.iter().map(|i| i.tag.as_ref().map(|t| (t.rel.as_str(), t.dir, t.end)).unwrap()).collect();
+        assert_eq!(tags, vec![("a.txt", false, false), ("b.pdf", false, false), ("", true, true)]);
+        let group = &items[0].tag.as_ref().unwrap().group;
+        assert!(items.iter().all(|i| &i.tag.as_ref().unwrap().group == group));
+        assert!(group_loose(paths.clone(), false).iter().all(|i| i.tag.is_none()), "1.3.x receivers");
+        assert!(group_loose(paths[..1].to_vec(), true).iter().all(|i| i.tag.is_none()), "a single file");
+        let odd = vec![PathBuf::from("x").join("CON"), PathBuf::from("x").join("b.pdf")];
+        assert!(group_loose(odd, true).iter().all(|i| i.tag.is_none()), "a device name stays sanitized");
     }
 
     #[test]

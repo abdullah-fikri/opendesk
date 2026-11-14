@@ -77,8 +77,7 @@ impl ReceivedFiles {
         for item in live {
             let echo = if item.path == path {
                 Echo::Same
-            } else if item.size.is_none() && path.strip_prefix(&item.path).is_some_and(|rest| rest.starts_with('\\'))
-            {
+            } else if item.size.is_none() && path.strip_prefix(&item.path).is_some_and(|rest| rest.starts_with('\\')) {
                 Echo::Inside
             } else if name_of(&item.path) == name_of(&path) && item.size == size {
                 Echo::Copy
