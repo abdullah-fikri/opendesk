@@ -10,7 +10,7 @@ use std::sync::mpsc::Sender;
 use parking_lot::Mutex;
 
 use super::sender::{SKIPPED_FOLDERS, send_pulled};
-use super::{caps_of, mtime_ms, now_micros, tree};
+use super::{Stamp, caps_of, now_micros, tree};
 use crate::domain::transfer::{MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, is_safe_id};
 use crate::infra::logger;
 use crate::protocol::{ClientMessage, FilePayload, OfferEntry, Outgoing};
@@ -48,7 +48,7 @@ pub fn offer_files(ctx: &AppContext, paths: Vec<PathBuf>, target: String) {
             .filter_map(|p| {
                 let meta = fs::metadata(p).ok().filter(|m| m.is_file() && m.len() <= MAX_FILE_BYTES)?;
                 let name = p.file_name()?.to_str()?.to_string();
-                let entry = OfferEntry { name, size: Some(meta.len()), dir: None, mtime: mtime_ms(&meta) };
+                let entry = Stamp::of(&meta).entry(name, Some(meta.len()), None);
                 Some((Some(p.clone()), entry))
             })
             .take(MAX_OFFER_FILES)
@@ -73,10 +73,10 @@ pub fn offer_files(ctx: &AppContext, paths: Vec<PathBuf>, target: String) {
                 let listing = entries
                     .into_iter()
                     .map(|e| {
-                        let mtime = fs::metadata(&e.path).ok().and_then(|m| mtime_ms(&m));
+                        let stamp = Stamp::of_path(&e.path);
                         match e.dir {
-                            true => (None, OfferEntry { name: e.rel, size: None, dir: Some(true), mtime }),
-                            false => (Some(e.path), OfferEntry { name: e.rel, size: Some(e.size), dir: None, mtime }),
+                            true => (None, stamp.entry(e.rel, None, Some(true))),
+                            false => (Some(e.path), stamp.entry(e.rel, Some(e.size), None)),
                         }
                     })
                     .collect();

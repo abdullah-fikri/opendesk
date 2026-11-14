@@ -10,6 +10,7 @@ pub mod clock;
 pub mod console;
 pub mod device;
 pub mod e2e;
+pub mod file_attrs;
 pub mod identity;
 pub mod key_pins;
 pub mod logger;

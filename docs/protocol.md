@@ -230,15 +230,17 @@ hosts of any version understand each other's `host-stats`; `encodeMs` keeps its 
 
 | `action` | Fields | Rule |
 | --- | --- | --- |
-| `start` | `id`, `name`, `size`, optional `mtime`; folders: `dir`, `group`, `rel`, `groupEnd`, `autoPaste` | Needs an active session; creates a grant bound to the two connections. |
+| `start` | `id`, `name`, `size`, optional `mtime`, `ctime`, `atime`, `attrs`; folders: `dir`, `group`, `rel`, `groupEnd`, `autoPaste` | Needs an active session; creates a grant bound to the two connections. |
 | `chunk` | `id`, `chunk` (base64, at most 32 KiB decoded) | Needs the grant. With `file-binary` a binary chunk replaces it. |
 | `end` | `id`, `name`, `sha256` (hex), `autoPaste` | Needs the grant. |
 | `ack` | `id`, `ok` | Receiver to sender; consumes the grant. |
-| `offer` | `id`, `files[]` (`name`, `size` or `dir`, optional `mtime`), or `image` (base64 PNG, `clipboard-image`) | Clipboard offer, or a copied image; needs an active session. |
+| `offer` | `id`, `files[]` (`name`, `size` or `dir`, optional `mtime`, `ctime`, `atime`, `attrs`), or `image` (base64 PNG, `clipboard-image`) | Clipboard offer, or a copied image; needs an active session. |
 | `pull` | `id` (offer), `index`, `tid` | Ask the offerer to send entry `index` as transfer `tid`. |
 
 `mtime` is the file's last write time in Unix milliseconds; receivers keep it as the pasted or saved file's
-"Date Modified". Older clients neither send nor read it.
+"Date Modified". `ctime` and `atime` are the creation and last access times, same unit. `attrs` holds Windows
+file attribute bits; only read-only (0x1), hidden (0x2) and archive (0x20) are sent or applied. Older clients
+neither send nor read any of these.
 
 A grant lets a transfer finish after its screen session ends, for 60 s of idleness, but only between the
 same two connections. At most 8 grants per sender. See `client-desktop/docs/features/file-transfer.md`.

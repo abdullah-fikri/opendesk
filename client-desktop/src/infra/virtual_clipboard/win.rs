@@ -40,6 +40,8 @@ const DATADIR_GET: u32 = 1;
 const GMEM_MOVEABLE: u32 = 0x0002;
 const GMEM_ZEROINIT: u32 = 0x0040;
 const FD_ATTRIBUTES: u32 = 0x0004;
+const FD_CREATETIME: u32 = 0x0008;
+const FD_ACCESSTIME: u32 = 0x0010;
 const FD_WRITETIME: u32 = 0x0020;
 const FD_FILESIZE: u32 = 0x0040;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
@@ -208,6 +210,10 @@ struct OfferFile {
     dir: bool,
     /// Last write time from the partner (Unix ms), shown as "Date Modified" after the paste.
     mtime: Option<u64>,
+    /// Creation and last access time (Unix ms) and the carried attributes (read-only, hidden, archive).
+    ctime: Option<u64>,
+    atime: Option<u64>,
+    attrs: u32,
     /// Index in the partner's list (what a pull asks for); differs from ours when invalid entries were dropped.
     remote: usize,
 }
@@ -699,9 +705,25 @@ fn descriptor_bytes(files: &[OfferFile]) -> Vec<u8> {
             fd.n_file_size_high = (f.size >> 32) as u32;
             fd.n_file_size_low = f.size as u32;
         }
-        if let Some(ft) = f.mtime.and_then(unix_ms_to_filetime) {
+        let filetime = |ms: Option<u64>| {
+            ms.and_then(unix_ms_to_filetime).map(|ft| FILETIME { low: ft as u32, high: (ft >> 32) as u32 })
+        };
+        if let Some(ft) = filetime(f.mtime) {
             fd.dw_flags |= FD_WRITETIME;
-            fd.ft_last_write_time = FILETIME { low: ft as u32, high: (ft >> 32) as u32 };
+            fd.ft_last_write_time = ft;
+        }
+        if let Some(ft) = filetime(f.ctime) {
+            fd.dw_flags |= FD_CREATETIME;
+            fd.ft_creation_time = ft;
+        }
+        if let Some(ft) = filetime(f.atime) {
+            fd.dw_flags |= FD_ACCESSTIME;
+            fd.ft_last_access_time = ft;
+        }
+        if f.attrs != 0 {
+            // Explorer applies these to the pasted file, as it does for a local copy.
+            fd.dw_flags |= FD_ATTRIBUTES;
+            fd.dw_file_attributes |= f.attrs;
         }
         // Names were validated by set_offer (`\` separates folders); replace anything else Explorer cannot create.
         let clean: Vec<u16> = f
@@ -988,7 +1010,17 @@ fn parse_offer_files(list: &[OfferEntry]) -> Result<Vec<OfferFile>, String> {
             let comps = safe_rel_path(&f.name)?;
             let dir = f.dir == Some(true);
             let size = if dir { 0 } else { f.size.filter(|s| *s <= MAX_FILE_BYTES)? };
-            Some(OfferFile { name: comps.join("\\"), size, dir, mtime: f.mtime, remote })
+            let attrs = f.attrs.unwrap_or(0) & crate::service::file_transfer::CARRIED_ATTRS;
+            Some(OfferFile {
+                name: comps.join("\\"),
+                size,
+                dir,
+                mtime: f.mtime,
+                ctime: f.ctime,
+                atime: f.atime,
+                attrs,
+                remote,
+            })
         })
         .collect();
     if files.iter().map(|f| f.size).sum::<u64>() > MAX_TREE_BYTES {
@@ -1136,6 +1168,9 @@ mod tests {
             size: 5_000_000_000,
             dir: false,
             mtime: None,
+            ctime: None,
+            atime: None,
+            attrs: 0,
             remote: 0,
         }]);
         assert_eq!(bytes.len(), 4 + 592);
@@ -1150,7 +1185,16 @@ mod tests {
     #[test]
     fn descriptor_carries_write_time() {
         // 2024-01-01T00:00:00Z = 1_704_067_200_000 ms = FILETIME 133_485_408_000_000_000.
-        let file = OfferFile { name: "a.txt".into(), size: 1, dir: false, mtime: Some(1_704_067_200_000), remote: 0 };
+        let file = OfferFile {
+            name: "a.txt".into(),
+            size: 1,
+            dir: false,
+            mtime: Some(1_704_067_200_000),
+            ctime: None,
+            atime: None,
+            attrs: 0,
+            remote: 0,
+        };
         let fd = &descriptor_bytes(&[file])[4..];
         assert_eq!(u32::from_le_bytes(fd[0..4].try_into().unwrap()), FD_FILESIZE | FD_PROGRESSUI | FD_WRITETIME);
         let low = u32::from_le_bytes(fd[56..60].try_into().unwrap()) as u64;
@@ -1345,6 +1389,27 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_carries_all_three_times_and_safe_attributes_only() {
+        // System (0x4) must not cross; read-only, hidden, archive do.
+        let files = parse_offer_files(&entries(json!([
+            { "name": "a.txt", "size": 1, "mtime": 1_704_067_200_000u64, "ctime": 1_600_000_000_000u64,
+              "atime": 1_710_000_000_000u64, "attrs": 0x1 | 0x2 | 0x4 | 0x20 },
+        ])))
+        .unwrap();
+        let fd = &descriptor_bytes(&files)[4..];
+        let u32_at = |off: usize| u32::from_le_bytes(fd[off..off + 4].try_into().unwrap());
+        let ft_at = |off: usize| u32_at(off) as u64 | (u32_at(off + 4) as u64) << 32;
+        assert_eq!(
+            u32_at(0),
+            FD_ATTRIBUTES | FD_CREATETIME | FD_ACCESSTIME | FD_WRITETIME | FD_FILESIZE | FD_PROGRESSUI
+        );
+        assert_eq!(u32_at(36), 0x1 | 0x2 | 0x20);
+        assert_eq!(ft_at(40), unix_ms_to_filetime(1_600_000_000_000).unwrap()); // ftCreationTime
+        assert_eq!(ft_at(48), unix_ms_to_filetime(1_710_000_000_000).unwrap()); // ftLastAccessTime
+        assert_eq!(ft_at(56), unix_ms_to_filetime(1_704_067_200_000).unwrap()); // ftLastWriteTime
+    }
+
+    #[test]
     fn offer_parsing_drops_unsafe_names_and_keeps_partner_indices() {
         let files = parse_offer_files(&entries(json!([
             { "name": "..\\x", "size": 1 },
@@ -1369,7 +1434,16 @@ mod tests {
         let offer = Offer {
             from: "111".into(),
             offer_id: "of_d".into(),
-            files: vec![OfferFile { name: "d".into(), size: 0, dir: true, mtime: None, remote: 0 }],
+            files: vec![OfferFile {
+                name: "d".into(),
+                size: 0,
+                dir: true,
+                mtime: None,
+                ctime: None,
+                atime: None,
+                attrs: 0,
+                remote: 0,
+            }],
             route: Route::Local(tx_out),
         };
         let obj =
@@ -1396,7 +1470,16 @@ mod tests {
         let offer = Offer {
             from: "111".into(),
             offer_id: "of_1".into(),
-            files: vec![OfferFile { name: "x.bin".into(), size: 4, dir: false, mtime: None, remote: 0 }],
+            files: vec![OfferFile {
+                name: "x.bin".into(),
+                size: 4,
+                dir: false,
+                mtime: None,
+                ctime: None,
+                atime: None,
+                attrs: 0,
+                remote: 0,
+            }],
             route: Route::Local(tx_out),
         };
         let stream = open_pull(&offer, 0);
@@ -1430,7 +1513,16 @@ mod tests {
         let offer = Offer {
             from: "111".into(),
             offer_id: "of_2".into(),
-            files: vec![OfferFile { name: "y.bin".into(), size: 6, dir: false, mtime: None, remote: 0 }],
+            files: vec![OfferFile {
+                name: "y.bin".into(),
+                size: 6,
+                dir: false,
+                mtime: None,
+                ctime: None,
+                atime: None,
+                attrs: 0,
+                remote: 0,
+            }],
             route: Route::Local(tx_out),
         };
         let stream = open_pull(&offer, 0);

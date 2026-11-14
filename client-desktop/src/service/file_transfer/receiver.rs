@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use core_engine::codec::from_base64;
 use sha2::{Digest, Sha256};
@@ -59,8 +59,8 @@ struct Incoming {
     /// Files inside a folder transfer: (target folder, file name, group key). The clipboard is only updated
     /// once the whole group has arrived.
     dest: Option<(PathBuf, String, String)>,
-    /// Sender's last write time, applied once the file is complete.
-    mtime: Option<SystemTime>,
+    /// Sender's times and attributes, applied once the file is complete.
+    stamp: super::Stamp,
 }
 
 /// A folder transfer in progress (`group` on start messages).
@@ -379,7 +379,7 @@ impl FileReceiver {
                         last_activity: Instant::now(),
                         shown_percent: 0,
                         dest,
-                        mtime: payload.mtime.map(|ms| UNIX_EPOCH + Duration::from_millis(ms)),
+                        stamp: super::Stamp::from_payload(payload),
                     },
                 );
                 self.show_badge(ctx);
@@ -532,7 +532,7 @@ impl FileReceiver {
         key: String,
         allow_auto_paste: bool,
     ) -> Outcome {
-        let Some(Incoming { mut file, path: staging, name, received, total, hash, dest, mtime, .. }) =
+        let Some(Incoming { mut file, path: staging, name, received, total, hash, dest, stamp, .. }) =
             self.active_files.remove(&key)
         else {
             // Unknown transfer (expired or rejected start): NACK so the sender does not wait for a timeout.
@@ -540,8 +540,8 @@ impl FileReceiver {
         };
         let checksum_ok = payload.sha256.as_deref() == Some(hex(&hash.finalize()).as_str());
         let written = received == total && checksum_ok && file.flush().is_ok() && file.sync_all().is_ok();
-        if written && let Some(t) = mtime {
-            let _ = file.set_modified(t); // "Date Modified" as on the sender; cosmetic, so failures are ignored
+        if written {
+            stamp.apply_times(&file); // dates as on the sender
         }
         drop(file);
         let fail = |reason: &str| {
@@ -565,6 +565,7 @@ impl FileReceiver {
             badge_finished(ctx, &format!("Could not receive {name}: saving failed"));
             return (Some(format!("Could not receive {name}: saving failed")), Some(false));
         };
+        stamp.apply_attrs(&saved);
         progress(ctx.ui.as_ref(), &key, &name, total, total, TransferState::Done);
         self.completed_ids.insert(key, Instant::now());
 

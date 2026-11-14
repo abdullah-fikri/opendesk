@@ -25,7 +25,7 @@ use parking_lot::Mutex;
 use crate::domain::capability::PeerCaps;
 use crate::domain::received_files::ReceivedFiles;
 use crate::infra::{autostart, logger};
-use crate::protocol::FileMark;
+use crate::protocol::{FileMark, FilePayload, OfferEntry};
 
 pub use receiver::FileReceiver;
 
@@ -330,13 +330,112 @@ fn hex(digest: &[u8]) -> String {
 
 /// Last write time in Unix milliseconds (`mtime` on offers and transfer starts).
 pub(super) fn mtime_ms(meta: &std::fs::Metadata) -> Option<u64> {
-    let since = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    unix_ms(meta.modified())
+}
+
+fn unix_ms(t: std::io::Result<std::time::SystemTime>) -> Option<u64> {
+    let since = t.ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
     u64::try_from(since.as_millis()).ok()
+}
+
+/// Windows attributes a transfer carries: read-only, hidden, archive. System and the rest stay behind.
+pub(crate) const CARRIED_ATTRS: u32 = 0x1 | 0x2 | 0x20;
+
+/// What a file keeps across a transfer besides its bytes: the three times and the carried attributes.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub(crate) struct Stamp {
+    pub mtime: Option<u64>,
+    pub ctime: Option<u64>,
+    pub atime: Option<u64>,
+    pub attrs: Option<u32>,
+}
+
+impl Stamp {
+    pub(super) fn of(meta: &std::fs::Metadata) -> Self {
+        #[cfg(windows)]
+        let attrs = Some(std::os::windows::fs::MetadataExt::file_attributes(meta) & CARRIED_ATTRS).filter(|a| *a != 0);
+        #[cfg(not(windows))]
+        let attrs = meta.permissions().readonly().then_some(0x1);
+        Self { mtime: mtime_ms(meta), ctime: unix_ms(meta.created()), atime: unix_ms(meta.accessed()), attrs }
+    }
+
+    pub(super) fn of_path(path: &std::path::Path) -> Self {
+        std::fs::metadata(path).map(|m| Self::of(&m)).unwrap_or_default()
+    }
+
+    pub(super) fn entry(self, name: String, size: Option<u64>, dir: Option<bool>) -> OfferEntry {
+        let Self { mtime, ctime, atime, attrs } = self;
+        OfferEntry { name, size, dir, mtime, ctime, atime, attrs }
+    }
+
+    pub(super) fn put_on(self, start: &mut FilePayload) {
+        (start.mtime, start.ctime, start.atime, start.attrs) = (self.mtime, self.ctime, self.atime, self.attrs);
+    }
+
+    pub(super) fn from_payload(p: &FilePayload) -> Self {
+        Self { mtime: p.mtime, ctime: p.ctime, atime: p.atime, attrs: p.attrs.map(|a| a & CARRIED_ATTRS) }
+    }
+
+    /// Applies the times to an open file (failures are cosmetic and ignored).
+    pub(super) fn apply_times(&self, file: &std::fs::File) {
+        let at = |ms: u64| std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms);
+        let mut times = std::fs::FileTimes::new();
+        if let Some(ms) = self.mtime {
+            times = times.set_modified(at(ms));
+        }
+        if let Some(ms) = self.atime {
+            times = times.set_accessed(at(ms));
+        }
+        #[cfg(windows)]
+        if let Some(ms) = self.ctime {
+            times = std::os::windows::fs::FileTimesExt::set_created(times, at(ms));
+        }
+        let _ = file.set_times(times);
+    }
+
+    /// Applies the attributes to a saved file; read-only last, since nothing may be written after it.
+    pub(super) fn apply_attrs(&self, path: &std::path::Path) {
+        let Some(attrs) = self.attrs.map(|a| a & CARRIED_ATTRS).filter(|a| *a != 0) else { return };
+        crate::infra::file_attrs::set(path, attrs);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn received_file_keeps_sender_times_and_attributes() {
+        let dir = std::env::temp_dir().join(format!("opendesk-stamp-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let (src, dst) = (dir.join("src.txt"), dir.join("dst.txt"));
+        fs::write(&src, b"x").unwrap();
+        fs::write(&dst, b"x").unwrap();
+        let file = fs::File::options().write(true).open(&src).unwrap();
+        let old = UNIX_EPOCH + std::time::Duration::from_millis(1_600_000_000_000);
+        let mut times = fs::FileTimes::new().set_modified(old).set_accessed(old);
+        #[cfg(windows)]
+        {
+            times = std::os::windows::fs::FileTimesExt::set_created(times, old);
+        }
+        file.set_times(times).unwrap();
+        drop(file);
+        crate::infra::file_attrs::set(&src, 0x2); // hidden
+        let mut start = FilePayload::default();
+        Stamp::of_path(&src).put_on(&mut start);
+        let wire: FilePayload = serde_json::from_str(&serde_json::to_string(&start).unwrap()).unwrap();
+        let stamp = Stamp::from_payload(&wire);
+        stamp.apply_times(&fs::File::options().write(true).open(&dst).unwrap());
+        stamp.apply_attrs(&dst);
+        let got = Stamp::of_path(&dst);
+        assert_eq!(got.mtime, Some(1_600_000_000_000));
+        #[cfg(windows)]
+        {
+            assert_eq!(got.ctime, Some(1_600_000_000_000));
+            assert_eq!(got.attrs.map(|a| a & 0x2), Some(0x2));
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn received_files_are_left_out_only_for_their_sender() {

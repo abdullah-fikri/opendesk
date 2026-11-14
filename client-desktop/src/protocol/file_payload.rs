@@ -71,6 +71,14 @@ pub struct FilePayload {
     /// Last write time of the file in Unix milliseconds (`start`); the receiver keeps it. Older peers ignore it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mtime: Option<u64>,
+    /// Creation and last access time in Unix milliseconds (`start`). Older peers omit and ignore them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ctime: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atime: Option<u64>,
+    /// Windows file attributes the receiver keeps (`start`): read-only, hidden and archive only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attrs: Option<u32>,
     /// A copied image instead of files (`offer` to partners with `clipboard-image`): base64 PNG, put straight on
     /// the receiver's clipboard.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -89,6 +97,14 @@ pub struct OfferEntry {
     /// Last write time in Unix milliseconds, kept on paste ("Date Modified"). Older peers omit and ignore it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mtime: Option<u64>,
+    /// Creation and last access time in Unix milliseconds; older peers omit and ignore them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ctime: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atime: Option<u64>,
+    /// Windows file attributes kept on paste: read-only, hidden and archive only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attrs: Option<u32>,
 }
 
 impl FilePayload {

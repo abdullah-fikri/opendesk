@@ -7,7 +7,7 @@
 //! `file-folder` receivers, as folder entries plus files carrying their relative path.
 
 use std::collections::VecDeque;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -422,7 +422,7 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
     expect_ack(&id, ack_tx);
 
     let mut start = FilePayload::start(&id, &wire_name, size);
-    start.mtime = fs::metadata(&path).ok().and_then(|m| super::mtime_ms(&m));
+    super::Stamp::of_path(&path).put_on(&mut start);
     if let Some(t) = &tag {
         start.group = Some(t.group.clone());
         start.rel = Some(t.rel.clone());
@@ -552,7 +552,7 @@ mod tests {
     fn folder_send_round_trip_recreates_tree() {
         let src = temp_tree("send");
         let downloads = env::temp_dir().join(format!("opendesk-recv-{}-{}", std::process::id(), now_ms()));
-        fs::create_dir_all(downloads.join("Project")).unwrap(); // existing folder: the copy must become "Project (1)"
+        std::fs::create_dir_all(downloads.join("Project")).unwrap(); // existing folder: the copy must become "Project (1)"
         *TEST_DOWNLOADS.lock() = Some(downloads.clone());
         super::super::set_partner_caps(PeerCaps { file_folder: true, ..PeerCaps::default() });
         let (ctx, rx) = test_support::context_with_outbox();
@@ -574,7 +574,7 @@ mod tests {
         }
         assert!(finished, "group end marker never arrived");
         let copy = downloads.join("Project (1)");
-        assert_eq!(fs::read(copy.join("src/main.rs")).unwrap(), b"fn main() {}");
+        assert_eq!(std::fs::read(copy.join("src/main.rs")).unwrap(), b"fn main() {}");
         assert_eq!(fs::read(copy.join("src/deep/x.txt")).unwrap(), b"x");
         assert!(copy.join("empty").is_dir());
         assert_eq!(fs::read(downloads.join("loose.txt")).unwrap(), b"12345");
