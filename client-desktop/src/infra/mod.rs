@@ -22,4 +22,5 @@ pub mod thread;
 pub mod tray;
 pub mod user_clipboard;
 pub mod virtual_clipboard;
+pub mod wifi;
 pub mod window;

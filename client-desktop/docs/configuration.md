@@ -37,6 +37,7 @@ Received files go to `%USERPROFILE%\Downloads\OpenDesk` (Windows) or `~/Download
 | `OPENDESK_WS_SNDBUF` | 524288 | Host: socket send buffer in bytes while a hosted session's video goes over the WebSocket relay; `0` leaves the OS default ([hosting](features/hosting.md#capture-loop)). |
 | `OPENDESK_ENCODER_TUNING` | on | Windows host: `0` skips the H.264 encoder's speed preset and VBV limit ([hosting](features/hosting.md#capture-loop)). |
 | `OPENDESK_CAPTURE` | DXGI | Windows: `gdi` forces GDI capture (for machines where Desktop Duplication misbehaves). |
+| `OPENDESK_WIFI_STREAMING` | on | Windows: `0` leaves Wi-Fi alone during sessions instead of requesting media streaming mode ([Wi-Fi streaming mode](features/wifi-streaming.md)). |
 | `OPENDESK_INPUT_ABSOLUTE` | on | Windows host: `0` moves the pointer with `SetCursorPos` instead of absolute `SendInput` (drags then fail in some apps; [hosting](features/hosting.md#input)). |
 | `OPENDESK_OPENH264` | search path | Linux: path of Cisco's `libopenh264-2.6.0-*.so` (see [core-engine](../../core-engine/README.md)). |
 | `OPENDESK_NO_AUTOSTART` | unset | Linux: any value stops the app from writing `~/.config/autostart/opendesk.desktop`. |

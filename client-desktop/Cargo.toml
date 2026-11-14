@@ -36,13 +36,16 @@ ureq = { version = "2.12", default-features = false, features = ["native-tls"] }
 native-tls = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-# Host sound: WASAPI loopback capture (COM). Same pinned version core-engine already builds, so nothing new to
-# download or audit; only these API features are added.
+# Host sound: WASAPI loopback capture (COM); Wi-Fi streaming mode: WLAN types, with wlanapi.dll loaded at run
+# time. Same pinned version core-engine already builds, so nothing new to download or audit; only these API
+# features are added.
 windows = { version = "=0.62.2", features = [
     "Win32_Foundation",
     "Win32_Media_Audio",
+    "Win32_NetworkManagement_WiFi",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_LibraryLoader",
     "Win32_System_Variant",
 ] }
 
