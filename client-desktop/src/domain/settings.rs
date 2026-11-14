@@ -44,6 +44,10 @@ pub struct Settings {
     /// [`Settings::mic_on_at_start`]. Unset (configs before 1.3.0, and every new install) means the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mic_on_at_start: Option<bool>,
+    /// Pointer lock for games (`mouse-relative`, viewer side); read it with [`Settings::pointer_lock`]. Unset
+    /// means on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pointer_lock: Option<bool>,
     /// The version whose "What's new" the user has seen (`domain::whats_new`). Empty: an install from before
     /// 1.3.0 or a new one; then nothing is shown and the running version is stored.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -98,6 +102,7 @@ impl Settings {
             auto_update: true,
             update_url: String::new(),
             mic_on_at_start: None,
+            pointer_lock: None,
             last_seen_version: String::new(),
             show_whats_new: true,
         }
@@ -107,6 +112,12 @@ impl Settings {
     /// included: it has no window, so only `config.json` can turn it off there.
     pub fn mic_on_at_start(&self) -> bool {
         self.mic_on_at_start.unwrap_or(true)
+    }
+
+    /// Whether a game on the host that captures the mouse locks this viewer's pointer (relative motion). Off:
+    /// the mouse always sends absolute positions, as before the feature.
+    pub fn pointer_lock(&self) -> bool {
+        self.pointer_lock.unwrap_or(true)
     }
 
     /// The viewer performance preset; a config from before presets maps its `max_fps` choice.
@@ -253,6 +264,8 @@ mod tests {
         assert!(Settings::new("123456789".into()).mic_on_at_start());
         assert!(!load(r#","mic_on_at_start":false"#).mic_on_at_start());
         assert!(load(r#","mic_on_at_start":true"#).mic_on_at_start());
+        assert!(load("").pointer_lock(), "pointer lock is on unless turned off");
+        assert!(!load(r#","pointer_lock":false"#).pointer_lock());
         // Unset is not written, so the file only changes when the user picks a value.
         assert!(!serde_json::to_string(&Settings::new("123456789".into())).unwrap().contains("mic_on_at_start"));
     }

@@ -92,6 +92,9 @@ export component MainWindow inherits Window {
     // Settings › This device › Audio › Microphone (config.json `mic_on_at_start`).
     in property <bool> mic_on_at_start: true;
     callback save_mic_on_at_start(bool);
+    // Settings › This device › Mouse › Pointer lock (config.json `pointer_lock`).
+    in property <bool> pointer_lock: true;
+    callback save_pointer_lock(bool);
 
     // ---- Dialogs (UI-owned) ----
     in-out property <bool> show_settings: false;
@@ -324,6 +327,8 @@ export component MainWindow inherits Window {
                 reset_device(id) => { root.security_reset(id); }
                 mic_on_at_start: root.mic_on_at_start;
                 set_mic_on_at_start(on) => { root.save_mic_on_at_start(on); }
+                pointer_lock: root.pointer_lock;
+                set_pointer_lock(on) => { root.save_pointer_lock(on); }
             }
 
             if is_admin && monitor_open && !settings_open: MonitorWallView {

@@ -2,7 +2,8 @@
 // - Relay, stored on the relay for every device: Security › Client token manages the relay's device allowlist
 //   (docs/features/device-security.md at the repository root): listed devices receive their token automatically
 //   on their first connection, so clients only need the relay address.
-// - This device, stored in the local config.json: Audio › Microphone (client-desktop/docs/features/voice.md).
+// - This device, stored in the local config.json: Audio › Microphone (client-desktop/docs/features/voice.md) and
+//   Mouse › Pointer lock (games that capture the mouse, `mouse-relative` in docs/protocol.md).
 
 import { SecurityItem } from "../../types.slint";
 import { Theme } from "../../theme.slint";
@@ -157,11 +158,14 @@ component ActionButton inherits Rectangle {
 }
 
 export component SettingsView inherits Rectangle {
-    // 0 = Settings, 1 = Security, 2 = Client token, 3 = Audio, 4 = Microphone.
+    // 0 = Settings, 1 = Security, 2 = Client token, 3 = Audio, 4 = Microphone, 5 = Mouse, 6 = Pointer lock.
     in-out property <int> page: 0;
     // This device: the microphone is on when a session starts.
     in property <bool> mic_on_at_start: true;
     callback set_mic_on_at_start(bool);
+    // This device: a game on the host that captures the mouse locks the pointer here (relative motion).
+    in property <bool> pointer_lock: true;
+    callback set_pointer_lock(bool);
     // The relay supports the device allowlist (known once registered).
     in property <bool> relay_online: false;
     in property <bool> security_supported: false;
@@ -184,13 +188,15 @@ export component SettingsView inherits Rectangle {
 
     // Where Back goes from each page.
     pure function parent_page(p: int) -> int {
-        return p == 2 ? 1 : p == 4 ? 3 : 0;
+        return p == 2 ? 1 : p == 4 ? 3 : p == 6 ? 5 : 0;
     }
     pure function breadcrumb(p: int) -> string {
         return p == 1 ? "Settings  ›  Security"
             : p == 2 ? "Settings  ›  Security  ›  Client token"
             : p == 3 ? "Settings  ›  Audio"
             : p == 4 ? "Settings  ›  Audio  ›  Microphone"
+            : p == 5 ? "Settings  ›  Mouse"
+            : p == 6 ? "Settings  ›  Mouse  ›  Pointer lock"
             : "Settings";
     }
 
@@ -273,6 +279,100 @@ export component SettingsView inherits Rectangle {
                 title: "Audio";
                 subtitle: "Microphone when a session starts";
                 clicked => { root.page = 3; }
+            }
+            NavRow {
+                title: "Mouse";
+                subtitle: "Pointer lock for games on the remote computer";
+                clicked => { root.page = 5; }
+            }
+        }
+
+        // ---- Mouse: items
+        if root.page == 5: VerticalLayout {
+            vertical-stretch: 1;
+            padding: 20px;
+            spacing: 8px;
+            alignment: start;
+            Text {
+                text: "Mouse";
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            Rectangle { height: 6px; }
+            NavRow {
+                title: "Pointer lock";
+                subtitle: "Lock your pointer when a remote game captures the mouse";
+                status: root.pointer_lock ? "ON" : "OFF";
+                status_on: root.pointer_lock;
+                clicked => { root.page = 6; }
+            }
+        }
+
+        // ---- Pointer lock
+        if root.page == 6: VerticalLayout {
+            vertical-stretch: 1;
+            padding: 20px;
+            spacing: 12px;
+            alignment: start;
+            Text {
+                text: "Pointer lock";
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            Text {
+                text: "When a game or 3D program on the remote computer hides and captures the mouse (mouse look), OpenDesk can lock your pointer inside the session window and send movement instead of positions, so turning the camera works as if the mouse were plugged in there. Hold Ctrl+Alt to get your pointer back; click the remote screen to lock it again. Applies at once, also to open sessions.";
+                color: Theme.text-3;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+            Rectangle {
+                height: 56px;
+                background: Theme.surface;
+                border-width: 1px;
+                border-color: Theme.border;
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 12px;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        spacing: 3px;
+                        Text {
+                            text: "Pointer lock for games";
+                            color: Theme.text;
+                            font-size: 12px;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: root.pointer_lock
+                                ? "On: games that capture the mouse get relative movement."
+                                : "Off: the mouse always moves the remote pointer to where yours is, as before.";
+                            color: Theme.text-3;
+                            font-size: 11px;
+                            overflow: elide;
+                        }
+                    }
+                    HorizontalLayout {
+                        width: 120px;
+                        spacing: 4px;
+                        alignment: center;
+                        padding-top: 15px;
+                        padding-bottom: 15px;
+                        Segment {
+                            label: "On";
+                            selected: root.pointer_lock;
+                            clicked => { root.set_pointer_lock(true); }
+                        }
+                        Segment {
+                            label: "Off";
+                            selected: !root.pointer_lock;
+                            clicked => { root.set_pointer_lock(false); }
+                        }
+                    }
+                }
             }
         }
 

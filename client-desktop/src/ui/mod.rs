@@ -38,6 +38,8 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, settings: &Sett
     win.set_gateway_url(settings.gateway_url.as_str().into());
     win.set_performance(settings.performance().index());
     win.set_mic_on_at_start(settings.mic_on_at_start());
+    win.set_pointer_lock(settings.pointer_lock());
+    crate::infra::pointer_lock::set_allowed(settings.pointer_lock());
     win.set_is_admin(ctx.edition == Edition::Admin);
     win.set_active_dashboard_tab(if ctx.edition == Edition::Admin { 1 } else { 0 });
     dashboard_model::set_history(view_model::history_items(&history.records()));

@@ -52,6 +52,9 @@ pub struct HostState {
     held_buttons: AtomicU8,
     /// A host application captured the mouse and the viewer was told (`pointer-lock`): it sends relative motion.
     pub pointer_locked: AtomicBool,
+    /// The viewer turned pointer lock off in its settings (`pointer-lock` `on: false` from it): mouse capture
+    /// by an application is not followed and absolute positions keep working.
+    pub pointer_lock_declined: AtomicBool,
     /// An administrator's monitor wall shows this machine (see [`monitor_stream`]).
     pub monitored: AtomicBool,
     /// Bumped on every monitor-stream start and stop; a stream thread exits once its generation is stale.
@@ -75,6 +78,7 @@ impl Default for HostState {
             held_keys: Mutex::new(Vec::new()),
             held_buttons: AtomicU8::new(0),
             pointer_locked: AtomicBool::new(false),
+            pointer_lock_declined: AtomicBool::new(false),
             monitored: AtomicBool::new(false),
             monitor_generation: AtomicU64::new(0),
         }
@@ -156,6 +160,7 @@ pub fn start(ctx: &Ctx, partner: &str, caps: PeerCaps, mic_muted: bool) {
     ctx.host.p2p_active.store(false, Ordering::SeqCst);
     ctx.host.stats_requested.store(false, Ordering::SeqCst);
     ctx.host.pointer_locked.store(false, Ordering::SeqCst);
+    ctx.host.pointer_lock_declined.store(false, Ordering::SeqCst);
     ctx.host.active.store(true, Ordering::SeqCst);
     let generation = ctx.host.capture_generation.fetch_add(1, Ordering::SeqCst) + 1;
     capture::spawn(Arc::clone(ctx), partner.to_string(), generation);

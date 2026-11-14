@@ -300,6 +300,21 @@ pub fn end_all(ctx: &AppContext) -> Vec<String> {
 
 // ---- Events from a viewed host ----
 
+/// Applies the pointer lock setting to every open session: off releases a held lock and tells each host to
+/// stop following mouse capture; on lets hosts lock again.
+pub fn set_pointer_lock_allowed(ctx: &AppContext, on: bool) {
+    pointer_lock::set_allowed(on);
+    for s in ctx.viewers.all().into_iter().filter(|s| s.is_connected()) {
+        if !on && s.pointer_locked.swap(false, Ordering::SeqCst) {
+            ctx.ui.session_changed(s.id.clone(), SessionChange::Cursor(s.cursor_shape.load(Ordering::SeqCst)));
+        }
+        if file_transfer::caps_of(&s.id).mouse_relative {
+            ctx.send_input(&s.id, InputEvent::PointerLock { on });
+        }
+    }
+    apply_focus(ctx);
+}
+
 /// Applies an event sent by host `sess` (cursor, monitors, microphone, voice quality).
 pub fn on_host_event(ctx: &AppContext, sess: &Session, event: InputEvent) {
     let id = sess.id.clone();
@@ -311,6 +326,10 @@ pub fn on_host_event(ctx: &AppContext, sess: &Session, event: InputEvent) {
             if !sess.pointer_locked.load(Ordering::SeqCst) {
                 ctx.ui.session_changed(id, SessionChange::Cursor(shape));
             }
+        }
+        InputEvent::PointerLock { on: true } if !pointer_lock::is_allowed() => {
+            // Turned off in the settings: the host goes back to absolute positions.
+            ctx.send_input(&id, InputEvent::PointerLock { on: false });
         }
         InputEvent::PointerLock { on } => {
             sess.pointer_locked.store(on, Ordering::SeqCst);

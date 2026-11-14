@@ -361,7 +361,8 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             }
         }
 
-        if caps.mouse_relative && frame_start.duration_since(last_lock_poll) >= LOCK_POLL {
+        let lock_wanted = caps.mouse_relative && !host.pointer_lock_declined.load(Ordering::SeqCst);
+        if lock_wanted && frame_start.duration_since(last_lock_poll) >= LOCK_POLL {
             last_lock_poll = frame_start;
             let captured = pointer_captured();
             // Two equal readings in a row: a game switching windows briefly drops its clip.

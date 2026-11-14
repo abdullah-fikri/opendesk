@@ -6,6 +6,8 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// The user's setting (Settings › Mouse › Pointer lock); off keeps absolute positions, as before the lock.
+static ALLOWED: AtomicBool = AtomicBool::new(true);
 /// The focused host asked for the lock.
 static LOCKED: AtomicBool = AtomicBool::new(false);
 /// The cursor is confined to the viewer window right now.
@@ -22,6 +24,16 @@ pub enum Motion {
     Delta(i32, i32),
     /// Locked, but the user just took the cursor back: show it again.
     Released,
+}
+
+/// Applies the pointer lock setting (read once at start and on every change).
+pub fn set_allowed(on: bool) {
+    ALLOWED.store(on, Ordering::SeqCst);
+}
+
+/// Whether the user lets hosts lock the pointer.
+pub fn is_allowed() -> bool {
+    ALLOWED.load(Ordering::SeqCst)
 }
 
 /// Starts (`on`) or ends the lock the host asked for.

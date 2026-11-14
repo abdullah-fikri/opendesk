@@ -74,6 +74,14 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
         InputEvent::MouseDelta { dx, dy } if host.pointer_locked.load(Ordering::SeqCst) => {
             injector.mouse_move_relative(dx, dy)
         }
+        // From the viewer: its pointer lock setting. Off ends a lock at once (absolute positions apply again);
+        // on lets the capture loop lock again while the application still holds the mouse.
+        InputEvent::PointerLock { on } => {
+            host.pointer_lock_declined.store(!on, Ordering::SeqCst);
+            if !on {
+                host.pointer_locked.store(false, Ordering::SeqCst);
+            }
+        }
         InputEvent::KeyDown { key_code } if key_code > 0 => {
             if key_code == VK_LWIN {
                 logger::info("host.input", "Viewer pressed the Windows key.");

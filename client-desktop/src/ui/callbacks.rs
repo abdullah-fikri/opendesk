@@ -47,7 +47,7 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {
     bind_hosting(win, ctx);
     bind_sessions(win, ctx);
     win.on_dismiss_transfer(|id| transfer_model::remove_finished(&id));
-    bind_device_settings(win);
+    bind_device_settings(win, ctx);
     #[cfg(feature = "admin")]
     bind_monitor_wall(win, ctx);
     #[cfg(feature = "admin")]
@@ -56,7 +56,15 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {
 
 /// Settings › This device: kept in the local `config.json`. Bound in every edition so the settings stay one
 /// code path; only the admin edition shows the page today.
-fn bind_device_settings(win: &MainWindow) {
+fn bind_device_settings(win: &MainWindow, ctx: &Ctx) {
+    let (weak, ctx) = (win.as_weak(), Arc::clone(ctx));
+    win.on_save_pointer_lock(move |on| {
+        settings::set_pointer_lock(on);
+        controller::set_pointer_lock_allowed(&ctx, on);
+        if let Some(w) = weak.upgrade() {
+            w.set_pointer_lock(on);
+        }
+    });
     let weak = win.as_weak();
     win.on_whats_new_closed(settings::whats_new_seen);
     win.on_save_mic_on_at_start(move |on| {

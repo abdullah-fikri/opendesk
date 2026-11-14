@@ -212,7 +212,7 @@ Per platform (see [platforms.md](platforms.md)):
 | `set-mic` | `muted` | either; only `muted: true` is honored |
 | `set-host-sound` | `on` | viewer to host, both listing `audio-system`: at session start and when the viewer toggles host sound. `on: true` streams the host's sound and pauses voice; `false` stops the capture and resumes voice (see [Host sound](#host-sound)) |
 | `cursor-shape` | `shape` (0 hidden, 1 arrow, 2 text, 3 hand, ...) | host to viewer |
-| `pointer-lock` | `on`: a host application (a game with mouse look) hid and confined the cursor, or released it | host to viewer (`mouse-relative`) |
+| `pointer-lock` | `on`: a host application (a game with mouse look) hid and confined the cursor, or released it. From the viewer: its pointer lock setting; `false` makes the host ignore mouse capture (absolute positions) until `true` | both ways (`mouse-relative`) |
 | `mouse-delta` | `dx`, `dy`: relative motion while the pointer is locked; positions of button and wheel events are then ignored | viewer to host |
 | `monitors` | `list[]` (`index`, `width`, `height`, `primary`), `active` | host to viewer |
 | `stats` | `on` | viewer to host: stats overlay shown or hidden |
