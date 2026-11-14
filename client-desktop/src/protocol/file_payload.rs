@@ -68,6 +68,9 @@ pub struct FilePayload {
     /// Ack verdict.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
+    /// Last write time of the file in Unix milliseconds (`start`); the receiver keeps it. Older peers ignore it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtime: Option<u64>,
 }
 
 /// One entry of a clipboard file offer.
@@ -79,6 +82,9 @@ pub struct OfferEntry {
     pub size: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dir: Option<bool>,
+    /// Last write time in Unix milliseconds, kept on paste ("Date Modified"). Older peers omit and ignore it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtime: Option<u64>,
 }
 
 impl FilePayload {

@@ -2,12 +2,12 @@
 //!
 //! Each file is `start`, `chunk`s and `end` with its SHA-256. Chunks are binary messages when the receiver and
 //! the relay both list `file-binary`, else base64 inside JSON (Android, older peers and relays). Pulled
-//! clipboard offers stay JSON: the paste stream reads base64 chunks only. Receivers that advertise `file-ack`
+//! clipboard offers go binary only to receivers that also list `file-pull-bin`. Receivers that advertise `file-ack`
 //! answer `end` with an ACK/NACK; for them "Sent" means verified on the other side. Folders go only to
 //! `file-folder` receivers, as folder entries plus files carrying their relative path.
 
 use std::collections::VecDeque;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -391,7 +391,7 @@ impl Shown {
 /// Sends one file and waits for its verdict.
 fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
     let SendItem { path, id, tag } = item;
-    // Only pulled offers come with the receiver's transfer ID; their paste stream reads JSON chunks only.
+    // Only pulled offers come with the receiver's transfer ID; paste streams up to 1.3.x read JSON chunks only.
     let pulled = id.is_some();
     if !path.is_file() {
         return;
@@ -416,12 +416,13 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
     // Sampled per file: the partner (and its caps) may change while a background transfer runs.
     let caps = caps_of(&link.target);
     let wants_ack = caps.file_ack;
-    let binary = caps.file_binary && link.relay_binary && !pulled;
+    let binary = caps.file_binary && link.relay_binary && (!pulled || caps.file_pull_bin);
     let chunk_size = if binary { BINARY_CHUNK_SIZE } else { CHUNK_SIZE };
     let (ack_tx, ack_rx) = mpsc::channel();
     expect_ack(&id, ack_tx);
 
     let mut start = FilePayload::start(&id, &wire_name, size);
+    start.mtime = fs::metadata(&path).ok().and_then(|m| super::mtime_ms(&m));
     if let Some(t) = &tag {
         start.group = Some(t.group.clone());
         start.rel = Some(t.rel.clone());

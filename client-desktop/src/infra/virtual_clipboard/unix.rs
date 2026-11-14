@@ -15,6 +15,11 @@ pub fn on_transfer(
     None
 }
 
+/// No paste streams, so no binary chunk belongs to one.
+pub fn on_chunk(_from: &str, _id: &str, _offset: u64, _data: &[u8]) -> Option<(Option<String>, Option<bool>)> {
+    None
+}
+
 /// Nothing to abort.
 pub fn abort_pulls() {}
 

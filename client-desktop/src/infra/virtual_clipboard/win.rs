@@ -39,6 +39,7 @@ const DATADIR_GET: u32 = 1;
 const GMEM_MOVEABLE: u32 = 0x0002;
 const GMEM_ZEROINIT: u32 = 0x0040;
 const FD_ATTRIBUTES: u32 = 0x0004;
+const FD_WRITETIME: u32 = 0x0020;
 const FD_FILESIZE: u32 = 0x0040;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const FD_PROGRESSUI: u32 = 0x4000;
@@ -193,6 +194,8 @@ struct OfferFile {
     name: String,
     size: u64,
     dir: bool,
+    /// Last write time from the partner (Unix ms), shown as "Date Modified" after the paste.
+    mtime: Option<u64>,
     /// Index in the partner's list (what a pull asks for); differs from ours when invalid entries were dropped.
     remote: usize,
 }
@@ -252,29 +255,8 @@ pub fn on_transfer(
                 }
             }
             FileAction::Chunk => {
-                let sink = sinks.get_mut(id).unwrap();
-                let bytes = payload
-                    .chunk
-                    .as_deref()
-                    .filter(|b64| b64.len() <= 48_000)
-                    .and_then(from_base64)
-                    .filter(|b| sink.received + b.len() as u64 <= sink.size);
-                match bytes {
-                    Some(bytes) => {
-                        sink.hash.update(&bytes);
-                        sink.received += bytes.len() as u64;
-                        let pct = crate::domain::transfer::percent(sink.received, sink.size);
-                        let status = format!("Pasting {} ({}%)...", sink.name, pct);
-                        // A closed receiver means the paste was cancelled; the remaining bytes are dropped.
-                        let _ = sink.tx.send(SinkMsg::Data(bytes));
-                        (Some(status), None)
-                    }
-                    None => {
-                        let sink = sinks.remove(id).unwrap();
-                        let _ = sink.tx.send(SinkMsg::End(false));
-                        (Some(format!("Paste failed for {}", sink.name)), Some(false))
-                    }
-                }
+                let bytes = payload.chunk.as_deref().filter(|b64| b64.len() <= 48_000).and_then(from_base64);
+                sink_data(sinks, id, bytes)
             }
             FileAction::End => {
                 let sink = sinks.remove(id).unwrap();
@@ -291,6 +273,40 @@ pub fn on_transfer(
             _ => (None, None),
         })
     })
+}
+
+/// Largest binary chunk a paste stream accepts (the sender's `BINARY_CHUNK_SIZE`).
+const MAX_BINARY_CHUNK: usize = 128 * 1024;
+
+/// A binary chunk (`file-pull-bin`) for a paste stream we requested; None when it belongs to no paste. The
+/// relay keeps the order, so `offset` must be exactly where the stream stands.
+pub fn on_chunk(from: &str, id: &str, offset: u64, data: &[u8]) -> Option<(Option<String>, Option<bool>)> {
+    with_sinks(|sinks| {
+        let sink = sinks.get(id).filter(|s| s.from == from)?;
+        let ok = offset == sink.received && data.len() <= MAX_BINARY_CHUNK;
+        Some(sink_data(sinks, id, ok.then(|| data.to_vec())))
+    })
+}
+
+/// Hands one chunk to the paste stream `id`, or fails the paste when `bytes` is None or overruns the size.
+fn sink_data(sinks: &mut HashMap<String, Sink>, id: &str, bytes: Option<Vec<u8>>) -> (Option<String>, Option<bool>) {
+    let sink = sinks.get_mut(id).unwrap();
+    match bytes.filter(|b| sink.received + b.len() as u64 <= sink.size) {
+        Some(bytes) => {
+            sink.hash.update(&bytes);
+            sink.received += bytes.len() as u64;
+            let pct = crate::domain::transfer::percent(sink.received, sink.size);
+            let status = format!("Pasting {} ({}%)...", sink.name, pct);
+            // A closed receiver means the paste was cancelled; the remaining bytes are dropped.
+            let _ = sink.tx.send(SinkMsg::Data(bytes));
+            (Some(status), None)
+        }
+        None => {
+            let sink = sinks.remove(id).unwrap();
+            let _ = sink.tx.send(SinkMsg::End(false));
+            (Some(format!("Paste failed for {}", sink.name)), Some(false))
+        }
+    }
 }
 
 /// Fails every paste in progress (relay connection lost).
@@ -605,6 +621,11 @@ fn global_from_bytes(bytes: &[u8]) -> *mut c_void {
     }
 }
 
+/// Unix milliseconds to FILETIME (100 ns ticks since 1601-01-01 UTC).
+fn unix_ms_to_filetime(ms: u64) -> Option<u64> {
+    ms.checked_mul(10_000)?.checked_add(116_444_736_000_000_000)
+}
+
 fn descriptor_bytes(files: &[OfferFile]) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + files.len() * std::mem::size_of::<FILEDESCRIPTORW>());
     out.extend_from_slice(&(files.len() as u32).to_le_bytes());
@@ -618,6 +639,10 @@ fn descriptor_bytes(files: &[OfferFile]) -> Vec<u8> {
             fd.dw_flags = FD_FILESIZE | FD_PROGRESSUI;
             fd.n_file_size_high = (f.size >> 32) as u32;
             fd.n_file_size_low = f.size as u32;
+        }
+        if let Some(ft) = f.mtime.and_then(unix_ms_to_filetime) {
+            fd.dw_flags |= FD_WRITETIME;
+            fd.ft_last_write_time = FILETIME { low: ft as u32, high: (ft >> 32) as u32 };
         }
         // Names were validated by set_offer (`\` separates folders); replace anything else Explorer cannot create.
         let clean: Vec<u16> = f
@@ -850,7 +875,7 @@ fn parse_offer_files(list: &[OfferEntry]) -> Result<Vec<OfferFile>, String> {
             let comps = safe_rel_path(&f.name)?;
             let dir = f.dir == Some(true);
             let size = if dir { 0 } else { f.size.filter(|s| *s <= MAX_FILE_BYTES)? };
-            Some(OfferFile { name: comps.join("\\"), size, dir, remote })
+            Some(OfferFile { name: comps.join("\\"), size, dir, mtime: f.mtime, remote })
         })
         .collect();
     if files.iter().map(|f| f.size).sum::<u64>() > MAX_TREE_BYTES {
@@ -901,8 +926,13 @@ mod tests {
     fn descriptor_layout_matches_windows() {
         assert_eq!(std::mem::size_of::<FILEDESCRIPTORW>(), 592);
         assert_eq!(std::mem::size_of::<STATSTG>(), 80);
-        let bytes =
-            descriptor_bytes(&[OfferFile { name: "a:b.txt".into(), size: 5_000_000_000, dir: false, remote: 0 }]);
+        let bytes = descriptor_bytes(&[OfferFile {
+            name: "a:b.txt".into(),
+            size: 5_000_000_000,
+            dir: false,
+            mtime: None,
+            remote: 0,
+        }]);
         assert_eq!(bytes.len(), 4 + 592);
         assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), 1);
         let fd = &bytes[4..];
@@ -910,6 +940,18 @@ mod tests {
         assert_eq!(u32::from_le_bytes(fd[64..68].try_into().unwrap()), 1); // size high
         let name: Vec<u16> = fd[72..86].chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         assert_eq!(String::from_utf16_lossy(&name), "a_b.txt");
+    }
+
+    #[test]
+    fn descriptor_carries_write_time() {
+        // 2024-01-01T00:00:00Z = 1_704_067_200_000 ms = FILETIME 133_485_408_000_000_000.
+        let file = OfferFile { name: "a.txt".into(), size: 1, dir: false, mtime: Some(1_704_067_200_000), remote: 0 };
+        let fd = &descriptor_bytes(&[file])[4..];
+        assert_eq!(u32::from_le_bytes(fd[0..4].try_into().unwrap()), FD_FILESIZE | FD_PROGRESSUI | FD_WRITETIME);
+        let low = u32::from_le_bytes(fd[56..60].try_into().unwrap()) as u64;
+        let high = u32::from_le_bytes(fd[60..64].try_into().unwrap()) as u64;
+        assert_eq!(high << 32 | low, 133_485_408_000_000_000);
+        assert_eq!(unix_ms_to_filetime(u64::MAX), None);
     }
 
     /// Puts `offer` on the clipboard, pastes it with Explorer into a fresh temp folder and plays the partner,
@@ -1083,7 +1125,7 @@ mod tests {
         let kept: Vec<(&str, usize, bool)> = files.iter().map(|f| (f.name.as_str(), f.remote, f.dir)).collect();
         assert_eq!(kept, vec![("ok.txt", 4, false), ("d", 6, true)]);
         let too_many: Vec<OfferEntry> =
-            (0..10_001).map(|i| OfferEntry { name: format!("f{i}"), size: Some(0), dir: None }).collect();
+            (0..10_001).map(|i| OfferEntry { name: format!("f{i}"), size: Some(0), ..Default::default() }).collect();
         assert!(parse_offer_files(&too_many).is_err());
     }
 
@@ -1093,7 +1135,7 @@ mod tests {
         let offer = Offer {
             from: "111".into(),
             offer_id: "of_d".into(),
-            files: vec![OfferFile { name: "d".into(), size: 0, dir: true, remote: 0 }],
+            files: vec![OfferFile { name: "d".into(), size: 0, dir: true, mtime: None, remote: 0 }],
             tx_out,
         };
         let obj =
@@ -1120,7 +1162,7 @@ mod tests {
         let offer = Offer {
             from: "111".into(),
             offer_id: "of_1".into(),
-            files: vec![OfferFile { name: "x.bin".into(), size: 4, dir: false, remote: 0 }],
+            files: vec![OfferFile { name: "x.bin".into(), size: 4, dir: false, mtime: None, remote: 0 }],
             tx_out,
         };
         let stream = open_pull(&offer, 0);
@@ -1146,5 +1188,41 @@ mod tests {
             assert_eq!(&buf[..n as usize], b"abcd");
             stream_release(stream);
         }
+    }
+
+    #[test]
+    fn binary_chunks_feed_the_stream_in_order_only() {
+        let (tx_out, _rx_out) = mpsc::channel();
+        let offer = Offer {
+            from: "111".into(),
+            offer_id: "of_2".into(),
+            files: vec![OfferFile { name: "y.bin".into(), size: 6, dir: false, mtime: None, remote: 0 }],
+            tx_out,
+        };
+        let stream = open_pull(&offer, 0);
+        let tid = unsafe { (*(stream as *const PullStream)).tid.clone() };
+        assert!(on_chunk("999", &tid, 0, b"abc").is_none(), "other peer must not feed the stream");
+        assert!(on_chunk("111", "unknown", 0, b"abc").is_none(), "not a paste stream: normal receiver");
+        on_transfer("111", FileAction::Start, &tid, &payload(json!({ "size": 6 })));
+        assert_eq!(on_chunk("111", &tid, 0, b"abc").unwrap().1, None);
+        on_transfer("111", FileAction::Chunk, &tid, &payload(json!({ "chunk": core_engine::codec::to_base64(b"d") })));
+        assert_eq!(on_chunk("111", &tid, 4, b"ef").unwrap().1, None);
+        let sha: String = Sha256::digest(b"abcdef").iter().map(|b| format!("{b:02x}")).collect();
+        let (_, ack) = on_transfer("111", FileAction::End, &tid, &payload(json!({ "sha256": sha }))).unwrap();
+        assert_eq!(ack, Some(true));
+        let mut buf = [0u8; 8];
+        let mut n = 0u32;
+        unsafe {
+            assert_eq!(stream_read(stream, buf.as_mut_ptr() as *mut c_void, 8, &mut n), S_OK);
+            assert_eq!(&buf[..n as usize], b"abcdef");
+            stream_release(stream);
+        }
+
+        // A gap (wrong offset) fails the paste.
+        let stream = open_pull(&offer, 0);
+        let tid = unsafe { (*(stream as *const PullStream)).tid.clone() };
+        assert_eq!(on_chunk("111", &tid, 2, b"cd").unwrap().1, Some(false));
+        assert!(on_chunk("111", &tid, 0, b"ab").is_none(), "failed stream is gone");
+        unsafe { stream_release(stream) };
     }
 }

@@ -15,6 +15,9 @@ pub const FILE_GROUP: &str = "file-group";
 /// File chunks as binary messages instead of base64 JSON. From a client: it accepts them; from the relay: it
 /// forwards them. Used only when both the partner and the relay list it.
 pub const FILE_BINARY: &str = "file-binary";
+/// With `file-binary`: bytes of a pulled (pasted) offer may arrive as binary chunks too. Peers up to 1.3.x read
+/// paste streams from JSON only.
+pub const FILE_PULL_BIN: &str = "file-pull-bin";
 /// The viewer draws its own cursor in the host's shape.
 pub const CURSOR_SHAPE: &str = "cursor-shape";
 /// Framed key/delta video.
@@ -84,6 +87,8 @@ pub struct PeerCaps {
     pub file_group: bool,
     /// The partner accepts binary file chunks (the relay must list `file-binary` too, see [`RelayCaps`]).
     pub file_binary: bool,
+    /// Pulled offers may be sent in binary chunks ([`FILE_PULL_BIN`]); implies `file_binary`.
+    pub file_pull_bin: bool,
     pub cursor_shape: bool,
     pub video_delta: bool,
     pub video_h264: bool,
@@ -118,6 +123,7 @@ impl PeerCaps {
             file_folder: has(FILE_FOLDER),
             file_group: has(FILE_FOLDER) && has(FILE_GROUP),
             file_binary: has(FILE_BINARY),
+            file_pull_bin: has(FILE_BINARY) && has(FILE_PULL_BIN),
             cursor_shape: has(CURSOR_SHAPE),
             video_delta: has(VIDEO_DELTA),
             video_h264: has(VIDEO_H264),

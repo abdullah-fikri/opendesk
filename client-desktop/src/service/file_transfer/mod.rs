@@ -62,6 +62,7 @@ static PARTNER_CAPS: Mutex<PeerCaps> = Mutex::new(PeerCaps {
     file_folder: false,
     file_group: false,
     file_binary: false,
+    file_pull_bin: false,
     cursor_shape: false,
     video_delta: false,
     video_h264: false,
@@ -285,6 +286,12 @@ fn now_micros() -> u128 {
 /// Lowercase hex of a SHA-256 digest.
 fn hex(digest: &[u8]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Last write time in Unix milliseconds (`mtime` on offers and transfer starts).
+pub(super) fn mtime_ms(meta: &std::fs::Metadata) -> Option<u64> {
+    let since = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    u64::try_from(since.as_millis()).ok()
 }
 
 #[cfg(test)]

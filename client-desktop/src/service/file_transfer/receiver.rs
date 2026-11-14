@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use core_engine::codec::from_base64;
 use sha2::{Digest, Sha256};
@@ -59,6 +59,8 @@ struct Incoming {
     /// Files inside a folder transfer: (target folder, file name, group key). The clipboard is only updated
     /// once the whole group has arrived.
     dest: Option<(PathBuf, String, String)>,
+    /// Sender's last write time, applied once the file is complete.
+    mtime: Option<SystemTime>,
 }
 
 /// A folder transfer in progress (`group` on start messages).
@@ -366,6 +368,7 @@ impl FileReceiver {
                         last_activity: Instant::now(),
                         shown_percent: 0,
                         dest,
+                        mtime: payload.mtime.map(|ms| UNIX_EPOCH + Duration::from_millis(ms)),
                     },
                 );
                 self.show_badge(ctx);
@@ -451,6 +454,10 @@ impl FileReceiver {
         if !is_safe_id(chunk.id) {
             return (None, None);
         }
+        // Binary bytes for a paste stream we requested (`file-pull-bin`).
+        if let Some(result) = virtual_clipboard::on_chunk(from, chunk.id, chunk.offset, chunk.data) {
+            return result;
+        }
         let key = format!("{from}:{}", chunk.id);
         if self.completed_ids.contains_key(&key) {
             return (None, None);
@@ -514,7 +521,7 @@ impl FileReceiver {
         key: String,
         allow_auto_paste: bool,
     ) -> Outcome {
-        let Some(Incoming { mut file, path: staging, name, received, total, hash, dest, .. }) =
+        let Some(Incoming { mut file, path: staging, name, received, total, hash, dest, mtime, .. }) =
             self.active_files.remove(&key)
         else {
             // Unknown transfer (expired or rejected start): NACK so the sender does not wait for a timeout.
@@ -522,6 +529,9 @@ impl FileReceiver {
         };
         let checksum_ok = payload.sha256.as_deref() == Some(hex(&hash.finalize()).as_str());
         let written = received == total && checksum_ok && file.flush().is_ok() && file.sync_all().is_ok();
+        if written && let Some(t) = mtime {
+            let _ = file.set_modified(t); // "Date Modified" as on the sender; cosmetic, so failures are ignored
+        }
         drop(file);
         let fail = |reason: &str| {
             progress(ctx.ui.as_ref(), &key, &name, received, total, TransferState::Failed(reason.into()))
