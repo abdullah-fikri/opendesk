@@ -151,7 +151,7 @@ pub struct WallView {
 pub enum TransferState {
     /// Bytes are moving.
     Active,
-    /// Every byte was sent; waiting for the receiver to verify it.
+    /// Every byte reached the relay; the receiver is saving and verifying it ("Finishing").
     Verifying,
     Done,
     Failed(String),

@@ -144,6 +144,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `file-ack` | client | Answers `end` with an `ack`. |
 | `file-offer` | client + relay | Copy-paste of files by offer and pull. |
 | `file-folder` | client | Folder transfers (`group`/`rel`). |
+| `file-group` | client, with `file-folder` | Several loose files may arrive as one group, closed by a bare group end (below), and are put on the clipboard and pasted once. Listed late (relays up to 1.2.0 may drop it, which only sends loose files one by one). |
 | `file-binary` | client + relay | File chunks as binary messages (`0x12`, below) instead of base64 JSON. The relay sends them only to clients that list it. |
 | `cursor-shape` | client | Draws its own cursor from `cursor-shape` events; the host stops painting it. |
 | `video-delta` | client | Framed key/delta video; without it the host sends plain JPEGs. |
@@ -170,7 +171,7 @@ Per platform (see [platforms.md](platforms.md)):
 
 - Windows: `file-ack`, `file-offer`, `file-folder`, `file-binary`, `cursor-shape`, `video-delta`, `frame-stamp`,
   `video-h264` (when the Media Foundation decoder exists), `audio-opus`, `audio-system`, `p2p.v1`, `multi-session`,
-  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`). No `host-features`: Windows hosts have every host control.
+  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`), `file-group`. No `host-features`: Windows hosts have every host control.
 - Linux: the same without `file-offer` and `audio-system`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
 - Android: `viewer-only`, `video-delta` and `e2e`, so it receives framed JPEG video (no H.264) and single-session
@@ -230,6 +231,12 @@ hosts of any version understand each other's `host-stats`; `encodeMs` keeps its 
 
 A grant lets a transfer finish after its screen session ends, for 60 s of idleness, but only between the
 same two connections. At most 8 grants per sender. See `client-desktop/docs/features/file-transfer.md`.
+
+Loose files to a `file-group` receiver: each file's `start` carries `group` and its plain name as `rel`, and
+after the last file comes a bare group end, a `start` with `dir: true`, `group`, `groupEnd: true`, `size: 0`, a
+placeholder `name` and no `rel`. The receiver closes only a group the same sender opened, answers with an `ack`
+and puts every file it saved on its clipboard at once. Receivers without `file-group` get one transfer per file,
+exactly as before.
 
 When the receiver and the relay both list `file-binary`, chunks are binary messages (below) and everything else
 stays JSON. The relay authorizes a binary chunk exactly like a JSON one: the grant for this sender, `id` and

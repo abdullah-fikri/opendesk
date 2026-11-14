@@ -2,6 +2,7 @@
 
 mod connection;
 mod dispatcher;
+mod file_pacer;
 mod resume;
 mod signal_pacer;
 

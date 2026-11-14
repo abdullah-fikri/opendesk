@@ -19,6 +19,7 @@ pub mod send_gate;
 pub mod storage;
 pub mod system_service;
 pub mod thread;
+pub mod transfer_badge;
 pub mod tray;
 pub mod user_clipboard;
 pub mod virtual_clipboard;

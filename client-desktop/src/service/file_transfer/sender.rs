@@ -12,26 +12,28 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use core_engine::codec::to_base64;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
 use super::{
-    BINARY_CHUNK_SIZE, CHUNK_SIZE, IN_FLIGHT_CHUNKS, caps_of, chunk_units, epoch, expect_ack, forget_ack, hex,
-    now_micros, tree,
+    BINARY_CHUNK_SIZE, CHUNK_SIZE, Delivery, IN_FLIGHT_CHUNKS, caps_of, chunk_units, epoch, expect_ack, forget_ack,
+    hex, now_micros, tree,
 };
-use crate::domain::transfer::{MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, percent};
+use crate::domain::transfer::{MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, percent, safe_rel_path};
 use crate::infra::logger;
-use crate::protocol::{ClientMessage, FilePayload, Outgoing, binary};
+use crate::protocol::{ClientMessage, FileMark, FilePayload, Outgoing, binary};
 use crate::service::context::AppContext;
 use crate::service::ui_port::{TransferState, TransferUpdate, UiPort};
 
 /// The sender waits this long for the receiver's verdict after queueing `end`.
 const ACK_TIMEOUT: Duration = Duration::from_secs(120);
+/// How often a sender waiting for the verdict refreshes its progress.
+const PROGRESS_POLL: Duration = Duration::from_millis(250);
 /// Most file messages allowed in the connection queue (~1.5 MB), in [`chunk_units`], before the sender waits.
 const MAX_QUEUED_CHUNKS: usize = 48;
 /// Status shown when a selection contained folders the partner cannot receive.
@@ -84,18 +86,25 @@ struct Link {
 
 impl Link {
     fn queue(&self, payload: FilePayload, status: Option<String>) {
+        self.queue_marked(payload, status, None);
+    }
+
+    /// Queues `payload`; `mark` comes back through [`super::set_delivered`] once the relay has read it.
+    fn queue_marked(&self, payload: FilePayload, status: Option<String>, mark: Option<FileMark>) {
         IN_FLIGHT_CHUNKS.fetch_add(1, Ordering::SeqCst);
-        let _ = self.outbox.send(Outgoing::File { message: ClientMessage::file(&self.target, payload), status });
+        let message = ClientMessage::file(&self.target, payload);
+        let _ = self.outbox.send(Outgoing::File { message, status, mark });
     }
 
     /// Queues `data` at `offset` of transfer `id`: binary when `binary`, else base64 JSON.
-    fn queue_chunk(&self, binary: bool, id: &str, offset: u64, data: &[u8], status: Option<String>) {
+    fn queue_chunk(&self, binary: bool, id: &str, offset: u64, data: &[u8], mark: FileMark) {
         match binary.then(|| binary::file_chunk(id, offset, data)).flatten() {
             Some(frame) => {
                 IN_FLIGHT_CHUNKS.fetch_add(chunk_units(frame.len()), Ordering::SeqCst);
-                let _ = self.outbox.send(Outgoing::FileChunk { target: self.target.clone(), frame, status });
+                let target = self.target.clone();
+                let _ = self.outbox.send(Outgoing::FileChunk { target, frame, status: None, mark: Some(mark) });
             }
-            None => self.queue(FilePayload::chunk(id, to_base64(data)), status),
+            None => self.queue_marked(FilePayload::chunk(id, to_base64(data)), None, Some(mark)),
         }
     }
 
@@ -257,11 +266,11 @@ fn run(ctx: &AppContext, paths: Vec<PathBuf>, target: String, auto_paste: bool) 
 }
 
 /// Turns selected paths into send items: `(items, folders_skipped)` or an error status. Without folders the
-/// list is exactly the selection.
+/// list is the selection: one group for `file-group` receivers (several files), else one transfer per file.
 fn expand(paths: Vec<PathBuf>, target: &str) -> Result<(Vec<SendItem>, bool), String> {
     let plain = |path: PathBuf| SendItem { path, id: None, tag: None };
     if !paths.iter().any(|p| p.is_dir()) {
-        return Ok((paths.into_iter().map(plain).collect(), false));
+        return Ok((group_loose(paths, caps_of(target).file_group), false));
     }
     if !caps_of(target).file_folder {
         logger::info("file_transfer", "Partner lacks file-folder; skipping folders in the selection.");
@@ -286,11 +295,43 @@ fn expand(paths: Vec<PathBuf>, target: &str) -> Result<(Vec<SendItem>, bool), St
     Ok((items, false))
 }
 
-/// Sends a folder entry: one `start` with `dir`, answered by an ACK; no bytes follow.
+/// Loose files as send items. With `grouped` (the receiver lists `file-group`) several files travel as one
+/// group whose items carry their plain name as `rel`, closed by a bare group end (no `rel`), so the receiver
+/// publishes and pastes them once instead of each on its own. Names the receiver's folder rules would reject
+/// keep the old one-by-one path, where they are only sanitized.
+fn group_loose(paths: Vec<PathBuf>, grouped: bool) -> Vec<SendItem> {
+    let name = |p: &PathBuf| p.file_name().and_then(|n| n.to_str()).map(str::to_string);
+    let groupable = grouped
+        && paths.len() > 1
+        && paths.iter().all(|p| name(p).is_some_and(|n| safe_rel_path(&n).is_some_and(|c| c.len() == 1)));
+    if !groupable {
+        return paths.into_iter().map(|path| SendItem { path, id: None, tag: None }).collect();
+    }
+    let group = format!("fg_{}", now_micros());
+    let marker = paths[0].clone();
+    let mut items: Vec<SendItem> = paths
+        .into_iter()
+        .map(|path| {
+            let rel = name(&path).unwrap_or_default();
+            SendItem { path, id: None, tag: Some(FolderTag { group: group.clone(), rel, dir: false, end: false }) }
+        })
+        .collect();
+    items.push(SendItem {
+        path: marker,
+        id: None,
+        tag: Some(FolderTag { group, rel: String::new(), dir: true, end: true }),
+    });
+    logger::info("file_transfer", &format!("Sending {} loose files as one group.", items.len() - 1));
+    items
+}
+
+/// Sends a folder entry: one `start` with `dir`, answered by an ACK; no bytes follow. An end marker with an
+/// empty `rel` is the bare group end of loose files.
 fn send_folder_entry(link: &Link, tag: &FolderTag, auto_paste: bool) {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let id = format!("fd_{}_{}", now_micros(), SEQ.fetch_add(1, Ordering::Relaxed));
-    let name = tag.rel.rsplit('\\').next().unwrap_or(&tag.rel);
+    let bare = tag.rel.is_empty();
+    let name = if bare { "files" } else { tag.rel.rsplit('\\').next().unwrap_or(&tag.rel) };
     let wants_ack = caps_of(&link.target).file_ack;
     let (ack_tx, ack_rx) = mpsc::channel();
     if wants_ack {
@@ -299,7 +340,7 @@ fn send_folder_entry(link: &Link, tag: &FolderTag, auto_paste: bool) {
     let payload = FilePayload {
         dir: Some(true),
         group: Some(tag.group.clone()),
-        rel: Some(tag.rel.clone()),
+        rel: (!bare).then(|| tag.rel.clone()),
         group_end: Some(tag.end),
         auto_paste: Some(auto_paste),
         ..FilePayload::start(&id, name, 0)
@@ -309,6 +350,7 @@ fn send_folder_entry(link: &Link, tag: &FolderTag, auto_paste: bool) {
         return;
     }
     match ack_rx.recv_timeout(ACK_TIMEOUT) {
+        Ok(true) if tag.end && bare => link.status("Sent: all files".into()),
         Ok(true) if tag.end => link.status(format!("Sent: {}", tag.rel)),
         Ok(true) => {}
         Ok(false) => link.status(format!("Could not send folder {}", tag.rel)),
@@ -316,6 +358,33 @@ fn send_folder_entry(link: &Link, tag: &FolderTag, auto_paste: bool) {
             forget_ack(&id);
             link.status(format!("Could not send folder {}: no confirmation from the receiver", tag.rel));
         }
+    }
+}
+
+/// What the transfer list last showed for one sent file, so it is updated only when something changed.
+#[derive(Default, PartialEq)]
+struct Shown {
+    percent: u64,
+    finishing: bool,
+}
+
+impl Shown {
+    /// Shows `delivered` of `size` bytes: active with a percentage, or finishing once every byte reached the
+    /// relay (the receiver still writes and verifies it).
+    fn update(&mut self, link: &Link, id: &str, label: &str, delivered: u64, size: u64) {
+        let delivered = delivered.min(size);
+        let now = Shown { percent: percent(delivered, size), finishing: delivered == size };
+        if now == *self {
+            return;
+        }
+        if now.finishing {
+            link.progress(id, label, size, size, TransferState::Verifying);
+            link.status(format!("Finishing: {label}"));
+        } else {
+            link.progress(id, label, delivered, size, TransferState::Active);
+            link.status(format!("Sending {label} ({}%)...", now.percent));
+        }
+        *self = now;
     }
 }
 
@@ -357,15 +426,19 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
         start.group = Some(t.group.clone());
         start.rel = Some(t.rel.clone());
     }
+    // Progress counts what reached the relay, not what was queued: up to the whole queue may still be on its
+    // way, which showed as "stuck at 99%".
+    let key = format!("{}:{id}", link.target);
+    let delivery = Delivery::track(key.clone());
+    let mark = |done: u64| FileMark { key: key.clone(), done };
+    let mut shown = Shown::default();
     link.queue(start, Some(format!("Sending {label} (0%)...")));
     link.progress(&id, &label, 0, size, TransferState::Active);
 
     let mut buf = vec![0u8; chunk_size];
     let mut hash = Sha256::new();
     let mut sent = 0u64;
-    let mut chunks = 0usize;
     let mut aborted = false;
-    let mut shown_percent = 0;
     loop {
         // An early NACK (receiver rejected start) stops sending chunks the relay would drop anyway.
         if epoch() != started || ack_rx.try_recv() == Ok(false) {
@@ -374,6 +447,7 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
         }
         while IN_FLIGHT_CHUNKS.load(Ordering::Relaxed) > MAX_QUEUED_CHUNKS && epoch() == started {
             thread::sleep(Duration::from_millis(8));
+            shown.update(link, &id, &label, delivery.bytes(), size);
         }
         if epoch() != started {
             aborted = true;
@@ -390,14 +464,8 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
                 hash.update(&buf[..n]);
                 let offset = sent;
                 sent += n as u64;
-                chunks += 1;
-                let status = (size > 0 && (binary || chunks.is_multiple_of(4) || sent == size))
-                    .then(|| format!("Sending {label} ({}%)...", percent(sent, size)));
-                link.queue_chunk(binary, &id, offset, &buf[..n], status);
-                if percent(sent, size) != shown_percent {
-                    shown_percent = percent(sent, size);
-                    link.progress(&id, &label, sent, size, TransferState::Active);
-                }
+                link.queue_chunk(binary, &id, offset, &buf[..n], mark(sent));
+                shown.update(link, &id, &label, delivery.bytes(), size);
                 thread::sleep(Duration::from_millis(3));
             }
             Err(e) => {
@@ -413,13 +481,25 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
         return link.fail(&id, &label, size, format!("Could not send {label}"));
     }
 
-    link.queue(
+    link.queue_marked(
         FilePayload::end(&id, &wire_name, hex(&hash.finalize()), auto_paste),
         Some(format!("Waiting for confirmation: {label}")),
+        Some(mark(size)),
     );
     if wants_ack {
-        link.progress(&id, &label, size, size, TransferState::Verifying);
-        match ack_rx.recv_timeout(ACK_TIMEOUT) {
+        // Bytes still on their way keep counting; once all reached the relay the row says "Finishing" while
+        // the receiver writes, syncs and verifies the file.
+        let deadline = Instant::now() + ACK_TIMEOUT;
+        let verdict = loop {
+            match ack_rx.recv_timeout(PROGRESS_POLL) {
+                Ok(ok) => break Ok(ok),
+                Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => {
+                    shown.update(link, &id, &label, delivery.bytes(), size);
+                }
+                Err(e) => break Err(e),
+            }
+        };
+        match verdict {
             Ok(true) => {
                 logger::info("file_transfer", &format!("Sent and confirmed: {label}"));
                 link.progress(&id, &label, size, size, TransferState::Done);
@@ -456,7 +536,7 @@ mod tests {
     use crate::protocol::FileAction;
     use crate::service::file_transfer::receiver::{FileReceiver, tests::TEST_DOWNLOADS};
     use crate::service::file_transfer::tree::tests::temp_tree;
-    use crate::service::file_transfer::{RECEIVED_CLIPBOARD, now_ms};
+    use crate::service::file_transfer::{now_ms, without_echoes};
     use crate::service::test_support;
     use std::{env, fs};
 
@@ -494,11 +574,8 @@ mod tests {
         assert!(copy.join("empty").is_dir());
         assert_eq!(fs::read(downloads.join("loose.txt")).unwrap(), b"12345");
         assert_eq!(fs::read_dir(downloads.join("Project")).unwrap().count(), 0, "existing folder untouched");
-        let ours = RECEIVED_CLIPBOARD.lock().clone();
-        assert_eq!(
-            ours,
-            vec![copy.to_string_lossy().to_string(), downloads.join("loose.txt").to_string_lossy().to_string()]
-        );
+        let published = vec![copy.clone(), downloads.join("loose.txt")];
+        assert!(without_echoes("222222222", published).is_empty(), "received items are never sent back");
         *TEST_DOWNLOADS.lock() = None;
         let _ = fs::remove_dir_all(src);
         let _ = fs::remove_dir_all(downloads);
@@ -536,6 +613,23 @@ mod tests {
             let _ = done_tx.send(99);
         }));
         assert_eq!(done_rx.recv_timeout(Duration::from_secs(5)).unwrap(), 99);
+    }
+
+    /// Several loose files go to a `file-group` receiver as one group closed by a bare end; one file, older
+    /// receivers and names the folder rules reject keep the one-by-one path.
+    #[test]
+    fn loose_files_travel_as_one_group_only_to_receivers_that_know_it() {
+        let paths = vec![PathBuf::from("x").join("a.txt"), PathBuf::from("y").join("b.pdf")];
+        let items = group_loose(paths.clone(), true);
+        let tags: Vec<(&str, bool, bool)> =
+            items.iter().map(|i| i.tag.as_ref().map(|t| (t.rel.as_str(), t.dir, t.end)).unwrap()).collect();
+        assert_eq!(tags, vec![("a.txt", false, false), ("b.pdf", false, false), ("", true, true)]);
+        let group = &items[0].tag.as_ref().unwrap().group;
+        assert!(items.iter().all(|i| &i.tag.as_ref().unwrap().group == group));
+        assert!(group_loose(paths.clone(), false).iter().all(|i| i.tag.is_none()), "1.3.x receivers");
+        assert!(group_loose(paths[..1].to_vec(), true).iter().all(|i| i.tag.is_none()), "a single file");
+        let odd = vec![PathBuf::from("x").join("CON"), PathBuf::from("x").join("b.pdf")];
+        assert!(group_loose(odd, true).iter().all(|i| i.tag.is_none()), "a device name stays sanitized");
     }
 
     #[test]

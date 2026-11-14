@@ -188,6 +188,7 @@ impl Connection {
         }
         let p2p_ok = relay.p2p_signal && caps.p2p && p2p::enabled();
         logger::info("relay", &format!("Session started: partner={target} role={role} p2p={p2p_ok}"));
+        file_transfer::log_session_path(target, &caps, relay.file_offer, is_host);
 
         privacy::reset_host_privacy();
         ctx.voice.is_session_active.store(true, Ordering::SeqCst);

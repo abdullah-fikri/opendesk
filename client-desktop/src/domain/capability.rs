@@ -9,6 +9,9 @@ pub const FILE_ACK: &str = "file-ack";
 pub const FILE_OFFER: &str = "file-offer";
 /// Folder transfer (relative paths, `group`/`rel`).
 pub const FILE_FOLDER: &str = "file-folder";
+/// With `file-folder`: loose files (no folder) may arrive as one group, closed by a bare group end, so the
+/// receiver puts them on its clipboard and pastes them once.
+pub const FILE_GROUP: &str = "file-group";
 /// File chunks as binary messages instead of base64 JSON. From a client: it accepts them; from the relay: it
 /// forwards them. Used only when both the partner and the relay list it.
 pub const FILE_BINARY: &str = "file-binary";
@@ -77,6 +80,8 @@ pub struct PeerCaps {
     /// Offers need relay support too, so this is the partner's capability AND the relay's.
     pub file_offer: bool,
     pub file_folder: bool,
+    /// Loose files may go to the partner as one group ([`FILE_GROUP`]).
+    pub file_group: bool,
     /// The partner accepts binary file chunks (the relay must list `file-binary` too, see [`RelayCaps`]).
     pub file_binary: bool,
     pub cursor_shape: bool,
@@ -111,6 +116,7 @@ impl PeerCaps {
             file_ack: has(FILE_ACK),
             file_offer: has(FILE_OFFER) && relay_offer,
             file_folder: has(FILE_FOLDER),
+            file_group: has(FILE_FOLDER) && has(FILE_GROUP),
             file_binary: has(FILE_BINARY),
             cursor_shape: has(CURSOR_SHAPE),
             video_delta: has(VIDEO_DELTA),
@@ -225,6 +231,14 @@ mod tests {
             assert_eq!(PeerCaps::from_list(&[max_fps_cap(30), p.cap().to_string()], true).performance, p);
         }
         assert_eq!(PeerCaps::from_list(&["perf-ultra".to_string()], true).performance, Performance::Medium);
+    }
+
+    #[test]
+    fn loose_file_groups_need_folder_support_too() {
+        let caps = |list: &[&str]| PeerCaps::from_list(&list.iter().map(|c| c.to_string()).collect::<Vec<_>>(), true);
+        assert!(caps(&[FILE_FOLDER, FILE_GROUP]).file_group);
+        assert!(!caps(&[FILE_GROUP]).file_group);
+        assert!(!caps(&[FILE_FOLDER]).file_group, "1.3.x receivers get loose files one by one");
     }
 
     #[test]

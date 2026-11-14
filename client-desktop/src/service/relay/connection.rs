@@ -23,13 +23,14 @@ use crate::domain::settings::{self, normalize_gateway_url};
 use crate::domain::{capability, frame_rate};
 use crate::infra::e2e::{self, E2e};
 use crate::infra::p2p::{self, P2p};
-use crate::infra::{autostart, device, logger, power, storage, virtual_clipboard, window};
-use crate::protocol::{ClientMessage, FilePayload, InputEvent, Outgoing, ServerMessage, binary};
+use crate::infra::{device, logger, power, storage, virtual_clipboard, window};
+use crate::protocol::{ClientMessage, FileMark, FilePayload, InputEvent, Outgoing, ServerMessage, binary};
 use crate::service::context::Ctx;
 use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS, chunk_units};
 use crate::service::ui_port::{RelayStatus, SessionChange};
 use crate::service::viewer::decoder;
 
+use super::file_pacer::FilePacer;
 use super::resume::{self, Resume};
 use super::signal_pacer::SignalPacer;
 
@@ -83,6 +84,7 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
             ctx,
             outbox,
             files: VecDeque::new(),
+            pacer: FilePacer::new(),
             receiver: FileReceiver::new(),
             p2p_input_tx: input_tx,
             p2p_input: input_rx,
@@ -118,6 +120,10 @@ struct QueuedFile {
     message: Message,
     /// Its weight in `IN_FLIGHT_CHUNKS`.
     units: usize,
+    /// Its size on the wire, charged to the file rate.
+    bytes: usize,
+    /// Progress of its transfer, reported once the relay has read it.
+    mark: Option<FileMark>,
     status: Option<String>,
 }
 
@@ -153,6 +159,8 @@ pub(super) struct Connection {
     outbox: Receiver<Outgoing>,
     /// File messages waiting their turn behind video and voice.
     files: VecDeque<QueuedFile>,
+    /// Paces `files` by the relay round trip (see `file_pacer.rs`).
+    pacer: FilePacer,
     pub(super) receiver: FileReceiver,
     /// Input that arrived over a P2P path (host side).
     pub(super) p2p_input_tx: Sender<InputEvent>,
@@ -268,6 +276,7 @@ impl Connection {
                 self.pump_monitor(&mut socket);
             }
             let mut status = self.pump_files(&mut socket, partner.is_empty());
+            self.pacer.poll(&mut socket, !self.files.is_empty(), Instant::now());
             if last_expire.elapsed() >= Duration::from_secs(1) {
                 last_expire = Instant::now();
                 status = self.receiver.expire_stale(ctx.ui.as_ref(), last_expire).or(status);
@@ -426,11 +435,10 @@ impl Connection {
     fn register_message(&self, resume_token: Option<String>) -> ClientMessage {
         let edition = self.ctx.edition;
         let mut caps = vec![capability::FILE_ACK];
-        // Clipboard file offers need Explorer's virtual files: Windows only, and not from the service's SYSTEM
-        // agent, whose clipboard objects the user's Explorer cannot pull from reliably. Partners then send
-        // copied files as ordinary transfers.
-        if cfg!(windows) && !autostart::supervised_by_service() {
-            caps.push(capability::FILE_OFFER);
+        // Without clipboard file offers, partners send copied files as ordinary transfers.
+        match file_transfer::local_file_offer() {
+            Ok(()) => caps.push(capability::FILE_OFFER),
+            Err(reason) => logger::info("file_transfer", &format!("Not advertising file-offer: {reason}.")),
         }
         caps.extend([capability::FILE_FOLDER, capability::FILE_BINARY, capability::CURSOR_SHAPE]);
         caps.extend(decoder::supported_video_caps());
@@ -466,6 +474,8 @@ impl Connection {
         }
         #[cfg(feature = "admin")]
         caps.push(capability::MONITOR_VIEW);
+        // Late in the list: a relay that keeps only 16 names drops it, which only sends loose files one by one.
+        caps.push(capability::FILE_GROUP);
         let stored = storage::load_settings();
         let mut caps: Vec<String> = caps.into_iter().map(String::from).collect();
         // Right before `fps-N`: a relay that keeps only 16 names drops it first, which only turns host sound off.
@@ -573,11 +583,18 @@ impl Connection {
                 Outgoing::VideoFrame(frame) => video = Some(frame),
                 Outgoing::MonitorFrame(frame) => self.monitor_pending = Some(frame),
                 Outgoing::Audio(packet) => self.send_audio(socket, partner, packet),
-                Outgoing::File { message, status } => {
-                    let message = Message::Text(message.to_json().into());
-                    self.files.push_back(QueuedFile { message, units: 1, status });
+                Outgoing::File { message, status, mark } => {
+                    let text = message.to_json();
+                    let bytes = text.len();
+                    self.files.push_back(QueuedFile {
+                        message: Message::Text(text.into()),
+                        units: 1,
+                        bytes,
+                        status,
+                        mark,
+                    });
                 }
-                Outgoing::FileChunk { target, frame, status } => {
+                Outgoing::FileChunk { target, frame, status, mark } => {
                     let units = chunk_units(frame.len());
                     // Sealed here, in queue order, so the receiver sees its nonces ascending.
                     let frame = self.seal(&target, frame);
@@ -587,7 +604,14 @@ impl Connection {
                     } else {
                         frame
                     };
-                    self.files.push_back(QueuedFile { message: Message::Binary(frame.into()), units, status });
+                    let bytes = frame.len();
+                    self.files.push_back(QueuedFile {
+                        message: Message::Binary(frame.into()),
+                        units,
+                        bytes,
+                        status,
+                        mark,
+                    });
                 }
             }
         }
@@ -671,11 +695,16 @@ impl Connection {
         }
     }
 
-    /// Sends a burst of queued file messages and returns the newest status line among them.
+    /// Sends a burst of queued file messages, within the per-tick budget and the paced file rate, and returns
+    /// the newest status line among them.
     fn pump_files(&mut self, socket: &mut Socket, idle: bool) -> Option<String> {
         let mut budget = if idle { FILE_BURST_IDLE } else { FILE_BURST_IN_SESSION };
         let mut latest = None;
+        let now = Instant::now();
         while budget > 0 {
+            if !self.files.front().is_some_and(|f| self.pacer.allow(f.bytes, now)) {
+                break;
+            }
             let Some(file) = self.files.pop_front() else { break };
             // WouldBlock means tungstenite buffered the frame; any other error leaves it queued until the read
             // loop notices the dead socket and fails the transfer. Messages are reference counted: the clone
@@ -689,6 +718,7 @@ impl Connection {
                 }
             }
             IN_FLIGHT_CHUNKS.fetch_sub(file.units, Ordering::Relaxed);
+            self.pacer.on_written(file.bytes, file.mark);
             budget = budget.saturating_sub(file.units);
             latest = file.status.or(latest);
         }
@@ -714,6 +744,9 @@ impl Connection {
                 Ok(Message::Ping(payload)) => {
                     let _ = socket.send(Message::Pong(payload));
                     let _ = socket.flush();
+                }
+                Ok(Message::Pong(payload)) => {
+                    self.pacer.on_pong(&payload, Instant::now());
                 }
                 Ok(Message::Binary(bin)) => self.on_binary(&bin),
                 Ok(Message::Text(text)) => {
@@ -816,6 +849,8 @@ impl Connection {
         for file in self.files.drain(..) {
             IN_FLIGHT_CHUNKS.fetch_sub(file.units, Ordering::Relaxed);
         }
+        // The next connection may take another route: its pacing starts over.
+        self.pacer = FilePacer::new();
         let reason = self.receiver.abort_all(ctx.ui.as_ref());
         let waiting = self.resumable_sessions();
         self.resume.suspend(waiting.clone(), Instant::now());
@@ -1110,7 +1145,7 @@ mod tests {
             InputEvent::MouseMove { norm_x: 0.0, norm_y: 0.0 }
         ))));
         assert!(!is_live(&Outgoing::Message(ClientMessage::disconnect("1"))), "closing a tab must reach the relay");
-        let file = Outgoing::FileChunk { target: "1".into(), frame: vec![1], status: None };
+        let file = Outgoing::FileChunk { target: "1".into(), frame: vec![1], status: None, mark: None };
         assert!(!is_live(&file));
     }
 
