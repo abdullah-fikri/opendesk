@@ -143,6 +143,36 @@ pub struct ViewerDecoder {
     /// Output buffers, reused round-robin (see [`ViewerDecoder::output`]).
     pool: Vec<SharedPixelBuffer<Rgba8Pixel>>,
     next: usize,
+    /// Framebuffer rows changed since the last output.
+    dirty: Rows,
+    /// Rows changed by the message being applied.
+    last_rows: Rows,
+    /// Per pool buffer: framebuffer rows it is missing (changed since it was last filled).
+    stale: [Rows; ViewerDecoder::POOL],
+}
+
+/// A band of framebuffer rows `start..end`, or None for no rows.
+type Rows = Option<(usize, usize)>;
+
+/// The smallest band holding both.
+fn union(a: Rows, b: Rows) -> Rows {
+    match (a, b) {
+        (Some((a0, a1)), Some((b0, b1))) => Some((a0.min(b0), a1.max(b1))),
+        (a, None) => a,
+        (None, b) => b,
+    }
+}
+
+/// Rows a delta writes (moved and patched destinations), clipped to the frame.
+fn delta_rows(h: &FrameHeader) -> Rows {
+    let height = h.height as usize;
+    let band = |y: u16, rows: u16| {
+        let (y, end) = (y as usize, (y as usize + rows as usize).min(height));
+        (y < end).then_some((y, end))
+    };
+    let moves = h.moves.iter().map(|m| band(m.dst_y, m.h));
+    let patches = h.patches.iter().map(|p| band(p.dst_y, p.h));
+    moves.chain(patches).fold(None, union)
 }
 
 impl ViewerDecoder {
@@ -156,8 +186,12 @@ impl ViewerDecoder {
         let mut changed = false;
         let mut need_key = false;
         for msg in batch {
-            match self.apply(&msg) {
-                Applied::Updated => changed = true,
+            let (applied, rows) = self.apply(&msg);
+            match applied {
+                Applied::Updated => {
+                    changed = true;
+                    self.dirty = union(self.dirty, rows);
+                }
                 Applied::Unchanged => {}
                 Applied::NeedKey => need_key = true,
             }
@@ -174,30 +208,57 @@ impl ViewerDecoder {
     /// Bound on reused output buffers: one on screen, one waiting for the UI thread, one being filled.
     const POOL: usize = 3;
 
-    /// Copies the framebuffer into an output buffer. Buffers are reused round-robin; one the UI still holds
-    /// is shared, so `make_mut_bytes` copies it first and the picture on screen is never written to.
+    /// Copies the framebuffer into an output buffer. Buffers are reused round-robin, and a reused buffer gets
+    /// only the rows that changed since it was last filled (typing touches a few rows, not the whole 8 MB of a
+    /// 1080p frame). One the UI still holds is shared, so `make_mut_bytes` copies it first and the picture on
+    /// screen is never written to.
     fn output(&mut self) -> SharedPixelBuffer<Rgba8Pixel> {
         let (w, h) = (self.comp.width, self.comp.height);
+        let dirty = self.dirty.take();
         if self.pool.first().is_some_and(|b| (b.width(), b.height()) != (w, h)) {
             self.pool.clear();
         }
         if self.pool.len() < Self::POOL {
+            for stale in &mut self.stale[..self.pool.len()] {
+                *stale = union(*stale, dirty);
+            }
             self.pool.push(to_pixel_buffer(&self.comp.fb, w, h));
+            self.stale[self.pool.len() - 1] = None;
             self.next = 0;
             return self.pool.last().unwrap().clone();
         }
-        let buf = &mut self.pool[self.next];
+        for stale in &mut self.stale {
+            *stale = union(*stale, dirty);
+        }
+        let i = self.next;
         self.next = (self.next + 1) % Self::POOL;
-        buf.make_mut_bytes().copy_from_slice(&self.comp.fb);
-        buf.clone()
+        let row = w as usize * 4;
+        if let Some((y0, y1)) = self.stale[i].take() {
+            let (a, b) = (y0 * row, (y1 * row).min(self.comp.fb.len()));
+            self.pool[i].make_mut_bytes()[a..b].copy_from_slice(&self.comp.fb[a..b]);
+        }
+        self.pool[i].clone()
     }
 
-    fn apply(&mut self, msg: &[u8]) -> Applied {
+    /// Applies one message; on `Updated` also the rows it changed.
+    fn apply(&mut self, msg: &[u8]) -> (Applied, Rows) {
+        let applied = self.apply_inner(msg);
+        let rows = match applied {
+            Applied::Updated => self.last_rows.take(),
+            _ => None,
+        };
+        (applied, rows)
+    }
+
+    fn apply_inner(&mut self, msg: &[u8]) -> Applied {
+        // Every picture that is not a delta replaces the whole frame.
+        self.last_rows = Some((0, self.comp.height as usize));
         if !is_framed(msg) {
             self.h264_ready = false;
             return match decode_jpeg_rgba(msg) {
                 Some((rgba, w, h)) => {
                     self.comp.set_full(None, rgba, w, h);
+                    self.last_rows = Some((0, h as usize));
                     Applied::Updated
                 }
                 None => Applied::Unchanged,
@@ -206,6 +267,10 @@ impl ViewerDecoder {
         let Some((header, payload)) = FrameHeader::parse(msg) else {
             self.comp.invalidate();
             return Applied::NeedKey;
+        };
+        self.last_rows = match header.kind {
+            KIND_DELTA => delta_rows(&header),
+            _ => Some((0, header.height as usize)),
         };
         if header.kind != KIND_H264 {
             self.h264_ready = false;
@@ -688,6 +753,45 @@ mod tests {
             let _ = viewer.process(vec![jpeg(16, 4, 9)]);
         }
         assert_eq!(ptrs(&viewer), before);
+    }
+
+    #[test]
+    fn reused_buffers_copy_only_changed_rows_yet_always_match_the_framebuffer() {
+        let (w, h) = (8u32, 16u32);
+        let mut viewer = ViewerDecoder::new();
+        viewer.comp.set_full(None, vec![0; (w * h * 4) as usize], w, h);
+        viewer.dirty = Some((0, h as usize));
+        let mut held = Vec::new();
+        let mut seed = 7u32;
+        for step in 0..200u32 {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let y0 = (seed >> 8) as usize % h as usize;
+            let y1 = (y0 + 1 + (seed >> 16) as usize % 4).min(h as usize);
+            let row = w as usize * 4;
+            viewer.comp.fb[y0 * row..y1 * row].fill(step as u8);
+            viewer.dirty = union(viewer.dirty, Some((y0, y1)));
+            let buf = viewer.output();
+            assert_eq!(buf.as_bytes(), &viewer.comp.fb[..], "step {step}");
+            if step % 3 == 0 {
+                held.push((buf, viewer.comp.fb.clone()));
+                if held.len() > 2 {
+                    held.remove(0);
+                }
+            }
+        }
+        for (buf, fb) in &held {
+            assert_eq!(buf.as_bytes(), &fb[..], "a frame the UI holds is never rewritten");
+        }
+    }
+
+    #[test]
+    fn delta_rows_cover_moves_and_patches_clipped_to_the_frame() {
+        use core_engine::codec::frame::{MoveRect, Patch};
+        let mut h = core_engine::codec::delta::key_header(1, 8, 100);
+        assert_eq!(delta_rows(&h), None);
+        h.moves.push(MoveRect { src_x: 0, src_y: 50, dst_x: 0, dst_y: 40, w: 8, h: 10 });
+        h.patches.push(Patch { dst_x: 0, dst_y: 90, w: 8, h: 32, atlas_x: 0, atlas_y: 0 });
+        assert_eq!(delta_rows(&h), Some((40, 100)));
     }
 
     #[test]
