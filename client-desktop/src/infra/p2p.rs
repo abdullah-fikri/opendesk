@@ -14,6 +14,7 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 
 use crate::domain::link_quality::LossMeter;
+use crate::domain::udp_window::{self, MIN_FRAMES_IN_FLIGHT, RttEstimator};
 use crate::infra::audio::VoiceEngine;
 use crate::infra::e2e::{E2e, P2P_NONCE_LIMIT};
 use crate::infra::logger;
@@ -32,9 +33,6 @@ const MAX_CANDIDATES: usize = 8;
 const REPLAY_WINDOW: u64 = 1024;
 const PATH_TIMEOUT: Duration = Duration::from_secs(3);
 const FRAME_ACK_TIMEOUT: Duration = Duration::from_millis(200);
-/// Video frames sent but not acknowledged yet. Two keep 60 FPS through a round trip of up to about one frame
-/// interval; one would halve the rate as soon as the round trip plus encoding exceeds 16 ms.
-const MAX_FRAMES_IN_FLIGHT: usize = 2;
 const INPUT_RETRANSMIT: Duration = Duration::from_millis(80);
 const MAX_UNACKED: usize = 256;
 /// The relay may drop a signal (rate limit) and says nothing, so with `e2e` the candidates go out again this many
@@ -409,8 +407,12 @@ struct State {
     first_from: Option<SocketAddr>,
     last_keepalive: Instant,
     frame_id: u32,
-    /// Frames awaiting their acknowledgement, oldest first (at most `MAX_FRAMES_IN_FLIGHT`).
+    /// Frames awaiting their acknowledgement, oldest first (at most `window`).
     frame_wait: VecDeque<(u32, Instant)>,
+    /// Smoothed round trip of frame acknowledgements.
+    ack_rtt: RttEstimator,
+    /// Video frames that may be in flight (`domain::udp_window`).
+    window: usize,
     reasm: Option<Reasm>,
     next_seq: u32,
     unacked: VecDeque<(u32, Vec<u8>, Instant)>,
@@ -435,6 +437,8 @@ pub struct P2p {
     sinks: Sinks,
     /// Both peers list `e2e`: the path uses the session's `Noise_XX` keys instead of its own `Noise_NN`.
     e2e: Option<Arc<E2e>>,
+    /// Host side: the window follows the acknowledgement round trip (else fixed at 2, `OPENDESK_DYNAMIC_WINDOW=0`).
+    dynamic_window: bool,
 }
 
 impl P2p {
@@ -460,6 +464,17 @@ impl P2p {
         let local: String = local_clean.chars().filter(|c| c.is_ascii_digit()).collect();
         let (viewer, host) = if is_host { (partner.clone(), local) } else { (local, partner.clone()) };
         let now = Instant::now();
+        let dynamic_window = udp_window::dynamic_enabled(std::env::var(udp_window::DYNAMIC_WINDOW_ENV).ok().as_deref());
+        if is_host {
+            logger::info(
+                "anynet.p2p",
+                if dynamic_window {
+                    "Video window: dynamic, 2..8 frames in flight from the acknowledgement round trip x target FPS."
+                } else {
+                    "Video window: fixed at 2 frames in flight (OPENDESK_DYNAMIC_WINDOW=0)."
+                },
+            );
+        }
         let p = Arc::new(P2p {
             partner,
             is_host,
@@ -488,6 +503,8 @@ impl P2p {
                 last_keepalive: now,
                 frame_id: 0,
                 frame_wait: VecDeque::new(),
+                ack_rtt: RttEstimator::default(),
+                window: MIN_FRAMES_IN_FLIGHT,
                 reasm: None,
                 next_seq: 0,
                 unacked: VecDeque::new(),
@@ -501,6 +518,7 @@ impl P2p {
             tx_out,
             sinks,
             e2e,
+            dynamic_window,
         });
         let worker = Arc::clone(&p);
         crate::infra::thread::spawn_named("p2p-worker", move || worker.run());
@@ -802,9 +820,13 @@ impl P2p {
                 let id = u32::from_be_bytes(body.try_into().unwrap());
                 // An acknowledgement also covers every older frame (their acks may have been lost).
                 if let Some(&(_, sent)) = st.frame_wait.iter().find(|(w, _)| *w == id) {
-                    self.video_link.stats.lock().ack_rtt.record(sent.elapsed());
+                    let rtt = sent.elapsed();
+                    self.video_link.stats.lock().ack_rtt.record(rtt);
+                    st.ack_rtt.sample(rtt);
                     st.frame_wait.retain(|(w, _)| (w.wrapping_sub(id) as i32) > 0);
-                    self.can_send_frame.open();
+                    if st.frame_wait.len() < st.window {
+                        self.can_send_frame.open();
+                    }
                 }
             }
             K_AUDIO => {
@@ -878,7 +900,7 @@ impl P2p {
             }
             let waiting = st.frame_wait.len();
             st.frame_wait.retain(|(_, t)| now.duration_since(*t) < FRAME_ACK_TIMEOUT);
-            if st.frame_wait.len() < waiting {
+            if st.frame_wait.len() < waiting && st.frame_wait.len() < st.window {
                 self.can_send_frame.open();
             }
             let resend: Vec<(u32, Vec<u8>)> = st
@@ -970,15 +992,20 @@ impl P2p {
             pkt.extend_from_slice(chunk);
             self.send_to_peer(&mut st, &pkt);
         }
-        // Up to MAX_FRAMES_IN_FLIGHT frames in flight; past that the viewer's frame-ack (or a timeout) releases the
-        // capture loop.
+        // Up to `window` frames in flight; past that the viewer's frame-ack (or a timeout) releases the capture
+        // loop. The window follows the stream's rate and the measured round trip, and the capture loop's
+        // congestion level shrinks it back to 2.
+        if self.dynamic_window {
+            let link = &self.video_link;
+            st.window = udp_window::frames_in_flight(st.ack_rtt.get(), link.target_fps(), link.congestion());
+        }
         st.frame_wait.push_back((id, started));
-        if st.frame_wait.len() < MAX_FRAMES_IN_FLIGHT {
+        if st.frame_wait.len() < st.window {
             self.can_send_frame.open();
         }
         let mut link = self.video_link.stats.lock();
         link.send.record(started.elapsed());
-        link.window = Some(MAX_FRAMES_IN_FLIGHT);
+        link.window = Some(st.window);
         true
     }
 

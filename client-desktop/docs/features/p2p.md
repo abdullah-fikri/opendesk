@@ -49,8 +49,20 @@ the relay.
 
 ## Video window and pacing
 
-The host keeps at most 2 video frames in flight: once two frames are unacknowledged, the capture loop waits for an
-acknowledgement (or 200 ms) before it encodes the next one. All fragments of a frame are sent back to back.
+Each video frame waits for the viewer's acknowledgement (or 200 ms). With a fixed window of `n` unacknowledged
+frames the frame rate cannot exceed `n / RTT`: two frames allow ~66 FPS at a 30 ms round trip and ~33 FPS at
+60 ms, a typical session through the UDP relay (two legs). So the host sizes the window from the measured round
+trip of its frame acknowledgements (smoothed like TCP's SRTT) and the capture loop's target frame rate:
+
+    frames in flight = clamp(ceil(SRTT x target FPS) + 1, 2, 8)
+
+Before the first acknowledgement, and on a LAN, that is 2 as before. The capture loop's congestion level (its wait
+for this window, `CongestionMeter`) shrinks the window linearly back to 2, so a queue that lengthens the round
+trip cannot keep widening it; the frame-rate governor then lowers the rate as before. Only the host's sender
+changes, so viewers of any version work with it. The host logs once per session which mode it uses;
+`OPENDESK_DYNAMIC_WINDOW=0` on the host keeps the fixed window of 2.
+
+All fragments of a frame are sent back to back.
 
 The stats overlay shows what the path does ([viewer-sessions.md](viewer-sessions.md#stats-overlay)): the host
 reports the time from sending a frame to its acknowledgement (Ack RTT) and the window in `host-stats`; the viewer

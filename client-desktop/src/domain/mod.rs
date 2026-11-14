@@ -18,4 +18,5 @@ pub mod performance;
 pub mod resolution;
 pub mod settings;
 pub mod transfer;
+pub mod udp_window;
 pub mod whats_new;

@@ -402,6 +402,8 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             perf.gate.record(Duration::ZERO);
         }
         last_level = level;
+        // The P2P path sizes its window of frames in flight by these (`domain::udp_window`).
+        host.video_link.set_rate(target_fps, level);
         // Above 60 FPS congestion first lowers the rate (see `FpsGovernor`), then quality.
         encoder.set_congestion(FpsGovernor::quality_level(level, target_fps));
         if can_send {

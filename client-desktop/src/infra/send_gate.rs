@@ -3,16 +3,38 @@
 //! video senders report back to the capture loop ([`VideoLink`]).
 
 use parking_lot::{Condvar, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 
 use crate::domain::perf_stats::Stage;
 
 /// What the host's video senders (the relay socket, the P2P path) measure, for `host-stats` and the
-/// `host.perf` line. Shared like the gate: senders write, the capture loop reads.
+/// `host.perf` line, and the stream's rate they size the P2P window by. Shared like the gate: senders write the
+/// stats and read the rate, the capture loop the other way round.
 #[derive(Default)]
 pub struct VideoLink {
     pub stats: Mutex<LinkStats>,
+    target_fps: AtomicU32,
+    /// `f32` bits of the congestion level (0..1).
+    congestion: AtomicU32,
+}
+
+impl VideoLink {
+    /// The capture loop's current target frame rate and congestion level (`CongestionMeter`).
+    pub fn set_rate(&self, target_fps: u32, congestion: f32) {
+        self.target_fps.store(target_fps, Ordering::Relaxed);
+        self.congestion.store(congestion.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The target frame rate; 0 before the capture loop ran.
+    pub fn target_fps(&self) -> u32 {
+        self.target_fps.load(Ordering::Relaxed)
+    }
+
+    /// The congestion level, 0..1.
+    pub fn congestion(&self) -> f32 {
+        f32::from_bits(self.congestion.load(Ordering::Relaxed))
+    }
 }
 
 /// See [`VideoLink`].
@@ -86,6 +108,14 @@ mod tests {
         assert!(!gate.is_open());
         gate.open();
         assert!(gate.is_open());
+    }
+
+    #[test]
+    fn video_link_carries_the_stream_rate() {
+        let link = VideoLink::default();
+        assert_eq!((link.target_fps(), link.congestion()), (0, 0.0));
+        link.set_rate(144, 0.25);
+        assert_eq!((link.target_fps(), link.congestion()), (144, 0.25));
     }
 
     #[test]
