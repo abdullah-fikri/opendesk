@@ -100,12 +100,12 @@ impl FolderGroup {
     }
 }
 
-/// Puts received paths on the clipboard (remembered as ours so the watcher never sends them back) and
-/// optionally pastes them into the focused Explorer window.
-fn publish(ctx: &AppContext, paths: &[PathBuf], paste: bool) {
+/// Puts paths received from `from` on the clipboard (remembered as that partner's, so copy-paste never sends
+/// them back to it) and optionally pastes them into the focused Explorer window.
+fn publish(ctx: &AppContext, from: &str, paths: &[PathBuf], paste: bool) {
     LAST_RECEIVED_MS.store(now_ms(), Ordering::SeqCst);
     let list: Vec<String> = paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
-    remember_received(list.clone());
+    remember_received(from, paths);
     let stored = core_engine::clipboard::set_files(&list);
     ctx.mark_clipboard_synced();
     if cfg!(windows) && !stored {
@@ -239,7 +239,7 @@ impl FileReceiver {
         match payload.action {
             FileAction::Start => self.start(ctx, payload, from, key, allow_auto_paste),
             FileAction::Chunk => self.chunk(ctx, payload, &key),
-            FileAction::End => self.end(ctx, payload, key, allow_auto_paste),
+            FileAction::End => self.end(ctx, payload, from, key, allow_auto_paste),
             _ => (None, None),
         }
     }
@@ -355,7 +355,7 @@ impl FileReceiver {
         // Whole folder arrived: hand the top-level items to the clipboard once.
         let group = self.groups.remove(&gkey).unwrap();
         let paste = payload.auto_paste.unwrap_or(true) && allow_auto_paste;
-        publish(ctx, &group.tops, paste);
+        publish(ctx, from, &group.tops, paste);
         let label = match group.tops.as_slice() {
             [one] => one.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
             many => format!("{} items", many.len()),
@@ -420,7 +420,14 @@ impl FileReceiver {
         (status, None)
     }
 
-    fn end(&mut self, ctx: &AppContext, payload: &FilePayload, key: String, allow_auto_paste: bool) -> Outcome {
+    fn end(
+        &mut self,
+        ctx: &AppContext,
+        payload: &FilePayload,
+        from: &str,
+        key: String,
+        allow_auto_paste: bool,
+    ) -> Outcome {
         let Some(Incoming { mut file, path: staging, name, received, total, hash, dest, .. }) =
             self.active_files.remove(&key)
         else {
@@ -465,7 +472,7 @@ impl FileReceiver {
         }
         let paste = payload.auto_paste.unwrap_or(true) && allow_auto_paste;
         logger::info("file_transfer", &format!("File transfer complete: {} (auto_paste={paste})", saved.display()));
-        publish(ctx, &[saved], paste);
+        publish(ctx, from, &[saved], paste);
         (Some(done_status(&name)), Some(true))
     }
 }

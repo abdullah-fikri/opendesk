@@ -50,4 +50,8 @@ SECURITY: everything from the peer is validated before it touches the disk.
 - Transfers without a chunk for 60 s are abandoned. Completed IDs are remembered for 10 minutes to reject replays.
 
 Finished files land in `Downloads\OpenDesk` and are put on the clipboard (and pasted when the sender asked and a
-session runs). Files received this way are recognized by the clipboard watcher and never sent back.
+session runs). Files received this way are never sent back to the partner they came from by copy-paste
+(`src/domain/received_files.rs`): for 10 minutes, the clipboard watcher, Ctrl+V and focus changes leave out the
+received items themselves, anything inside a received folder, and copies of them pasted elsewhere (same name,
+and for a file the same size). Each item left out is logged with its reason. Other partners may still get them,
+and a drop or the "Send files" button always sends.

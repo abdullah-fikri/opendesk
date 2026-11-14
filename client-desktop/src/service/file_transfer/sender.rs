@@ -456,7 +456,7 @@ mod tests {
     use crate::protocol::FileAction;
     use crate::service::file_transfer::receiver::{FileReceiver, tests::TEST_DOWNLOADS};
     use crate::service::file_transfer::tree::tests::temp_tree;
-    use crate::service::file_transfer::{RECEIVED_CLIPBOARD, now_ms};
+    use crate::service::file_transfer::{now_ms, without_echoes};
     use crate::service::test_support;
     use std::{env, fs};
 
@@ -494,11 +494,8 @@ mod tests {
         assert!(copy.join("empty").is_dir());
         assert_eq!(fs::read(downloads.join("loose.txt")).unwrap(), b"12345");
         assert_eq!(fs::read_dir(downloads.join("Project")).unwrap().count(), 0, "existing folder untouched");
-        let ours = RECEIVED_CLIPBOARD.lock().clone();
-        assert_eq!(
-            ours,
-            vec![copy.to_string_lossy().to_string(), downloads.join("loose.txt").to_string_lossy().to_string()]
-        );
+        let published = vec![copy.clone(), downloads.join("loose.txt")];
+        assert!(without_echoes("222222222", published).is_empty(), "received items are never sent back");
         *TEST_DOWNLOADS.lock() = None;
         let _ = fs::remove_dir_all(src);
         let _ = fs::remove_dir_all(downloads);

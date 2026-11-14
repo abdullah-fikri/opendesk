@@ -1,6 +1,6 @@
 //! Clipboard follows the current partner: text copied here is sent to it, and copied files are offered (or,
-//! to partners without offers, sent when this machine is the host). Copies of files we just received are
-//! recognized by provenance and never sent back.
+//! to partners without offers, sent when this machine is the host). Items a partner sent us are recognized by
+//! provenance (`domain::received_files`) and never sent back to it.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,9 +53,12 @@ pub fn spawn(ctx: Ctx) {
             let mut clip = user_clipboard::read();
             let offers = file_transfer::caps_of(&partner).file_offer;
             if offers || ctx.is_hosting() {
-                let files = std::mem::take(&mut clip.files);
-                if !files.is_empty() {
-                    let received = file_transfer::is_received_clipboard(&files);
+                let copied = std::mem::take(&mut clip.files);
+                if !copied.is_empty() {
+                    // Items the partner sent us stay out; only the rest is offered or sent.
+                    let files = file_transfer::without_echoes(&partner, copied.clone());
+                    let received = files.is_empty();
+                    let files = if received { copied } else { files };
                     let action = files_action(last_files.as_ref(), &files, received, offers, Instant::now());
                     let mark_offered = || {
                         mark_seen();
@@ -83,7 +86,7 @@ pub fn spawn(ctx: Ctx) {
                             last_files = Some((files.clone(), Instant::now()));
                             sender::send_files(&ctx, files, partner, false);
                         }
-                        FilesAction::Skip if received => log("skip", "files we just received"),
+                        FilesAction::Skip if received => log("skip", "every item came from this partner"),
                         FilesAction::Skip => log("skip", "same copy seen again; already sent"),
                     }
                     continue;

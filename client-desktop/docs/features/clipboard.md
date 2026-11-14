@@ -13,7 +13,8 @@ Code: `src/service/clipboard_sync.rs` (watcher), `src/service/relay/dispatcher.r
   `OpenDesk.exe --clipboard-read <file>` started as the logged-on user (`src/infra/user_clipboard.rs`).
   Writing works as SYSTEM.
 - Anything the app wrote to the clipboard itself (received text or files) is marked as already synced, so it is
-  never echoed back.
+  never echoed back. Received files also stay out of later copies to the partner that sent them (see
+  [file transfer](file-transfer.md#receiving)).
 
 ## Diagnostics
 

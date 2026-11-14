@@ -14,14 +14,16 @@ pub mod receiver;
 pub mod sender;
 pub mod tree;
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 
 use crate::domain::capability::PeerCaps;
+use crate::domain::received_files::ReceivedFiles;
 use crate::infra::{autostart, logger};
 
 pub use receiver::FileReceiver;
@@ -44,8 +46,8 @@ pub static LAST_RECEIVED_MS: AtomicU64 = AtomicU64::new(0);
 /// Bumped when the relay connection drops; senders abort transfers started on an older connection.
 static TRANSFER_EPOCH: AtomicU64 = AtomicU64::new(0);
 
-/// Paths this app put on the clipboard after receiving them, so copy-paste never sends them back.
-static RECEIVED_CLIPBOARD: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Items received from each partner, so copy-paste never sends them back to it.
+static RECEIVED: Mutex<ReceivedFiles> = Mutex::new(ReceivedFiles::new());
 /// Senders waiting for a receiver ACK, keyed by transfer ID.
 static PENDING_ACKS: Mutex<Vec<(String, Sender<bool>)>> = Mutex::new(Vec::new());
 /// File capabilities of each viewed host (a viewer of several hosts must not mix them up).
@@ -173,16 +175,35 @@ pub fn log_clipboard_files(partner: &str, files: &[PathBuf], decision: &str, rea
     );
 }
 
-/// True if the clipboard holds exactly the files we just received (provenance, not timing).
-pub fn is_received_clipboard(paths: &[PathBuf]) -> bool {
-    let ours = RECEIVED_CLIPBOARD.lock();
-    !paths.is_empty()
-        && paths.len() == ours.len()
-        && paths.iter().all(|p| ours.iter().any(|o| o.eq_ignore_ascii_case(&p.to_string_lossy())))
+/// Size of a file, `None` for a folder (or a path that is gone), as [`ReceivedFiles`] wants it.
+fn file_size(path: &Path) -> Option<u64> {
+    fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len())
 }
 
-fn remember_received(paths: Vec<String>) {
-    *RECEIVED_CLIPBOARD.lock() = paths;
+/// Copied `paths` for `partner` without the ones it sent us (see `domain::received_files`); each one left out
+/// is logged with the reason. Only clipboard paths go through this: a drop or the file picker sends anything.
+pub fn without_echoes(partner: &str, paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let now = Instant::now();
+    let received = RECEIVED.lock();
+    paths
+        .into_iter()
+        .filter(|path| match received.echo(partner, &path.to_string_lossy(), file_size(path), now) {
+            Some(echo) => {
+                logger::info("clipboard", &format!("Not sending {} back to {partner}: {}.", path.display(), echo.reason()));
+                false
+            }
+            None => true,
+        })
+        .collect()
+}
+
+/// Remembers `paths` (just put on the clipboard) as received from `partner`.
+fn remember_received(partner: &str, paths: &[PathBuf]) {
+    let now = Instant::now();
+    let mut received = RECEIVED.lock();
+    for path in paths {
+        received.record(partner, &path.to_string_lossy(), file_size(path), now);
+    }
 }
 
 /// Delivers a receiver ACK to the waiting sender thread, if any.
@@ -231,15 +252,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn received_clipboard_matches_exact_file_set_only() {
-        remember_received(vec![r"C:\Users\a\Downloads\OpenDesk\x.txt".into()]);
-        assert!(is_received_clipboard(&[PathBuf::from(r"c:\users\a\downloads\opendesk\X.TXT")]));
-        assert!(!is_received_clipboard(&[PathBuf::from(r"C:\other.txt")]));
-        assert!(!is_received_clipboard(&[]));
-        assert!(!is_received_clipboard(&[
-            PathBuf::from(r"C:\Users\a\Downloads\OpenDesk\x.txt"),
-            PathBuf::from(r"C:\other.txt")
-        ]));
+    fn received_files_are_left_out_only_for_their_sender() {
+        let folder = PathBuf::from(r"C:\Users\a\Downloads\OpenDesk\Project-710000009");
+        remember_received("710000009", std::slice::from_ref(&folder));
+        let copied = vec![PathBuf::from(r"c:\users\a\downloads\opendesk\PROJECT-710000009\x.txt"), "C:\\other.txt".into()];
+        assert_eq!(without_echoes("710000009", copied.clone()), vec![PathBuf::from(r"C:\other.txt")]);
+        assert_eq!(without_echoes("710000008", copied.clone()), copied, "another partner may get them");
+        assert!(without_echoes("710000009", vec![folder]).is_empty());
     }
 
     #[test]

@@ -23,7 +23,7 @@ use crate::domain::settings::{self, normalize_gateway_url};
 use crate::domain::{capability, frame_rate};
 use crate::infra::e2e::{self, E2e};
 use crate::infra::p2p::{self, P2p};
-use crate::infra::{autostart, device, logger, power, storage, virtual_clipboard, window};
+use crate::infra::{device, logger, power, storage, virtual_clipboard, window};
 use crate::protocol::{ClientMessage, FilePayload, InputEvent, Outgoing, ServerMessage, binary};
 use crate::service::context::Ctx;
 use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS, chunk_units};
