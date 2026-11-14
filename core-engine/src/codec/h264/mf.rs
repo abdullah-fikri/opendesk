@@ -888,6 +888,51 @@ mod tests {
         }
     }
 
+    /// Host side, 1080p hardware encode: process CPU and wall per frame, and the colour conversion alone:
+    /// `cargo test --release encode_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn encode_cost_hardware() {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> isize;
+            fn GetProcessTimes(h: isize, c: *mut u64, e: *mut u64, k: *mut u64, u: *mut u64) -> i32;
+        }
+        let cpu = || {
+            let (mut c, mut e, mut k, mut u) = (0, 0, 0, 0);
+            unsafe { GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u) };
+            Duration::from_nanos((k + u) * 100)
+        };
+        let (w, h) = (1920usize, 1080usize);
+        let frames: Vec<Vec<u32>> = (0..8).map(|t| pattern(w, h, t)).collect();
+        let mut nv12 = Vec::new();
+        let (c0, t0) = (cpu(), Instant::now());
+        for i in 0..120 {
+            bgra_to_nv12(&frames[i % 8], w, w, h, &mut nv12);
+        }
+        println!(
+            "bgra_to_nv12: CPU {:.2} ms, wall {:.2} ms per frame",
+            (cpu() - c0).as_secs_f64() * 1000.0 / 120.0,
+            t0.elapsed().as_secs_f64() * 1000.0 / 120.0
+        );
+        for pipelined in [false, true] {
+            let mut enc = H264Encoder::new(w as u32, h as u32, 60, 8_000_000, true).unwrap();
+            enc.set_pipelined(pipelined);
+            let _ = enc.encode(&frames[0], w);
+            let (c0, t0) = (cpu(), Instant::now());
+            let mut n = 0;
+            for i in 0..120 {
+                n += enc.encode(&frames[i % 8], w).unwrap().is_some() as u32;
+            }
+            println!(
+                "{} (pipelined={pipelined}): {n} AUs, CPU {:.2} ms, wall {:.2} ms per frame",
+                enc.name,
+                (cpu() - c0).as_secs_f64() * 1000.0 / 120.0,
+                t0.elapsed().as_secs_f64() * 1000.0 / 120.0
+            );
+        }
+    }
+
     #[test]
     fn vbv_is_two_frames_of_the_target_bitrate() {
         assert_eq!(vbv_bits(6_000_000, 60), 200_000);
