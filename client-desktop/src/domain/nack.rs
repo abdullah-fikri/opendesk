@@ -82,10 +82,17 @@ pub struct Pushed {
 /// Frames held at most: the oldest incomplete one and the newer ones waiting behind it.
 const MAX_HELD: usize = 4;
 
+/// A fragment this many frames (or fewer) behind the last frame that left is a late copy of it; further back,
+/// the host restarted its frame numbering.
+const LATE_WINDOW: u32 = 1024;
+
 /// Incomplete frames in id order; complete ones leave as soon as everything before them did.
 #[derive(Default)]
 pub struct Reassembly {
     held: std::collections::VecDeque<Partial>,
+    /// The newest frame that left (decoded or given up). Retransmitted copies of fragments that were only late,
+    /// not lost, arrive after their frame completed; without this they would rebuild and decode it again.
+    left: Option<u32>,
 }
 
 fn newer(a: u32, b: u32) -> bool {
@@ -111,6 +118,11 @@ impl Reassembly {
         if self.held.front().is_some_and(|f| newer(f.id, id)) {
             return out; // stale (or a retransmit for a frame we gave up on)
         }
+        match self.left {
+            Some(left) if !newer(id, left) && left.wrapping_sub(id) <= LATE_WINDOW => return out,
+            Some(_) if !newer(id, self.left.unwrap_or(id)) => self.left = None, // numbering restarted
+            _ => {}
+        }
         let at = match self.held.iter().position(|f| !newer(id, f.id)) {
             Some(i) if self.held[i].id == id => i,
             Some(i) => {
@@ -121,7 +133,8 @@ impl Reassembly {
             None => {
                 self.held.push_back(Partial::new(id, count, now));
                 if self.held.len() > MAX_HELD {
-                    self.held.pop_front();
+                    let dropped = self.held.pop_front().map(|f| f.id);
+                    self.mark_left(dropped);
                 }
                 self.held.len() - 1
             }
@@ -165,14 +178,22 @@ impl Reassembly {
             match self.held.front() {
                 Some(f) if f.complete() => {
                     let f = self.held.pop_front().unwrap();
+                    self.mark_left(Some(f.id));
                     out.last_id = Some(f.id);
                     out.frames.push(f.assemble());
                 }
                 Some(f) if self.held.len() > 1 && now.duration_since(f.started) >= GIVE_UP => {
-                    self.held.pop_front();
+                    let dropped = self.held.pop_front().map(|f| f.id);
+                    self.mark_left(dropped);
                 }
                 _ => return,
             }
+        }
+    }
+
+    fn mark_left(&mut self, id: Option<u32>) {
+        if let Some(id) = id {
+            self.left = Some(self.left.filter(|&l| newer(l, id)).unwrap_or(id));
         }
     }
 }
@@ -295,6 +316,21 @@ mod tests {
         assert!(r.push(t, 1, 1, 2, b"x", never).frames.is_empty(), "frame 1 is gone");
         let out = r.push(t, 2, 1, 2, b"B", never);
         assert_eq!(out.frames, vec![b"bB".to_vec()], "frames 3 and 4 still incomplete");
+    }
+
+    /// Fragments that were only late got requested and resent; the copies arriving after their frame was
+    /// decoded must not rebuild and decode it a second time.
+    #[test]
+    fn late_copies_of_a_decoded_frame_are_ignored() {
+        let (mut r, t) = (Reassembly::default(), Instant::now());
+        r.push(t, 6, 0, 2, b"a", never);
+        assert_eq!(r.push(t, 6, 1, 2, b"b", never).frames, vec![b"ab".to_vec()]);
+        assert!(r.push(t, 6, 0, 2, b"a", never).frames.is_empty());
+        assert!(r.push(t, 6, 1, 2, b"b", never).frames.is_empty(), "frame 6 decoded twice");
+        assert_eq!(r.push(t, 7, 0, 1, b"c", never).frames, vec![b"c".to_vec()]);
+        // A host that restarted its numbering is followed, not ignored.
+        assert_eq!(r.push(t, 7 + 5000, 0, 1, b"d", never).frames, vec![b"d".to_vec()]);
+        assert_eq!(r.push(t, 1, 0, 1, b"e", never).frames, vec![b"e".to_vec()], "numbering restarted");
     }
 
     #[test]
