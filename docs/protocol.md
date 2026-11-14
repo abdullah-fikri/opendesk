@@ -150,6 +150,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `cursor-shape` | client | Draws its own cursor from `cursor-shape` events; the host stops painting it. |
 | `mouse-relative` | client (Windows) | Locks its pointer while a host application captured the mouse (`pointer-lock`) and sends `mouse-delta`; the host sends `pointer-lock` only to viewers listing it. Ctrl+Alt hands the cursor back on the viewer, a click takes it again. |
 | `video-delta` | client | Framed key/delta video; without it the host sends plain JPEGs. |
+| `clipboard-image` | client (Windows) | Copied images follow the clipboard like text: an `offer` whose `image` holds a base64 PNG (at most 11 MB; screenshots go as RGB PNG, the clipboard's own PNG as is). The receiver puts it on its clipboard as CF_DIB plus "PNG". Sent on copy and on a focus change, only to partners listing it; Ctrl+V forwards only the keystroke. |
 | `file-p2p` | client, with `p2p.v1` and `file-binary` | File transfers may run over the P2P path as a reliable stream (`K_BULK` segments, `K_BULK_ACK` cumulative + selective acks, delay-based window, receiver window). Each transfer (a folder: each folder) keeps the path its `start` took; offers, pulls and acks stay on the relay. If the path drops mid-transfer the transfer is cancelled. `OPENDESK_FILE_P2P=0` turns it off. See `client-desktop/src/domain/bulk.rs`. |
 | `video-nack` | client, with `p2p.v1` | Lost P2P video fragments are requested (`K_NACK`) and resent from the host's last frames; a viewer waits for them only from a host that lists it. See `client-desktop/docs/features/p2p.md`. |
 | `tile-lossless` | client, with `video-delta` | Deltas may carry lossless text/UI tiles (flag bit 2, below); the host sends them only to viewers that list it. |
@@ -176,7 +177,7 @@ Per platform (see [platforms.md](platforms.md)):
 
 - Windows: `file-ack`, `file-offer`, `file-folder`, `file-binary`, `cursor-shape`, `video-delta`, `frame-stamp`,
   `video-h264` (when the Media Foundation decoder exists), `audio-opus`, `audio-system`, `p2p.v1`, `multi-session`,
-  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`), `file-group`, `file-pull-bin`, `tile-lossless`, `mouse-relative`, `file-p2p`, `video-nack`. No `host-features`: Windows hosts have every host control.
+  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`), `file-group`, `file-pull-bin`, `tile-lossless`, `mouse-relative`, `clipboard-image`, `file-p2p`, `video-nack`. No `host-features`: Windows hosts have every host control.
 - Linux: the same without `file-offer` and `audio-system`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
 - Android: `viewer-only`, `video-delta` and `e2e`, so it receives framed JPEG video (no H.264) and single-session
@@ -233,7 +234,7 @@ hosts of any version understand each other's `host-stats`; `encodeMs` keeps its 
 | `chunk` | `id`, `chunk` (base64, at most 32 KiB decoded) | Needs the grant. With `file-binary` a binary chunk replaces it. |
 | `end` | `id`, `name`, `sha256` (hex), `autoPaste` | Needs the grant. |
 | `ack` | `id`, `ok` | Receiver to sender; consumes the grant. |
-| `offer` | `id`, `files[]` (`name`, `size` or `dir`, optional `mtime`) | Clipboard offer; needs an active session. |
+| `offer` | `id`, `files[]` (`name`, `size` or `dir`, optional `mtime`), or `image` (base64 PNG, `clipboard-image`) | Clipboard offer, or a copied image; needs an active session. |
 | `pull` | `id` (offer), `index`, `tid` | Ask the offerer to send entry `index` as transfer `tid`. |
 
 `mtime` is the file's last write time in Unix milliseconds; receivers keep it as the pasted or saved file's

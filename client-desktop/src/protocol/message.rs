@@ -127,7 +127,7 @@ pub enum ServerMessage {
     },
     FileTransfer {
         from_clean: Option<String>,
-        payload: FilePayload,
+        payload: Box<FilePayload>,
     },
     P2pSignal {
         from_clean: String,

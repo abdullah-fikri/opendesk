@@ -36,7 +36,7 @@ pub fn spawn(ctx: Ctx) {
             if seen.0 != partner {
                 // What was copied before the session is not a copy for it: a host that sends on copy only
                 // sends files that differ from this (read once, before any change).
-                let baseline = ctx.is_hosting().then(|| user_clipboard::read().files);
+                let baseline = ctx.is_hosting().then(|| user_clipboard::read(false).files);
                 seen = (partner.clone(), baseline);
             }
             let current = core_engine::clipboard::sequence_number();
@@ -58,7 +58,7 @@ pub fn spawn(ctx: Ctx) {
 
             // A viewer sends its files explicitly on Ctrl+V, so files are only auto-sent from the host side;
             // partners with offers get names and sizes now and pull on paste.
-            let mut clip = user_clipboard::read();
+            let mut clip = user_clipboard::read(file_transfer::caps_of(&partner).clipboard_image);
             // Other programs (clipboard managers, an app gaining focus) touch the clipboard without copying
             // anything new; the files are then the same as at the previous look.
             let unchanged = seen.1.as_ref() == Some(&clip.files);
@@ -122,7 +122,13 @@ pub fn spawn(ctx: Ctx) {
                     "viewer copy for a host without offers; sent on Ctrl+V in the session",
                     false,
                 ),
-                None => logger::info("clipboard", "Clipboard changed, but it holds no text to send."),
+                None => match &clip.image {
+                    Some(png) => {
+                        mark_seen();
+                        file_transfer::send_clipboard_image(&ctx, &partner, png);
+                    }
+                    None => logger::info("clipboard", "Clipboard changed, but it holds no text to send."),
+                },
             }
         }
     });

@@ -506,6 +506,8 @@ impl Connection {
         caps.push(capability::TILE_LOSSLESS);
         #[cfg(windows)]
         caps.push(capability::MOUSE_RELATIVE);
+        #[cfg(windows)]
+        caps.push(capability::CLIPBOARD_IMAGE);
         if p2p::enabled() && p2p::file_p2p_enabled() {
             caps.push(capability::FILE_P2P);
         }

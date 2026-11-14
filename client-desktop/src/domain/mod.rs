@@ -3,6 +3,7 @@
 
 pub mod bulk;
 pub mod capability;
+pub mod clip_image;
 pub mod desk_id;
 pub mod edition;
 pub mod file_pacing;

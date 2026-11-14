@@ -85,7 +85,7 @@ fn push_clipboard(ctx: &AppContext, s: &Arc<Session>) {
     s.clip_seq.store(current, Ordering::SeqCst);
     // The clipboard watcher must not send the same copy again.
     ctx.clipboard_seq.store(current, Ordering::SeqCst);
-    let clip = user_clipboard::read();
+    let clip = user_clipboard::read(file_transfer::caps_of(&s.id).clipboard_image);
     if file_transfer::caps_of(&s.id).file_offer {
         let files = clip.files;
         if !files.is_empty() {
@@ -103,6 +103,8 @@ fn push_clipboard(ctx: &AppContext, s: &Arc<Session>) {
     }
     if let Some(text) = clip.text {
         ctx.send(ClientMessage::RelayClipboard { target_clean: s.id.clone(), text });
+    } else if let Some(png) = clip.image {
+        file_transfer::send_clipboard_image(ctx, &s.id, &png);
     }
 }
 
@@ -411,7 +413,8 @@ pub fn key_event(ctx: &AppContext, id: &str, text: &str, pressed: bool, repeat: 
             send_key_outs(ctx, id, vec![out]);
             continue;
         }
-        let clip = user_clipboard::read();
+        // Copied images went on copy or focus change; only the keystroke follows.
+        let clip = user_clipboard::read(false);
         // Items that came from this host are already there, and files offered to this host in this session
         // are on its clipboard as virtual entries: only the keystroke is forwarded. Anything else (copied
         // before the session or before this host had focus) is sent and pasted, like a drop.

@@ -65,6 +65,7 @@ static PARTNER_CAPS: Mutex<PeerCaps> = Mutex::new(PeerCaps {
     file_pull_bin: false,
     cursor_shape: false,
     mouse_relative: false,
+    clipboard_image: false,
     file_p2p: false,
     video_delta: false,
     video_h264: false,
@@ -103,6 +104,13 @@ pub fn remove_session_caps(id: &str) {
 /// Records the capabilities of the single partner.
 pub fn set_partner_caps(caps: PeerCaps) {
     *PARTNER_CAPS.lock() = caps;
+}
+
+/// Sends a copied image (PNG) to `partner`, which listed `clipboard-image`; it goes on its clipboard as is.
+pub fn send_clipboard_image(ctx: &crate::service::context::AppContext, partner: &str, png: &[u8]) {
+    let id = format!("img-{}", SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis()));
+    logger::info("clipboard", &format!("Sending copied image ({} KB PNG) to {partner}.", png.len() / 1024));
+    ctx.send(crate::protocol::ClientMessage::file(partner, crate::protocol::FilePayload::clipboard_image(&id, png)));
 }
 
 /// Capabilities of `target`: its viewer session's when it has one, else the single partner's.

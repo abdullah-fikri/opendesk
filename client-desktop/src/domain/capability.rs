@@ -32,6 +32,9 @@ pub const CURSOR_SHAPE: &str = "cursor-shape";
 /// The viewer locks its pointer and sends relative motion while a host application captured the mouse
 /// (`pointer-lock`, `mouse-delta`): games with mouse look. Hosts send `pointer-lock` only to viewers listing it.
 pub const MOUSE_RELATIVE: &str = "mouse-relative";
+/// Copied images follow the clipboard like text (an `offer` carrying a PNG, see `domain::clip_image`). Both
+/// sides list it; an image goes only to a partner that does.
+pub const CLIPBOARD_IMAGE: &str = "clipboard-image";
 /// Framed key/delta video.
 pub const VIDEO_DELTA: &str = "video-delta";
 /// H.264 motion frames inside the framed format.
@@ -106,6 +109,8 @@ pub struct PeerCaps {
     pub cursor_shape: bool,
     /// The viewer can lock its pointer for relative motion ([`MOUSE_RELATIVE`]).
     pub mouse_relative: bool,
+    /// The partner takes copied images ([`CLIPBOARD_IMAGE`]).
+    pub clipboard_image: bool,
     pub video_delta: bool,
     pub video_h264: bool,
     /// Deltas to this viewer may carry lossless tiles ([`TILE_LOSSLESS`]).
@@ -147,6 +152,7 @@ impl PeerCaps {
             file_p2p: has(P2P) && has(FILE_BINARY) && has(FILE_P2P),
             cursor_shape: has(CURSOR_SHAPE),
             mouse_relative: has(MOUSE_RELATIVE),
+            clipboard_image: has(CLIPBOARD_IMAGE),
             video_delta: has(VIDEO_DELTA),
             video_h264: has(VIDEO_H264),
             tile_lossless: has(VIDEO_DELTA) && has(TILE_LOSSLESS),

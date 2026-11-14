@@ -43,7 +43,7 @@ impl Connection {
             }
             ServerMessage::InputCommand { event, from_clean } => self.on_input(&event, from_clean.as_deref()),
             ServerMessage::ClipboardSync { text, from_clean } => self.on_clipboard(text, from_clean.as_deref()),
-            ServerMessage::FileTransfer { from_clean, payload } => self.on_file(from_clean, payload),
+            ServerMessage::FileTransfer { from_clean, payload } => self.on_file(from_clean, *payload),
             ServerMessage::P2pSignal { from_clean, candidate } => self.on_signal(&from_clean, &candidate),
             ServerMessage::UdpRelayOffer { target_clean, addr, token } => {
                 if let Some(p) = self.links.iter().find(|p| p.partner == target_clean) {
@@ -394,6 +394,29 @@ impl Connection {
         }
     }
 
+    /// A copied image from the partner (`clipboard-image`) replaces the clipboard, like copied text.
+    fn on_clipboard_image(&self, from: &str, payload: &FilePayload) {
+        let ctx = &self.ctx;
+        let Some((dib, png)) = payload
+            .image
+            .as_deref()
+            .and_then(core_engine::codec::from_base64)
+            .and_then(|png| crate::domain::clip_image::from_png(&png))
+        else {
+            logger::warn("clipboard", "Received a copied image that is not a readable PNG.");
+            return;
+        };
+        if !core_engine::clipboard::set_image(&dib, Some(&png)) {
+            logger::warn("clipboard", "Received a copied image, but the clipboard stayed busy.");
+            return;
+        }
+        logger::info("clipboard", &format!("Received a copied image ({} KB PNG).", png.len() / 1024));
+        let seq = ctx.mark_clipboard_synced();
+        if let Some(s) = ctx.viewers.get(from) {
+            s.clip_seq.store(seq, Ordering::SeqCst);
+        }
+    }
+
     /// `fromClean` is stamped by the relay, never taken from the payload. Outside a session it is the only
     /// sender identity, so a payload without it goes to the current partner (or is dropped without one).
     pub(super) fn on_file(&mut self, from: Option<String>, payload: FilePayload) {
@@ -407,6 +430,7 @@ impl Connection {
             FileAction::Offer if ctx.viewers.get(&from).is_some() && !ctx.viewers.is_focused(&from) => {
                 logger::info("clipboard", &format!("Ignored file offer from unfocused session {from}."));
             }
+            FileAction::Offer if payload.image.is_some() => self.on_clipboard_image(&from, &payload),
             FileAction::Offer => {
                 if let Some(status) = virtual_clipboard::set_offer(&from, &payload, ctx.outbox.clone()) {
                     ctx.ui.status(status);

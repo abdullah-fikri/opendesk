@@ -71,6 +71,10 @@ pub struct FilePayload {
     /// Last write time of the file in Unix milliseconds (`start`); the receiver keeps it. Older peers ignore it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mtime: Option<u64>,
+    /// A copied image instead of files (`offer` to partners with `clipboard-image`): base64 PNG, put straight on
+    /// the receiver's clipboard.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 /// One entry of a clipboard file offer.
@@ -95,6 +99,11 @@ impl FilePayload {
     /// `start` of a single file.
     pub fn start(id: &str, name: &str, size: u64) -> Self {
         Self { name: Some(name.to_string()), size: Some(size), ..Self::new(FileAction::Start, id) }
+    }
+
+    /// A copied image (`offer` with `image`): `png` goes on the receiver's clipboard as it is.
+    pub fn clipboard_image(id: &str, png: &[u8]) -> Self {
+        Self { image: Some(core_engine::codec::to_base64(png)), ..Self::new(FileAction::Offer, id) }
     }
 
     /// `chunk` carrying base64 `data`.

@@ -76,7 +76,7 @@ pub fn run_if_requested() {
         #[cfg(windows)]
         "--service" => crate::infra::system_service::run(),
         "--pick-files" => pick_files(rest.first()),
-        "--clipboard-read" => clipboard_read(rest.first()),
+        "--clipboard-read" => clipboard_read(rest.first(), rest.get(1).is_some_and(|a| a == "image")),
         #[cfg(windows)]
         "--clipboard-helper" => crate::infra::clipboard_helper::run_helper(rest.first(), rest.get(1)),
         // A mistyped command must not silently start the app; options (`--background`, `--id=`) and paths do.
@@ -510,10 +510,10 @@ fn pick_files(out: Option<&String>) -> i32 {
     }
 }
 
-/// Writes the clipboard's text and files as JSON to `out`.
-fn clipboard_read(out: Option<&String>) -> i32 {
+/// Writes the clipboard's text and files (and with `image`, a copied image) as JSON to `out`.
+fn clipboard_read(out: Option<&String>, image: bool) -> i32 {
     let Some(out) = out else { return 2 };
-    let json = serde_json::to_vec(&user_clipboard::read_here()).unwrap_or_default();
+    let json = serde_json::to_vec(&user_clipboard::read_here(image)).unwrap_or_default();
     match std::fs::write(out, json) {
         Ok(()) => 0,
         Err(_) => 1,
