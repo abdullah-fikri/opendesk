@@ -142,6 +142,7 @@ unsafe extern "system" {
     fn OleInitialize(pv_reserved: *mut c_void) -> HRESULT;
     fn OleSetClipboard(p_data_obj: *mut c_void) -> HRESULT;
     fn OleIsCurrentClipboard(p_data_obj: *mut c_void) -> HRESULT;
+    fn ReleaseStgMedium(p_medium: *mut STGMEDIUM);
 }
 
 #[link(name = "shell32")]
@@ -154,6 +155,7 @@ unsafe extern "system" {
     fn GlobalAlloc(u_flags: u32, dw_bytes: usize) -> *mut c_void;
     fn GlobalLock(h_mem: *mut c_void) -> *mut c_void;
     fn GlobalUnlock(h_mem: *mut c_void) -> i32;
+    fn GlobalSize(h_mem: *mut c_void) -> usize;
     fn GetCurrentThreadId() -> u32;
 }
 
@@ -173,6 +175,11 @@ struct Formats {
     descriptor: u16,
     contents: u16,
     drop_effect: u16,
+    /// Shell notifications a paste target sends back through `SetData`.
+    performed: u16,
+    logical_performed: u16,
+    paste_succeeded: u16,
+    target_clsid: u16,
 }
 
 fn formats() -> &'static Formats {
@@ -186,6 +193,10 @@ fn formats() -> &'static Formats {
             descriptor: reg("FileGroupDescriptorW"),
             contents: reg("FileContents"),
             drop_effect: reg("Preferred DropEffect"),
+            performed: reg("Performed DropEffect"),
+            logical_performed: reg("Logical Performed DropEffect"),
+            paste_succeeded: reg("Paste Succeeded"),
+            target_clsid: reg("TargetCLSID"),
         }
     })
 }
@@ -803,9 +814,63 @@ unsafe extern "system" fn data_canonical(_: *mut c_void, _: *const FORMATETC, ou
     E_NOTIMPL
 }
 
-unsafe extern "system" fn data_set_data(_: *mut c_void, _: *const FORMATETC, _: *mut STGMEDIUM, _: i32) -> HRESULT {
-    // Explorer reports "Paste Succeeded" etc. here; refusing leaves the medium with the caller.
-    E_NOTIMPL
+/// `CLSID_RecycleBin` {645FF040-5081-101B-9F08-00AA002F954E}: a drop target that only deletes.
+const CLSID_RECYCLE_BIN: [u8; 16] =
+    [0x40, 0xF0, 0x5F, 0x64, 0x81, 0x50, 0x1B, 0x10, 0x9F, 0x08, 0x00, 0xAA, 0x00, 0x2F, 0x95, 0x4E];
+
+/// Bytes of an HGLOBAL medium (at most `max`).
+fn global_bytes(h: *mut c_void, max: usize) -> Vec<u8> {
+    unsafe {
+        let p = GlobalLock(h) as *const u8;
+        if p.is_null() {
+            return Vec::new();
+        }
+        let out = std::slice::from_raw_parts(p, GlobalSize(h).min(max)).to_vec();
+        GlobalUnlock(h);
+        out
+    }
+}
+
+/// The paste target reports back (AnyDesk's `ole.data` does the same): which effect it performed, that the
+/// paste succeeded, or which target it was. Logged so a paste is never silent; other formats are refused.
+unsafe extern "system" fn data_set_data(
+    this: *mut c_void,
+    fmt: *const FORMATETC,
+    medium: *mut STGMEDIUM,
+    release: i32,
+) -> HRESULT {
+    unsafe {
+        if fmt.is_null() || medium.is_null() {
+            return E_FAIL;
+        }
+        let f = formats();
+        let cf = (*fmt).cf_format;
+        let known = [f.performed, f.logical_performed, f.paste_succeeded, f.target_clsid];
+        if !known.contains(&cf) || (*medium).tymed != TYMED_HGLOBAL || (*medium).data.is_null() {
+            // Refused: the medium stays with the caller.
+            return E_NOTIMPL;
+        }
+        let bytes = global_bytes((*medium).data, 16);
+        let dword = bytes.get(..4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).unwrap_or(0);
+        let offer = &(*(this as *const DataObject)).offer;
+        let what = if cf == f.paste_succeeded {
+            Some(format!("Paste succeeded (effect {dword})"))
+        } else if cf == f.performed {
+            Some(format!("Paste target performed effect {dword}"))
+        } else if cf == f.target_clsid && bytes.as_slice() == CLSID_RECYCLE_BIN {
+            Some("Dropped on the Recycle Bin; nothing pulled".to_string())
+        } else {
+            None
+        };
+        if let Some(what) = what {
+            logger::info("clipbrd.capture", &format!("{what} for offer {} from {}.", offer.offer_id, offer.from));
+        }
+        // Accepted: with `release` the medium is ours to free.
+        if release != 0 {
+            ReleaseStgMedium(medium);
+        }
+        S_OK
+    }
 }
 
 unsafe extern "system" fn data_enum_format_etc(_: *mut c_void, direction: u32, out: *mut *mut c_void) -> HRESULT {
