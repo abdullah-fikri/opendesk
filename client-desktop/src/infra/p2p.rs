@@ -22,6 +22,7 @@ use crate::infra::audio::VoiceEngine;
 use crate::infra::e2e::{E2e, P2P_NONCE_LIMIT};
 use crate::infra::logger;
 use crate::infra::send_gate::{SendGate, VideoLink};
+use crate::infra::udp_socket::{self, PathSocket};
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 
 const NOISE: &str = "Noise_NN_25519_ChaChaPoly_BLAKE2s";
@@ -239,9 +240,13 @@ fn open(t: &snow::StatelessTransportState, replay: &mut Replay, pkt: &[u8]) -> O
     Some(plain)
 }
 
-/// Only public or private IPv4 unicast on non-system ports, so a hostile candidate list cannot aim probes at local services.
+/// Only public or private IPv4 unicast and global IPv6 on non-system ports, so a hostile candidate list cannot aim
+/// probes at local services.
 fn valid_candidate(addr: &SocketAddr) -> bool {
-    let SocketAddr::V4(v4) = addr else { return false };
+    let v4 = match addr {
+        SocketAddr::V4(v4) => v4,
+        SocketAddr::V6(v6) => return v6.port() >= 1024 && udp_socket::is_global_v6(v6.ip()),
+    };
     let ip = v4.ip();
     v4.port() >= 1024
         && !(ip.is_unspecified()
@@ -312,7 +317,7 @@ fn parse_stun_response(buf: &[u8], txid: &[u8; 12]) -> Option<SocketAddr> {
     None
 }
 
-fn stun_query(sock: &UdpSocket, server: &str) -> Option<SocketAddr> {
+fn stun_query(sock: &PathSocket, server: &str) -> Option<SocketAddr> {
     let addr = server.to_socket_addrs().ok()?.find(|a| a.is_ipv4())?;
     let mut txid = [0u8; 12];
     getrandom::fill(&mut txid).ok()?;
@@ -340,9 +345,15 @@ fn stun_query(sock: &UdpSocket, server: &str) -> Option<SocketAddr> {
     None
 }
 
-fn gather_candidates(sock: &UdpSocket) -> Vec<SocketAddr> {
-    let port = sock.local_addr().map(|a| a.port()).unwrap_or(0);
+fn gather_candidates(sock: &PathSocket) -> Vec<SocketAddr> {
+    let port = sock.port();
     let mut cands = Vec::new();
+    // IPv6 first: most home ISPs hand out global addresses without NAT, so the peers reach each other directly.
+    if sock.is_dual()
+        && let Some(ip) = udp_socket::global_ipv6()
+    {
+        cands.push(SocketAddr::from((ip, port)));
+    }
     // shortcut: only the primary interface (route to a public address); no packet is sent by connect().
     if let Ok(probe) = UdpSocket::bind("0.0.0.0:0")
         && probe.connect("8.8.8.8:80").is_ok()
@@ -484,7 +495,7 @@ pub struct P2p {
     pub partner: String,
     is_host: bool,
     prologue: Vec<u8>,
-    sock: UdpSocket,
+    sock: PathSocket,
     state: Mutex<State>,
     closed: AtomicBool,
     /// Gather the candidates again and send them as a refresh (see `refresh`).
@@ -522,13 +533,8 @@ impl P2p {
         sinks: Sinks,
         e2e: Option<Arc<E2e>>,
     ) -> Option<Arc<P2p>> {
-        let raw =
-            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP)).ok()?;
         // A 1080p JPEG is ~100-200 fragments sent back to back; the default 64 KB buffer would drop most of them.
-        let _ = raw.set_recv_buffer_size(4 << 20);
-        let _ = raw.set_send_buffer_size(4 << 20);
-        raw.bind(&SocketAddr::from(([0, 0, 0, 0], 0)).into()).ok()?;
-        let sock: UdpSocket = raw.into();
+        let sock = PathSocket::bind(4 << 20).ok()?;
         let local: String = local_clean.chars().filter(|c| c.is_ascii_digit()).collect();
         let (viewer, host) = if is_host { (partner.clone(), local) } else { (local, partner.clone()) };
         let now = Instant::now();
@@ -1455,11 +1461,16 @@ mod tests {
             "255.255.255.255:5000",
             "192.168.1.2:80",
             "169.254.1.1:5000",
+            "[::1]:5000",
+            "[fe80::1]:5000",
+            "[2a02:1810::1]:80",
+            "[::ffff:8.8.8.8]:5000",
         ] {
             assert!(!valid_candidate(&bad.parse().unwrap()), "{bad}");
         }
         assert!(valid_candidate(&"192.168.1.2:50000".parse().unwrap()));
         assert!(valid_candidate(&"8.8.4.4:50000".parse().unwrap()));
+        assert!(valid_candidate(&"[2a02:1810::1]:50000".parse().unwrap()));
     }
 
     #[test]

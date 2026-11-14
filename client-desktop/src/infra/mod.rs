@@ -25,6 +25,7 @@ pub mod system_service;
 pub mod thread;
 pub mod transfer_badge;
 pub mod tray;
+pub mod udp_socket;
 pub mod user_clipboard;
 pub mod virtual_clipboard;
 pub mod wifi;
