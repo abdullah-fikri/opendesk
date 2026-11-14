@@ -28,7 +28,8 @@ in-memory fakes and never import transport or storage code.
   aside). Senders enqueue and return; the writer serves bounded queues in priority order: control and input
   text, voice, video, file transfers. Video keeps one ordered frame queue per single session, multi-session
   view and monitor tile (served round robin); file messages get a turn at least every 8 writes.
-- Overflow: voice drops its oldest packet; video keeps the frame-queue rules; a full control (256 messages)
+- Overflow: voice drops its oldest packet; video keeps the frame-queue rules (at most 8 frames, and a delta
+  older than `OPENDESK_WS_FRAME_MAX_AGE_MS` flushes the chain up to the next key frame); a full control (256 messages)
   or file (16) queue holds its sender back while the writer is making progress. A receiver whose current
   write has been stuck for 5 s with a full control queue, or 10 s with a full file queue, is closed, and so
   is one whose write fails or times out (10 s). A relayed mouse move replaces the sender's newest queued move

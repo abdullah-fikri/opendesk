@@ -35,6 +35,13 @@ func newTestRelay(opts Options) *Relay {
 	return New(nopStore{}, nopStore{}, metrics.New(), opts, slog.New(slog.DiscardHandler))
 }
 
+// newPeer builds a peer and starts its writer, without the frame age limit.
+func newPeer(info PeerInfo, deskID string, multi bool, conn Conn, m FrameMetrics) *Peer {
+	p := buildPeer(info, deskID, multi, conn, m)
+	go p.writeLoop()
+	return p
+}
+
 // addPeer registers a peer directly, without its writer goroutine, so tests can inspect its queues.
 func addPeer(r *Relay, id string, multi bool) *Peer {
 	p := buildPeer(PeerInfo{CleanID: id}, "", multi, nopConn{}, r.metrics)

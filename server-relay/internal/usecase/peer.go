@@ -58,6 +58,9 @@ type Peer struct {
 	metrics FrameMetrics
 	// frames is the single-session video queue (untagged).
 	frames *frameQueue
+	// frameMaxAge is how long a video frame may wait in this peer's queues (see frameQueue.pop); zero disables
+	// the age limit. Set before the writer starts and never changed.
+	frameMaxAge time.Duration
 
 	// Outbound queues served by writeLoop (see outbox.go), guarded by outMu.
 	outMu                sync.Mutex
@@ -84,12 +87,6 @@ type Peer struct {
 type viewSession struct {
 	active bool // guarded by Relay.mu
 	frames *frameQueue
-}
-
-func newPeer(info PeerInfo, deskID string, multi bool, conn Conn, m FrameMetrics) *Peer {
-	p := buildPeer(info, deskID, multi, conn, m)
-	go p.writeLoop()
-	return p
 }
 
 // buildPeer returns a peer whose writer is not running yet.

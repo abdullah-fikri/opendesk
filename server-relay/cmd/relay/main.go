@@ -44,7 +44,7 @@ func run(configPath string, log *slog.Logger) error {
 	}
 	log.Info("starting OpenDesk relay", "version", version.Version, "pid", os.Getpid(), "addr", cfg.Address(),
 		"db", cfg.DBHost, "credentials", len(cfg.DeviceCredentials), "p2p_disabled", cfg.P2PDisabled,
-		"coalesce_moves", !cfg.MoveCoalescingDisabled)
+		"coalesce_moves", !cfg.MoveCoalescingDisabled, "ws_frame_max_age", cfg.FrameMaxAge())
 	memlimit.Apply(log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -74,7 +74,7 @@ func run(configPath string, log *slog.Logger) error {
 		collector,
 		usecase.Options{
 			Credentials: cfg.DeviceCredentials, P2PDisabled: cfg.P2PDisabled, Security: postgres.NewSecurityRepository(db),
-			UDPRelay: udp != nil, MoveCoalescingDisabled: cfg.MoveCoalescingDisabled,
+			UDPRelay: udp != nil, MoveCoalescingDisabled: cfg.MoveCoalescingDisabled, FrameMaxAge: cfg.FrameMaxAge(),
 		},
 		log,
 	)

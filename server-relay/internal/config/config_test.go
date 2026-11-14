@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadDefaultsAndOverrides(t *testing.T) {
@@ -56,5 +57,20 @@ func TestUDPRelaySettings(t *testing.T) {
 	t.Setenv("OPENDESK_UDP_RELAY_PUBLIC", "relay.example.com:8089")
 	if _, err := Load(missing); err == nil {
 		t.Fatal("a host name was accepted; clients need an IP address")
+	}
+}
+
+func TestFrameMaxAge(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if cfg, err := Load(missing); err != nil || cfg.FrameMaxAge() != 50*time.Millisecond {
+		t.Fatalf("default must be 50 ms: %+v %v", cfg, err)
+	}
+	t.Setenv("OPENDESK_WS_FRAME_MAX_AGE_MS", "0")
+	if cfg, err := Load(missing); err != nil || cfg.FrameMaxAge() != 0 {
+		t.Fatalf("0 must disable the age limit: %+v %v", cfg, err)
+	}
+	t.Setenv("OPENDESK_WS_FRAME_MAX_AGE_MS", "-5")
+	if _, err := Load(missing); err == nil {
+		t.Fatal("a negative age limit was accepted")
 	}
 }
