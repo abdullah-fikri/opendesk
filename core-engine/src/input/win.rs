@@ -292,6 +292,13 @@ impl InputInjector {
         press(button, true);
     }
 
+    /// Moves the pointer by (`dx`, `dy`) mickeys, as a physical mouse does: what games that captured the mouse read.
+    pub fn mouse_move_relative(&self, dx: i32, dy: i32) {
+        if dx != 0 || dy != 0 {
+            send(&[mouse_input(MOUSEEVENTF_MOVE, dx, dy)]);
+        }
+    }
+
     /// Scrolls by `delta_y` (120 = one notch up).
     pub fn mouse_wheel(&self, delta_y: i32) {
         unsafe {

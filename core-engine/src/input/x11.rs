@@ -159,6 +159,13 @@ impl InputInjector {
         self.with(|t| t.fake(MOTION_NOTIFY_EVENT, 0, x as i16, y as i16));
     }
 
+    /// Moves the pointer by (`dx`, `dy`) pixels.
+    pub fn mouse_move_relative(&self, dx: i32, dy: i32) {
+        let clamp = |v: i32| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        // XTest motion with detail 1 is relative.
+        self.with(|t| t.fake(MOTION_NOTIFY_EVENT, 1, clamp(dx), clamp(dy)));
+    }
+
     fn button(&self, button: i32, down: bool) {
         // X core buttons: 1 left, 2 middle, 3 right, 8 back, 9 forward.
         let detail = match button {

@@ -9,6 +9,7 @@ use std::sync::atomic::Ordering;
 use crate::domain::capability::PeerCaps;
 use crate::domain::keyboard::{KeyOut, Mods};
 use crate::domain::{desk_id, resolution};
+use crate::infra::pointer_lock::{self, Motion};
 use crate::infra::{audio, logger, privacy, storage, user_clipboard, virtual_clipboard, window};
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 use crate::service::context::{AppContext, Ctx};
@@ -17,6 +18,8 @@ use crate::service::viewer::decoder;
 use crate::service::viewer::registry::{Open, Session, clipboard_push_needed};
 use crate::service::{file_transfer, settings};
 
+/// Cursor code the canvas shows as no cursor at all: the pointer is locked for relative motion.
+const CURSOR_LOCKED: i32 = -1;
 const MSG_FULL_MULTI: &str = "At most 4 sessions can be open at once. Close one first.";
 const MSG_FULL_SINGLE: &str = "This relay supports one session at a time. Close the running session first.";
 
@@ -42,6 +45,7 @@ pub fn apply_focus(ctx: &AppContext) {
             None => privacy::set_viewer_hook_state(false, ""),
         }
     }
+    pointer_lock::set_locked(focused.as_ref().is_some_and(|s| s.pointer_locked.load(Ordering::SeqCst)));
     if let Some(s) = focused {
         ctx.voice.is_mic_muted.store(s.mic_muted.load(Ordering::SeqCst), Ordering::SeqCst);
         ctx.voice.audio_quality.store(s.audio_quality.load(Ordering::SeqCst), Ordering::SeqCst);
@@ -298,7 +302,21 @@ pub fn on_host_event(ctx: &AppContext, sess: &Session, event: InputEvent) {
     let id = sess.id.clone();
     let focused = ctx.viewers.is_focused(&id);
     match event {
-        InputEvent::CursorShape { shape } => ctx.ui.session_changed(id, SessionChange::Cursor(shape)),
+        InputEvent::CursorShape { shape } => {
+            sess.cursor_shape.store(shape, Ordering::SeqCst);
+            // A locked pointer stays hidden; the shape shows again when the lock ends.
+            if !sess.pointer_locked.load(Ordering::SeqCst) {
+                ctx.ui.session_changed(id, SessionChange::Cursor(shape));
+            }
+        }
+        InputEvent::PointerLock { on } => {
+            sess.pointer_locked.store(on, Ordering::SeqCst);
+            if focused {
+                pointer_lock::set_locked(on);
+            }
+            let shape = if on { CURSOR_LOCKED } else { sess.cursor_shape.load(Ordering::SeqCst) };
+            ctx.ui.session_changed(id, SessionChange::Cursor(shape));
+        }
         // A remote peer may silence this microphone, but only the local user can enable it.
         InputEvent::SetMic { muted: true } => {
             sess.mic_muted.store(true, Ordering::SeqCst);
@@ -370,6 +388,7 @@ fn send_key_outs(ctx: &AppContext, id: &str, outs: Vec<KeyOut>) {
 
 /// Lifts every key still held on host `id` (focus loss, window deactivation, tab switch).
 pub fn release_keys(ctx: &AppContext, id: &str) {
+    pointer_lock::suspend();
     if let Some(s) = ctx.viewers.get(id) {
         let outs = s.keys.lock().release_all();
         send_key_outs(ctx, id, outs);
@@ -445,6 +464,24 @@ pub fn mouse(ctx: &AppContext, id: &str, kind: Mouse, x_10000: i32, y_10000: i32
     }
     if !sess.is_connected() {
         return;
+    }
+    match kind {
+        Mouse::Move => match pointer_lock::on_move() {
+            Motion::Absolute => {}
+            Motion::Delta(0, 0) => return,
+            Motion::Delta(dx, dy) => return ctx.send_input(id, InputEvent::MouseDelta { dx, dy }),
+            Motion::Released => {
+                let shape = sess.cursor_shape.load(Ordering::SeqCst);
+                return ctx.ui.session_changed(id.to_string(), SessionChange::Cursor(shape));
+            }
+        },
+        // A click on the remote screen takes the cursor back after Ctrl+Alt; the click itself stays here.
+        Mouse::Down(_) if pointer_lock::is_user_released() => {
+            pointer_lock::resume();
+            *ctx.viewers.swallowed_click.lock() = Some(id.to_string());
+            return ctx.ui.session_changed(id.to_string(), SessionChange::Cursor(CURSOR_LOCKED));
+        }
+        _ => {}
     }
     let norm_x = (x_10000 as f64 / 10000.0).clamp(0.0, 1.0);
     let norm_y = (y_10000 as f64 / 10000.0).clamp(0.0, 1.0);

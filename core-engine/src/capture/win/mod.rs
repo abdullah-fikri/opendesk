@@ -6,7 +6,7 @@ mod gdi;
 mod monitor;
 mod win32;
 
-pub use cursor::cursor_shape;
+pub use cursor::{cursor_shape, pointer_captured};
 pub use gdi::GdiScreenCapturer;
 pub use monitor::{enable_per_monitor_dpi_awareness, enumerate_monitors, refresh_rate};
 

@@ -131,6 +131,11 @@ pub fn enumerate_monitors() -> Vec<MonitorBounds> {
     with_shared(query_monitors).filter(|l| !l.is_empty()).unwrap_or_else(|| vec![FALLBACK_MONITOR])
 }
 
+/// Whether an application captured the mouse for mouse look; not detected on X11.
+pub fn pointer_captured() -> bool {
+    false
+}
+
 /// Current host cursor as a portable shape code (see the Windows backend for the list): the XFixes cursor
 /// name mapped through [`shape_from_cursor_name`], 0 when the cursor image is fully transparent.
 pub fn cursor_shape() -> u8 {

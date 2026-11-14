@@ -7,7 +7,9 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use core_engine::capture::{DesktopCapturer, MonitorBounds, cursor_shape, enumerate_monitors, refresh_rate};
+use core_engine::capture::{
+    DesktopCapturer, MonitorBounds, cursor_shape, enumerate_monitors, pointer_captured, refresh_rate,
+};
 use core_engine::codec::frame::{self, FrameStamp};
 use core_engine::stream::{FrameInput, H264Mode, StreamEncoder};
 
@@ -23,6 +25,8 @@ use crate::service::sessions;
 
 /// How often the loop re-enumerates monitors to notice plugged, unplugged or resized displays.
 const MONITOR_POLL: Duration = Duration::from_secs(2);
+/// How often the capture loop checks whether an application captured the mouse (`pointer-lock`).
+const LOCK_POLL: Duration = Duration::from_millis(50);
 /// Time a tick keeps for the grab: it stops waiting for the backpressure gate this long before the tick ends.
 const GATE_MARGIN: Duration = Duration::from_millis(1);
 
@@ -262,6 +266,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     let mut sent_monitors: Option<InputEvent> = None;
     let mut monitors_dirty = true;
     let mut last_monitor_poll = Instant::now();
+    let (mut last_lock_poll, mut lock_reading) = (last_monitor_poll, false);
     let mut perf = HostPerf::default();
     let mut perf_window = PerfWindow::new(last_monitor_poll);
     let mut stats_window = PerfWindow::every(last_monitor_poll, STATS_INTERVAL);
@@ -354,6 +359,21 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             }
         }
 
+        if caps.mouse_relative && frame_start.duration_since(last_lock_poll) >= LOCK_POLL {
+            last_lock_poll = frame_start;
+            let captured = pointer_captured();
+            // Two equal readings in a row: a game switching windows briefly drops its clip.
+            if captured == lock_reading && captured != host.pointer_locked.load(Ordering::SeqCst) {
+                if captured {
+                    // Buttons then act where the game keeps the pointer, not at the last absolute position.
+                    core_engine::input::LAST_INJECTED_POS.store(i64::MIN, Ordering::Relaxed);
+                }
+                host.pointer_locked.store(captured, Ordering::SeqCst);
+                logger::info("host.capture", &format!("Mouse captured by an application: {captured}."));
+                ctx.send_input(partner, InputEvent::PointerLock { on: captured });
+            }
+            lock_reading = captured;
+        }
         if local_cursor {
             let shape = cursor_shape();
             if shape != last_shape {

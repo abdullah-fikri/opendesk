@@ -148,6 +148,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `file-binary` | client + relay | File chunks as binary messages (`0x12`, below) instead of base64 JSON. The relay sends them only to clients that list it. |
 | `file-pull-bin` | client, with `file-binary` | Bytes of a pulled clipboard offer (a paste stream) may arrive as binary chunks too. Without it pulled offers stay base64 JSON (clients up to 1.3.x). |
 | `cursor-shape` | client | Draws its own cursor from `cursor-shape` events; the host stops painting it. |
+| `mouse-relative` | client (Windows) | Locks its pointer while a host application captured the mouse (`pointer-lock`) and sends `mouse-delta`; the host sends `pointer-lock` only to viewers listing it. Ctrl+Alt hands the cursor back on the viewer, a click takes it again. |
 | `video-delta` | client | Framed key/delta video; without it the host sends plain JPEGs. |
 | `video-nack` | client, with `p2p.v1` | Lost P2P video fragments are requested (`K_NACK`) and resent from the host's last frames; a viewer waits for them only from a host that lists it. See `client-desktop/docs/features/p2p.md`. |
 | `tile-lossless` | client, with `video-delta` | Deltas may carry lossless text/UI tiles (flag bit 2, below); the host sends them only to viewers that list it. |
@@ -174,7 +175,7 @@ Per platform (see [platforms.md](platforms.md)):
 
 - Windows: `file-ack`, `file-offer`, `file-folder`, `file-binary`, `cursor-shape`, `video-delta`, `frame-stamp`,
   `video-h264` (when the Media Foundation decoder exists), `audio-opus`, `audio-system`, `p2p.v1`, `multi-session`,
-  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`), `file-group`, `file-pull-bin`, `tile-lossless`, `video-nack`. No `host-features`: Windows hosts have every host control.
+  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`), `file-group`, `file-pull-bin`, `tile-lossless`, `mouse-relative`, `video-nack`. No `host-features`: Windows hosts have every host control.
 - Linux: the same without `file-offer` and `audio-system`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
 - Android: `viewer-only`, `video-delta` and `e2e`, so it receives framed JPEG video (no H.264) and single-session
@@ -209,6 +210,8 @@ Per platform (see [platforms.md](platforms.md)):
 | `set-mic` | `muted` | either; only `muted: true` is honored |
 | `set-host-sound` | `on` | viewer to host, both listing `audio-system`: at session start and when the viewer toggles host sound. `on: true` streams the host's sound and pauses voice; `false` stops the capture and resumes voice (see [Host sound](#host-sound)) |
 | `cursor-shape` | `shape` (0 hidden, 1 arrow, 2 text, 3 hand, ...) | host to viewer |
+| `pointer-lock` | `on`: a host application (a game with mouse look) hid and confined the cursor, or released it | host to viewer (`mouse-relative`) |
+| `mouse-delta` | `dx`, `dy`: relative motion while the pointer is locked; positions of button and wheel events are then ignored | viewer to host |
 | `monitors` | `list[]` (`index`, `width`, `height`, `primary`), `active` | host to viewer |
 | `stats` | `on` | viewer to host: stats overlay shown or hidden |
 | `stats-ping` | `t` (viewer clock, ms) | viewer to host, once a second while the overlay is shown |

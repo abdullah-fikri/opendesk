@@ -142,6 +142,16 @@ pub enum InputEvent {
     CursorShape {
         shape: i32,
     },
+    /// Host -> viewer (viewers listing `mouse-relative`): an application on the host captured the mouse for mouse
+    /// look (`on`), or released it. While on, the viewer locks its pointer and sends `mouse-delta`.
+    PointerLock {
+        on: bool,
+    },
+    /// Viewer -> host while the pointer is locked: relative motion in viewer pixels.
+    MouseDelta {
+        dx: i32,
+        dy: i32,
+    },
     /// Host -> viewer: monitor list (primary first) and the streamed index.
     Monitors {
         list: Vec<MonitorInfo>,
@@ -248,6 +258,14 @@ mod tests {
             .unwrap();
         assert_eq!(e, json!({ "action": "set-resolution", "mode": 1080 }));
         assert_eq!(serde_json::to_value(InputEvent::VideoKeyframe).unwrap(), json!({ "action": "video-keyframe" }));
+        assert_eq!(
+            serde_json::to_value(InputEvent::PointerLock { on: true }).unwrap(),
+            json!({ "action": "pointer-lock", "on": true })
+        );
+        assert_eq!(
+            serde_json::to_value(InputEvent::MouseDelta { dx: -3, dy: 7 }).unwrap(),
+            json!({ "action": "mouse-delta", "dx": -3, "dy": 7 })
+        );
         assert_eq!(
             serde_json::to_value(InputEvent::SetHostSound { on: false }).unwrap(),
             json!({ "action": "set-host-sound", "on": false })

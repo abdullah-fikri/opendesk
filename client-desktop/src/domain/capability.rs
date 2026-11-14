@@ -26,6 +26,9 @@ pub const TILE_LOSSLESS: &str = "tile-lossless";
 pub const VIDEO_NACK: &str = "video-nack";
 /// The viewer draws its own cursor in the host's shape.
 pub const CURSOR_SHAPE: &str = "cursor-shape";
+/// The viewer locks its pointer and sends relative motion while a host application captured the mouse
+/// (`pointer-lock`, `mouse-delta`): games with mouse look. Hosts send `pointer-lock` only to viewers listing it.
+pub const MOUSE_RELATIVE: &str = "mouse-relative";
 /// Framed key/delta video.
 pub const VIDEO_DELTA: &str = "video-delta";
 /// H.264 motion frames inside the framed format.
@@ -96,6 +99,8 @@ pub struct PeerCaps {
     /// Pulled offers may be sent in binary chunks ([`FILE_PULL_BIN`]); implies `file_binary`.
     pub file_pull_bin: bool,
     pub cursor_shape: bool,
+    /// The viewer can lock its pointer for relative motion ([`MOUSE_RELATIVE`]).
+    pub mouse_relative: bool,
     pub video_delta: bool,
     pub video_h264: bool,
     /// Deltas to this viewer may carry lossless tiles ([`TILE_LOSSLESS`]).
@@ -135,6 +140,7 @@ impl PeerCaps {
             file_binary: has(FILE_BINARY),
             file_pull_bin: has(FILE_BINARY) && has(FILE_PULL_BIN),
             cursor_shape: has(CURSOR_SHAPE),
+            mouse_relative: has(MOUSE_RELATIVE),
             video_delta: has(VIDEO_DELTA),
             video_h264: has(VIDEO_H264),
             tile_lossless: has(VIDEO_DELTA) && has(TILE_LOSSLESS),

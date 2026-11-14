@@ -106,7 +106,9 @@ export component RemoteViewerCanvas inherits Rectangle {
                 height: parent.height;
                 // A hidden host cursor (0) shows as the default arrow: the user still points with this one,
                 // and the host hides its cursor for keyboard use (Start, Alt+Tab, typing) without a mouse move.
-                mouse-cursor: remote_cursor == 2 ? MouseCursor.text
+                // -1: the pointer is locked for a host game's mouse look.
+                mouse-cursor: remote_cursor == -1 ? MouseCursor.none
+                    : remote_cursor == 2 ? MouseCursor.text
                     : remote_cursor == 3 ? MouseCursor.pointer
                     : remote_cursor == 4 ? MouseCursor.wait
                     : remote_cursor == 5 ? MouseCursor.progress
