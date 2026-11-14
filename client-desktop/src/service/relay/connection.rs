@@ -483,6 +483,7 @@ impl Connection {
         // Late in the list: a relay that keeps only 16 names drops it, which only sends loose files one by one.
         caps.push(capability::FILE_GROUP);
         caps.push(capability::FILE_PULL_BIN);
+        caps.push(capability::TILE_LOSSLESS);
         let stored = storage::load_settings();
         let mut caps: Vec<String> = caps.into_iter().map(String::from).collect();
         // Right before `fps-N`: a relay that keeps only 16 names drops it first, which only turns host sound off.

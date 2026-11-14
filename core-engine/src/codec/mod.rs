@@ -5,6 +5,7 @@ pub mod delta;
 pub mod frame;
 pub mod h264;
 mod jpeg;
+pub mod lossless;
 
 pub use base64::{from_base64, to_base64};
 pub use jpeg::JpegEncoder;

@@ -6,8 +6,11 @@ use std::time::Instant;
 
 use crate::codec::JpegEncoder;
 use crate::codec::delta::{build_atlas, key_header, pack_atlas};
-use crate::codec::frame::{FLAG_IDR, FrameHeader, KIND_DELTA, KIND_H264, MoveRect};
+use crate::codec::frame::{
+    FLAG_IDR, FLAG_LOSSLESS, FrameHeader, KIND_DELTA, KIND_H264, LOSSLESS_PATCH, MoveRect, Patch, mixed_payload,
+};
 use crate::codec::h264::H264Encoder;
+use crate::codec::lossless;
 
 /// What `H264Encoder::encode` / `take_ready` return, with the backend's error dropped (any error means the same).
 type H264Result = Result<Option<(Vec<u8>, bool)>, ()>;
@@ -151,6 +154,11 @@ pub struct StreamEncoder {
     /// The viewer prefers H.264 during motion: on a hardware encoder `Auto` follows the high-frame-rate rule at
     /// any rate (see [`enters_h264`]).
     prefer_h264: bool,
+    /// The viewer takes lossless text/UI tiles (`tile-lossless`).
+    lossless: bool,
+    /// Blocks the viewer has only as JPEG since the last key frame; with `lossless`, text/UI among them are
+    /// resent pixel-exact once the screen is still (the refine pass).
+    refine: Vec<bool>,
 }
 
 impl StreamEncoder {
@@ -185,6 +193,8 @@ impl StreamEncoder {
             high_fps_policy: std::env::var("OPENDESK_H264_HIGH_FPS").map(|v| v != "0").unwrap_or(true),
             bitrate_factor: 1.0,
             prefer_h264: false,
+            lossless: false,
+            refine: vec![false; blocks],
         }
     }
 
@@ -269,6 +279,12 @@ impl StreamEncoder {
         self.high_fps() || (self.high_fps_policy && self.prefer_h264 && self.h264_hardware())
     }
 
+    /// Sends text and UI blocks pixel-exact (`tile-lossless` viewers only; `OPENDESK_LOSSLESS_TILES=0` turns it
+    /// off).
+    pub fn set_lossless(&mut self, on: bool) {
+        self.lossless = on && std::env::var("OPENDESK_LOSSLESS_TILES").map_or(true, |v| v != "0");
+    }
+
     /// Frame rate of the capture loop; a change rebuilds the H.264 encoder for the new rate.
     pub fn set_fps(&mut self, fps: u32) {
         if fps != self.fps {
@@ -292,6 +308,7 @@ impl StreamEncoder {
             self.height = height;
             self.diff = BlockDiff::new(width, height, BLOCK);
             self.lowq = vec![false; self.diff.grid_w * self.diff.grid_h];
+            self.refine = vec![false; self.lowq.len()];
             // The encoder is bound to the old size.
             self.rebuild_h264();
         }
@@ -367,7 +384,8 @@ impl StreamEncoder {
         } else {
             self.idle_ticks += 1;
             let n_low = self.lowq.iter().filter(|&&d| d).count();
-            if n_low > 0 && self.idle_ticks >= scaled_ticks(SETTLE_TICKS, self.fps) {
+            let settled = self.idle_ticks >= scaled_ticks(SETTLE_TICKS, self.fps);
+            if n_low > 0 && settled {
                 if n_low * 2 > total {
                     self.send_key(f, false)
                 } else {
@@ -375,6 +393,11 @@ impl StreamEncoder {
                     let q = self.quality(false);
                     self.send_delta(f, &blocks, q)
                 }
+            } else if settled && self.refine.iter().any(|&r| r) {
+                // Refine pass: text and UI the viewer has only as JPEG become pixel-exact; photos stay JPEG.
+                let blocks = std::mem::replace(&mut self.refine, vec![false; total]);
+                let (_, flat) = self.split_flat(f, &blocks);
+                if flat.iter().any(|&b| b) { self.send_delta(f, &flat, self.quality(false)) } else { None }
             } else if self.idle_ticks >= scaled_ticks(KEEPALIVE_TICKS, self.fps) {
                 self.idle_ticks = 0;
                 self.send_delta(f, &[], self.base_quality)
@@ -521,6 +544,7 @@ impl StreamEncoder {
         self.needs_key = false;
         let blurry = q < self.quality(false);
         self.lowq.fill(blurry);
+        self.refine.fill(self.lossless && self.delta);
         self.seq = self.seq.wrapping_add(1);
         self.last.kind = SentKind::Key;
         self.last.quality = q;
@@ -528,9 +552,22 @@ impl StreamEncoder {
     }
 
     fn send_delta(&mut self, f: &FrameInput, blocks: &[bool], q: u32) -> Option<Vec<u8>> {
-        let rects = merge_blocks(blocks, self.diff.grid_w, BLOCK, self.width, self.height);
-        let (aw, ah, patches) = pack_atlas(&rects, self.width);
-        let payload = if patches.is_empty() {
+        // At full quality, text and UI blocks go pixel-exact; reduced quality (motion, congestion) stays JPEG.
+        let (blocks, flat) = if self.lossless && self.delta && q >= self.quality(false) {
+            self.split_flat(f, blocks)
+        } else {
+            (blocks.to_vec(), Vec::new())
+        };
+        let full = q >= self.quality(false);
+        for (r, (&j, &l)) in self.refine.iter_mut().zip(blocks.iter().zip(flat.iter())) {
+            // A block resent at full quality is final (exact, or a photo); a blurry one waits for `lowq` first.
+            if l || (j && full) {
+                *r = false;
+            }
+        }
+        let rects = merge_blocks(&blocks, self.diff.grid_w, BLOCK, self.width, self.height);
+        let (aw, ah, mut patches) = pack_atlas(&rects, self.width);
+        let mut payload = if patches.is_empty() {
             Vec::new()
         } else {
             let atlas = build_atlas(f.pixels, f.stride, &patches, aw, ah);
@@ -544,12 +581,25 @@ impl StreamEncoder {
                 }
             }
         };
+        let mut flags = 0;
+        if flat.iter().any(|&b| b) {
+            let rects = merge_blocks(&flat, self.diff.grid_w, BLOCK, self.width, self.height);
+            let (lw, lh, lpatches) = pack_atlas(&rects, self.width);
+            if lw as u16 >= LOSSLESS_PATCH {
+                self.request_key();
+                return None;
+            }
+            let atlas = build_atlas(f.pixels, f.stride, &lpatches, lw, lh);
+            payload = mixed_payload(&payload, &lossless::encode(&atlas, lw as usize, lh as usize));
+            patches.extend(lpatches.into_iter().map(|p| Patch { atlas_x: p.atlas_x | LOSSLESS_PATCH, ..p }));
+            flags = FLAG_LOSSLESS;
+        }
         self.seq = self.seq.wrapping_add(1);
         self.last.kind = SentKind::Delta;
         self.last.quality = q;
         let header = FrameHeader {
             kind: KIND_DELTA,
-            flags: 0,
+            flags,
             seq: self.seq,
             width: self.width as u16,
             height: self.height as u16,
@@ -557,6 +607,22 @@ impl StreamEncoder {
             patches,
         };
         Some(header.encode(&payload))
+    }
+
+    /// Splits `blocks` into `(JPEG blocks, lossless blocks)`: a block with few colours (text, UI) goes lossless.
+    fn split_flat(&self, f: &FrameInput, blocks: &[bool]) -> (Vec<bool>, Vec<bool>) {
+        let (gw, b) = (self.diff.grid_w, BLOCK as usize);
+        let (w, h) = (self.width as usize, self.height as usize);
+        let mut jpeg = blocks.to_vec();
+        let mut flat = vec![false; blocks.len()];
+        for (i, _) in blocks.iter().enumerate().filter(|(_, d)| **d) {
+            let (x, y) = ((i % gw) * b, (i / gw) * b);
+            if x < w && y < h && lossless::is_flat(f.pixels, f.stride, x, y, b.min(w - x), b.min(h - y)) {
+                jpeg[i] = false;
+                flat[i] = true;
+            }
+        }
+        (jpeg, flat)
     }
 }
 

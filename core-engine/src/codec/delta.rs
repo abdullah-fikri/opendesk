@@ -1,7 +1,7 @@
 //! Dirty-region delta frames: the host packs changed rectangles into one atlas image (one JPEG header
 //! and one encode call per frame), the viewer keeps a persistent framebuffer and blits the patches back.
 
-use super::frame::{FrameHeader, KIND_DELTA, KIND_KEY, MoveRect, Patch};
+use super::frame::{FrameHeader, KIND_DELTA, KIND_KEY, LOSSLESS_PATCH, MoveRect, Patch};
 use crate::diff::Rect;
 
 /// JPEG works on 16x16 MCUs with 4:2:0 chroma; aligning atlas cells keeps one patch from bleeding into the next.
@@ -128,6 +128,17 @@ impl Compositor {
 
     /// Applies one delta. `atlas` is the decoded payload (RGBA, width, height) or None when it has no patches.
     pub fn apply_delta(&mut self, h: &FrameHeader, atlas: Option<(&[u8], u32, u32)>) -> Applied {
+        self.apply_mixed(h, atlas, None)
+    }
+
+    /// Applies a delta whose patches come from a JPEG atlas and, for patches marked `LOSSLESS_PATCH`, a lossless
+    /// atlas (both decoded to RGBA). A patch whose atlas is missing is skipped (clipped like any bad rect).
+    pub fn apply_mixed(
+        &mut self,
+        h: &FrameHeader,
+        atlas: Option<(&[u8], u32, u32)>,
+        lossless: Option<(&[u8], u32, u32)>,
+    ) -> Applied {
         if h.kind != KIND_DELTA
             || self.last_seq.is_none_or(|s| s.wrapping_add(1) != h.seq)
             || h.width as u32 != self.width
@@ -140,11 +151,14 @@ impl Compositor {
         for m in &h.moves {
             self.apply_move(m);
         }
-        let Some((src, aw, ah)) = atlas else {
+        if atlas.is_none() && lossless.is_none() {
             return if h.moves.is_empty() { Applied::Unchanged } else { Applied::Updated };
-        };
+        }
         let fw = self.width as usize;
         for p in &h.patches {
+            let (from_lossless, atlas_x) = (p.atlas_x & LOSSLESS_PATCH != 0, p.atlas_x & !LOSSLESS_PATCH);
+            let Some((src, aw, ah)) = (if from_lossless { lossless } else { atlas }) else { continue };
+            let p = Patch { atlas_x, ..*p };
             // Clip against both images so a malformed rect can never index out of bounds.
             let w = (p.w as u32).min(self.width.saturating_sub(p.dst_x as u32)).min(aw.saturating_sub(p.atlas_x as u32))
                 as usize;

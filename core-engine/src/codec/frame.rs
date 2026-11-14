@@ -6,7 +6,7 @@
 //!                  0x00 can never follow SOI in a real JPEG, so legacy frames are never mistaken for it
 //! 4  version (1)
 //! 5  kind          1 = key (payload is one full JPEG), 2 = delta (payload is one JPEG atlas), 3 = H.264 access unit
-//! 6  flags         bit0 = H.264 IDR, bit1 = stamped (12-byte trailer below)
+//! 6  flags         bit0 = H.264 IDR, bit1 = stamped (12-byte trailer below), bit2 = lossless tiles (delta)
 //! 7  reserved
 //! 8  seq u32       a delta applies only on top of seq-1; key frames restart the chain
 //! 12 width u16, height u16
@@ -17,6 +17,10 @@
 //!    captured_us u64   host monotonic clock at capture, microseconds (any epoch; only differences count)
 //!    host_us u32       capture to hand-off for sending on the host, microseconds
 //! ```
+//!
+//! A delta with the lossless flag (only toward viewers that list `tile-lossless`) carries two atlases:
+//! payload = `jpeg length u32`, the JPEG atlas, then a `codec::lossless` atlas. Patches whose `atlas_x` has bit 15
+//! set come from the lossless atlas (at `atlas_x & 0x7FFF`).
 //!
 //! Only viewers that list `frame-stamp` get stamped messages; parsers that predate it read the trailer as
 //! payload, so a host never sends one to them.
@@ -38,6 +42,26 @@ pub const FLAG_IDR: u8 = 1;
 /// Flag: the message ends in a [`FrameStamp`] trailer.
 pub const FLAG_STAMP: u8 = 2;
 const STAMP_LEN: usize = 12;
+/// Flag (delta): the payload holds a JPEG atlas and a lossless atlas (see the module docs).
+pub const FLAG_LOSSLESS: u8 = 4;
+/// Bit of `Patch::atlas_x` marking a patch of the lossless atlas.
+pub const LOSSLESS_PATCH: u16 = 0x8000;
+
+/// Joins the two atlases of a lossless delta (empty JPEG part allowed).
+pub fn mixed_payload(jpeg: &[u8], lossless: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + jpeg.len() + lossless.len());
+    out.extend_from_slice(&(jpeg.len() as u32).to_be_bytes());
+    out.extend_from_slice(jpeg);
+    out.extend_from_slice(lossless);
+    out
+}
+
+/// Splits a lossless delta's payload into `(jpeg, lossless)`; None when malformed.
+pub fn split_mixed(payload: &[u8]) -> Option<(&[u8], &[u8])> {
+    let len = u32::from_be_bytes(payload.get(..4)?.try_into().ok()?) as usize;
+    let jpeg = payload.get(4..4usize.checked_add(len)?)?;
+    Some((jpeg, &payload[4 + len..]))
+}
 
 /// Host-side timing of one framed message, carried in its trailer (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

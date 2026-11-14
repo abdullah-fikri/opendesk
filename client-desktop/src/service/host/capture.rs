@@ -230,6 +230,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     let mut preset = caps.performance;
     encoder.set_preset(preset.bitrate_factor(), preset.prefers_h264());
     encoder.set_h264(h264);
+    encoder.set_lossless(caps.tile_lossless);
     let mut h264_logged = false;
     let mut last_shape = u8::MAX;
     let mut congestion = CongestionMeter::new();

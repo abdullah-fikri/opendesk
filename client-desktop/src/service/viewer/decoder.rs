@@ -9,8 +9,11 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use core_engine::codec::delta::{Applied, Compositor};
-use core_engine::codec::frame::{FLAG_IDR, FrameHeader, KIND_DELTA, KIND_H264, KIND_KEY, is_framed, read_stamp};
+use core_engine::codec::frame::{
+    FLAG_IDR, FLAG_LOSSLESS, FrameHeader, KIND_DELTA, KIND_H264, KIND_KEY, is_framed, read_stamp, split_mixed,
+};
 use core_engine::codec::h264::H264Decoder;
+use core_engine::codec::lossless;
 use image::ImageReader;
 use parking_lot::{Condvar, Mutex};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
@@ -286,6 +289,7 @@ impl ViewerDecoder {
                     Applied::NeedKey
                 }
             },
+            KIND_DELTA if header.flags & FLAG_LOSSLESS != 0 => self.apply_lossless_delta(&header, payload),
             KIND_DELTA => {
                 if payload.is_empty() || header.patches.is_empty() {
                     return self.comp.apply_delta(&header, None);
@@ -302,6 +306,20 @@ impl ViewerDecoder {
             // Unknown kinds are never sent to us; resync if they are.
             _ => Applied::NeedKey,
         }
+    }
+
+    /// A delta with a JPEG atlas and a lossless text/UI atlas (`tile-lossless`).
+    fn apply_lossless_delta(&mut self, header: &FrameHeader, payload: &[u8]) -> Applied {
+        let decoded = split_mixed(payload).and_then(|(jpeg, tiles)| {
+            let jpeg = if jpeg.is_empty() { None } else { Some(decode_jpeg_rgba(jpeg)?) };
+            Some((jpeg, lossless::decode(tiles)?))
+        });
+        let Some((jpeg, (tiles, tw, th))) = decoded else {
+            self.comp.invalidate();
+            return Applied::NeedKey;
+        };
+        let jpeg = jpeg.as_ref().map(|(rgba, w, h)| (rgba.as_slice(), *w, *h));
+        self.comp.apply_mixed(header, jpeg, Some((&tiles, tw, th)))
     }
 
     fn apply_h264(&mut self, h: &FrameHeader, au: &[u8]) -> Applied {
@@ -649,6 +667,78 @@ mod tests {
         enc.request_key();
         assert!(shown(viewer.process(vec![enc.encode(&input(&frame, w)).unwrap()])));
         assert!(psnr(&frame, &viewer.comp.fb) > 20.0);
+    }
+
+    /// `tile-lossless`: text typed on a plain background arrives pixel-exact, photo-like blocks stay JPEG, and
+    /// both kinds can share one delta.
+    #[test]
+    fn lossless_tiles_reproduce_text_exactly_end_to_end() {
+        let (w, h) = (320usize, 200usize);
+        // Plain window background with a gradient "photo" in the right half.
+        let mut frame: Vec<u32> = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                if x >= 192 {
+                    (((x * 7 + y * 3) as u32 & 0xFF) << 16) | (((y as u32 * 5) & 0xFF) << 8) | 0x40
+                } else {
+                    0x00F3_F3F3
+                }
+            })
+            .collect();
+        let mut enc = StreamEncoder::new(w as i32, h as i32, 85, true);
+        enc.set_lossless(true);
+        let mut viewer = ViewerDecoder::new();
+        assert!(shown(viewer.process(vec![enc.encode(&input(&frame, w)).unwrap()])));
+
+        let text = |x: usize, y: usize| (x * 7 + y * 13) % 5 < 2; // dense two-tone "glyphs"
+        for t in 0..4 {
+            for y in 40..56 {
+                for x in 10 + t * 30..34 + t * 30 {
+                    if text(x, y) {
+                        frame[y * w + x] = 0x0020_2020;
+                    }
+                }
+            }
+            // The last tick also touches the photo half: one delta with both atlases.
+            if t == 3 {
+                for y in 100..140 {
+                    for x in 200..260 {
+                        frame[y * w + x] ^= 0x0033_1100;
+                    }
+                }
+            }
+            let msg = enc.encode(&input(&frame, w)).unwrap();
+            let (hdr, _) = FrameHeader::parse(&msg).unwrap();
+            assert_eq!((hdr.kind, hdr.flags & FLAG_LOSSLESS), (KIND_DELTA, FLAG_LOSSLESS));
+            assert!(shown(viewer.process(vec![msg])));
+        }
+        // Still screen: the refine pass resends the rest of the plain background (key-frame JPEG) pixel-exact.
+        let mut refined = false;
+        for _ in 0..10 {
+            if let Some(msg) = enc.encode(&input(&frame, w)) {
+                assert_eq!(FrameHeader::parse(&msg).unwrap().0.flags & FLAG_LOSSLESS, FLAG_LOSSLESS);
+                assert!(shown(viewer.process(vec![msg])));
+                refined = true;
+                break;
+            }
+        }
+        assert!(refined, "no refine pass");
+        // Every pixel left of the photo is exact.
+        for y in 0..h {
+            for x in 0..192 {
+                let (p, o) = (frame[y * w + x], (y * w + x) * 4);
+                let got = [viewer.comp.fb[o], viewer.comp.fb[o + 1], viewer.comp.fb[o + 2]];
+                assert_eq!(got, [(p >> 16) as u8, (p >> 8) as u8, p as u8], "pixel ({x}, {y})");
+            }
+        }
+        assert!(psnr(&frame, &viewer.comp.fb) > 20.0);
+
+        // A viewer without the capability never gets lossless tiles.
+        let mut plain = StreamEncoder::new(w as i32, h as i32, 85, true);
+        let _key = plain.encode(&input(&frame, w)).unwrap();
+        frame[45 * w + 12] = 0;
+        let msg = plain.encode(&input(&frame, w)).unwrap();
+        assert_eq!(FrameHeader::parse(&msg).unwrap().0.flags & FLAG_LOSSLESS, 0);
     }
 
     #[test]
@@ -1019,6 +1109,7 @@ screen {}x{} mode={} q={} | GDI capture {:.2} ms/frame | {} first frame {:.2} ms
             ] {
                 let mut enc = StreamEncoder::new(w as i32, h as i32, quality, delta);
                 enc.set_h264(h264);
+                enc.set_lossless(std::env::var("BENCH_LOSSLESS").is_ok_and(|v| v == "1"));
                 enc.wait_h264_ready();
                 let mut viewer = ViewerDecoder::new();
                 let (mut bytes, mut sent, mut enc_sent_us, mut enc_max, mut host_us, mut dec_us) =

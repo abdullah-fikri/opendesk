@@ -149,6 +149,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `file-pull-bin` | client, with `file-binary` | Bytes of a pulled clipboard offer (a paste stream) may arrive as binary chunks too. Without it pulled offers stay base64 JSON (clients up to 1.3.x). |
 | `cursor-shape` | client | Draws its own cursor from `cursor-shape` events; the host stops painting it. |
 | `video-delta` | client | Framed key/delta video; without it the host sends plain JPEGs. |
+| `tile-lossless` | client, with `video-delta` | Deltas may carry lossless text/UI tiles (flag bit 2, below); the host sends them only to viewers that list it. |
 | `video-h264` | client | H.264 inside the framed format. |
 | `frame-stamp` | client | Framed video to this viewer may end in a capture stamp (below) for the stats overlay's latency rows. |
 | `audio-opus` | client | Decodes Opus voice (`[0x02][0x4F]...`); voice to it is Opus, to everyone else PCM. |
@@ -172,7 +173,7 @@ Per platform (see [platforms.md](platforms.md)):
 
 - Windows: `file-ack`, `file-offer`, `file-folder`, `file-binary`, `cursor-shape`, `video-delta`, `frame-stamp`,
   `video-h264` (when the Media Foundation decoder exists), `audio-opus`, `audio-system`, `p2p.v1`, `multi-session`,
-  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`), `file-group`, `file-pull-bin`. No `host-features`: Windows hosts have every host control.
+  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`), `file-group`, `file-pull-bin`, `tile-lossless`. No `host-features`: Windows hosts have every host control.
 - Linux: the same without `file-offer` and `audio-system`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
 - Android: `viewer-only`, `video-delta` and `e2e`, so it receives framed JPEG video (no H.264) and single-session
@@ -277,7 +278,7 @@ Framed video (`video-delta`), all integers big-endian:
 0   FF D8 00 4F   magic (starts like a JPEG; 0x00 never follows SOI in a real JPEG)
 4   version = 1
 5   kind: 1 key (payload = JPEG), 2 delta (payload = JPEG atlas), 3 H.264 access unit
-6   flags: bit 0 = H.264 IDR, bit 1 = stamped
+6   flags: bit 0 = H.264 IDR, bit 1 = stamped, bit 2 = lossless tiles (delta, `tile-lossless` viewers)
 7   reserved
 8   seq (u32): a delta applies only on top of seq-1
 12  width, height (u16)
@@ -289,6 +290,13 @@ Framed video (`video-delta`), all integers big-endian:
       captured_us (u64): host monotonic clock at capture, µs
       host_us (u32): capture to hand-off for sending on the host, µs
 ```
+
+A delta with flag bit 2 carries two atlases: payload = JPEG length (u32), the JPEG atlas (may be empty), then a
+lossless atlas: `width, height (u16), mode (u8)`; mode 1 = palette (`count-1` u8, `count` x RGB, deflated
+one-byte indices), mode 0 = deflated RGB. Patches whose `atlas_x` has bit 15 set come from the lossless atlas (at
+`atlas_x & 0x7FFF`). The host sends 32x32 blocks with at most 48 colours (text, UI) this way at full quality,
+and once the screen is still it resends such blocks that the viewer has only as JPEG (after a key frame), so text
+ends pixel-exact. `OPENDESK_LOSSLESS_TILES=0` on the host turns it off.
 
 The viewer maps `captured_us` onto its own clock with the offset from `stats-ping`/`stats-pong` (`h` taken as
 halfway through the round trip) to split a frame's latency into host, network, decode and display.

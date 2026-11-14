@@ -18,6 +18,9 @@ pub const FILE_BINARY: &str = "file-binary";
 /// With `file-binary`: bytes of a pulled (pasted) offer may arrive as binary chunks too. Peers up to 1.3.x read
 /// paste streams from JSON only.
 pub const FILE_PULL_BIN: &str = "file-pull-bin";
+/// Framed deltas may carry lossless text/UI tiles (`FLAG_LOSSLESS`, see `core_engine::codec::lossless`). From a
+/// viewer: it decodes them; a host sends them only to viewers that list it.
+pub const TILE_LOSSLESS: &str = "tile-lossless";
 /// The viewer draws its own cursor in the host's shape.
 pub const CURSOR_SHAPE: &str = "cursor-shape";
 /// Framed key/delta video.
@@ -92,6 +95,8 @@ pub struct PeerCaps {
     pub cursor_shape: bool,
     pub video_delta: bool,
     pub video_h264: bool,
+    /// Deltas to this viewer may carry lossless tiles ([`TILE_LOSSLESS`]).
+    pub tile_lossless: bool,
     /// Framed video to this viewer may carry capture stamps.
     pub frame_stamp: bool,
     /// Voice to this partner may be Opus (we always decode it, so the partner's word is enough).
@@ -127,6 +132,7 @@ impl PeerCaps {
             cursor_shape: has(CURSOR_SHAPE),
             video_delta: has(VIDEO_DELTA),
             video_h264: has(VIDEO_H264),
+            tile_lossless: has(VIDEO_DELTA) && has(TILE_LOSSLESS),
             frame_stamp: has(FRAME_STAMP),
             audio_opus: has(AUDIO_OPUS),
             audio_system: has(AUDIO_SYSTEM),

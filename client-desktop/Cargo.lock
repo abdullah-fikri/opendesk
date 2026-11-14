@@ -792,6 +792,7 @@ dependencies = [
  "arboard",
  "jpeg-encoder",
  "libc",
+ "miniz_oxide 0.8.9",
  "openh264",
  "openh264-sys2",
  "windows 0.62.2",

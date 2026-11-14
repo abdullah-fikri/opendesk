@@ -7,6 +7,10 @@ license-file = "../LICENSE"
 repository = "https://github.com/abdullah-fikri/opendesk"
 publish = false
 
+[dependencies]
+# Deflate for lossless text/UI tiles (`codec::lossless`); pure Rust, already in the client's dependency tree.
+miniz_oxide = "0.8.9"
+
 [target.'cfg(windows)'.dependencies]
 # DXGI Desktop Duplication / D3D11 (capture) and Media Foundation (H.264): COM vtables by hand would be unreasonable.
 windows = { version = "=0.62.2", features = [
