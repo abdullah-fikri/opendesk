@@ -24,6 +24,7 @@ use super::{
     BINARY_CHUNK_SIZE, CHUNK_SIZE, Delivery, IN_FLIGHT_CHUNKS, caps_of, chunk_units, epoch, expect_ack, forget_ack,
     hex, now_micros, tree,
 };
+use crate::domain::file_squeeze::{OFFSET_DEFLATED, Squeeze};
 use crate::domain::transfer::{MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, percent, safe_rel_path};
 use crate::infra::logger;
 use crate::protocol::{ClientMessage, FileMark, FilePayload, Outgoing, binary};
@@ -96,9 +97,14 @@ impl Link {
         let _ = self.outbox.send(Outgoing::File { message, status, mark });
     }
 
-    /// Queues `data` at `offset` of transfer `id`: binary when `binary`, else base64 JSON.
-    fn queue_chunk(&self, binary: bool, id: &str, offset: u64, data: &[u8], mark: FileMark) {
-        match binary.then(|| binary::file_chunk(id, offset, data)).flatten() {
+    /// Queues `data` at `offset` of transfer `id`: binary when `binary`, else base64 JSON. `packed` is `data`
+    /// deflated (binary only), sent instead with the offset flagged.
+    fn queue_chunk(&self, binary: bool, id: &str, offset: u64, data: &[u8], packed: Option<Vec<u8>>, mark: FileMark) {
+        let frame = match packed {
+            Some(packed) if binary => binary::file_chunk(id, offset | OFFSET_DEFLATED, &packed),
+            _ => binary.then(|| binary::file_chunk(id, offset, data)).flatten(),
+        };
+        match frame {
             Some(frame) => {
                 IN_FLIGHT_CHUNKS.fetch_add(chunk_units(frame.len()), Ordering::SeqCst);
                 let target = self.target.clone();
@@ -388,6 +394,11 @@ impl Shown {
     }
 }
 
+/// Kill switch: `OPENDESK_FILE_DEFLATE=0` sends every chunk raw.
+fn deflate_enabled() -> bool {
+    std::env::var("OPENDESK_FILE_DEFLATE").map_or(true, |v| v != "0")
+}
+
 /// Sends one file and waits for its verdict.
 fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
     let SendItem { path, id, tag } = item;
@@ -437,6 +448,8 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
     link.progress(&id, &label, 0, size, TransferState::Active);
 
     let fast = super::fast_path(&link.target);
+    let mut squeeze = Squeeze::new(&wire_name, binary && caps.file_deflate && deflate_enabled(), Instant::now());
+    let (mut raw_bytes, mut wire_bytes) = (0u64, 0u64);
     let mut buf = vec![0u8; chunk_size];
     let mut hash = Sha256::new();
     let mut sent = 0u64;
@@ -447,7 +460,9 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
             aborted = true;
             break;
         }
+        let mut waited = false;
         while IN_FLIGHT_CHUNKS.load(Ordering::Relaxed) > MAX_QUEUED_CHUNKS && epoch() == started {
+            waited = true;
             thread::sleep(Duration::from_millis(8));
             shown.update(link, &id, &label, delivery.bytes(), size);
         }
@@ -466,7 +481,10 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
                 hash.update(&buf[..n]);
                 let offset = sent;
                 sent += n as u64;
-                link.queue_chunk(binary, &id, offset, &buf[..n], mark(sent));
+                let packed = squeeze.pack(&buf[..n], waited, Instant::now());
+                raw_bytes += n as u64;
+                wire_bytes += packed.as_ref().map_or(n, Vec::len) as u64;
+                link.queue_chunk(binary, &id, offset, &buf[..n], packed, mark(sent));
                 shown.update(link, &id, &label, delivery.bytes(), size);
                 // The relay path spaces chunks out behind video; a direct path paces itself (`domain::bulk`).
                 if !fast {
@@ -479,6 +497,12 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
                 break;
             }
         }
+    }
+    if wire_bytes < raw_bytes {
+        logger::info(
+            "file_transfer",
+            &format!("Deflated id={id}: {raw_bytes} -> {wire_bytes} bytes ({}%)", wire_bytes * 100 / raw_bytes.max(1)),
+        );
     }
     if aborted || sent != size {
         logger::error("file_transfer", &format!("Transfer incomplete for {path:?}"));
@@ -538,6 +562,7 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
 mod tests {
     use super::*;
     use crate::domain::capability::PeerCaps;
+    use crate::domain::file_squeeze;
     use crate::protocol::FileAction;
     use crate::service::file_transfer::receiver::{FileReceiver, tests::TEST_DOWNLOADS};
     use crate::service::file_transfer::tree::tests::temp_tree;
@@ -680,9 +705,14 @@ mod tests {
                     wire += frame.len();
                     binary_chunks += 1;
                     let chunk = binary::parse_file_chunk(&frame).unwrap();
-                    assert_eq!((to.as_str(), chunk.offset), (target, got.len() as u64));
-                    assert!(chunk.data.len() <= BINARY_CHUNK_SIZE);
-                    got.extend_from_slice(chunk.data);
+                    let (offset, bytes) = if chunk.offset & OFFSET_DEFLATED != 0 {
+                        (chunk.offset & !OFFSET_DEFLATED, file_squeeze::unpack(chunk.data, BINARY_CHUNK_SIZE).unwrap())
+                    } else {
+                        (chunk.offset, chunk.data.to_vec())
+                    };
+                    assert_eq!((to.as_str(), offset), (target, got.len() as u64));
+                    assert!(bytes.len() <= BINARY_CHUNK_SIZE);
+                    got.extend_from_slice(&bytes);
                 }
                 _ => {}
             }
@@ -713,6 +743,25 @@ mod tests {
             n + 2
         );
         assert_eq!(json_wire, old_relay_wire);
+        // Compressible data: much smaller toward a `file-deflate` receiver, the same bytes after inflating.
+        let text: Vec<u8> = (0..400_000u32)
+            .flat_map(|i| {
+                format!(
+                    "line {} of a log file
+",
+                    i % 977
+                )
+                .into_bytes()
+            })
+            .collect();
+        super::super::set_session_caps(
+            "710000003",
+            PeerCaps { file_binary: true, file_deflate: true, ..PeerCaps::default() },
+        );
+        let (plain, _) = send_and_collect("710000001", &text, true);
+        let (deflated, _) = send_and_collect("710000003", &text, true);
+        println!("text {} B: binary {plain} B, deflated {deflated} B", text.len());
+        assert!(deflated * 4 < plain, "{deflated} vs {plain}");
         assert!(binary_wire < data.len() + data.len() / 100 && json_wire > data.len() * 4 / 3);
         super::super::remove_session_caps("710000001");
         super::super::remove_session_caps("710000002");

@@ -22,7 +22,7 @@ use crate::domain::bulk;
 use crate::domain::file_route::{FileRoutes, Step};
 use crate::domain::performance::Performance;
 use crate::domain::settings::{self, normalize_gateway_url};
-use crate::domain::{capability, frame_rate};
+use crate::domain::{capability, file_squeeze, frame_rate};
 use crate::infra::e2e::{self, E2e};
 use crate::infra::p2p::{self, P2p};
 use crate::infra::{device, logger, power, storage, virtual_clipboard, window};
@@ -511,6 +511,7 @@ impl Connection {
         if p2p::enabled() && p2p::file_p2p_enabled() {
             caps.push(capability::FILE_P2P);
         }
+        caps.push(capability::FILE_DEFLATE);
         let stored = storage::load_settings();
         let mut caps: Vec<String> = caps.into_iter().map(String::from).collect();
         // Right before `fps-N`: a relay that keeps only 16 names drops it first, which only turns host sound off.
@@ -981,6 +982,27 @@ impl Connection {
     /// answered with a NACK so the sender stops at once.
     fn on_file_chunk(&mut self, from: &str, chunk: &binary::FileChunk) {
         let ctx = Arc::clone(&self.ctx);
+        // A deflated chunk is inflated first, so every reader below (receiver, paste stream) sees plain bytes.
+        let inflated;
+        let chunk = if chunk.offset & file_squeeze::OFFSET_DEFLATED != 0 {
+            match file_squeeze::unpack(chunk.data, file_transfer::BINARY_CHUNK_SIZE) {
+                Some(data) => {
+                    inflated = data;
+                    &binary::FileChunk {
+                        id: chunk.id,
+                        offset: chunk.offset & !file_squeeze::OFFSET_DEFLATED,
+                        data: &inflated,
+                    }
+                }
+                None => {
+                    logger::warn("file_transfer", &format!("Corrupt deflated chunk for id={}; rejecting.", chunk.id));
+                    ctx.send(ClientMessage::file(from, FilePayload::ack(chunk.id, false)));
+                    return;
+                }
+            }
+        } else {
+            chunk
+        };
         let (status, ack) = self.receiver.handle_chunk(&ctx, chunk, from);
         if let Some(ok) = ack {
             ctx.send(ClientMessage::file(from, FilePayload::ack(chunk.id, ok)));

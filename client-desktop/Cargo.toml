@@ -34,6 +34,8 @@ ed25519-dalek = { version = "2", default-features = false }
 # blocking, no async runtime, follows the GitHub Releases redirect.
 ureq = { version = "2.12", default-features = false, features = ["native-tls"] }
 native-tls = "0.2"
+# Deflate for compressible file chunks (`file-deflate`); pure Rust, the version core-engine already builds.
+miniz_oxide = "0.8.9"
 
 [target.'cfg(windows)'.dependencies]
 # Host sound: WASAPI loopback capture (COM); Wi-Fi streaming mode: WLAN types, with wlanapi.dll loaded at run

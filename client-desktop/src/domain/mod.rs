@@ -8,6 +8,7 @@ pub mod desk_id;
 pub mod edition;
 pub mod file_pacing;
 pub mod file_route;
+pub mod file_squeeze;
 pub mod frame_rate;
 pub mod history;
 pub mod keyboard;
