@@ -128,8 +128,8 @@ pub struct Batch {
 
 /// What a decoded batch means for the screen.
 pub enum ViewerOutput {
-    /// Show this frame.
-    Frame(SharedPixelBuffer<Rgba8Pixel>, u32, u32),
+    /// Show this frame; the rows that differ from the previous one (None: all of them).
+    Frame(SharedPixelBuffer<Rgba8Pixel>, u32, u32, Rows),
     /// Nothing to redraw.
     Unchanged,
     /// Delta chain broken or undecodable; ask the host for a key frame.
@@ -200,7 +200,8 @@ impl ViewerDecoder {
             }
         }
         if changed {
-            ViewerOutput::Frame(self.output(), self.comp.width, self.comp.height)
+            let (pixels, rows) = self.output();
+            ViewerOutput::Frame(pixels, self.comp.width, self.comp.height, rows)
         } else if need_key {
             ViewerOutput::NeedKey
         } else {
@@ -215,12 +216,15 @@ impl ViewerDecoder {
     /// only the rows that changed since it was last filled (typing touches a few rows, not the whole 8 MB of a
     /// 1080p frame). One the UI still holds is shared, so `make_mut_bytes` copies it first and the picture on
     /// screen is never written to.
-    fn output(&mut self) -> SharedPixelBuffer<Rgba8Pixel> {
+    /// Also returns the rows that differ from the previous output; None (all rows) for the first outputs of a
+    /// size, when nothing on screen can be built on.
+    fn output(&mut self) -> (SharedPixelBuffer<Rgba8Pixel>, Rows) {
         let (w, h) = (self.comp.width, self.comp.height);
         let dirty = self.dirty.take();
         if self.pool.first().is_some_and(|b| (b.width(), b.height()) != (w, h)) {
             self.pool.clear();
         }
+        let fresh = self.pool.is_empty();
         if self.pool.len() < Self::POOL {
             for stale in &mut self.stale[..self.pool.len()] {
                 *stale = union(*stale, dirty);
@@ -228,7 +232,7 @@ impl ViewerDecoder {
             self.pool.push(to_pixel_buffer(&self.comp.fb, w, h));
             self.stale[self.pool.len() - 1] = None;
             self.next = 0;
-            return self.pool.last().unwrap().clone();
+            return (self.pool.last().unwrap().clone(), if fresh { None } else { dirty });
         }
         for stale in &mut self.stale {
             *stale = union(*stale, dirty);
@@ -240,7 +244,7 @@ impl ViewerDecoder {
             let (a, b) = (y0 * row, (y1 * row).min(self.comp.fb.len()));
             self.pool[i].make_mut_bytes()[a..b].copy_from_slice(&self.comp.fb[a..b]);
         }
-        self.pool[i].clone()
+        (self.pool[i].clone(), dirty)
     }
 
     /// Applies one message; on `Updated` also the rows it changed.
@@ -510,8 +514,8 @@ where
             let out = decoder.get_or_insert_with(ViewerDecoder::new).process(batch);
             let decoded = Instant::now();
             perf.process.record(decoded - process_start);
-            let (pixels, width, height) = match out {
-                ViewerOutput::Frame(buf, w, h) => (buf, w, h),
+            let (pixels, width, height, rows) = match out {
+                ViewerOutput::Frame(buf, w, h, rows) => (buf, w, h, rows),
                 ViewerOutput::Unchanged => continue,
                 ViewerOutput::NeedKey => {
                     if last_key_request.is_none_or(|t| t.elapsed() >= KEY_REQUEST_INTERVAL) {
@@ -538,7 +542,7 @@ where
                 received: received.unwrap_or(process_start),
                 decoded,
             };
-            show(&sess, Frame { pixels, width, height, fps: current_fps, path, latency });
+            show(&sess, Frame { pixels, rows, width, height, fps: current_fps, path, latency });
             perf.handoff.record(handoff_start.elapsed());
             perf.shown += 1;
         }
@@ -834,8 +838,9 @@ mod tests {
             assert_eq!(buf.as_bytes(), &fb[..], "a frame the UI holds is never rewritten");
         }
         assert_eq!(viewer.pool.len(), ViewerDecoder::POOL);
-        let ViewerOutput::Frame(buf, w, h) = viewer.process(vec![jpeg(16, 4, 128)]) else { panic!() };
+        let ViewerOutput::Frame(buf, w, h, rows) = viewer.process(vec![jpeg(16, 4, 128)]) else { panic!() };
         assert_eq!((buf.width(), buf.height(), w, h), (16, 4, 16, 4), "a new stream size resets the pool");
+        assert_eq!(rows, None, "the first frame of a size is whole");
         assert_eq!(viewer.pool.len(), 1);
 
         // Buffers the UI has released are refilled in place, not reallocated.
@@ -858,6 +863,8 @@ mod tests {
         viewer.dirty = Some((0, h as usize));
         let mut held = Vec::new();
         let mut seed = 7u32;
+        // What a texture fed only the reported rows shows (V2): always the framebuffer.
+        let mut screen = vec![0u8; (w * h * 4) as usize];
         for step in 0..200u32 {
             seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
             let y0 = (seed >> 8) as usize % h as usize;
@@ -865,8 +872,11 @@ mod tests {
             let row = w as usize * 4;
             viewer.comp.fb[y0 * row..y1 * row].fill(step as u8);
             viewer.dirty = union(viewer.dirty, Some((y0, y1)));
-            let buf = viewer.output();
+            let (buf, rows) = viewer.output();
             assert_eq!(buf.as_bytes(), &viewer.comp.fb[..], "step {step}");
+            let (a, b) = rows.map_or((0, h as usize), |(a, b)| (a, b));
+            screen[a * row..b * row].copy_from_slice(&buf.as_bytes()[a * row..b * row]);
+            assert_eq!(screen, viewer.comp.fb, "step {step}: rows {rows:?} miss a change");
             if step % 3 == 0 {
                 held.push((buf, viewer.comp.fb.clone()));
                 if held.len() > 2 {

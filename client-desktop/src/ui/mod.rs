@@ -3,6 +3,7 @@
 
 mod callbacks;
 mod dashboard_model;
+mod gl_frames;
 #[cfg(feature = "admin")]
 mod monitor_wall_model;
 mod presenter;

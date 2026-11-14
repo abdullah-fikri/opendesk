@@ -9,7 +9,7 @@ use std::time::Instant;
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Image, Weak};
 
-use super::{MainWindow, dashboard_model, session_model, transfer_model, view_model};
+use super::{MainWindow, dashboard_model, gl_frames, session_model, transfer_model, view_model};
 use crate::domain::history::HistoryRecord;
 use crate::infra::logger;
 use crate::service::file_transfer::{self, IN_FLIGHT_CHUNKS, LAST_RECEIVED_MS};
@@ -69,7 +69,15 @@ impl SlintUi {
 fn present_on_render(window: &MainWindow) -> Option<PendingPresent> {
     let pending = PendingPresent::default();
     let sink = Arc::clone(&pending);
-    let installed = window.window().set_rendering_notifier(move |state, _| {
+    let installed = window.window().set_rendering_notifier(move |state, api| {
+        if gl_frames::on_rendering(&state, api) {
+            // Outside rendering: rows switch to their new texture (or back to plain images after a teardown).
+            let _ = slint::invoke_from_event_loop(|| {
+                for (id, image) in gl_frames::take_ready() {
+                    session_model::update(&id, |r| r.frame = image);
+                }
+            });
+        }
         if matches!(state, slint::RenderingState::AfterRendering) {
             let now = Instant::now();
             for (_, latency) in sink.lock().drain() {
@@ -184,15 +192,27 @@ impl UiPort for SlintUi {
         });
     }
 
-    fn session_frame(&self, id: String, frame: Frame) {
-        if self.frames.lock().insert(id.clone(), frame).is_some() {
-            return; // the queued closure shows this newer frame instead
+    fn session_frame(&self, id: String, mut frame: Frame) {
+        {
+            let mut pending = self.frames.lock();
+            if let Some(older) = pending.remove(&id) {
+                // The older frame is never shown: its changed rows travel with this one.
+                frame.rows = gl_frames::union(older.rows, frame.rows);
+                pending.insert(id, frame);
+                return; // the queued closure shows this newer frame instead
+            }
+            pending.insert(id.clone(), frame);
         }
         let pending = Arc::clone(&self.frames);
         let presented = self.presented.clone();
         self.apply(move |w| {
             let Some(frame) = pending.lock().remove(&id) else { return };
-            let image = Image::from_rgba8(frame.pixels);
+            // Our own texture when OpenGL is there (only changed rows are uploaded, at the next render).
+            let textured = gl_frames::offer(&id, &frame.pixels, frame.rows);
+            if textured.is_some() {
+                w.window().request_redraw();
+            }
+            let image = textured.unwrap_or_else(|| Image::from_rgba8(frame.pixels));
             let path = frame.path;
             let (width, height) = (frame.width as i32, frame.height as i32);
             let fps = frame.fps as i32;
@@ -268,6 +288,7 @@ impl UiPort for SlintUi {
         self.frames.lock().remove(&id);
         self.apply(move |w| {
             session_model::remove(&id);
+            gl_frames::forget(&id);
             if session_model::is_empty() {
                 w.set_show_new_session(false);
                 if !w.get_hosting() {
