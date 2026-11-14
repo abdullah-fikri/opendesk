@@ -16,6 +16,7 @@ pub mod key_pins;
 pub mod logger;
 pub mod p2p;
 pub mod pointer_lock;
+pub mod port_map;
 pub mod power;
 pub mod privacy;
 pub mod process_usage;

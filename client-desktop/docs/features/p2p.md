@@ -8,9 +8,14 @@ The direct path only moves video, voice and input, and every session falls back 
 
 ## Setup
 
-1. Each side opens a UDP socket and gathers candidates: LAN addresses, plus its public address from STUN
-   (`OPENDESK_STUN`, default `stun.l.google.com:19302`; `off` disables it). At most 8; loopback, multicast and
-   ports below 1024 are rejected.
+1. Each side opens a UDP socket and gathers candidates: its global IPv6 address, its LAN address, and its public
+   address from STUN (`OPENDESK_STUN`, default `stun.l.google.com:19302`; `off` disables it). The socket is
+   dual-stack (one port for IPv4 and IPv6); `OPENDESK_IPV6=0` keeps it IPv4-only. At most 8 candidates; loopback,
+   multicast, link-local, unique-local IPv6 and ports below 1024 are rejected.
+   In the background each side also asks its router to forward the socket's port (NAT-PMP to the default
+   gateway, else UPnP-IGD found by SSDP; `OPENDESK_PORT_MAPPING=0` disables it). A forwarded port whose public
+   address really is public (no second NAT above the router) is sent as one more candidate in a refresh signal,
+   renewed every 30 minutes and removed when the path closes. It is skipped once a direct path already works.
 2. A Noise `NN_25519_ChaChaPoly_BLAKE2s` handshake travels in `p2p-signal` messages through the relay, with a
    prologue binding it to the viewer and host desk IDs (signal `v: 1`). When both peers list `e2e`, the path
    instead uses the keys of the session's `Noise_XX` handshake with pinned device keys ([e2e.md](e2e.md)) and the

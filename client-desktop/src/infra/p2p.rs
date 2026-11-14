@@ -21,6 +21,7 @@ use crate::domain::udp_window::{self, MIN_FRAMES_IN_FLIGHT, RttEstimator};
 use crate::infra::audio::VoiceEngine;
 use crate::infra::e2e::{E2e, P2P_NONCE_LIMIT};
 use crate::infra::logger;
+use crate::infra::port_map;
 use crate::infra::send_gate::{SendGate, VideoLink};
 use crate::infra::udp_socket::{self, PathSocket};
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
@@ -59,6 +60,8 @@ const RELAY_BIND_RETRY: Duration = Duration::from_secs(1);
 const RELAY_PROBE: Duration = Duration::from_secs(1);
 /// Second STUN server, only used to tell the NAT type (see `gather_candidates`).
 const STUN_CHECK: &str = "stun1.l.google.com:19302";
+/// A port mapping is offered once the handshake is done; given up when that takes longer than this.
+const PORT_MAP_OFFER_WAIT: Duration = Duration::from_secs(30);
 
 const K_PROBE: u8 = 1;
 const K_PROBE_ACK: u8 = 2;
@@ -387,6 +390,14 @@ fn gather_candidates(sock: &PathSocket) -> Vec<SocketAddr> {
     cands.dedup();
     cands.retain(valid_candidate);
     cands
+}
+
+/// This machine's LAN IPv4 address among the candidates (the one a router forwards to).
+fn lan_ipv4(cands: &[SocketAddr]) -> Option<Ipv4Addr> {
+    cands.iter().find_map(|c| match c {
+        SocketAddr::V4(v4) if v4.ip().is_private() => Some(*v4.ip()),
+        _ => None,
+    })
 }
 
 /// Latest-frame-wins reassembly: a newer frame id discards the incomplete older one.
@@ -781,6 +792,10 @@ impl P2p {
             return;
         }
         logger::info("anynet.p2p", &format!("UDP ready with {} local candidates.", cands.len()));
+        if let Some(local) = lan_ipv4(&cands).filter(|_| port_map::enabled()) {
+            let p = Arc::clone(&self);
+            crate::infra::thread::spawn_named("p2p-portmap", move || p.keep_port_mapping(local));
+        }
 
         let _ = self.sock.set_read_timeout(Some(Duration::from_millis(50)));
         let mut buf = [0u8; 2048];
@@ -819,6 +834,47 @@ impl P2p {
         st.refreshed = true;
         st.signal_resends = 0;
         st.probe_started = Some(Instant::now());
+    }
+
+    /// Asks the router to forward this path's port and offers the public address as one more candidate (a
+    /// refresh, once the handshake is done). The mapping is renewed while the path lives and removed after.
+    fn keep_port_mapping(&self, local: Ipv4Addr) {
+        let Some(mut mapping) = port_map::map(self.sock.port(), local) else { return };
+        let external = SocketAddr::V4(mapping.external);
+        let started = Instant::now();
+        let mut offered = false;
+        let mut renewed = Instant::now();
+        while !self.closed.load(Ordering::SeqCst) {
+            if !offered {
+                let mut st = self.state.lock();
+                if matches!(Self::route_of(&st), Some(Route::Direct(_))) {
+                    // Hole punching already worked; the forwarded port is not needed.
+                    break;
+                }
+                if matches!(st.hs, Some(Handshake::Done(_))) {
+                    if !st.local_cands.contains(&external) {
+                        st.local_cands.insert(0, external);
+                        st.local_cands.truncate(MAX_CANDIDATES);
+                    }
+                    logger::info("anynet.p2p", &format!("Offering the mapped port {external} as a candidate."));
+                    self.send_signal(&[], &st.local_cands, true);
+                    st.refreshed = true;
+                    st.signal_resends = 0;
+                    st.probe_started = Some(Instant::now());
+                    offered = true;
+                } else if started.elapsed() > PORT_MAP_OFFER_WAIT {
+                    break; // the handshake never finished: no path to offer it to
+                }
+            }
+            if renewed.elapsed() >= port_map::LEASE / 2 {
+                renewed = Instant::now();
+                if !mapping.renew() {
+                    logger::warn("anynet.p2p", &format!("The router stopped forwarding {external}."));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        mapping.remove();
     }
 
     /// Starts this path's own `Noise_NN` handshake (partners without `e2e`). False if it cannot start.
