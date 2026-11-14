@@ -65,6 +65,7 @@ static PARTNER_CAPS: Mutex<PeerCaps> = Mutex::new(PeerCaps {
     file_pull_bin: false,
     cursor_shape: false,
     mouse_relative: false,
+    file_p2p: false,
     video_delta: false,
     video_h264: false,
     tile_lossless: false,
@@ -225,6 +226,24 @@ fn remember_received(partner: &str, paths: &[PathBuf]) {
     for path in paths {
         received.record(partner, &path.to_string_lossy(), file_size(path), now);
     }
+}
+
+/// Partners whose transfers currently start on a direct P2P path (`file-p2p`); see [`set_fast_path`].
+static FAST_PATH: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// The relay connection's view of whether new transfers to `target` take a direct P2P path: they are then paced
+/// by that path's window instead of being spaced out for the relay.
+pub fn set_fast_path(target: &str, on: bool) {
+    let mut fast = FAST_PATH.lock();
+    fast.retain(|t| t != target);
+    if on {
+        fast.push(target.to_string());
+    }
+}
+
+/// True while new transfers to `target` take a direct P2P path.
+pub(super) fn fast_path(target: &str) -> bool {
+    FAST_PATH.lock().iter().any(|t| t == target)
 }
 
 /// Records how far a sent transfer has reached the relay (from the relay connection); transfers no sender

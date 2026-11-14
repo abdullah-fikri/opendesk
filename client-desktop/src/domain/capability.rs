@@ -24,6 +24,9 @@ pub const TILE_LOSSLESS: &str = "tile-lossless";
 /// P2P video: the viewer asks for lost fragments (`K_NACK`) and the host resends them from its last frames. Both
 /// sides list it; a viewer waits for retransmits only from a host that does.
 pub const VIDEO_NACK: &str = "video-nack";
+/// File transfers between the partners may run over the P2P path (`domain::bulk`, kinds `K_BULK` and
+/// `K_BULK_ACK`) instead of the relay. Both sides list it; each transfer keeps the path it started on.
+pub const FILE_P2P: &str = "file-p2p";
 /// The viewer draws its own cursor in the host's shape.
 pub const CURSOR_SHAPE: &str = "cursor-shape";
 /// The viewer locks its pointer and sends relative motion while a host application captured the mouse
@@ -98,6 +101,8 @@ pub struct PeerCaps {
     pub file_binary: bool,
     /// Pulled offers may be sent in binary chunks ([`FILE_PULL_BIN`]); implies `file_binary`.
     pub file_pull_bin: bool,
+    /// Transfers may run over the P2P path ([`FILE_P2P`]).
+    pub file_p2p: bool,
     pub cursor_shape: bool,
     /// The viewer can lock its pointer for relative motion ([`MOUSE_RELATIVE`]).
     pub mouse_relative: bool,
@@ -139,6 +144,7 @@ impl PeerCaps {
             file_group: has(FILE_FOLDER) && has(FILE_GROUP),
             file_binary: has(FILE_BINARY),
             file_pull_bin: has(FILE_BINARY) && has(FILE_PULL_BIN),
+            file_p2p: has(P2P) && has(FILE_BINARY) && has(FILE_P2P),
             cursor_shape: has(CURSOR_SHAPE),
             mouse_relative: has(MOUSE_RELATIVE),
             video_delta: has(VIDEO_DELTA),

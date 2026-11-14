@@ -436,6 +436,7 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
     link.queue(start, Some(format!("Sending {label} (0%)...")));
     link.progress(&id, &label, 0, size, TransferState::Active);
 
+    let fast = super::fast_path(&link.target);
     let mut buf = vec![0u8; chunk_size];
     let mut hash = Sha256::new();
     let mut sent = 0u64;
@@ -467,7 +468,10 @@ fn send_file(link: &Link, item: SendItem, started: u64, auto_paste: bool) {
                 sent += n as u64;
                 link.queue_chunk(binary, &id, offset, &buf[..n], mark(sent));
                 shown.update(link, &id, &label, delivery.bytes(), size);
-                thread::sleep(Duration::from_millis(3));
+                // The relay path spaces chunks out behind video; a direct path paces itself (`domain::bulk`).
+                if !fast {
+                    thread::sleep(Duration::from_millis(3));
+                }
             }
             Err(e) => {
                 logger::error("file_transfer", &format!("Read failed for {path:?}: {e}"));

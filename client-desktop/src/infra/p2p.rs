@@ -13,6 +13,7 @@ use core_engine::codec::{from_base64, to_base64};
 use parking_lot::{Condvar, Mutex, MutexGuard};
 use serde_json::{Value, json};
 
+use crate::domain::bulk::{self, BulkReceiver, BulkSender, OnDelivered};
 use crate::domain::link_quality::LossMeter;
 use crate::domain::nack::{self, Pushed, Reassembly};
 use crate::domain::pacing::{self, Pacing};
@@ -70,6 +71,23 @@ const K_KEEPALIVE: u8 = 8;
 const K_NACK: u8 = 9;
 /// Frames whose fragments the host keeps for retransmits.
 const NACK_HISTORY: usize = 4;
+/// File stream segment (`file-p2p`, see `domain::bulk`): `[seq u32][flags u8][data]`.
+const K_BULK: u8 = 10;
+/// File stream acknowledgement: `[cum u32][rwnd u32][sack bitmap]`.
+const K_BULK_ACK: u8 = 11;
+const BULK_SEG: usize = MAX_PLAIN - 6;
+/// Received file stream bytes the connection may hold unprocessed; the advertised window shrinks with it.
+const BULK_BUFFER: usize = 16 << 20;
+/// Kind the bulk sink receives once when the path drops with the file stream unfinished.
+pub const BULK_LOST: u8 = 0;
+
+/// Receives file stream messages: `(kind, payload)`.
+pub type BulkSink = Arc<dyn Fn(u8, Vec<u8>) + Send + Sync>;
+
+/// `OPENDESK_FILE_P2P=0` keeps file transfers on the relay.
+pub fn file_p2p_enabled() -> bool {
+    std::env::var("OPENDESK_FILE_P2P").map_or(true, |v| v != "0")
+}
 
 /// `OPENDESK_VIDEO_NACK=0` turns lost-fragment retransmits off (1.3.x behavior: a lost fragment drops the frame).
 pub fn nack_enabled() -> bool {
@@ -145,6 +163,9 @@ pub struct Sinks {
     pub loss: Option<Arc<Mutex<LossMeter>>>,
     /// Viewer side: the host resends lost fragments (`video-nack`), so ask for them and keep frames in order.
     pub nack: bool,
+    /// File stream messages from the partner (`file-p2p`): `(kind, payload)`, and [`BULK_LOST`] when the path
+    /// dropped mid-stream. None: the partner does not send files this way.
+    pub bulk: Option<BulkSink>,
 }
 
 /// Sliding anti-replay window over explicit nonces (bit = nonce % window).
@@ -451,6 +472,11 @@ struct State {
     unacked: VecDeque<(u32, Vec<u8>, Instant)>,
     rx_next: u32,
     rx_buf: BTreeMap<u32, Vec<u8>>,
+    /// File stream to the partner and from it (`file-p2p`).
+    bulk_tx: BulkSender,
+    bulk_rx: BulkReceiver,
+    /// Pacing of the file stream: when the next segment may leave.
+    bulk_due: Instant,
 }
 
 /// A direct encrypted UDP path to one session partner (see `docs/features/p2p.md`).
@@ -477,6 +503,10 @@ pub struct P2p {
     pacing: bool,
     /// Wakes the pacer thread when a frame has fragments to pace.
     pace_wake: Condvar,
+    /// Wakes the file stream thread (new data, an acknowledgement).
+    bulk_wake: Condvar,
+    /// File stream bytes handed to the bulk sink and not yet processed (see [`P2p::bulk_consumed`]).
+    bulk_pending: std::sync::atomic::AtomicUsize,
 }
 
 impl P2p {
@@ -560,6 +590,9 @@ impl P2p {
                 unacked: VecDeque::new(),
                 rx_next: 0,
                 rx_buf: BTreeMap::new(),
+                bulk_tx: BulkSender::new(BULK_SEG),
+                bulk_rx: BulkReceiver::default(),
+                bulk_due: now,
             }),
             closed: AtomicBool::new(false),
             regather: AtomicBool::new(false),
@@ -571,9 +604,13 @@ impl P2p {
             dynamic_window,
             pacing,
             pace_wake: Condvar::new(),
+            bulk_wake: Condvar::new(),
+            bulk_pending: std::sync::atomic::AtomicUsize::new(0),
         });
         let worker = Arc::clone(&p);
         crate::infra::thread::spawn_named("p2p-worker", move || worker.run());
+        let bulk = Arc::clone(&p);
+        crate::infra::thread::spawn_named("p2p-bulk", move || bulk.run_bulk());
         if pacing {
             let pacer = Arc::clone(&p);
             crate::infra::thread::spawn_named("p2p-pacer", move || pacer.pace());
@@ -585,6 +622,8 @@ impl P2p {
     pub fn close(&self) {
         if !self.closed.swap(true, Ordering::SeqCst) {
             self.can_send_frame.open();
+            self.state.lock().bulk_tx.abort();
+            self.bulk_wake.notify_all();
         }
     }
 
@@ -926,6 +965,27 @@ impl P2p {
                 ack.extend_from_slice(&st.rx_next.to_be_bytes());
                 self.send_to_peer(&mut st, &ack);
             }
+            K_BULK if body.len() > 5 => {
+                let Some(sink) = self.sinks.bulk.as_ref() else { return };
+                let seq = u32::from_be_bytes(body[0..4].try_into().unwrap());
+                let got = st.bulk_rx.on_segment(seq, body[4], &body[5..]);
+                for (kind, payload) in got.messages {
+                    self.bulk_pending.fetch_add(payload.len(), Ordering::SeqCst);
+                    sink(kind, payload);
+                }
+                if got.ack {
+                    let room = BULK_BUFFER.saturating_sub(self.bulk_pending.load(Ordering::SeqCst)) / BULK_SEG;
+                    let mut ack = vec![K_BULK_ACK];
+                    ack.extend_from_slice(&st.bulk_rx.ack(room.min(bulk::MAX_REORDER as usize) as u32));
+                    self.send_to_peer(&mut st, &ack);
+                }
+            }
+            K_BULK_ACK => {
+                if let Some((cum, rwnd, sack)) = bulk::parse_ack(body) {
+                    st.bulk_tx.on_ack(Instant::now(), cum, rwnd, sack);
+                    self.bulk_wake.notify_all();
+                }
+            }
             K_INPUT_ACK if !self.is_host && body.len() == 4 => {
                 let next = u32::from_be_bytes(body.try_into().unwrap());
                 while st.unacked.front().is_some_and(|(s, _, _)| *s < next) {
@@ -986,6 +1046,7 @@ impl P2p {
                 // shortcut: unacked input is dropped, not replayed on the relay, to avoid double clicks.
                 st.unacked.clear();
                 self.can_send_frame.open();
+                self.drop_bulk(&mut st);
             }
         }
         if alive {
@@ -1164,6 +1225,87 @@ impl P2p {
                 continue;
             }
             self.send_paced(&mut st, Some(now));
+        }
+    }
+
+    /// True while the path goes straight to the partner (not through the UDP relay): new file transfers take it.
+    pub fn is_direct(&self) -> bool {
+        matches!(self.route(), Some(Route::Direct(_)))
+    }
+
+    /// Queues one file stream message (`file-p2p`); `done` runs once the partner acknowledged it, or with false
+    /// if the path dropped first. False when the path is down (`done` then ran with false already).
+    pub fn send_bulk(&self, kind: u8, payload: &[u8], done: Option<OnDelivered>) -> bool {
+        let mut st = self.state.lock();
+        if self.closed.load(Ordering::SeqCst) || Self::route_of(&st).is_none() {
+            if let Some(done) = done {
+                done(false);
+            }
+            return false;
+        }
+        st.bulk_tx.push(kind, payload, done);
+        self.bulk_wake.notify_all();
+        true
+    }
+
+    /// The connection processed `bytes` of received file stream payload: the advertised window grows back.
+    pub fn bulk_consumed(&self, bytes: usize) {
+        let _ = self.bulk_pending.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |p| Some(p.saturating_sub(bytes)));
+    }
+
+    /// Ends both directions of the file stream after the path dropped: unacknowledged messages fail and the
+    /// connection learns that what it was receiving is cut off.
+    fn drop_bulk(&self, st: &mut State) {
+        let sending = !st.bulk_tx.is_idle();
+        st.bulk_tx.abort();
+        st.bulk_tx = BulkSender::new(BULK_SEG);
+        st.bulk_rx = BulkReceiver::default();
+        if sending {
+            logger::warn("anynet.p2p", "P2P path lost during a file transfer; the transfer is cancelled.");
+        }
+        if let Some(sink) = &self.sinks.bulk {
+            sink(BULK_LOST, Vec::new());
+        }
+    }
+
+    /// File stream sender: segments leave as the window allows, paced at the window's rate so a burst never
+    /// queues ahead of video; overdue ones are resent.
+    fn run_bulk(&self) {
+        let mut st = self.state.lock();
+        while !self.closed.load(Ordering::SeqCst) {
+            if st.bulk_tx.is_idle() || Self::route_of(&st).is_none() {
+                self.bulk_wake.wait_for(&mut st, Duration::from_millis(100));
+                continue;
+            }
+            let now = Instant::now();
+            st.bulk_tx.on_timer(now);
+            if st.bulk_due > now {
+                let wait = st.bulk_due - now;
+                MutexGuard::unlocked(&mut st, || std::thread::sleep(wait));
+                continue;
+            }
+            // Up to 1 ms of the window's rate per wake-up; one segment at a time before a round trip is known.
+            let burst = st.bulk_tx.rate().map_or(1, |r| ((r * 0.001) / BULK_SEG as f64).ceil().max(1.0) as usize);
+            let mut sent = 0;
+            while sent < burst {
+                let Some((seq, flags, data)) = st.bulk_tx.next(now) else { break };
+                let mut pkt = Vec::with_capacity(6 + data.len());
+                pkt.push(K_BULK);
+                pkt.extend_from_slice(&seq.to_be_bytes());
+                pkt.push(flags);
+                pkt.extend_from_slice(&data);
+                self.send_to_peer(&mut st, &pkt);
+                sent += 1;
+            }
+            if sent == 0 {
+                // Window full: an acknowledgement wakes this thread; the timeout catches losses.
+                self.bulk_wake.wait_for(&mut st, Duration::from_millis(5));
+                continue;
+            }
+            let rate = st.bulk_tx.rate().unwrap_or(f64::MAX);
+            let spacing =
+                Duration::from_secs_f64((sent * BULK_SEG) as f64 / (rate * 1.25)).min(Duration::from_millis(20));
+            st.bulk_due = now + spacing;
         }
     }
 
@@ -1348,6 +1490,7 @@ mod tests {
             audio_gate: None,
             loss: None,
             nack: true,
+            bulk: None,
         };
         let (dummy, _keep) = std::sync::mpsc::channel();
         let viewer = P2p::start(
@@ -1477,6 +1620,7 @@ mod tests {
             audio_gate: None,
             loss: None,
             nack: true,
+            bulk: None,
         };
         let (dummy, _keep) = std::sync::mpsc::channel();
         let viewer = P2p::start(
@@ -1556,24 +1700,31 @@ mod tests {
         host.close();
     }
 
-    /// Frames through a path that loses every `drop_every`-th video fragment; returns how many of `frames`
-    /// arrived intact, and whether they arrived in sending order.
-    fn lossy_stream(nack: bool, drop_every: u32, frames: usize) -> (usize, bool) {
+    type Bulk = Option<BulkSink>;
+
+    /// A viewer and a host whose path runs through a fake UDP relay that loses every `drop_every`-th full-size
+    /// datagram; the returned flag stops the relay.
+    fn relayed_pair(
+        nack: bool,
+        drop_every: u32,
+        video: Arc<dyn Fn(Vec<u8>) + Send + Sync>,
+        viewer_bulk: Bulk,
+        host_bulk: Bulk,
+    ) -> (Arc<P2p>, Arc<P2p>, Arc<AtomicBool>) {
         // SAFETY: set before any thread in this test reads the environment.
         unsafe { std::env::set_var("OPENDESK_STUN", "off") };
         let (tx_v, rx_v) = std::sync::mpsc::channel();
         let (tx_h, rx_h) = std::sync::mpsc::channel();
         let (in_tx, _in_rx) = std::sync::mpsc::channel();
         let voice = VoiceEngine::new(tx_v.clone());
-        let inbox: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
-        let sink = Arc::clone(&inbox);
-        let mk = |input: Sender<InputEvent>, video: Arc<dyn Fn(Vec<u8>) + Send + Sync>, nack: bool| Sinks {
+        let mk = |input: Sender<InputEvent>, video: Arc<dyn Fn(Vec<u8>) + Send + Sync>, nack: bool, bulk: Bulk| Sinks {
             video,
             voice: Arc::clone(&voice),
             input,
             audio_gate: None,
             loss: None,
             nack,
+            bulk,
         };
         let (dummy, _keep) = std::sync::mpsc::channel();
         let viewer = P2p::start(
@@ -1583,7 +1734,7 @@ mod tests {
             Arc::new(SendGate::new(true)),
             Arc::default(),
             tx_v,
-            mk(dummy, Arc::new(move |f| sink.lock().push(f)), nack),
+            mk(dummy, video, nack, viewer_bulk),
             None,
         )
         .unwrap();
@@ -1594,7 +1745,7 @@ mod tests {
             Arc::new(SendGate::new(true)),
             Arc::default(),
             tx_h,
-            mk(in_tx, Arc::new(|_| {}), false),
+            mk(in_tx, Arc::new(|_| {}), false, host_bulk),
             None,
         )
         .unwrap();
@@ -1618,6 +1769,15 @@ mod tests {
             assert!(Instant::now() < deadline, "path never came up through the relay");
             thread::sleep(Duration::from_millis(20));
         }
+        (viewer, host, stop)
+    }
+
+    /// Frames through a path that loses every `drop_every`-th video fragment; returns how many of `frames`
+    /// arrived intact, and whether they arrived in sending order.
+    fn lossy_stream(nack: bool, drop_every: u32, frames: usize) -> (usize, bool) {
+        let inbox: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let sink = Arc::clone(&inbox);
+        let (viewer, host, stop) = relayed_pair(nack, drop_every, Arc::new(move |f| sink.lock().push(f)), None, None);
         // Each frame starts with its number, so order and integrity can be checked.
         let frame = |n: usize| -> Vec<u8> { (0..150_000u32).map(|i| (i as usize * 7 + n) as u8).collect() };
         for n in 0..frames {
@@ -1631,6 +1791,55 @@ mod tests {
         viewer.close();
         host.close();
         (ids.len(), ids.windows(2).all(|w| w[0] < w[1]) && ids.len() == got.len())
+    }
+
+    type Message = (u8, Vec<u8>);
+
+    /// Sends `count` messages of `size` bytes from the viewer to the host over a path losing every
+    /// `drop_every`-th full datagram; returns whether all arrived whole and in order, how many were acknowledged
+    /// and the throughput in MB/s.
+    fn file_stream(drop_every: u32, count: usize, size: usize) -> (bool, usize, f64) {
+        let got: Arc<Mutex<Vec<Message>>> = Arc::default();
+        let sink = Arc::clone(&got);
+        let host_bulk: Bulk = Some(Arc::new(move |kind, payload| sink.lock().push((kind, payload))));
+        let (viewer, host, stop) = relayed_pair(false, drop_every, Arc::new(|_| {}), None, host_bulk);
+        let msg = |n: usize| -> Vec<u8> { (0..size).map(|i| (i * 13 + n) as u8).collect() };
+        let acked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let started = Instant::now();
+        for n in 0..count {
+            let a = Arc::clone(&acked);
+            let done: OnDelivered = Box::new(move |ok| {
+                if ok {
+                    a.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+            assert!(viewer.send_bulk(bulk::MSG_BINARY, &msg(n), Some(done)));
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while acked.load(Ordering::SeqCst) < count && Instant::now() < deadline {
+            let n: usize = got.lock().iter().map(|(_, p)| p.len()).sum();
+            host.bulk_consumed(n);
+            thread::sleep(Duration::from_millis(2));
+        }
+        let secs = started.elapsed().as_secs_f64();
+        let got = got.lock().clone();
+        stop.store(true, Ordering::SeqCst);
+        viewer.close();
+        host.close();
+        let whole =
+            got.len() == count && got.iter().enumerate().all(|(n, (k, p))| *k == bulk::MSG_BINARY && *p == msg(n));
+        (whole, acked.load(Ordering::SeqCst), (count * size) as f64 / secs / 1e6)
+    }
+
+    /// FN4: file stream messages arrive whole, in order and acknowledged, also with ~5% loss.
+    #[test]
+    fn file_stream_is_reliable_over_a_lossy_path() {
+        let (whole, acked, mbps) = file_stream(0, 40, 128 * 1024);
+        println!("loopback file stream: {mbps:.0} MB/s");
+        assert!(whole && acked == 40, "clean path: whole={whole} acked={acked}");
+        let (whole, acked, mbps) = file_stream(20, 16, 128 * 1024);
+        println!("~5% loss: {mbps:.0} MB/s");
+        assert!(whole && acked == 16, "lossy path: whole={whole} acked={acked}");
     }
 
     /// B12: with ~7% fragment loss a 150 KB frame (127 fragments) almost never arrives whole; with retransmit

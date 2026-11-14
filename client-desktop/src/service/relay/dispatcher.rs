@@ -1,6 +1,7 @@
 //! Turns relay messages into service calls. Each handler decodes nothing itself: `ServerMessage` and
 //! `InputEvent` are already typed, so handlers only decide which use case runs.
 
+use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -208,6 +209,7 @@ impl Connection {
                     audio_gate: None,
                     loss: None,
                     nack: false,
+                    bulk: self.bulk_sink(target, caps),
                 };
                 self.start_link(true, target, sinks);
             }
@@ -224,9 +226,22 @@ impl Connection {
                 audio_gate: Some(Arc::clone(&sess.audio_on)),
                 loss: Some(Arc::clone(&sess.udp_loss)),
                 nack: caps.video_nack && p2p::nack_enabled(),
+                bulk: self.bulk_sink(target, caps),
             };
             self.start_link(false, target, sinks);
         }
+    }
+
+    /// Where file stream messages from `partner` go (`file-p2p`): the connection thread handles them like
+    /// relay file messages.
+    fn bulk_sink(&self, partner: &str, caps: PeerCaps) -> Option<p2p::BulkSink> {
+        if !(caps.file_p2p && p2p::file_p2p_enabled()) {
+            return None;
+        }
+        let (tx, from) = (Mutex::new(self.bulk_in_tx.clone()), partner.to_string());
+        Some(Arc::new(move |kind, payload| {
+            let _ = tx.lock().send((from.clone(), kind, payload));
+        }))
     }
 
     fn start_link(&mut self, is_host: bool, partner: &str, sinks: Sinks) {
@@ -381,7 +396,7 @@ impl Connection {
 
     /// `fromClean` is stamped by the relay, never taken from the payload. Outside a session it is the only
     /// sender identity, so a payload without it goes to the current partner (or is dropped without one).
-    fn on_file(&mut self, from: Option<String>, payload: FilePayload) {
+    pub(super) fn on_file(&mut self, from: Option<String>, payload: FilePayload) {
         let ctx = Arc::clone(&self.ctx);
         let from = from.unwrap_or_else(|| ctx.partner());
         if from.is_empty() {

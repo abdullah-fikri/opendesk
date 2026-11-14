@@ -18,13 +18,15 @@ use std::time::{Duration, Instant};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
+use crate::domain::bulk;
+use crate::domain::file_route::{FileRoutes, Step};
 use crate::domain::performance::Performance;
 use crate::domain::settings::{self, normalize_gateway_url};
 use crate::domain::{capability, frame_rate};
 use crate::infra::e2e::{self, E2e};
 use crate::infra::p2p::{self, P2p};
 use crate::infra::{device, logger, power, storage, virtual_clipboard, window};
-use crate::protocol::{ClientMessage, FileMark, FilePayload, InputEvent, Outgoing, ServerMessage, binary};
+use crate::protocol::{ClientMessage, FileAction, FileMark, FilePayload, InputEvent, Outgoing, ServerMessage, binary};
 use crate::service::context::Ctx;
 use crate::service::file_transfer::{self, FileReceiver, IN_FLIGHT_CHUNKS, chunk_units};
 use crate::service::ui_port::{RelayStatus, SessionChange};
@@ -80,6 +82,7 @@ const TRANSFER_SEND_BUFFER: usize = 4 * 1024 * 1024;
 pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
     crate::infra::thread::spawn_named("relay-conn", move || {
         let (input_tx, input_rx) = mpsc::channel();
+        let (bulk_tx, bulk_rx) = mpsc::channel();
         let mut conn = Connection {
             ctx,
             outbox,
@@ -88,6 +91,10 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
             receiver: FileReceiver::new(),
             p2p_input_tx: input_tx,
             p2p_input: input_rx,
+            bulk_in_tx: bulk_tx,
+            bulk_in: bulk_rx,
+            file_routes: FileRoutes::default(),
+            p2p_incoming: Vec::new(),
             links: Vec::new(),
             e2e: Vec::new(),
             monitor_pending: None,
@@ -165,6 +172,13 @@ pub(super) struct Connection {
     /// Input that arrived over a P2P path (host side).
     pub(super) p2p_input_tx: Sender<InputEvent>,
     p2p_input: Receiver<InputEvent>,
+    /// File stream messages that arrived over a P2P path (`file-p2p`): sender, kind, payload.
+    pub(super) bulk_in_tx: Sender<(String, u8, Vec<u8>)>,
+    bulk_in: Receiver<(String, u8, Vec<u8>)>,
+    /// Path of each outgoing transfer (relay or P2P, see `domain::file_route`).
+    file_routes: FileRoutes,
+    /// Incoming transfers (`sender:id`) that arrived over a P2P path, cancelled if that path drops.
+    p2p_incoming: Vec<String>,
     /// One direct path per session: the hosted viewer, or each viewed host.
     pub(super) links: Vec<Arc<P2p>>,
     /// One end-to-end channel per session whose partner lists `e2e`; same lifetime as `links`.
@@ -249,6 +263,9 @@ impl Connection {
                         s.p2p_active.store(route.is_some(), Ordering::Relaxed);
                         s.p2p_relayed.store(matches!(route, Some(p2p::Route::Relayed(_))), Ordering::Relaxed);
                     }
+                }
+                for p in &self.links {
+                    file_transfer::set_fast_path(&p.partner, self.file_p2p_to(&p.partner));
                 }
                 let hosted_p2p = self.links.iter().any(|p| p.is_host() && p.is_active());
                 ctx.host.p2p_active.store(hosted_p2p, Ordering::Relaxed);
@@ -489,6 +506,9 @@ impl Connection {
         caps.push(capability::TILE_LOSSLESS);
         #[cfg(windows)]
         caps.push(capability::MOUSE_RELATIVE);
+        if p2p::enabled() && p2p::file_p2p_enabled() {
+            caps.push(capability::FILE_P2P);
+        }
         let stored = storage::load_settings();
         let mut caps: Vec<String> = caps.into_iter().map(String::from).collect();
         // Right before `fps-N`: a relay that keeps only 16 names drops it first, which only turns host sound off.
@@ -596,6 +616,18 @@ impl Connection {
                 Outgoing::VideoFrame(frame) => video = Some(frame),
                 Outgoing::MonitorFrame(frame) => self.monitor_pending = Some(frame),
                 Outgoing::Audio(packet) => self.send_audio(socket, partner, packet),
+                Outgoing::File { message: ClientMessage::RelayFile { target_clean, payload }, status, mark }
+                    if self.route_file(&target_clean, &payload) =>
+                {
+                    let json = serde_json::to_vec(&payload).unwrap_or_default();
+                    self.send_file_p2p(&target_clean, bulk::MSG_JSON, &json, chunk_units(0), status, mark);
+                }
+                Outgoing::FileChunk { target, frame, status, mark }
+                    if binary::parse_file_chunk(&frame).is_some_and(|c| self.routed_p2p(&target, c.id)) =>
+                {
+                    let units = chunk_units(frame.len());
+                    self.send_file_p2p(&target, bulk::MSG_BINARY, &frame, units, status, mark);
+                }
                 Outgoing::File { message, status, mark } => {
                     let text = message.to_json();
                     let bytes = text.len();
@@ -744,6 +776,10 @@ impl Connection {
             self.busy = true;
             crate::service::host::input::apply(&self.ctx, event);
         }
+        while let Ok((from, kind, payload)) = self.bulk_in.try_recv() {
+            self.busy = true;
+            self.on_bulk(&from, kind, &payload);
+        }
         loop {
             let read = socket.read();
             if read.is_ok() {
@@ -836,6 +872,106 @@ impl Connection {
                     s.inbox.push(frame.into_owned());
                 }
             }
+        }
+    }
+
+    /// True when new transfers to `target` take its P2P path: both sides list `file-p2p` and the path is direct.
+    fn file_p2p_to(&self, target: &str) -> bool {
+        p2p::file_p2p_enabled()
+            && file_transfer::caps_of(target).file_p2p
+            && self.links.iter().any(|p| p.partner == target && p.is_direct())
+    }
+
+    /// Whether file message `payload` to `target` goes over the P2P path (see `domain::file_route`).
+    fn route_file(&mut self, target: &str, payload: &FilePayload) -> bool {
+        let step = match payload.action {
+            FileAction::Start => Step::Start,
+            FileAction::Chunk => Step::Chunk,
+            FileAction::End => Step::End { group_end: payload.group_end == Some(true) },
+            _ => Step::Other,
+        };
+        let p2p_now = self.file_p2p_to(target);
+        self.file_routes.route(target, &payload.id, payload.group.as_deref(), step, || p2p_now)
+    }
+
+    fn routed_p2p(&self, target: &str, id: &str) -> bool {
+        self.file_routes.routed(target, id)
+    }
+
+    /// Sends one file message over `target`'s P2P path; its in-flight units are released and its progress mark
+    /// recorded once the partner acknowledged it. A path that just dropped loses the message: the transfer is
+    /// cancelled with it (see `on_bulk`).
+    fn send_file_p2p(
+        &mut self,
+        target: &str,
+        kind: u8,
+        payload: &[u8],
+        units: usize,
+        status: Option<String>,
+        mark: Option<FileMark>,
+    ) {
+        let units = units.max(1);
+        let done: bulk::OnDelivered = Box::new(move |ok| {
+            IN_FLIGHT_CHUNKS.fetch_sub(units, Ordering::Relaxed);
+            if ok && let Some(mark) = &mark {
+                file_transfer::set_delivered(mark);
+            }
+        });
+        let sent = match self.links.iter().find(|p| p.partner == target) {
+            Some(p) => p.send_bulk(kind, payload, Some(done)),
+            None => {
+                done(false);
+                false
+            }
+        };
+        if !sent {
+            file_transfer::abort_pending_sends();
+        }
+        if let Some(status) = status {
+            self.ctx.ui.status(status);
+        }
+    }
+
+    /// A file stream message from `from`'s P2P path, handled like its relay counterpart; [`p2p::BULK_LOST`]
+    /// cancels what was arriving and leaving that way.
+    fn on_bulk(&mut self, from: &str, kind: u8, payload: &[u8]) {
+        match kind {
+            p2p::BULK_LOST => {
+                let prefix = format!("{from}:");
+                let incoming: Vec<String> =
+                    self.p2p_incoming.iter().filter(|k| k.starts_with(&prefix)).cloned().collect();
+                self.p2p_incoming.retain(|k| !k.starts_with(&prefix));
+                if !incoming.is_empty() {
+                    let ctx = Arc::clone(&self.ctx);
+                    if let Some(status) = self.receiver.abort_keys(ctx.ui.as_ref(), &incoming) {
+                        ctx.ui.status(status);
+                    }
+                    virtual_clipboard::abort_pulls();
+                }
+                if self.file_routes.drop_p2p(from) {
+                    file_transfer::abort_pending_sends();
+                }
+            }
+            bulk::MSG_JSON => {
+                if let Ok(file) = serde_json::from_slice::<FilePayload>(payload) {
+                    let key = format!("{from}:{}", file.id);
+                    match file.action {
+                        FileAction::Start if !self.p2p_incoming.contains(&key) => self.p2p_incoming.push(key),
+                        FileAction::End => self.p2p_incoming.retain(|k| *k != key),
+                        _ => {}
+                    }
+                    self.on_file(Some(from.to_string()), file);
+                }
+            }
+            bulk::MSG_BINARY => {
+                if let Some(chunk) = binary::parse_file_chunk(payload) {
+                    self.on_file_chunk(from, &chunk);
+                }
+            }
+            _ => {}
+        }
+        if let Some(p) = self.links.iter().find(|p| p.partner == from) {
+            p.bulk_consumed(payload.len());
         }
     }
 

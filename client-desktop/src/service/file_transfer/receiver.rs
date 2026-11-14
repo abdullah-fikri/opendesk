@@ -285,6 +285,17 @@ impl FileReceiver {
         status
     }
 
+    /// Deletes the partial files of transfers `keys` (`sender:id`): the P2P path they came over dropped.
+    pub fn abort_keys(&mut self, ui: &dyn UiPort, keys: &[String]) -> Option<String> {
+        let mut status = None;
+        for key in keys {
+            if let Some(name) = self.discard(ui, key, "Direct connection lost") {
+                status = Some(format!("Could not receive {name}: direct connection lost"));
+            }
+        }
+        status
+    }
+
     /// Handles one payload from `from`. `allow_auto_paste` is false outside a screen session.
     pub fn handle(&mut self, ctx: &AppContext, payload: &FilePayload, from: &str, allow_auto_paste: bool) -> Outcome {
         let id = payload.id.as_str();
