@@ -212,6 +212,8 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     // No background Wi-Fi scans (latency spikes) while the viewer watches.
     let _wifi = wifi::streaming();
     power::raise_thread_priority();
+    // Capture and encode ahead of whatever else loads the host (a game included).
+    let _mmcss = power::mmcss(power::Mmcss::Games);
     // Follow the secure desktop (UAC / lock screen) when running as SYSTEM; a no-op otherwise.
     core_engine::desktop::switch_to_input_desktop();
     let mut monitors = enumerate_monitors();

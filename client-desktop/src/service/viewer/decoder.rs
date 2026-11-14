@@ -433,6 +433,7 @@ where
     }
     let name = format!("viewer-decoder-{}", sess.id);
     crate::infra::thread::spawn_supervised(&name, on_panic, move || {
+        let _mmcss = crate::infra::power::mmcss(crate::infra::power::Mmcss::Games);
         let mut frame_count = 0u32;
         let mut fps_timer = Instant::now();
         let mut current_fps = 0u32;

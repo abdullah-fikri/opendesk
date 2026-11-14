@@ -608,12 +608,19 @@ impl P2p {
             bulk_pending: std::sync::atomic::AtomicUsize::new(0),
         });
         let worker = Arc::clone(&p);
-        crate::infra::thread::spawn_named("p2p-worker", move || worker.run());
+        crate::infra::thread::spawn_named("p2p-worker", move || {
+            // Video and input arrive on this thread.
+            let _mmcss = crate::infra::power::mmcss(crate::infra::power::Mmcss::Games);
+            worker.run()
+        });
         let bulk = Arc::clone(&p);
         crate::infra::thread::spawn_named("p2p-bulk", move || bulk.run_bulk());
         if pacing {
             let pacer = Arc::clone(&p);
-            crate::infra::thread::spawn_named("p2p-pacer", move || pacer.pace());
+            crate::infra::thread::spawn_named("p2p-pacer", move || {
+                let _mmcss = crate::infra::power::mmcss(crate::infra::power::Mmcss::Games);
+                pacer.pace()
+            });
         }
         Some(p)
     }

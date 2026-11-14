@@ -53,6 +53,35 @@ pub fn raise_thread_priority() {
     }
 }
 
+/// Multimedia Class Scheduler task a latency-critical thread joins.
+#[derive(Clone, Copy)]
+pub enum Mmcss {
+    /// Capture, encode, decode and the P2P path: frames and input (MMCSS "Games": high category, ahead of
+    /// ordinary threads under load; Windows keeps 20% of the CPU for everything else).
+    Games,
+    /// Microphone, speaker and host sound loops ("Audio").
+    Audio,
+}
+
+/// The calling thread's MMCSS registration; dropping it (on the same thread) leaves the class.
+pub struct MmcssGuard(sys::MmcssHandle);
+
+impl Drop for MmcssGuard {
+    fn drop(&mut self) {
+        sys::mmcss_leave(&self.0);
+    }
+}
+
+/// Registers the calling thread with MMCSS for `task` until the guard drops; without MMCSS (the service
+/// stopped, `OPENDESK_ECOQOS=0`, not Windows) the thread keeps its priority.
+pub fn mmcss(task: Mmcss) -> MmcssGuard {
+    let name = match task {
+        Mmcss::Games => "Games",
+        Mmcss::Audio => "Audio",
+    };
+    MmcssGuard(if enabled() { sys::mmcss_join(name) } else { sys::MmcssHandle::default() })
+}
+
 fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var("OPENDESK_ECOQOS").as_deref() != Ok("0"))
@@ -115,6 +144,35 @@ mod sys {
         // SAFETY: the pseudo handle names the calling thread and needs no closing.
         unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL) };
     }
+
+    #[link(name = "avrt")]
+    unsafe extern "system" {
+        fn AvSetMmThreadCharacteristicsW(task: *const u16, index: *mut u32) -> *mut c_void;
+        fn AvRevertMmThreadCharacteristics(handle: *mut c_void) -> i32;
+    }
+
+    /// Null when the thread is not registered.
+    pub struct MmcssHandle(pub *mut c_void);
+
+    impl Default for MmcssHandle {
+        fn default() -> Self {
+            Self(std::ptr::null_mut())
+        }
+    }
+
+    pub fn mmcss_join(task: &str) -> MmcssHandle {
+        let name: Vec<u16> = task.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut index = 0u32;
+        // SAFETY: a NUL-terminated task name and an out-parameter, both valid for the call.
+        MmcssHandle(unsafe { AvSetMmThreadCharacteristicsW(name.as_ptr(), &mut index) })
+    }
+
+    pub fn mmcss_leave(handle: &MmcssHandle) {
+        if !handle.0.is_null() {
+            // SAFETY: the handle came from AvSetMmThreadCharacteristicsW on this thread (the guard is !Send).
+            unsafe { AvRevertMmThreadCharacteristics(handle.0) };
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -124,10 +182,26 @@ mod sys {
     }
 
     pub fn raise_thread_priority() {}
+
+    #[derive(Default)]
+    pub struct MmcssHandle;
+
+    pub fn mmcss_join(_task: &str) -> MmcssHandle {
+        MmcssHandle
+    }
+
+    pub fn mmcss_leave(_handle: &MmcssHandle) {}
 }
 
 #[cfg(all(test, windows))]
 mod tests {
+    #[test]
+    fn threads_join_and_leave_mmcss() {
+        let guard = super::mmcss(super::Mmcss::Games);
+        assert!(!guard.0.0.is_null(), "MMCSS refused the Games task");
+        drop(guard);
+    }
+
     #[test]
     fn windows_accepts_the_throttling_request() {
         assert!(super::sys::set_throttled(true));

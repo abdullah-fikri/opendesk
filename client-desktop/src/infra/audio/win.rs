@@ -165,6 +165,7 @@ impl VoiceEngine {
         // 1. Microphone Capture Thread
         // Keeps waveIn open across mute/unmute toggles during a session so re-enabling mic never fails!
         crate::infra::thread::spawn_named("audio-capture", move || unsafe {
+            let _mmcss = crate::infra::power::mmcss(crate::infra::power::Mmcss::Audio);
             let block_align = (CHANNELS * BITS_PER_SAMPLE) / 8;
             let mut processed_buf = [0u8; MAX_FRAME_BYTES];
             // Failed opens in a row: a host without a microphone fails every time, so only the first is logged
@@ -281,10 +282,12 @@ impl VoiceEngine {
 
         // 2. Speaker playback: voice (16 / 24 / 48 kHz mono) and host sound (48 kHz stereo) each on their own waveOut.
         crate::infra::thread::spawn_named("audio-playback", move || unsafe {
+            let _mmcss = crate::infra::power::mmcss(crate::infra::power::Mmcss::Audio);
             play_loop(rx_play, CHANNELS, VOICE_PREBUFFER)
         });
         let (tx_sound, rx_sound) = mpsc::channel::<(u32, Vec<u8>)>();
         crate::infra::thread::spawn_named("sound-playback", move || unsafe {
+            let _mmcss = crate::infra::power::mmcss(crate::infra::power::Mmcss::Audio);
             play_loop(rx_sound, SOUND_CHANNELS, SOUND_PREBUFFER)
         });
 
