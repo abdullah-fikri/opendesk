@@ -1,0 +1,194 @@
+// Solid and outline icons drawn with paths (never font glyphs).
+
+import { Theme } from "../theme.slint";
+
+// Solid icons. Coloured (settings panes): 0 = shield, 1 = server, 2 = microphone, 3 = pointer. Single colour (`tint`,
+// tabs and buttons): 4 = server stack, 5 = history, 6 = grid, 7 = gear (outline), 8 = refresh (outline).
+export component SolidIcon inherits Rectangle {
+    in property <int> kind: 0;
+    in property <length> size: 22px;
+    in property <color> tint: #a6a6b0;
+
+    width: root.size;
+    height: root.size;
+
+    if root.kind == 0: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M12 2 L4 5.5 L4 11.2 C4 16.5 7.4 20.4 12 22 C16.6 20.4 20 16.5 20 11.2 L20 5.5 Z";
+        fill: #e11d48;
+    }
+    if root.kind == 0: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M9.3 12.2 L11.2 14.1 L15 10.1";
+        stroke: #ffffff;
+        stroke-width: root.size / 11;
+        fill: transparent;
+    }
+
+    if root.kind == 1: Rectangle {
+        x: root.size * 3 / 24;
+        y: root.size * 3.5 / 24;
+        width: root.size * 18 / 24;
+        height: root.size * 7.5 / 24;
+        border-radius: root.size * 2.2 / 24;
+        background: #f59e0b;
+    }
+    if root.kind == 1: Rectangle {
+        x: root.size * 3 / 24;
+        y: root.size * 13 / 24;
+        width: root.size * 18 / 24;
+        height: root.size * 7.5 / 24;
+        border-radius: root.size * 2.2 / 24;
+        background: #d97706;
+    }
+    if root.kind == 1: Rectangle {
+        x: root.size * 5.8 / 24;
+        y: root.size * 6.05 / 24;
+        width: root.size * 2.4 / 24;
+        height: root.size * 2.4 / 24;
+        border-radius: root.size * 1.2 / 24;
+        background: #fffbeb;
+    }
+    if root.kind == 1: Rectangle {
+        x: root.size * 5.8 / 24;
+        y: root.size * 15.55 / 24;
+        width: root.size * 2.4 / 24;
+        height: root.size * 2.4 / 24;
+        border-radius: root.size * 1.2 / 24;
+        background: #fffbeb;
+    }
+
+    if root.kind == 2: Rectangle {
+        x: root.size * 8.5 / 24;
+        y: root.size * 2.5 / 24;
+        width: root.size * 7 / 24;
+        height: root.size * 11 / 24;
+        border-radius: root.size * 3.5 / 24;
+        background: #0ea5e9;
+    }
+    if root.kind == 2: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M5.5 11.5 A6.5 6.5 0 0 0 18.5 11.5 M12 18 L12 21.2 M8.8 21.2 L15.2 21.2";
+        stroke: #38bdf8;
+        stroke-width: root.size / 12;
+        fill: transparent;
+    }
+
+    if root.kind == 3: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M5.5 3.2 L18.7 11.1 L13.1 12.9 L10.9 18.6 Z";
+        fill: #8b5cf6;
+    }
+    if root.kind == 3: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M13 13 L17.2 17.2";
+        stroke: #c4b5fd;
+        stroke-width: root.size / 11;
+        fill: transparent;
+    }
+
+    if root.kind == 4: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        commands: "M3 4.5 A2 2 0 0 1 5 2.5 L15 2.5 A2 2 0 0 1 17 4.5 L17 7.3 A2 2 0 0 1 15 9.3 L5 9.3 A2 2 0 0 1 3 7.3 Z M3 12.7 A2 2 0 0 1 5 10.7 L15 10.7 A2 2 0 0 1 17 12.7 L17 15.5 A2 2 0 0 1 15 17.5 L5 17.5 A2 2 0 0 1 3 15.5 Z";
+        fill: root.tint;
+    }
+    if root.kind == 4: Rectangle {
+        x: root.size * 5.4 / 20;
+        y: root.size * 4.7 / 20;
+        width: root.size * 1.8 / 20;
+        height: root.size * 1.8 / 20;
+        border-radius: root.size * 0.9 / 20;
+        background: Theme.input;
+    }
+    if root.kind == 4: Rectangle {
+        x: root.size * 5.4 / 20;
+        y: root.size * 12.9 / 20;
+        width: root.size * 1.8 / 20;
+        height: root.size * 1.8 / 20;
+        border-radius: root.size * 0.9 / 20;
+        background: Theme.input;
+    }
+
+    if root.kind == 5: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        commands: "M10 2.5 A7.5 7.5 0 1 0 17.45 10.83 A0.85 0.85 0 0 0 15.76 10.64 A5.8 5.8 0 1 1 14.14 5.9 L12.6 6.12 A0.75 0.75 0 0 0 12.81 7.6 L16.01 7.15 A0.75 0.75 0 0 0 16.65 6.31 L16.2 3.11 A0.75 0.75 0 0 0 14.72 3.32 L14.92 4.7 A7.47 7.47 0 0 0 10 2.5 Z M10.75 6.75 A0.75 0.75 0 0 0 9.25 6.75 L9.25 10.25 A0.75 0.75 0 0 0 9.62 10.9 L12.12 12.35 A0.75 0.75 0 1 0 12.88 11.05 L10.75 9.82 Z";
+        fill: root.tint;
+        fill-rule: evenodd;
+    }
+
+    if root.kind == 6: Rectangle {
+        x: root.size * 2.5 / 20;
+        y: root.size * 2.5 / 20;
+        width: root.size * 6.5 / 20;
+        height: root.size * 6.5 / 20;
+        border-radius: root.size * 1.6 / 20;
+        background: root.tint;
+    }
+    if root.kind == 6: Rectangle {
+        x: root.size * 11 / 20;
+        y: root.size * 2.5 / 20;
+        width: root.size * 6.5 / 20;
+        height: root.size * 6.5 / 20;
+        border-radius: root.size * 1.6 / 20;
+        background: root.tint;
+    }
+    if root.kind == 6: Rectangle {
+        x: root.size * 2.5 / 20;
+        y: root.size * 11 / 20;
+        width: root.size * 6.5 / 20;
+        height: root.size * 6.5 / 20;
+        border-radius: root.size * 1.6 / 20;
+        background: root.tint;
+    }
+    if root.kind == 6: Rectangle {
+        x: root.size * 11 / 20;
+        y: root.size * 11 / 20;
+        width: root.size * 6.5 / 20;
+        height: root.size * 6.5 / 20;
+        border-radius: root.size * 1.6 / 20;
+        background: root.tint;
+    }
+
+    if root.kind == 7: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        commands: "M8.3 2.7 A1.7 1.7 0 0 1 11.7 2.7 L11.9 3.8 A5.5 5.5 0 0 1 13.3 4.6 L14.3 4.1 A1.7 1.7 0 0 1 16 7 L15.1 7.6 C15.2 8 15.3 8.5 15.3 9 C15.3 9.5 15.2 10 15.1 10.4 L16 11 A1.7 1.7 0 0 1 14.3 13.9 L13.3 13.4 A5.5 5.5 0 0 1 11.9 14.2 L11.7 15.3 A1.7 1.7 0 0 1 8.3 15.3 L8.1 14.2 A5.5 5.5 0 0 1 6.7 13.4 L5.7 13.9 A1.7 1.7 0 0 1 4 11 L4.9 10.4 C4.8 10 4.7 9.5 4.7 9 C4.7 8.5 4.8 8 4.9 7.6 L4 7 A1.7 1.7 0 0 1 5.7 4.1 L6.7 4.6 A5.5 5.5 0 0 1 8.1 3.8 Z M7.8 9 A2.2 2.2 0 1 0 12.2 9 A2.2 2.2 0 1 0 7.8 9";
+        stroke: root.tint;
+        stroke-width: root.size * 1.5 / 20;
+        fill: transparent;
+    }
+
+    if root.kind == 8: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        commands: "M16.2 10 A6.2 6.2 0 1 1 14.7 5.9 M15.8 3.2 L15.8 6.2 L12.8 6.2";
+        stroke: root.tint;
+        stroke-width: root.size * 1.6 / 20;
+        fill: transparent;
+    }
+}

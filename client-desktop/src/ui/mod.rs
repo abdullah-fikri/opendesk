@@ -8,6 +8,7 @@ mod gl_frames;
 mod monitor_wall_model;
 mod presenter;
 mod session_model;
+mod splash;
 mod transfer_model;
 mod view_model;
 
@@ -31,6 +32,7 @@ use crate::service::sessions;
 use crate::service::viewer::drop_point;
 
 pub use presenter::SlintUi;
+pub use splash::start as start_splash;
 
 slint::include_modules!();
 

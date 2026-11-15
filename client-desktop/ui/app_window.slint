@@ -115,6 +115,10 @@ export component MainWindow inherits Window {
     in property <string> whats_new_body: "";
     callback whats_new_closed(bool);  // true = Don't show again
 
+    // ---- Start-up splash (Rust plays the frames; any click or key skips it) ----
+    in property <image> splash_frame;
+    in-out property <bool> show_splash: false;
+
     // ---- Dashboard ----
     callback request_connect(string);
     callback copy_local_id();
@@ -468,6 +472,36 @@ export component MainWindow inherits Window {
         closed(dont_show_again) => {
             root.show_whats_new = false;
             root.whats_new_closed(dont_show_again);
+        }
+    }
+
+    // Last child: the splash covers everything, including dialogs.
+    if show_splash: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #000000;
+        Image {
+            width: 100%;
+            height: 100%;
+            source: root.splash_frame;
+            image-fit: contain;
+        }
+        Text {
+            x: parent.width - self.width - 20px;
+            y: parent.height - self.height - 16px;
+            text: "Click or press any key to skip";
+            color: #ffffff55;
+            font-size: 11px;
+        }
+        TouchArea {
+            clicked => { root.show_splash = false; }
+        }
+        splash-keys := FocusScope {
+            init => { self.focus(); }
+            key-pressed(e) => {
+                root.show_splash = false;
+                accept
+            }
         }
     }
 }

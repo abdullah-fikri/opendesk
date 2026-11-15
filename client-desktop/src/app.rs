@@ -94,6 +94,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
     let _tray = ui::install_tray(&window, &ctx);
     ui::enable_file_drop(&window, &ctx, opts.background);
     start_services(&ctx, outbox_rx);
+    // The start-up splash plays unless the app starts hidden in the tray (autostart); keep its timer alive.
+    let _splash = if opts.background { None } else { ui::start_splash(&window) };
     run_window(&window, opts.background)
 }
 
