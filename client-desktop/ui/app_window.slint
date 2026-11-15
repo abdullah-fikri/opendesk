@@ -199,12 +199,6 @@ export component MainWindow inherits Window {
         padding: 0px;
         spacing: 0px;
 
-        // Accent line
-        if !wall_fullscreen && !settings_page_shown: Rectangle {
-            height: 2px;
-            background: Theme.accent;
-        }
-
         // Wrapped in a fixed-height Rectangle: the bar adapts to its own width, which must not feed back into the
         // window's layout (a binding loop).
         if sessions.length == 0 && !wall_fullscreen && !settings_page_shown: Rectangle {
@@ -223,6 +217,8 @@ export component MainWindow inherits Window {
                 is_mic_muted: root.hosting_mic_muted;
                 show_settings <=> root.show_settings;
                 settings_open: root.settings_open;
+                show_refresh: root.is_admin && root.active_dashboard_tab == 1 && !root.settings_open && !root.monitor_open;
+                refresh => { root.refresh_hosts(); }
                 open_admin_settings => {
                     root.monitor_open = false;
                     root.close_monitor();

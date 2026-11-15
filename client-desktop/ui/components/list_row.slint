@@ -3,16 +3,18 @@
 import { Theme, Icons } from "../theme.slint";
 import { Icon } from "icon.slint";
 
-// Selectable list row: marker, title and subtitle on the left, Name / Connect / delete buttons on the right.
-// Clicking anywhere but a button only selects the row (a double click does not connect).
+// Selectable list row on one line: marker, title, ID chip and a detail text on the left; Name / Connect / delete on
+// the right. The detail text and the Name button show while the row is hovered or selected; Connect turns red
+// then. Clicking anywhere but a button only selects the row (a double click does not connect).
 export component ListRow inherits Rectangle {
     in property <string> title;
-    // Second line; hidden when empty.
+    // ID shown in a mono chip after the title; hidden when empty.
+    in property <string> id_chip;
+    // Detail text after the chip ("· windows-host · PC (Dell)"); shown on hover or selection.
     in property <string> subtitle;
-    in property <color> subtitle_color: Theme.text-3;
-    // Greys the title (offline host).
+    // Dims the whole row (offline host).
     in property <bool> muted: false;
-    // Marker left of the title: a short bar, or a status dot when `dot` is set.
+    // Marker left of the title: a short red bar, or a status dot (in `marker_color`) when `dot` is set.
     in property <bool> dot: false;
     in property <color> marker_color: Theme.accent;
     in property <bool> show_rename: true;
@@ -20,33 +22,27 @@ export component ListRow inherits Rectangle {
     in property <bool> can_connect: true;
     in property <string> connect_label: "Connect";
     in property <bool> selected: false;
-    // Another row is selected: this row's buttons are dimmed (still clickable) so the eye finds the selected pair.
-    in property <bool> dimmed: false;
 
     callback select();
     callback rename();
     callback connect();
     callback remove();
 
-    property <float> button_opacity: root.dimmed ? 0.45 : 1;
+    // Set by the buttons (they sit above row-ta, which then no longer reports hover).
+    property <bool> over_button: false;
+    property <bool> hot: row-ta.has-hover || root.over_button || ta-conn.has-hover || root.selected;
 
-    height: 48px;
+    height: 46px;
     border-radius: Theme.radius-md;
     clip: true;
-    background: root.selected ? #ffffff14 : row-ta.has-hover ? #ffffff0d : #ffffff08;
+    background: root.selected ? #dc262614 : root.hot ? #ffffff0f : #ffffff06;
     border-width: 1px;
-    border-color: root.selected ? Theme.accent : Theme.divider;
+    border-color: root.selected ? #dc262652 : transparent;
+    opacity: root.muted ? (root.hot ? 0.78 : 0.48) : 1;
 
     // Declared first so the buttons, drawn above it, still receive their own clicks.
     row-ta := TouchArea {
         clicked => { root.select(); }
-    }
-
-    if root.selected: Rectangle {
-        x: 0;
-        width: 3px;
-        height: parent.height;
-        background: Theme.accent;
     }
 
     HorizontalLayout {
@@ -56,32 +52,56 @@ export component ListRow inherits Rectangle {
 
         HorizontalLayout {
             horizontal-stretch: 1;
-            spacing: 10px;
+            min-width: 0px;
+            spacing: 13px;
             alignment: start;
 
             Rectangle {
                 width: root.dot ? 8px : 3px;
-                height: root.dot ? 8px : 18px;
+                height: root.dot ? 8px : 16px;
                 y: (parent.height - self.height) / 2;
                 border-radius: root.dot ? 4px : 2px;
-                background: root.marker_color;
+                background: root.dot ? root.marker_color : Theme.accent;
             }
 
-            VerticalLayout {
-                alignment: center;
-                Text {
-                    text: root.title;
-                    color: root.selected ? #ffffff : root.muted ? Theme.text-2 : Theme.text;
-                    font-size: 13px;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: 13.5px;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            if root.id_chip != "": Rectangle {
+                width: chip-txt.preferred-width + 16px;
+                height: 22px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 5px;
+                background: root.selected ? #dc262626 : #ffffff0e;
+                border-width: 1px;
+                border-color: root.selected ? #dc262659 : #ffffff12;
+                chip-txt := Text {
+                    text: root.id_chip;
+                    color: root.selected ? #fecaca : #e4e4e7;
+                    font-size: 12px;
                     font-weight: 600;
-                    overflow: elide;
+                    font-family: "Consolas";
+                    letter-spacing: 0.4px;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
                 }
-                if root.subtitle != "": Text {
-                    text: root.subtitle;
-                    color: root.subtitle_color;
-                    font-size: 11px;
-                    overflow: elide;
-                }
+            }
+
+            if root.subtitle != "": Text {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                text: root.subtitle;
+                color: Theme.text-3;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+                opacity: root.hot ? 1 : 0;
             }
         }
 
@@ -93,21 +113,21 @@ export component ListRow inherits Rectangle {
             if root.show_rename: Rectangle {
                 height: 28px;
                 border-radius: Theme.radius-sm;
-                opacity: ta-ren.has-hover ? 1 : root.button_opacity;
-                background: ta-ren.has-hover ? Theme.hover : #ffffff0d;
-                border-width: 1px;
-                border-color: Theme.border;
+                opacity: root.hot ? 1 : 0;
+                background: ta-ren.has-hover ? #ffffff0f : transparent;
                 ta-ren := TouchArea {
                     mouse-cursor: pointer;
+                    changed has-hover => { root.over_button = self.has-hover; }
                     clicked => { root.rename(); }
                 }
                 HorizontalLayout {
-                    padding-left: 10px;
-                    padding-right: 10px;
+                    padding-left: 12px;
+                    padding-right: 12px;
                     Text {
                         text: "Name";
-                        color: Theme.text-2;
-                        font-size: 11px;
+                        color: ta-ren.has-hover ? Theme.text : Theme.text-3;
+                        font-size: 12px;
+                        font-weight: 600;
                         vertical-alignment: center;
                     }
                 }
@@ -116,10 +136,11 @@ export component ListRow inherits Rectangle {
             Rectangle {
                 height: 28px;
                 border-radius: Theme.radius-sm;
-                opacity: ta-conn.has-hover ? 1 : root.button_opacity;
-                background: !root.can_connect ? #ffffff0a : ta-conn.has-hover ? #ef4444 : Theme.accent;
-                border-width: 1px;
-                border-color: root.can_connect ? Theme.accent : Theme.border;
+                background: !root.can_connect ? #ffffff0a
+                    : root.hot ? (ta-conn.has-hover ? Theme.accent-hover : Theme.accent)
+                    : #ffffff0f;
+                border-width: root.hot && root.can_connect ? 0px : 1px;
+                border-color: #ffffff12;
                 ta-conn := TouchArea {
                     mouse-cursor: root.can_connect ? pointer : default;
                     clicked => {
@@ -131,12 +152,12 @@ export component ListRow inherits Rectangle {
                     }
                 }
                 HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 12px;
+                    padding-left: 14px;
+                    padding-right: 14px;
                     Text {
                         text: root.connect_label;
-                        color: root.can_connect ? #ffffff : #52525b;
-                        font-size: 11px;
+                        color: !root.can_connect ? #52525b : root.hot ? #ffffff : Theme.text;
+                        font-size: 12px;
                         font-weight: 600;
                         vertical-alignment: center;
                     }
@@ -147,18 +168,17 @@ export component ListRow inherits Rectangle {
                 width: 28px;
                 height: 28px;
                 border-radius: Theme.radius-sm;
-                opacity: ta-del.has-hover ? 1 : root.button_opacity;
-                background: ta-del.has-hover ? Theme.hover : #ffffff0d;
-                border-width: 1px;
-                border-color: Theme.border;
+                opacity: root.hot ? 1 : 0;
+                background: ta-del.has-hover ? #ffffff0f : transparent;
                 ta-del := TouchArea {
                     mouse-cursor: pointer;
+                    changed has-hover => { root.over_button = self.has-hover; }
                     clicked => { root.remove(); }
                 }
                 Icon {
                     size: 10px;
                     commands: Icons.close;
-                    tint: Theme.text-3;
+                    tint: ta-del.has-hover ? Theme.text : Theme.text-3;
                 }
             }
         }

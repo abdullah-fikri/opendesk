@@ -1,18 +1,19 @@
 // Top bar outside viewer sessions: relay status, settings and hosting controls.
 
-import { Theme, Icons } from "../theme.slint";
-import { Icon } from "../components/icon.slint";
+import { Theme } from "../theme.slint";
+import { SolidIcon } from "../components/solid_icon.slint";
 
 // Rounded header button: optional icon and label; `active` highlights it in the accent colour, `primary` fills it.
 component HeaderButton inherits Rectangle {
     in property <string> label;
-    in property <string> icon;
+    // SolidIcon kind, -1 = none.
+    in property <int> icon_kind: -1;
     in property <bool> active: false;
     in property <bool> primary: false;
     callback clicked();
 
-    height: 30px;
-    min-width: 30px;
+    height: 32px;
+    min-width: 32px;
     horizontal-stretch: 0;
     border-radius: Theme.radius-sm;
     background: root.primary ? (ta.has-hover ? Theme.accent-hover : Theme.accent)
@@ -30,10 +31,10 @@ component HeaderButton inherits Rectangle {
         padding-right: 10px;
         spacing: 7px;
         alignment: center;
-        if root.icon != "": Icon {
+        if root.icon_kind >= 0: SolidIcon {
             y: (parent.height - self.height) / 2;
-            size: 13px;
-            commands: root.icon;
+            size: 15px;
+            kind: root.icon_kind;
             tint: root.primary ? #ffffff : root.active ? #f87171 : Theme.text-2;
         }
         if root.label != "": Text {
@@ -66,6 +67,9 @@ export component HeaderBar inherits Rectangle {
     // Admin edition: the settings page is open.
     in property <bool> settings_open: false;
 
+    // Relay Hosts list is showing: offer the refresh button.
+    in property <bool> show_refresh: false;
+    callback refresh();
     callback open_admin_settings();
     callback open_file_picker();
     callback toggle_mic();
@@ -140,9 +144,15 @@ export component HeaderBar inherits Rectangle {
                 clicked => { fullscreen = false; }
             }
 
+            if show_refresh: HeaderButton {
+                y: (parent.height - self.height) / 2;
+                icon_kind: 8;
+                clicked => { refresh(); }
+            }
+
             if is_admin: HeaderButton {
                 y: (parent.height - self.height) / 2;
-                icon: Icons.settings;
+                icon_kind: 7;
                 label: "Settings";
                 active: settings_open;
                 clicked => { open_admin_settings(); }
@@ -151,7 +161,7 @@ export component HeaderBar inherits Rectangle {
             // The relay address and performance live in Settings for the admin edition.
             if !is_admin: HeaderButton {
                 y: (parent.height - self.height) / 2;
-                icon: Icons.server;
+                icon_kind: 1;
                 label: "Server";
                 active: show_settings;
                 clicked => { show_settings = !show_settings; }

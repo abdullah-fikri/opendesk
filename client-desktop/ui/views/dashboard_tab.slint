@@ -2,12 +2,14 @@
 
 import { Theme, Icons } from "../theme.slint";
 import { Icon } from "../components/icon.slint";
+import { SolidIcon } from "../components/solid_icon.slint";
 
 // Tab pill: icon, label and count badge; the active tab is a raised pill. `external` marks a segment that opens
 // another view instead of switching the list (trailing arrow icon). `compact` drops the label (narrow windows).
 export component DashboardTab inherits Rectangle {
     in property <string> label;
-    in property <string> icon;
+    // SolidIcon kind (4 = server stack, 5 = history, 6 = grid).
+    in property <int> icon_kind: 4;
     // Badge text, e.g. "8" or "3/8" while filtering; hidden when empty.
     in property <string> badge;
     in property <bool> active: false;
@@ -16,9 +18,9 @@ export component DashboardTab inherits Rectangle {
     callback clicked();
 
     horizontal-stretch: 1;
-    height: 34px;
+    height: 36px;
     border-radius: Theme.radius-sm;
-    background: root.active ? Theme.surface-2 : ta.has-hover ? #ffffff0a : transparent;
+    background: root.active ? #202027 : ta.has-hover ? #ffffff0a : transparent;
 
     ta := TouchArea {
         mouse-cursor: pointer;
@@ -31,11 +33,11 @@ export component DashboardTab inherits Rectangle {
         spacing: 8px;
         alignment: center;
 
-        Icon {
+        SolidIcon {
             y: (parent.height - self.height) / 2;
-            size: 14px;
-            commands: root.icon;
-            tint: root.active ? Theme.accent : Theme.text-3;
+            size: 15px;
+            kind: root.icon_kind;
+            tint: root.active ? Theme.text : Theme.text-3;
         }
         if !root.compact: Text {
             text: root.label;
