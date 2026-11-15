@@ -12,8 +12,9 @@ export component DeleteConfirmModal inherits Rectangle {
 
     Rectangle {
         width: 360px;
+        border-radius: 12px;
         height: 162px;
-        background: #111114;
+        background: #17171c;
         border-width: 1px;
         border-color: #27272a;
         x: (parent.width - self.width) / 2;
@@ -55,7 +56,8 @@ export component DeleteConfirmModal inherits Rectangle {
                     Rectangle {
                         width: 72px;
                         height: 32px;
-                        background: #18181c;
+                        border-radius: 6px;
+                        background: #202027;
                         border-width: 1px;
                         border-color: #27272a;
                         TouchArea {
@@ -74,6 +76,7 @@ export component DeleteConfirmModal inherits Rectangle {
                     Rectangle {
                         width: 88px;
                         height: 32px;
+                        border-radius: 6px;
                         background: #dc2626;
                         TouchArea {
                             mouse-cursor: pointer;

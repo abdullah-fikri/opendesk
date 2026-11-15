@@ -9,8 +9,9 @@ export component Segment inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked();
 
-    height: 26px;
+    height: 28px;
     min-width: 26px;
+    border-radius: Theme.radius-sm;
     horizontal-stretch: 1;
     background: selected ? Theme.accent : (ta.has-hover && enabled) ? Theme.hover : Theme.surface-2;
     border-width: 1px;

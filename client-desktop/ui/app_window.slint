@@ -14,17 +14,20 @@ import { ServerSettingsModal } from "dialogs/server_settings_dialog.slint";
 import { RenameDeviceModal } from "dialogs/rename_device_dialog.slint";
 import { DeleteConfirmModal } from "dialogs/delete_confirm_dialog.slint";
 import { WhatsNewModal } from "dialogs/whats_new_dialog.slint";
+import { Theme } from "theme.slint";
 
 export { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem, TransferItem }
 
 export component MainWindow inherits Window {
     title: "OpenDesk - " + local_desk_id;
     icon: @image-url("icon.png");
-    min-width: 880px;
-    min-height: 560px;
+    // Dashboard, settings and the monitor wall adapt down to a small window; a viewer session needs the full
+    // toolbar, so it keeps the earlier minimum.
+    min-width: sessions.length > 0 ? 880px : 640px;
+    min-height: sessions.length > 0 ? 560px : 480px;
     preferred-width: 920px;
     preferred-height: 600px;
-    background: #09090b;
+    background: Theme.bg;
 
     // ---- Device and relay ----
     in property <string> local_desk_id;
@@ -189,43 +192,55 @@ export component MainWindow inherits Window {
 
     // The monitor wall in full screen shows nothing but the screens.
     property <bool> wall_fullscreen: is_admin && monitor_open && !settings_open && sessions.length == 0 && root.full-screen;
+    // Settings has its own sidebar with Back; the top bar returns in full screen so it can always be left.
+    property <bool> settings_page_shown: is_admin && settings_open && sessions.length == 0 && !root.full-screen;
 
     VerticalLayout {
         padding: 0px;
         spacing: 0px;
 
         // Accent line
-        if !wall_fullscreen: Rectangle {
+        if !wall_fullscreen && !settings_page_shown: Rectangle {
             height: 2px;
-            background: #dc2626;
+            background: Theme.accent;
         }
 
-        if sessions.length == 0 && !wall_fullscreen: HeaderBar {
-            fullscreen <=> root.full-screen;
-            is_relay_online: root.is_relay_online;
-            status_text: root.status_text;
-            is_admin: root.is_admin;
-            hosting: root.hosting;
-            is_mic_muted: root.hosting_mic_muted;
-            show_settings <=> root.show_settings;
-            settings_open: root.settings_open;
-            open_admin_settings => {
-                root.monitor_open = false;
-                root.close_monitor();
-                root.settings_page = 0;
-                root.settings_open = !root.settings_open;
-                if (root.settings_open) {
-                    root.security_refresh();
+        // Wrapped in a fixed-height Rectangle: the bar adapts to its own width, which must not feed back into the
+        // window's layout (a binding loop).
+        if sessions.length == 0 && !wall_fullscreen && !settings_page_shown: Rectangle {
+            height: 46px;
+            min-width: 0px;
+            max-width: 100000px;
+            preferred-width: 0px;
+            HeaderBar {
+                width: 100%;
+                height: 100%;
+                fullscreen <=> root.full-screen;
+                is_relay_online: root.is_relay_online;
+                status_text: root.status_text;
+                is_admin: root.is_admin;
+                hosting: root.hosting;
+                is_mic_muted: root.hosting_mic_muted;
+                show_settings <=> root.show_settings;
+                settings_open: root.settings_open;
+                open_admin_settings => {
+                    root.monitor_open = false;
+                    root.close_monitor();
+                    root.settings_page = 0;
+                    root.settings_open = !root.settings_open;
+                    if (root.settings_open) {
+                        root.security_refresh();
+                    }
                 }
+                open_file_picker => { root.hosting_send_files(); }
+                toggle_mic => { root.hosting_toggle_mic(); }
+                disconnect_session => { root.end_hosting(); }
             }
-            open_file_picker => { root.hosting_send_files(); }
-            toggle_mic => { root.hosting_toggle_mic(); }
-            disconnect_session => { root.end_hosting(); }
         }
 
-        if sessions.length == 0 && !wall_fullscreen: Rectangle {
+        if sessions.length == 0 && !wall_fullscreen && !settings_page_shown: Rectangle {
             height: 1px;
-            background: #1f1f23;
+            background: Theme.divider;
         }
 
         if sessions.length > 0: SessionWorkspace {
@@ -310,11 +325,15 @@ export component MainWindow inherits Window {
         // Body while no viewer session is open: the monitor wall, the dashboard, or the hosting panel.
         if sessions.length == 0: Rectangle {
             vertical-stretch: 1;
-            background: #09090b;
+            background: Theme.bg;
             clip: true;
 
             if is_admin && settings_open: SettingsView {
                 page <=> root.settings_page;
+                gateway_url <=> root.gateway_url;
+                performance: root.performance;
+                save_gateway_url(url) => { root.save_gateway_url(url); }
+                save_performance(preset) => { root.save_performance(preset); }
                 relay_online: root.is_relay_online;
                 security_supported: root.security_supported;
                 security_enabled: root.security_enabled;

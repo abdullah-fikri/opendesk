@@ -30,10 +30,12 @@ export component ListRow inherits Rectangle {
 
     property <float> button_opacity: root.dimmed ? 0.45 : 1;
 
-    height: 44px;
-    background: root.selected ? #1a1a20 : row-ta.has-hover ? #131317 : #0d0d10;
+    height: 48px;
+    border-radius: Theme.radius-md;
+    clip: true;
+    background: root.selected ? #ffffff14 : row-ta.has-hover ? #ffffff0d : #ffffff08;
     border-width: 1px;
-    border-color: root.selected ? Theme.accent : root.muted ? Theme.surface-2 : Theme.border;
+    border-color: root.selected ? Theme.accent : Theme.divider;
 
     // Declared first so the buttons, drawn above it, still receive their own clicks.
     row-ta := TouchArea {
@@ -58,9 +60,10 @@ export component ListRow inherits Rectangle {
             alignment: start;
 
             Rectangle {
-                width: root.dot ? 7px : 2px;
-                height: root.dot ? 7px : 18px;
+                width: root.dot ? 8px : 3px;
+                height: root.dot ? 8px : 18px;
                 y: (parent.height - self.height) / 2;
+                border-radius: root.dot ? 4px : 2px;
                 background: root.marker_color;
             }
 
@@ -85,12 +88,13 @@ export component ListRow inherits Rectangle {
         HorizontalLayout {
             horizontal-stretch: 0;
             spacing: 6px;
-            y: (parent.height - 26px) / 2;
+            y: (parent.height - 28px) / 2;
 
             if root.show_rename: Rectangle {
-                height: 26px;
+                height: 28px;
+                border-radius: Theme.radius-sm;
                 opacity: ta-ren.has-hover ? 1 : root.button_opacity;
-                background: ta-ren.has-hover ? Theme.border : Theme.surface-2;
+                background: ta-ren.has-hover ? Theme.hover : #ffffff0d;
                 border-width: 1px;
                 border-color: Theme.border;
                 ta-ren := TouchArea {
@@ -110,9 +114,10 @@ export component ListRow inherits Rectangle {
             }
 
             Rectangle {
-                height: 26px;
+                height: 28px;
+                border-radius: Theme.radius-sm;
                 opacity: ta-conn.has-hover ? 1 : root.button_opacity;
-                background: !root.can_connect ? Theme.surface-2 : ta-conn.has-hover ? #e11d48 : Theme.accent;
+                background: !root.can_connect ? #ffffff0a : ta-conn.has-hover ? #ef4444 : Theme.accent;
                 border-width: 1px;
                 border-color: root.can_connect ? Theme.accent : Theme.border;
                 ta-conn := TouchArea {
@@ -139,10 +144,11 @@ export component ListRow inherits Rectangle {
             }
 
             if root.show_delete: Rectangle {
-                width: 26px;
-                height: 26px;
+                width: 28px;
+                height: 28px;
+                border-radius: Theme.radius-sm;
                 opacity: ta-del.has-hover ? 1 : root.button_opacity;
-                background: ta-del.has-hover ? Theme.border : Theme.surface-2;
+                background: ta-del.has-hover ? Theme.hover : #ffffff0d;
                 border-width: 1px;
                 border-color: Theme.border;
                 ta-del := TouchArea {

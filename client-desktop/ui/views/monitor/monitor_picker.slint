@@ -58,6 +58,7 @@ export component MonitorPicker inherits Rectangle {
                 }
                 for p in root.picks: Rectangle {
                     height: 28px;
+                    border-radius: 6px;
                     background: row-ta.has-hover ? Theme.hover : transparent;
                     row-ta := TouchArea {
                         mouse-cursor: pointer;

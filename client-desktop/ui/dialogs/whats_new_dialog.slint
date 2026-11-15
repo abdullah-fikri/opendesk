@@ -28,9 +28,10 @@ export component WhatsNewModal inherits Rectangle {
 
     Rectangle {
         width: 420px;
+        border-radius: 12px;
         // Long lists (several skipped versions) scroll; at most about 60 % of the window.
         height: min(root.height * 0.6, text.preferred-height + 124px);
-        background: #111114;
+        background: #17171c;
         border-width: 1px;
         border-color: #27272a;
         x: (parent.width - self.width) / 2;
@@ -73,7 +74,8 @@ export component WhatsNewModal inherits Rectangle {
                     Rectangle {
                         width: 128px;
                         height: 32px;
-                        background: #18181c;
+                        border-radius: 6px;
+                        background: #202027;
                         border-width: 1px;
                         border-color: #27272a;
                         TouchArea {
@@ -94,6 +96,7 @@ export component WhatsNewModal inherits Rectangle {
                     Rectangle {
                         width: 88px;
                         height: 32px;
+                        border-radius: 6px;
                         background: #2563eb;
                         TouchArea {
                             mouse-cursor: pointer;

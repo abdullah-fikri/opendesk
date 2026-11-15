@@ -7,6 +7,227 @@ import { ListRow } from "../components/list_row.slint";
 import { DashboardTab } from "dashboard_tab.slint";
 import { SearchField } from "search_field.slint";
 
+// "This Device's ID" card: the ID in a copyable box and the reachability notice.
+component IdPanel inherits Rectangle {
+    in property <string> local_desk_id;
+    in property <bool> is_relay_online;
+    in property <string> host_notice;
+    callback copy_local_id();
+
+    background: Theme.surface;
+    border-radius: Theme.radius-lg;
+    border-width: 1px;
+    border-color: Theme.divider;
+    horizontal-stretch: 1;
+    min-width: 0px;
+
+    VerticalLayout {
+        padding: 16px;
+        padding-left: 18px;
+        padding-right: 18px;
+        spacing: 10px;
+        alignment: center;
+
+        Text {
+            text: "This Device's ID";
+            color: Theme.text-2;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        Rectangle {
+            height: 48px;
+            border-radius: Theme.radius-md;
+            background: Theme.input;
+            border-width: 1px;
+            border-color: id-ta.has-hover ? Theme.border : Theme.divider;
+            id-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.copy_local_id(); }
+            }
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 10px;
+                spacing: 11px;
+                Rectangle {
+                    width: 3px;
+                    height: 22px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 2px;
+                    background: Theme.accent;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.local_desk_id;
+                    color: Theme.text;
+                    font-size: 22px;
+                    font-weight: 700;
+                    letter-spacing: 1px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Rectangle {
+                    width: copy-txt.preferred-width + 20px;
+                    height: 26px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: Theme.radius-sm;
+                    background: id-ta.has-hover ? #ffffff1a : #ffffff0d;
+                    copy-txt := Text {
+                        text: "Copy ID";
+                        color: id-ta.has-hover ? Theme.text : Theme.text-2;
+                        font-size: 11.5px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+        }
+
+        Text {
+            text: root.host_notice != "" ? root.host_notice : root.is_relay_online ? "Ready for connections" : "Waiting for the relay";
+            color: root.host_notice != "" ? #fbbf24 : Theme.text-3;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// "Control Another Device" card: ID input and Connect button on one row.
+component ConnectPanel inherits Rectangle {
+    in-out property <string> target_desk_id;
+    callback request_connect(string);
+
+    background: Theme.surface;
+    border-radius: Theme.radius-lg;
+    border-width: 1px;
+    border-color: Theme.divider;
+    horizontal-stretch: 1;
+    min-width: 0px;
+
+    VerticalLayout {
+        padding: 16px;
+        padding-left: 18px;
+        padding-right: 18px;
+        spacing: 10px;
+        alignment: center;
+
+        Text {
+            text: "Control Another Device";
+            color: Theme.text-2;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        HorizontalLayout {
+            spacing: 10px;
+            height: 48px;
+
+            Rectangle {
+                horizontal-stretch: 1;
+                min-width: 60px;
+                border-radius: Theme.radius-md;
+                background: Theme.input;
+                border-width: 1px;
+                border-color: input-target.has-focus ? Theme.accent : Theme.divider;
+
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 12px;
+
+                    Rectangle {
+                        if input-target.text == "": Text {
+                            width: parent.width;
+                            height: parent.height;
+                            text: "Enter a device ID";
+                            color: Theme.text-3;
+                            font-size: 13.5px;
+                            vertical-alignment: center;
+                            horizontal-alignment: left;
+                            overflow: elide;
+                        }
+                        input-target := TextInput {
+                            text <=> root.target_desk_id;
+                            color: Theme.text;
+                            font-size: 16px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            single-line: true;
+                            accepted => { root.request_connect(self.text); }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                width: 110px;
+                border-radius: Theme.radius-md;
+                background: ta-conn.has-hover ? Theme.accent-hover : Theme.accent;
+                ta-conn := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.request_connect(input-target.text); }
+                }
+                Text {
+                    text: "Connect";
+                    color: #ffffff;
+                    font-size: 13.5px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+// Tabs of the list panel (admin edition): a pill group.
+component TabStrip inherits Rectangle {
+    in property <bool> as_new_session_page;
+    in property <bool> compact;
+    in property <string> hosts_badge;
+    in property <string> history_badge;
+    in property <int> active_tab;
+    callback hosts_clicked();
+    callback history_clicked();
+    callback wall_clicked();
+
+    height: 42px;
+    border-radius: Theme.radius-md;
+    background: Theme.input;
+    border-width: 1px;
+    border-color: Theme.divider;
+
+    HorizontalLayout {
+        padding: 4px;
+        spacing: 4px;
+
+        DashboardTab {
+            label: "Relay Hosts";
+            icon: Icons.server;
+            badge: root.hosts_badge;
+            compact: root.compact;
+            active: root.active_tab == 1;
+            clicked => { root.hosts_clicked(); }
+        }
+        DashboardTab {
+            label: "Session History";
+            icon: Icons.clock;
+            badge: root.history_badge;
+            compact: root.compact;
+            active: root.active_tab == 0;
+            clicked => { root.history_clicked(); }
+        }
+        // Monitor wall: view-only grid of many hosts (not from the "+" page: sessions are open).
+        if !root.as_new_session_page: DashboardTab {
+            label: "Monitor Wall";
+            icon: Icons.grid;
+            external: true;
+            compact: root.compact;
+            clicked => { root.wall_clicked(); }
+        }
+    }
+}
+
 // The root is a FocusScope so Ctrl+F reaches the search box wherever focus is on this screen.
 export component DashboardView inherits FocusScope {
     width: 100%;
@@ -55,6 +276,9 @@ export component DashboardView inherits FocusScope {
     in property <int> open_sessions: 0;
     callback back_to_sessions();
 
+    // Narrow window: the two cards stack and the tabs sit above the search box.
+    property <bool> narrow: root.width < 700px;
+
     // Arrow keys and Enter act on the list without a click first.
     init => { list-keys.focus(); }
 
@@ -69,9 +293,9 @@ export component DashboardView inherits FocusScope {
         reject
     }
 
-    // Count badge of a tab: "8", or "3/8" while a search filters the list.
+    // Count badge of a tab: only while a search filters the list ("3/8"); the tabs are plain otherwise.
     pure function badge(shown: int, total: int) -> string {
-        root.filter_query != "" ? shown + "/" + total : "" + total
+        root.filter_query != "" ? shown + "/" + total : ""
     }
 
     function select_row(id: string) {
@@ -97,238 +321,87 @@ export component DashboardView inherits FocusScope {
     }
 
     VerticalLayout {
-        padding: 20px;
-        spacing: 16px;
+        padding: root.narrow ? 12px : 20px;
+        spacing: root.narrow ? 12px : 18px;
 
         if as_new_session_page: HorizontalLayout {
-            height: 28px;
+            height: 30px;
             spacing: 10px;
             Rectangle {
-                width: 2px;
+                width: 3px;
                 height: 14px;
                 y: (parent.height - self.height) / 2;
-                background: #dc2626;
+                border-radius: 2px;
+                background: Theme.accent;
             }
             Text {
                 horizontal-stretch: 1;
                 text: open_sessions >= 4
                     ? "4 sessions are open (the maximum). Close a tab to open a new one."
                     : "The session opens in a new tab (" + open_sessions + " of 4 sessions open).";
-                color: open_sessions >= 4 ? #f87171 : #a1a1aa;
+                color: open_sessions >= 4 ? #f87171 : Theme.text-2;
                 font-size: 12px;
                 vertical-alignment: center;
                 overflow: elide;
             }
             Rectangle {
-                width: back-txt.preferred-width + 20px;
-                height: 28px;
-                background: ta-back.has-hover ? #27272a : #18181c;
+                width: back-txt.preferred-width + 24px;
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: ta-back.has-hover ? Theme.hover : Theme.surface-2;
                 border-width: 1px;
-                border-color: #27272a;
+                border-color: Theme.divider;
                 ta-back := TouchArea {
                     mouse-cursor: pointer;
                     clicked => { back_to_sessions(); }
                 }
                 back-txt := Text {
                     text: "Back to sessions";
-                    color: #e4e4e7;
+                    color: Theme.text;
                     font-size: 11px;
                     font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
                 }
             }
         }
 
-        // Top Split Panels
-        HorizontalLayout {
+        // Connection strip: two cards side by side, stacked in a narrow window.
+        if !root.narrow: HorizontalLayout {
             spacing: 16px;
-            height: 168px;
-
-            // Left Panel: ID Anda
-            Rectangle {
-                background: #111114;
-                border-width: 1px;
-                border-color: #222227;
-                clip: true;
-
-                VerticalLayout {
-                    padding: 0px;
-                    spacing: 0px;
-
-                    Rectangle {
-                        height: 2px;
-                        background: #dc2626;
-                    }
-
-                    VerticalLayout {
-                        padding: 18px;
-                        spacing: 12px;
-                        alignment: space-between;
-
-                        HorizontalLayout {
-                            alignment: space-between;
-                            Text {
-                                text: "This Device's ID";
-                                color: #a1a1aa;
-                                font-size: 12px;
-                                font-weight: 600;
-                                vertical-alignment: center;
-                            }
-
-                            Rectangle {
-                                height: 26px;
-                                background: ta-copy.has-hover ? #27272a : #18181c;
-                                border-width: 1px;
-                                border-color: #2e2e36;
-                                ta-copy := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { copy_local_id(); }
-                                }
-                                HorizontalLayout {
-                                    padding-left: 10px;
-                                    padding-right: 10px;
-                                    Text {
-                                        text: "Copy ID";
-                                        color: #e4e4e7;
-                                        font-size: 11px;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            height: 64px;
-                            background: #0a0a0c;
-                            border-width: 1px;
-                            border-color: #1f1f24;
-
-                            HorizontalLayout {
-                                padding-left: 16px;
-                                padding-right: 16px;
-                                spacing: 12px;
-                                alignment: start;
-
-                                Rectangle {
-                                    width: 3px;
-                                    height: 28px;
-                                    background: #dc2626;
-                                    y: (parent.height - self.height) / 2;
-                                }
-
-                                Text {
-                                    text: local_desk_id;
-                                    color: #fafafa;
-                                    font-size: 28px;
-                                    font-weight: 800;
-                                    letter-spacing: 2px;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-
-                        Text {
-                            text: host_notice != "" ? host_notice : is_relay_online ? "Ready for connections" : "Waiting for the relay";
-                            color: host_notice != "" ? #fbbf24 : #71717a;
-                            font-size: 11px;
-                            wrap: word-wrap;
-                        }
-                    }
-                }
+            IdPanel {
+                local_desk_id: root.local_desk_id;
+                is_relay_online: root.is_relay_online;
+                host_notice: root.host_notice;
+                copy_local_id => { root.copy_local_id(); }
             }
-
-            // Right panel: connect to another device
-            Rectangle {
-                background: #111114;
-                border-width: 1px;
-                border-color: #222227;
-                clip: true;
-
-                VerticalLayout {
-                    padding: 0px;
-                    spacing: 0px;
-
-                    Rectangle {
-                        height: 2px;
-                        background: #dc2626;
-                    }
-
-                    VerticalLayout {
-                        padding: 18px;
-                        spacing: 12px;
-                        alignment: space-between;
-
-                        Text {
-                            text: "Control Another Device";
-                            color: #a1a1aa;
-                            font-size: 12px;
-                            font-weight: 600;
-                        }
-
-                        Rectangle {
-                            height: 42px;
-                            background: #0a0a0c;
-                            border-width: 1px;
-                            border-color: input-target.has-focus ? #dc2626 : #27272a;
-
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-
-                                Rectangle {
-                                    if input-target.text == "": Text {
-                                        width: parent.width;
-                                        height: parent.height;
-                                        text: "Enter a device ID";
-                                        color: #52525b;
-                                        font-size: 15px;
-                                        vertical-alignment: center;
-                                        horizontal-alignment: left;
-                                    }
-
-                                    input-target := TextInput {
-                                        text <=> target_desk_id;
-                                        color: #fafafa;
-                                        font-size: 16px;
-                                        font-weight: 600;
-                                        vertical-alignment: center;
-                                        single-line: true;
-                                        accepted => {
-                                            request_connect(self.text);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            height: 38px;
-                            background: ta-conn.has-hover ? #e11d48 : #dc2626;
-                            ta-conn := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    request_connect(input-target.text);
-                                }
-                            }
-                            Text {
-                                text: "Connect";
-                                color: #ffffff;
-                                font-size: 13px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                                horizontal-alignment: center;
-                            }
-                        }
-                    }
-                }
+            ConnectPanel {
+                target_desk_id <=> root.target_desk_id;
+                request_connect(id) => { root.request_connect(id); }
+            }
+        }
+        if root.narrow: VerticalLayout {
+            spacing: 10px;
+            IdPanel {
+                local_desk_id: root.local_desk_id;
+                is_relay_online: root.is_relay_online;
+                host_notice: root.host_notice;
+                copy_local_id => { root.copy_local_id(); }
+            }
+            ConnectPanel {
+                target_desk_id <=> root.target_desk_id;
+                request_connect(id) => { root.request_connect(id); }
             }
         }
 
-        // Bottom section: session history and relay hosts (admin)
+        // Directory: search and tabs, then the list.
         Rectangle {
             vertical-stretch: 1;
+            min-height: 120px;
             background: Theme.surface;
+            border-radius: Theme.radius-lg;
             border-width: 1px;
-            border-color: #222227;
+            border-color: Theme.divider;
             clip: true;
 
             list-keys := FocusScope {
@@ -342,99 +415,98 @@ export component DashboardView inherits FocusScope {
                 }
 
                 VerticalLayout {
-                    padding: 1px;
+                    padding: 0px;
                     spacing: 0px;
 
-                    // Tab bar (admin edition): a segmented control across the panel.
-                    if is_admin: Rectangle {
-                        height: 38px;
-                        background: Theme.raised;
+                    VerticalLayout {
+                        padding: 12px;
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        spacing: 10px;
+
+                        // Narrow window: the tabs take a row of their own above the search.
+                        if is_admin && root.narrow: TabStrip {
+                            compact: false;
+                            as_new_session_page: root.as_new_session_page;
+                            hosts_badge: root.badge(server_hosts.length, host_total);
+                            history_badge: root.badge(history_items.length, history_total);
+                            active_tab: root.active_tab;
+                            hosts_clicked => {
+                                root.active_tab = 1;
+                                refresh_hosts();
+                            }
+                            history_clicked => { root.active_tab = 0; }
+                            wall_clicked => { open_monitor(); }
+                        }
 
                         HorizontalLayout {
-                            spacing: 0px;
+                            spacing: 12px;
+                            height: 42px;
 
-                            DashboardTab {
-                                label: "Relay Hosts";
-                                icon: Icons.server;
-                                badge: root.badge(server_hosts.length, host_total);
-                                active: active_tab == 1;
-                                clicked => {
-                                    active_tab = 1;
-                                    refresh_hosts();
+                            if !is_admin: HorizontalLayout {
+                                spacing: 8px;
+                                horizontal-stretch: 0;
+                                Rectangle {
+                                    width: 3px;
+                                    height: 14px;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: 2px;
+                                    background: Theme.accent;
+                                }
+                                Text {
+                                    text: "Session History";
+                                    color: Theme.text;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
                                 }
                             }
 
-                            DashboardTab {
-                                label: "Session History";
-                                icon: Icons.clock;
-                                badge: root.badge(history_items.length, history_total);
-                                active: active_tab == 0;
-                                clicked => { active_tab = 0; }
-                            }
-
-                            // Monitor wall: view-only grid of many hosts (not from the "+" page: sessions are open).
-                            if !as_new_session_page: DashboardTab {
-                                label: "Monitor Wall";
-                                icon: Icons.grid;
-                                external: true;
-                                clicked => { open_monitor(); }
-                            }
-                        }
-                    }
-
-                    if is_admin: Rectangle {
-                        height: 1px;
-                        background: Theme.divider;
-                    }
-
-                    // Toolbar: search, and Refresh on the relay host list.
-                    HorizontalLayout {
-                        padding-left: 12px;
-                        padding-right: 12px;
-                        padding-top: 10px;
-                        padding-bottom: 10px;
-                        spacing: 10px;
-
-                        if !is_admin: HorizontalLayout {
-                            spacing: 8px;
-                            Rectangle {
-                                width: 2px;
-                                height: 12px;
+                            search := SearchField {
                                 y: (parent.height - self.height) / 2;
-                                background: Theme.accent;
+                                placeholder: is_admin && active_tab == 1
+                                    ? "Search name, ID, device, platform…"
+                                    : "Search name or ID…";
+                                text <=> root.search_text;
+                                edited(text) => { root.search_edited(text); }
                             }
-                            Text {
-                                text: "Session History (" + root.badge(history_items.length, history_total) + ")";
-                                color: #d4d4d8;
-                                font-size: 12px;
-                                font-weight: 600;
-                                vertical-alignment: center;
-                            }
-                        }
 
-                        search := SearchField {
-                            placeholder: is_admin && active_tab == 1
-                                ? "Search name, ID, device, platform…"
-                                : "Search name or ID…";
-                            text <=> root.search_text;
-                            edited(text) => { root.search_edited(text); }
-                        }
-
-                        if is_admin && active_tab == 1: Rectangle {
-                            width: ref-txt.preferred-width + 24px;
-                            height: 30px;
-                            background: ta-ref.has-hover ? Theme.border : Theme.surface-2;
-                            border-width: 1px;
-                            border-color: #2e2e36;
-                            ta-ref := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { refresh_hosts(); }
+                            if is_admin && active_tab == 1: Rectangle {
+                                width: ref-txt.preferred-width + 24px;
+                                height: 34px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: Theme.radius-md;
+                                background: ta-ref.has-hover ? Theme.hover : #ffffff0d;
+                                border-width: 1px;
+                                border-color: Theme.divider;
+                                ta-ref := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { refresh_hosts(); }
+                                }
+                                ref-txt := Text {
+                                    text: "Refresh";
+                                    color: Theme.text;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: center;
+                                }
                             }
-                            ref-txt := Text {
-                                text: "Refresh";
-                                color: #d4d4d8;
-                                font-size: 12px;
-                                vertical-alignment: center;
+
+                            // Wide window: the tabs sit right of the search; icons only below 880 px.
+                            if is_admin && !root.narrow: TabStrip {
+                                width: root.width < 880px ? 150px : 440px;
+                                compact: root.width < 880px;
+                                as_new_session_page: root.as_new_session_page;
+                                hosts_badge: root.badge(server_hosts.length, host_total);
+                                history_badge: root.badge(history_items.length, history_total);
+                                active_tab: root.active_tab;
+                                hosts_clicked => {
+                                    root.active_tab = 1;
+                                    refresh_hosts();
+                                }
+                                history_clicked => { root.active_tab = 0; }
+                                wall_clicked => { open_monitor(); }
                             }
                         }
                     }
@@ -466,7 +538,7 @@ export component DashboardView inherits FocusScope {
                                     height: 80px;
                                     Text {
                                         text: history_total == 0 ? "No sessions yet." : "No sessions match \"" + filter_query + "\"";
-                                        color: #52525b;
+                                        color: Theme.text-3;
                                         font-size: 12px;
                                         vertical-alignment: center;
                                         horizontal-alignment: center;
@@ -507,7 +579,7 @@ export component DashboardView inherits FocusScope {
                                         text: host_total == 0
                                             ? "No hosts are registered on the relay yet."
                                             : "No hosts match \"" + filter_query + "\"";
-                                        color: #52525b;
+                                        color: Theme.text-3;
                                         font-size: 12px;
                                         vertical-alignment: center;
                                         horizontal-alignment: center;

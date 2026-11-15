@@ -1,93 +1,159 @@
-// Settings (admin edition), in two groups:
-// - Relay, stored on the relay for every device: Security › Client token manages the relay's device allowlist
-//   (docs/features/device-security.md at the repository root): listed devices receive their token automatically
+// Settings (admin edition): a sidebar with four panes, in two groups.
+// - Relay, stored on the relay for every device: Security manages the relay's device allowlist (client tokens,
+//   docs/features/device-security.md at the repository root): listed devices receive their token automatically
 //   on their first connection, so clients only need the relay address.
-// - This device, stored in the local config.json: Audio › Microphone (client-desktop/docs/features/voice.md) and
-//   Mouse › Pointer lock (games that capture the mouse, `mouse-relative` in docs/protocol.md).
+// - This device, stored in the local config.json: Server (relay address, viewing performance), Audio (microphone,
+//   client-desktop/docs/features/voice.md) and Mouse (pointer lock, `mouse-relative` in docs/protocol.md).
+// In a narrow window the sidebar becomes a row of tabs above the pane.
 
 import { SecurityItem } from "../../types.slint";
-import { Theme } from "../../theme.slint";
+import { Theme, Icons } from "../../theme.slint";
+import { Icon } from "../../components/icon.slint";
 import { Segment } from "../../components/segment.slint";
 import { ScrollArea } from "../../components/scroll_area.slint";
 
-// One entry of a settings list: title, description and a status on the right.
-component NavRow inherits Rectangle {
-    in property <string> title;
-    in property <string> subtitle;
-    in property <string> status;
-    in property <bool> status_on: false;
+// Solid, coloured icon of a settings pane: 0 = shield (Security), 1 = server, 2 = microphone, 3 = pointer.
+component SolidIcon inherits Rectangle {
+    in property <int> kind: 0;
+    in property <length> size: 22px;
+
+    width: root.size;
+    height: root.size;
+
+    if root.kind == 0: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M12 2 L4 5.5 L4 11.2 C4 16.5 7.4 20.4 12 22 C16.6 20.4 20 16.5 20 11.2 L20 5.5 Z";
+        fill: #e11d48;
+    }
+    if root.kind == 0: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M9.3 12.2 L11.2 14.1 L15 10.1";
+        stroke: #ffffff;
+        stroke-width: root.size / 11;
+        fill: transparent;
+    }
+
+    if root.kind == 1: Rectangle {
+        x: root.size * 3 / 24;
+        y: root.size * 3.5 / 24;
+        width: root.size * 18 / 24;
+        height: root.size * 7.5 / 24;
+        border-radius: root.size * 2.2 / 24;
+        background: #f59e0b;
+    }
+    if root.kind == 1: Rectangle {
+        x: root.size * 3 / 24;
+        y: root.size * 13 / 24;
+        width: root.size * 18 / 24;
+        height: root.size * 7.5 / 24;
+        border-radius: root.size * 2.2 / 24;
+        background: #d97706;
+    }
+    if root.kind == 1: Rectangle {
+        x: root.size * 5.8 / 24;
+        y: root.size * 6.05 / 24;
+        width: root.size * 2.4 / 24;
+        height: root.size * 2.4 / 24;
+        border-radius: root.size * 1.2 / 24;
+        background: #fffbeb;
+    }
+    if root.kind == 1: Rectangle {
+        x: root.size * 5.8 / 24;
+        y: root.size * 15.55 / 24;
+        width: root.size * 2.4 / 24;
+        height: root.size * 2.4 / 24;
+        border-radius: root.size * 1.2 / 24;
+        background: #fffbeb;
+    }
+
+    if root.kind == 2: Rectangle {
+        x: root.size * 8.5 / 24;
+        y: root.size * 2.5 / 24;
+        width: root.size * 7 / 24;
+        height: root.size * 11 / 24;
+        border-radius: root.size * 3.5 / 24;
+        background: #0ea5e9;
+    }
+    if root.kind == 2: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M5.5 11.5 A6.5 6.5 0 0 0 18.5 11.5 M12 18 L12 21.2 M8.8 21.2 L15.2 21.2";
+        stroke: #38bdf8;
+        stroke-width: root.size / 12;
+        fill: transparent;
+    }
+
+    if root.kind == 3: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M5.5 3.2 L18.7 11.1 L13.1 12.9 L10.9 18.6 Z";
+        fill: #8b5cf6;
+    }
+    if root.kind == 3: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M13 13 L17.2 17.2";
+        stroke: #c4b5fd;
+        stroke-width: root.size / 11;
+        fill: transparent;
+    }
+}
+
+// Entry of the sidebar (wide) or tab strip (narrow).
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <int> kind: 0;
+    in property <bool> active: false;
+    in property <bool> tab: false;
     callback clicked();
 
-    height: 58px;
-    background: ta.has-hover ? Theme.hover : Theme.surface;
-    border-width: 1px;
-    border-color: Theme.border;
+    height: root.tab ? 34px : 38px;
+    horizontal-stretch: root.tab ? 1 : 0;
+    border-radius: Theme.radius-md;
+    background: root.active ? #ffffff14 : ta.has-hover ? #ffffff0a : transparent;
 
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
     HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
-        spacing: 12px;
-        Rectangle {
-            width: 2px;
-            height: 22px;
+        padding-left: root.tab ? 8px : 12px;
+        padding-right: 8px;
+        spacing: 10px;
+        alignment: root.tab ? center : start;
+        SolidIcon {
             y: (parent.height - self.height) / 2;
-            background: Theme.accent;
-        }
-        VerticalLayout {
-            horizontal-stretch: 1;
-            alignment: center;
-            spacing: 3px;
-            Text {
-                text: root.title;
-                color: Theme.text;
-                font-size: 13px;
-                font-weight: 600;
-            }
-            Text {
-                text: root.subtitle;
-                color: Theme.text-3;
-                font-size: 11px;
-                overflow: elide;
-            }
-        }
-        if root.status != "": Text {
-            text: root.status;
-            color: root.status_on ? Theme.ok : Theme.text-3;
-            font-size: 11px;
-            font-weight: 700;
-            vertical-alignment: center;
+            kind: root.kind;
+            size: 20px;
         }
         Text {
-            text: "›";
-            color: Theme.text-3;
-            font-size: 18px;
+            text: root.label;
+            color: root.active ? Theme.text : Theme.text-2;
+            font-size: 13px;
+            font-weight: root.active ? 700 : 500;
             vertical-alignment: center;
+            overflow: elide;
         }
     }
-}
-
-// Title and one-line introduction of a group of settings on the first page.
-component GroupHeading inherits VerticalLayout {
-    in property <string> title;
-    in property <string> intro;
-
-    spacing: 3px;
-    padding-bottom: 4px;
-    Text {
-        text: root.title;
-        color: Theme.text-2;
-        font-size: 10px;
-        font-weight: 700;
-    }
-    Text {
-        text: root.intro;
-        color: Theme.text-3;
-        font-size: 11px;
-        wrap: word-wrap;
+    if root.active && !root.tab: Rectangle {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        width: 3px;
+        height: 16px;
+        border-radius: 2px;
+        background: Theme.accent;
     }
 }
 
@@ -97,19 +163,19 @@ component Switch inherits Rectangle {
     in property <bool> enabled: true;
     callback toggled();
 
-    width: 38px;
-    height: 20px;
-    background: root.on ? Theme.accent : Theme.surface-2;
-    border-width: 1px;
-    border-color: root.on ? Theme.accent : Theme.border;
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    background: root.on ? Theme.accent : #ffffff1a;
     opacity: root.enabled ? 1.0 : 0.5;
 
     Rectangle {
         x: root.on ? parent.width - self.width - 3px : 3px;
         y: 3px;
-        width: 14px;
-        height: 14px;
-        background: root.on ? #ffffff : Theme.text-3;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: #ffffff;
         animate x { duration: 120ms; }
     }
     TouchArea {
@@ -122,7 +188,7 @@ component Switch inherits Rectangle {
     }
 }
 
-// Text button in the settings pages.
+// Text button in the settings panes.
 component ActionButton inherits Rectangle {
     in property <string> label;
     in property <bool> primary: false;
@@ -130,14 +196,15 @@ component ActionButton inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked();
 
-    height: 28px;
-    min-width: txt.preferred-width + 22px;
+    height: 32px;
+    min-width: txt.preferred-width + 24px;
     horizontal-stretch: 0;
-    background: !root.enabled ? Theme.surface-2
+    border-radius: Theme.radius-sm;
+    background: !root.enabled ? #ffffff08
         : root.primary ? (ta.has-hover ? Theme.accent-hover : Theme.accent)
-        : ta.has-hover ? Theme.hover : Theme.surface-2;
-    border-width: 1px;
-    border-color: root.primary && root.enabled ? Theme.accent : Theme.border;
+        : ta.has-hover ? Theme.hover : #ffffff0d;
+    border-width: root.primary && root.enabled ? 0px : 1px;
+    border-color: Theme.divider;
 
     ta := TouchArea {
         mouse-cursor: root.enabled ? pointer : default;
@@ -149,17 +216,201 @@ component ActionButton inherits Rectangle {
     }
     txt := Text {
         text: root.label;
-        color: !root.enabled ? Theme.text-3 : root.primary ? #ffffff : root.danger ? #f87171 : #d4d4d8;
-        font-size: 11px;
+        color: !root.enabled ? Theme.text-3 : root.primary ? #ffffff : root.danger ? #f87171 : Theme.text;
+        font-size: 12px;
         font-weight: 600;
         vertical-alignment: center;
         horizontal-alignment: center;
     }
 }
 
+// A setting: solid icon tile, title and description on the left, the control (@children) on the right.
+component SettingCard inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+    in property <color> description_color: Theme.text-3;
+    in property <int> kind: 0;
+    in property <color> frame: Theme.divider;
+    in property <length> control_width: 0px;
+
+    min-height: 72px;
+    border-radius: Theme.radius-lg;
+    background: #ffffff0a;
+    border-width: 1px;
+    border-color: root.frame;
+
+    HorizontalLayout {
+        padding: 14px;
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 14px;
+
+        Rectangle {
+            width: 36px;
+            height: 36px;
+            y: (parent.height - self.height) / 2;
+            border-radius: Theme.radius-md;
+            background: #ffffff0d;
+            SolidIcon {
+                kind: root.kind;
+                size: 22px;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 3px;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: 13.5px;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.description;
+                color: root.description_color;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+        HorizontalLayout {
+            horizontal-stretch: 0;
+            width: root.control_width > 0px ? root.control_width : self.preferred-width;
+            alignment: end;
+            @children
+        }
+    }
+}
+
+// Heading of a pane.
+component PageTitle inherits Text {
+    color: Theme.text;
+    font-size: 22px;
+    font-weight: 700;
+}
+
+// "Administrator" checkbox of the add row.
+component AdminCheck inherits Rectangle {
+    in-out property <bool> checked: false;
+
+    width: row.preferred-width + 16px;
+    border-radius: Theme.radius-sm;
+    background: ta.has-hover ? #ffffff0a : transparent;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.checked = !root.checked; }
+    }
+    row := HorizontalLayout {
+        x: 8px;
+        spacing: 7px;
+        Rectangle {
+            width: 14px;
+            height: 14px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: root.checked ? Theme.accent : Theme.text-3;
+            background: root.checked ? Theme.accent : transparent;
+        }
+        Text {
+            text: "Administrator";
+            color: Theme.text-2;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// "Add a device" row of the allowlist. In a narrow window the options go on a second row.
+component AddBar inherits VerticalLayout {
+    in property <bool> narrow: false;
+    in property <bool> relay_online: false;
+    in-out property <bool> as_admin: false;
+    callback add_device(string, bool);
+    callback add_online();
+
+    spacing: 8px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        height: 36px;
+        Rectangle {
+            horizontal-stretch: 1;
+            min-width: 80px;
+            border-radius: Theme.radius-md;
+            background: Theme.input;
+            border-width: 1px;
+            border-color: id-input.has-focus ? Theme.accent : Theme.divider;
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 10px;
+                Rectangle {
+                    if id-input.text == "": Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: "Device ID, e.g. 123 456 789";
+                        color: Theme.text-3;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    id-input := TextInput {
+                        color: Theme.text;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        single-line: true;
+                        accepted => {
+                            if (self.text != "") {
+                                root.add_device(self.text, root.as_admin);
+                                self.text = "";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !root.narrow: AdminCheck {
+            checked <=> root.as_admin;
+        }
+        ActionButton {
+            label: "Add";
+            primary: true;
+            enabled: id-input.text != "" && root.relay_online;
+            clicked => {
+                root.add_device(id-input.text, root.as_admin);
+                id-input.text = "";
+            }
+        }
+        if !root.narrow: ActionButton {
+            label: "Add all online devices";
+            enabled: root.relay_online;
+            clicked => { root.add_online(); }
+        }
+    }
+    if root.narrow: HorizontalLayout {
+        spacing: 8px;
+        height: 32px;
+        AdminCheck {
+            checked <=> root.as_admin;
+        }
+        Rectangle { horizontal-stretch: 1; }
+        ActionButton {
+            label: "Add all online devices";
+            enabled: root.relay_online;
+            clicked => { root.add_online(); }
+        }
+    }
+}
+
 export component SettingsView inherits Rectangle {
-    // 0 = Settings, 1 = Security, 2 = Client token, 3 = Audio, 4 = Microphone, 5 = Mouse, 6 = Pointer lock.
+    // 0 = Security, 1 = Server, 2 = Audio, 3 = Mouse.
     in-out property <int> page: 0;
+    // Server pane: the relay address and the viewer performance preset (0 = Low, 1 = Medium, 2 = High).
+    in-out property <string> gateway_url: "";
+    in property <int> performance: 1;
+    callback save_gateway_url(string);
+    callback save_performance(int);
     // This device: the microphone is on when a session starts.
     in property <bool> mic_on_at_start: true;
     callback set_mic_on_at_start(bool);
@@ -185,19 +436,18 @@ export component SettingsView inherits Rectangle {
     property <bool> confirm_enable: false;
     property <string> confirm_remove: "";
     property <bool> add_admin: false;
+    property <int> picked_perf: root.performance;
+    property <bool> gateway_saved: false;
+    // Sidebar becomes a row of tabs below this width.
+    property <bool> narrow: root.width < 640px;
 
-    // Where Back goes from each page.
-    pure function parent_page(p: int) -> int {
-        return p == 2 ? 1 : p == 4 ? 3 : p == 6 ? 5 : 0;
-    }
-    pure function breadcrumb(p: int) -> string {
-        return p == 1 ? "Settings  ›  Security"
-            : p == 2 ? "Settings  ›  Security  ›  Client token"
-            : p == 3 ? "Settings  ›  Audio"
-            : p == 4 ? "Settings  ›  Audio  ›  Microphone"
-            : p == 5 ? "Settings  ›  Mouse"
-            : p == 6 ? "Settings  ›  Mouse  ›  Pointer lock"
-            : "Settings";
+    function go(p: int) {
+        root.confirm_enable = false;
+        root.confirm_remove = "";
+        root.page = p;
+        if (p == 0) {
+            root.refresh();
+        }
     }
 
     background: Theme.bg;
@@ -206,613 +456,554 @@ export component SettingsView inherits Rectangle {
         padding: 0px;
         spacing: 0px;
 
-        // ---- Toolbar: back and breadcrumb
-        Rectangle {
-            height: 38px;
-            background: #0c0c0f;
-            HorizontalLayout {
-                padding-left: 10px;
-                padding-right: 10px;
-                padding-top: 6px;
-                padding-bottom: 6px;
-                spacing: 10px;
-                Segment {
-                    width: 60px;
-                    horizontal-stretch: 0;
-                    label: "Back";
-                    clicked => {
-                        root.confirm_enable = false;
-                        root.confirm_remove = "";
-                        if (root.page == 0) {
-                            root.close();
-                        } else {
-                            root.page = root.parent_page(root.page);
+        // ---- Narrow window: back and the pane tabs on top
+        if root.narrow: Rectangle {
+            background: Theme.bar;
+            height: 96px;
+            VerticalLayout {
+                padding: 10px;
+                spacing: 8px;
+                HorizontalLayout {
+                    height: 30px;
+                    spacing: 10px;
+                    Rectangle {
+                        width: back-row.preferred-width + 20px;
+                        border-radius: Theme.radius-sm;
+                        background: back-ta.has-hover ? #ffffff14 : transparent;
+                        back-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.close(); }
+                        }
+                        back-row := HorizontalLayout {
+                            x: 8px;
+                            spacing: 7px;
+                            Icon {
+                                y: (parent.height - self.height) / 2;
+                                size: 13px;
+                                commands: Icons.back;
+                                tint: Theme.text-2;
+                            }
+                            Text {
+                                text: "Back";
+                                color: Theme.text-2;
+                                font-size: 13px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
                         }
                     }
+                    Text {
+                        text: "OpenDesk Settings";
+                        color: Theme.text-3;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
                 }
-                Text {
-                    text: root.breadcrumb(root.page);
-                    color: Theme.text-2;
-                    font-size: 11px;
-                    font-weight: 600;
-                    vertical-alignment: center;
+                HorizontalLayout {
+                    spacing: 4px;
+                    NavItem { tab: true; kind: 0; label: "Security"; active: root.page == 0; clicked => { root.go(0); } }
+                    NavItem { tab: true; kind: 1; label: "Server"; active: root.page == 1; clicked => { root.go(1); } }
+                    NavItem { tab: true; kind: 2; label: "Audio"; active: root.page == 2; clicked => { root.go(2); } }
+                    NavItem { tab: true; kind: 3; label: "Mouse"; active: root.page == 3; clicked => { root.go(3); } }
                 }
-                Rectangle { horizontal-stretch: 1; }
             }
         }
-        Rectangle {
+        if root.narrow: Rectangle {
             height: 1px;
             background: Theme.divider;
         }
 
-        // ---- Settings: categories
-        if root.page == 0: VerticalLayout {
+        HorizontalLayout {
             vertical-stretch: 1;
-            padding: 20px;
-            spacing: 8px;
-            alignment: start;
-            Text {
-                text: "Settings";
-                color: Theme.text;
-                font-size: 16px;
-                font-weight: 700;
-            }
-            Rectangle { height: 6px; }
-            GroupHeading {
-                title: "RELAY";
-                intro: "Stored on the relay and shared by every device. Only administrators can change it.";
-            }
-            NavRow {
-                title: "Security";
-                subtitle: "Who may connect to this relay";
-                clicked => {
-                    root.page = 1;
-                    root.refresh();
-                }
-            }
-            Rectangle { height: 14px; }
-            GroupHeading {
-                title: "THIS DEVICE";
-                intro: "Stored on this computer only.";
-            }
-            NavRow {
-                title: "Audio";
-                subtitle: "Microphone when a session starts";
-                clicked => { root.page = 3; }
-            }
-            NavRow {
-                title: "Mouse";
-                subtitle: "Pointer lock for games on the remote computer";
-                clicked => { root.page = 5; }
-            }
-        }
 
-        // ---- Mouse: items
-        if root.page == 5: VerticalLayout {
-            vertical-stretch: 1;
-            padding: 20px;
-            spacing: 8px;
-            alignment: start;
-            Text {
-                text: "Mouse";
-                color: Theme.text;
-                font-size: 16px;
-                font-weight: 700;
-            }
-            Rectangle { height: 6px; }
-            NavRow {
-                title: "Pointer lock";
-                subtitle: "Lock your pointer when a remote game captures the mouse";
-                status: root.pointer_lock ? "ON" : "OFF";
-                status_on: root.pointer_lock;
-                clicked => { root.page = 6; }
-            }
-        }
+            // ---- Sidebar
+            if !root.narrow: Rectangle {
+                width: 232px;
+                horizontal-stretch: 0;
+                background: Theme.bar;
 
-        // ---- Pointer lock
-        if root.page == 6: VerticalLayout {
-            vertical-stretch: 1;
-            padding: 20px;
-            spacing: 12px;
-            alignment: start;
-            Text {
-                text: "Pointer lock";
-                color: Theme.text;
-                font-size: 16px;
-                font-weight: 700;
-            }
-            Text {
-                text: "When a game or 3D program on the remote computer hides and captures the mouse (mouse look), OpenDesk can lock your pointer inside the session window and send movement instead of positions, so turning the camera works as if the mouse were plugged in there. Hold Ctrl+Alt to get your pointer back; click the remote screen to lock it again. Applies at once, also to open sessions.";
-                color: Theme.text-3;
-                font-size: 11px;
-                wrap: word-wrap;
-            }
-            Rectangle {
-                height: 56px;
-                background: Theme.surface;
-                border-width: 1px;
-                border-color: Theme.border;
-                HorizontalLayout {
-                    padding-left: 16px;
-                    padding-right: 16px;
-                    spacing: 12px;
-                    VerticalLayout {
-                        horizontal-stretch: 1;
-                        alignment: center;
-                        spacing: 3px;
-                        Text {
-                            text: "Pointer lock for games";
-                            color: Theme.text;
-                            font-size: 12px;
-                            font-weight: 600;
-                        }
-                        Text {
-                            text: root.pointer_lock
-                                ? "On: games that capture the mouse get relative movement."
-                                : "Off: the mouse always moves the remote pointer to where yours is, as before.";
-                            color: Theme.text-3;
-                            font-size: 11px;
-                            overflow: elide;
-                        }
-                    }
-                    HorizontalLayout {
-                        width: 120px;
-                        spacing: 4px;
-                        alignment: center;
-                        padding-top: 15px;
-                        padding-bottom: 15px;
-                        Segment {
-                            label: "On";
-                            selected: root.pointer_lock;
-                            clicked => { root.set_pointer_lock(true); }
-                        }
-                        Segment {
-                            label: "Off";
-                            selected: !root.pointer_lock;
-                            clicked => { root.set_pointer_lock(false); }
-                        }
-                    }
-                }
-            }
-        }
-
-        // ---- Audio: items
-        if root.page == 3: VerticalLayout {
-            vertical-stretch: 1;
-            padding: 20px;
-            spacing: 8px;
-            alignment: start;
-            Text {
-                text: "Audio";
-                color: Theme.text;
-                font-size: 16px;
-                font-weight: 700;
-            }
-            Rectangle { height: 6px; }
-            NavRow {
-                title: "Microphone";
-                subtitle: "Whether your microphone is on when a session starts";
-                status: root.mic_on_at_start ? "ON" : "OFF";
-                status_on: root.mic_on_at_start;
-                clicked => { root.page = 4; }
-            }
-        }
-
-        // ---- Microphone
-        if root.page == 4: VerticalLayout {
-            vertical-stretch: 1;
-            padding: 20px;
-            spacing: 12px;
-            alignment: start;
-            Text {
-                text: "Microphone";
-                color: Theme.text;
-                font-size: 16px;
-                font-weight: 700;
-            }
-            Text {
-                text: "Applies to every new session on this computer, whether you control another device or someone controls this one. The microphone button in a session still turns it on or off for that session.";
-                color: Theme.text-3;
-                font-size: 11px;
-                wrap: word-wrap;
-            }
-            Rectangle {
-                height: 56px;
-                background: Theme.surface;
-                border-width: 1px;
-                border-color: Theme.border;
-                HorizontalLayout {
-                    padding-left: 16px;
-                    padding-right: 16px;
-                    spacing: 12px;
-                    VerticalLayout {
-                        horizontal-stretch: 1;
-                        alignment: center;
-                        spacing: 3px;
-                        Text {
-                            text: "Microphone when a session starts";
-                            color: Theme.text;
-                            font-size: 12px;
-                            font-weight: 600;
-                        }
-                        Text {
-                            text: root.mic_on_at_start
-                                ? "On: the other side hears you as soon as the session starts."
-                                : "Off: turn it on with the microphone button when you want to talk.";
-                            color: Theme.text-3;
-                            font-size: 11px;
-                            overflow: elide;
-                        }
-                    }
-                    HorizontalLayout {
-                        width: 120px;
-                        spacing: 4px;
-                        alignment: center;
-                        padding-top: 15px;
-                        padding-bottom: 15px;
-                        Segment {
-                            label: "On";
-                            selected: root.mic_on_at_start;
-                            clicked => { root.set_mic_on_at_start(true); }
-                        }
-                        Segment {
-                            label: "Off";
-                            selected: !root.mic_on_at_start;
-                            clicked => { root.set_mic_on_at_start(false); }
-                        }
-                    }
-                }
-            }
-        }
-
-        // ---- Security: items
-        if root.page == 1: VerticalLayout {
-            vertical-stretch: 1;
-            padding: 20px;
-            spacing: 8px;
-            alignment: start;
-            Text {
-                text: "Security";
-                color: Theme.text;
-                font-size: 16px;
-                font-weight: 700;
-            }
-            Rectangle { height: 6px; }
-            NavRow {
-                title: "Client token";
-                subtitle: "Only devices you list can connect; each receives its token automatically";
-                status: !root.security_supported ? "" : root.security_enabled ? "ON" : "OFF";
-                status_on: root.security_enabled;
-                clicked => {
-                    root.page = 2;
-                    root.refresh();
-                }
-            }
-        }
-
-        // ---- Client token
-        if root.page == 2: VerticalLayout {
-            vertical-stretch: 1;
-            padding: 20px;
-            spacing: 12px;
-
-            Text {
-                text: "Client token";
-                color: Theme.text;
-                font-size: 16px;
-                font-weight: 700;
-            }
-            Text {
-                text: "List the devices that may use this relay. A listed device receives its own token automatically the first time it connects and must present it from then on, so nothing has to be set up on the device besides the relay address.";
-                color: Theme.text-3;
-                font-size: 11px;
-                wrap: word-wrap;
-            }
-
-            if !root.security_supported: Rectangle {
-                height: 40px;
-                background: Theme.accent-soft;
-                border-width: 1px;
-                border-color: Theme.accent;
-                Text {
-                    text: !root.relay_online ? "Waiting for the relay…" : "This relay does not support client tokens. Update the relay to use them.";
-                    color: #fca5a5;
-                    font-size: 11px;
-                }
-            }
-
-            // On/off
-            if root.security_supported: Rectangle {
-                height: root.confirm_enable ? 92px : 56px;
-                background: Theme.surface;
-                border-width: 1px;
-                border-color: root.security_enabled ? Theme.accent : Theme.border;
                 VerticalLayout {
-                    padding-left: 16px;
-                    padding-right: 16px;
-                    padding-top: 10px;
-                    padding-bottom: 10px;
-                    spacing: 8px;
-                    HorizontalLayout {
-                        spacing: 12px;
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            spacing: 3px;
-                            Text {
-                                text: "Require a client token";
-                                color: Theme.text;
-                                font-size: 12px;
-                                font-weight: 600;
-                            }
-                            Text {
-                                text: root.security_enabled
-                                    ? "On: only the devices below can connect. Others are refused."
-                                    : "Off: any device that knows the relay address can connect.";
-                                color: root.security_enabled ? Theme.ok : Theme.text-3;
-                                font-size: 11px;
-                                overflow: elide;
-                            }
-                        }
-                        Switch {
-                            y: (parent.height - self.height) / 2;
-                            on: root.security_enabled;
-                            enabled: root.relay_online;
-                            toggled => {
-                                if (root.security_enabled) {
-                                    root.set_enabled(false);
-                                } else {
-                                    root.confirm_enable = true;
-                                }
-                            }
-                        }
-                    }
-                    if root.confirm_enable: HorizontalLayout {
-                        spacing: 8px;
-                        Text {
-                            horizontal-stretch: 1;
-                            text: "Devices that are not on the list are disconnected right away. This device is added as an administrator.";
-                            color: Theme.wait;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                            overflow: elide;
-                        }
-                        ActionButton {
-                            label: "Cancel";
-                            clicked => { root.confirm_enable = false; }
-                        }
-                        ActionButton {
-                            label: "Turn on";
-                            primary: true;
-                            clicked => {
-                                root.confirm_enable = false;
-                                root.set_enabled(true);
-                            }
-                        }
-                    }
-                }
-            }
+                    padding: 14px;
+                    spacing: 4px;
+                    alignment: start;
 
-            if root.security_supported && root.security_managed_by_env: Text {
-                text: "The relay also has OPENDESK_DEVICE_CREDENTIALS set: those devices always need the token configured there, and the list below applies to every other device.";
-                color: Theme.wait;
-                font-size: 11px;
-                wrap: word-wrap;
-            }
-
-            // Add a device
-            if root.security_supported: HorizontalLayout {
-                spacing: 8px;
-                height: 32px;
-                Rectangle {
-                    horizontal-stretch: 1;
-                    background: #0a0a0c;
-                    border-width: 1px;
-                    border-color: id-input.has-focus ? Theme.accent : Theme.border;
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        Rectangle {
-                            if id-input.text == "": Text {
-                                width: parent.width;
-                                height: parent.height;
-                                text: "Device ID, e.g. 123 456 789";
-                                color: #52525b;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                            }
-                            id-input := TextInput {
-                                color: Theme.text;
-                                font-size: 13px;
-                                vertical-alignment: center;
-                                single-line: true;
-                                accepted => {
-                                    if (self.text != "") {
-                                        root.add_device(self.text, root.add_admin);
-                                        self.text = "";
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Rectangle {
-                    width: admin-row.preferred-width + 16px;
-                    background: admin-ta.has-hover ? Theme.hover : transparent;
-                    admin-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.add_admin = !root.add_admin; }
-                    }
-                    admin-row := HorizontalLayout {
-                        x: 8px;
-                        spacing: 6px;
-                        Rectangle {
-                            width: 12px;
-                            height: 12px;
-                            y: (parent.height - self.height) / 2;
-                            border-width: 1px;
-                            border-color: root.add_admin ? Theme.accent : Theme.text-3;
-                            background: root.add_admin ? Theme.accent : transparent;
-                        }
-                        Text {
-                            text: "Administrator";
-                            color: Theme.text-2;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-                ActionButton {
-                    y: 2px;
-                    label: "Add";
-                    primary: true;
-                    enabled: id-input.text != "" && root.relay_online;
-                    clicked => {
-                        root.add_device(id-input.text, root.add_admin);
-                        id-input.text = "";
-                    }
-                }
-                ActionButton {
-                    y: 2px;
-                    label: "Add all online devices";
-                    enabled: root.relay_online;
-                    clicked => { root.add_online(); }
-                }
-            }
-
-            // Allowed devices
-            if root.security_supported: Rectangle {
-                vertical-stretch: 1;
-                background: Theme.surface;
-                border-width: 1px;
-                border-color: Theme.border;
-                VerticalLayout {
-                    padding: 0px;
-                    spacing: 0px;
                     Rectangle {
                         height: 34px;
-                        background: Theme.raised;
+                        border-radius: Theme.radius-md;
+                        background: back-ta2.has-hover ? #ffffff14 : transparent;
+                        back-ta2 := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.close(); }
+                        }
                         HorizontalLayout {
-                            padding-left: 14px;
-                            padding-right: 14px;
+                            padding-left: 10px;
+                            spacing: 8px;
+                            alignment: start;
+                            Icon {
+                                y: (parent.height - self.height) / 2;
+                                size: 14px;
+                                commands: Icons.back;
+                                tint: Theme.text-2;
+                            }
                             Text {
-                                text: "Allowed devices (" + root.security_items.length + ")";
-                                color: #d4d4d8;
-                                font-size: 12px;
+                                text: "Back";
+                                color: Theme.text-2;
+                                font-size: 13px;
                                 font-weight: 600;
                                 vertical-alignment: center;
                             }
                         }
                     }
-                    Rectangle {
-                        height: 1px;
-                        background: Theme.divider;
-                    }
-                    ScrollArea {
-                        vertical-stretch: 1;
-                        spacing: 4px;
 
-                        Rectangle { height: 4px; }
-                        if root.security_items.length == 0: Text {
-                            height: 60px;
-                            text: "No device is listed yet. Add device IDs above, or add every device that is online now.";
-                            color: Theme.text-3;
-                            font-size: 11px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            wrap: word-wrap;
+                    // OpenDesk logo and name
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-top: 10px;
+                        padding-bottom: 10px;
+                        spacing: 10px;
+                        alignment: start;
+                        Image {
+                            width: 30px;
+                            height: 30px;
+                            source: @image-url("../../icon.png");
+                            image-fit: contain;
                         }
-                        for d in root.security_items: Rectangle {
-                            height: 44px;
-                            x: 8px;
-                            width: parent.width - 8px;
-                            background: #0d0d10;
-                            border-width: 1px;
-                            border-color: root.confirm_remove == d.desk_id ? Theme.accent : #1f1f24;
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 10px;
-                                spacing: 10px;
-                                Rectangle {
-                                    width: 7px;
-                                    height: 7px;
-                                    y: (parent.height - self.height) / 2;
-                                    background: d.online ? Theme.ok : #52525b;
-                                }
-                                VerticalLayout {
-                                    horizontal-stretch: 1;
-                                    alignment: center;
-                                    spacing: 2px;
-                                    HorizontalLayout {
-                                        spacing: 8px;
-                                        Text {
-                                            text: d.name != "" ? d.name + "  •  " + d.desk_id : d.desk_id;
-                                            color: Theme.text;
-                                            font-size: 12px;
-                                            font-weight: 600;
-                                            overflow: elide;
-                                        }
-                                        if d.admin: Rectangle {
-                                            width: adm-txt.preferred-width + 10px;
-                                            height: 15px;
-                                            background: Theme.accent-soft;
-                                            adm-txt := Text {
-                                                text: "ADMIN";
-                                                color: #fca5a5;
-                                                font-size: 9px;
-                                                font-weight: 700;
-                                            }
-                                        }
-                                        Rectangle { horizontal-stretch: 1; }
-                                    }
-                                    Text {
-                                        text: root.confirm_remove == d.desk_id
-                                            ? (root.security_enabled ? "Remove this device? It is disconnected and can no longer connect." : "Remove this device from the list?")
-                                            : d.enrolled ? "Token issued " + d.enrolled_at
-                                            : "Waiting for its first connection; it receives its token then";
-                                        color: root.confirm_remove == d.desk_id ? Theme.wait : d.enrolled ? Theme.text-3 : Theme.wait;
-                                        font-size: 10px;
-                                        overflow: elide;
-                                    }
-                                }
-                                if root.confirm_remove != d.desk_id && d.enrolled: ActionButton {
-                                    y: (parent.height - self.height) / 2;
-                                    label: "Reset token";
-                                    enabled: root.relay_online;
-                                    clicked => { root.reset_device(d.desk_id); }
-                                }
-                                if root.confirm_remove != d.desk_id: ActionButton {
-                                    y: (parent.height - self.height) / 2;
-                                    label: "Remove";
-                                    danger: true;
-                                    enabled: root.relay_online;
-                                    clicked => { root.confirm_remove = d.desk_id; }
-                                }
-                                if root.confirm_remove == d.desk_id: ActionButton {
-                                    y: (parent.height - self.height) / 2;
-                                    label: "Cancel";
-                                    clicked => { root.confirm_remove = ""; }
-                                }
-                                if root.confirm_remove == d.desk_id: ActionButton {
-                                    y: (parent.height - self.height) / 2;
-                                    label: "Remove";
-                                    primary: true;
-                                    clicked => {
-                                        root.confirm_remove = "";
-                                        root.remove_device(d.desk_id);
+                        Text {
+                            text: "OpenDesk";
+                            color: Theme.text;
+                            font-size: 16px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Text {
+                        text: "RELAY";
+                        color: Theme.text-3;
+                        font-size: 10.5px;
+                        font-weight: 700;
+                        letter-spacing: 0.6px;
+                    }
+                    NavItem { kind: 0; label: "Security"; active: root.page == 0; clicked => { root.go(0); } }
+
+                    Rectangle { height: 10px; }
+                    Text {
+                        text: "THIS DEVICE";
+                        color: Theme.text-3;
+                        font-size: 10.5px;
+                        font-weight: 700;
+                        letter-spacing: 0.6px;
+                    }
+                    NavItem { kind: 1; label: "Server"; active: root.page == 1; clicked => { root.go(1); } }
+                    NavItem { kind: 2; label: "Audio"; active: root.page == 2; clicked => { root.go(2); } }
+                    NavItem { kind: 3; label: "Mouse"; active: root.page == 3; clicked => { root.go(3); } }
+                }
+            }
+            if !root.narrow: Rectangle {
+                width: 1px;
+                horizontal-stretch: 0;
+                background: Theme.divider;
+            }
+
+            // ---- Stage
+            Rectangle {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                clip: true;
+
+                // ---- Security
+                if root.page == 0: VerticalLayout {
+                    padding: root.narrow ? 14px : 32px;
+                    padding-top: root.narrow ? 14px : 28px;
+                    spacing: 14px;
+
+                    PageTitle { text: "Security"; }
+
+                    if !root.security_supported: Rectangle {
+                        height: 44px;
+                        border-radius: Theme.radius-md;
+                        background: Theme.accent-soft;
+                        border-width: 1px;
+                        border-color: Theme.accent;
+                        Text {
+                            x: 14px;
+                            width: parent.width - 28px;
+                            text: !root.relay_online ? "Waiting for the relay…" : "This relay does not support client tokens. Update the relay to use them.";
+                            color: #fca5a5;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+
+                    if root.security_supported: VerticalLayout {
+                        spacing: 8px;
+                        SettingCard {
+                            kind: 0;
+                            title: "Client token allowlist";
+                            description: root.security_enabled
+                                ? "Only devices you list can connect to this relay; each receives its token automatically on first connection."
+                                : "Off: any device that knows the relay address can connect.";
+                            frame: root.security_enabled ? #dc262666 : Theme.divider;
+                            Switch {
+                                y: (parent.height - self.height) / 2;
+                                on: root.security_enabled;
+                                enabled: root.relay_online;
+                                toggled => {
+                                    if (root.security_enabled) {
+                                        root.set_enabled(false);
+                                    } else {
+                                        root.confirm_enable = true;
                                     }
                                 }
                             }
                         }
-                        Rectangle { height: 4px; }
+                        if root.confirm_enable: Rectangle {
+                            border-radius: Theme.radius-md;
+                            background: #f59e0b14;
+                            border-width: 1px;
+                            border-color: #f59e0b55;
+                            HorizontalLayout {
+                                padding: 10px;
+                                padding-left: 14px;
+                                spacing: 8px;
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: "Devices that are not on the list are disconnected right away. This device is added as an administrator.";
+                                    color: Theme.wait;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                                ActionButton {
+                                    y: (parent.height - self.height) / 2;
+                                    label: "Cancel";
+                                    clicked => { root.confirm_enable = false; }
+                                }
+                                ActionButton {
+                                    y: (parent.height - self.height) / 2;
+                                    label: "Turn on";
+                                    primary: true;
+                                    clicked => {
+                                        root.confirm_enable = false;
+                                        root.set_enabled(true);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.security_supported && root.security_managed_by_env: Text {
+                        text: "The relay also has OPENDESK_DEVICE_CREDENTIALS set: those devices always need the token configured there, and the list below applies to every other device.";
+                        color: Theme.wait;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    if root.security_supported: Text {
+                        text: "Allowed devices on this relay";
+                        color: Theme.text-2;
+                        font-size: 12px;
+                        font-weight: 700;
+                    }
+
+                    if root.security_supported: AddBar {
+                        narrow: root.narrow;
+                        relay_online: root.relay_online;
+                        as_admin <=> root.add_admin;
+                        add_device(id, admin) => { root.add_device(id, admin); }
+                        add_online => { root.add_online(); }
+                    }
+
+                    // Allowed devices
+                    if root.security_supported: Rectangle {
+                        vertical-stretch: 1;
+                        min-height: 110px;
+                        border-radius: Theme.radius-lg;
+                        background: #ffffff08;
+                        border-width: 1px;
+                        border-color: Theme.divider;
+                        clip: true;
+                        ScrollArea {
+                            spacing: 6px;
+
+                            Rectangle { height: 4px; }
+                            if root.security_items.length == 0: Text {
+                                height: 60px;
+                                text: "No device is listed yet. Add device IDs above, or add every device that is online now.";
+                                color: Theme.text-3;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                wrap: word-wrap;
+                            }
+                            for d in root.security_items: Rectangle {
+                                height: 52px;
+                                x: 8px;
+                                width: parent.width - 8px;
+                                border-radius: Theme.radius-md;
+                                background: #ffffff0a;
+                                border-width: 1px;
+                                border-color: root.confirm_remove == d.desk_id ? Theme.accent : Theme.divider;
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 10px;
+                                    spacing: 10px;
+                                    Rectangle {
+                                        width: 8px;
+                                        height: 8px;
+                                        border-radius: 4px;
+                                        y: (parent.height - self.height) / 2;
+                                        background: d.online ? Theme.ok : #52525b;
+                                    }
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        min-width: 0px;
+                                        alignment: center;
+                                        spacing: 2px;
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            Text {
+                                                text: d.name != "" ? d.name + "  •  " + d.desk_id : d.desk_id;
+                                                color: Theme.text;
+                                                font-size: 12.5px;
+                                                font-weight: 600;
+                                                overflow: elide;
+                                            }
+                                            if d.admin: Rectangle {
+                                                width: adm-txt.preferred-width + 12px;
+                                                height: 16px;
+                                                border-radius: 4px;
+                                                background: Theme.accent-soft;
+                                                adm-txt := Text {
+                                                    text: "ADMIN";
+                                                    color: #fca5a5;
+                                                    font-size: 9px;
+                                                    font-weight: 700;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                            Rectangle { horizontal-stretch: 1; }
+                                        }
+                                        Text {
+                                            text: root.confirm_remove == d.desk_id
+                                                ? (root.security_enabled ? "Remove this device? It is disconnected and can no longer connect." : "Remove this device from the list?")
+                                                : d.enrolled ? "Token issued " + d.enrolled_at
+                                                : "Waiting for its first connection; it receives its token then";
+                                            color: root.confirm_remove == d.desk_id ? Theme.wait : d.enrolled ? Theme.text-3 : Theme.wait;
+                                            font-size: 10.5px;
+                                            overflow: elide;
+                                        }
+                                    }
+                                    if root.confirm_remove != d.desk_id && d.enrolled: ActionButton {
+                                        y: (parent.height - self.height) / 2;
+                                        height: 28px;
+                                        label: "Reset token";
+                                        enabled: root.relay_online;
+                                        clicked => { root.reset_device(d.desk_id); }
+                                    }
+                                    if root.confirm_remove != d.desk_id: ActionButton {
+                                        y: (parent.height - self.height) / 2;
+                                        height: 28px;
+                                        label: "Remove";
+                                        danger: true;
+                                        enabled: root.relay_online;
+                                        clicked => { root.confirm_remove = d.desk_id; }
+                                    }
+                                    if root.confirm_remove == d.desk_id: ActionButton {
+                                        y: (parent.height - self.height) / 2;
+                                        height: 28px;
+                                        label: "Cancel";
+                                        clicked => { root.confirm_remove = ""; }
+                                    }
+                                    if root.confirm_remove == d.desk_id: ActionButton {
+                                        y: (parent.height - self.height) / 2;
+                                        height: 28px;
+                                        label: "Remove";
+                                        primary: true;
+                                        clicked => {
+                                            root.confirm_remove = "";
+                                            root.remove_device(d.desk_id);
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle { height: 4px; }
+                        }
+                    }
+
+                    if root.security_supported: Text {
+                        text: "Reset token: use it when a device was reinstalled and lost its token; its next connection receives a new one.";
+                        color: Theme.text-3;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+
+                    if !root.security_supported: Rectangle { vertical-stretch: 1; }
+                }
+
+                // ---- Server
+                if root.page == 1: VerticalLayout {
+                    padding: root.narrow ? 14px : 32px;
+                    padding-top: root.narrow ? 14px : 28px;
+                    spacing: 14px;
+                    alignment: start;
+
+                    PageTitle { text: "Server"; }
+
+                    Rectangle {
+                        border-radius: Theme.radius-lg;
+                        background: #ffffff0a;
+                        border-width: 1px;
+                        border-color: Theme.divider;
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 12px;
+                            Text {
+                                text: "Relay gateway address";
+                                color: Theme.text;
+                                font-size: 13.5px;
+                                font-weight: 600;
+                            }
+                            Text {
+                                text: "Server used to discover devices and relay encrypted sessions when direct P2P is unavailable.";
+                                color: Theme.text-3;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                height: 36px;
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    min-width: 60px;
+                                    border-radius: Theme.radius-md;
+                                    background: Theme.input;
+                                    border-width: 1px;
+                                    border-color: gw-input.has-focus ? Theme.accent : Theme.divider;
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        gw-input := TextInput {
+                                            text <=> root.gateway_url;
+                                            color: Theme.text;
+                                            font-size: 13px;
+                                            vertical-alignment: center;
+                                            single-line: true;
+                                            edited => { root.gateway_saved = false; }
+                                            accepted => {
+                                                root.save_gateway_url(self.text);
+                                                root.gateway_saved = true;
+                                            }
+                                        }
+                                    }
+                                }
+                                ActionButton {
+                                    label: root.gateway_saved ? "Saved" : "Save";
+                                    primary: true;
+                                    clicked => {
+                                        root.save_gateway_url(gw-input.text);
+                                        root.gateway_saved = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    SettingCard {
+                        kind: 1;
+                        title: "Performance when viewing";
+                        description: root.picked_perf == 0 ? "Saves CPU, battery and data (30 FPS). Applies to open sessions at once."
+                            : root.picked_perf == 2 ? "Smoothest, follows your monitor's refresh rate. Applies to open sessions at once."
+                            : "Balanced for everyday work (60 FPS). Applies to open sessions at once.";
+                        control_width: root.narrow ? 150px : 230px;
+                        HorizontalLayout {
+                            spacing: 4px;
+                            y: (parent.height - 28px) / 2;
+                            Segment {
+                                label: "Low";
+                                selected: root.picked_perf == 0;
+                                clicked => {
+                                    root.picked_perf = 0;
+                                    root.save_performance(0);
+                                }
+                            }
+                            Segment {
+                                label: "Medium";
+                                selected: root.picked_perf == 1;
+                                clicked => {
+                                    root.picked_perf = 1;
+                                    root.save_performance(1);
+                                }
+                            }
+                            Segment {
+                                label: "High";
+                                selected: root.picked_perf == 2;
+                                clicked => {
+                                    root.picked_perf = 2;
+                                    root.save_performance(2);
+                                }
+                            }
+                        }
                     }
                 }
-            }
 
-            if root.security_supported: Text {
-                text: "Reset token: use it when a device was reinstalled and lost its token; its next connection receives a new one.";
-                color: Theme.text-3;
-                font-size: 10px;
-                wrap: word-wrap;
+                // ---- Audio
+                if root.page == 2: VerticalLayout {
+                    padding: root.narrow ? 14px : 32px;
+                    padding-top: root.narrow ? 14px : 28px;
+                    spacing: 14px;
+                    alignment: start;
+
+                    PageTitle { text: "Audio"; }
+                    SettingCard {
+                        kind: 2;
+                        title: "Microphone when a session starts";
+                        description: root.mic_on_at_start
+                            ? "On: the other side hears you as soon as a session starts. The microphone button in a session still turns it off."
+                            : "Off: turn it on with the microphone button when you want to talk.";
+                        Switch {
+                            y: (parent.height - self.height) / 2;
+                            on: root.mic_on_at_start;
+                            toggled => { root.set_mic_on_at_start(!root.mic_on_at_start); }
+                        }
+                    }
+                    Text {
+                        text: "Applies to every new session on this computer, whether you control another device or someone controls this one.";
+                        color: Theme.text-3;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                // ---- Mouse
+                if root.page == 3: VerticalLayout {
+                    padding: root.narrow ? 14px : 32px;
+                    padding-top: root.narrow ? 14px : 28px;
+                    spacing: 14px;
+                    alignment: start;
+
+                    PageTitle { text: "Mouse"; }
+                    SettingCard {
+                        kind: 3;
+                        title: "Pointer lock for games";
+                        description: root.pointer_lock
+                            ? "On: games that capture the mouse get relative movement. Hold Ctrl+Alt to release."
+                            : "Off: the mouse always moves the remote pointer to where yours is.";
+                        Switch {
+                            y: (parent.height - self.height) / 2;
+                            on: root.pointer_lock;
+                            toggled => { root.set_pointer_lock(!root.pointer_lock); }
+                        }
+                    }
+                    Text {
+                        text: "When a game or 3D program on the remote computer hides and captures the mouse (mouse look), OpenDesk locks your pointer inside the session window and sends movement instead of positions. Click the remote screen to lock it again. Applies at once, also to open sessions.";
+                        color: Theme.text-3;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
             }
         }
     }
