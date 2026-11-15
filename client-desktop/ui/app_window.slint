@@ -196,6 +196,8 @@ export component MainWindow inherits Window {
 
     // The monitor wall in full screen shows nothing but the screens.
     property <bool> wall_fullscreen: is_admin && monitor_open && !settings_open && sessions.length == 0 && root.full-screen;
+    // The monitor wall has its own toolbar with Back, so no top bar there either.
+    property <bool> wall_page_shown: is_admin && monitor_open && !settings_open && sessions.length == 0;
     // Settings has its own sidebar with Back; the top bar returns in full screen so it can always be left.
     property <bool> settings_page_shown: is_admin && settings_open && sessions.length == 0 && !root.full-screen;
 
@@ -205,7 +207,7 @@ export component MainWindow inherits Window {
 
         // Wrapped in a fixed-height Rectangle: the bar adapts to its own width, which must not feed back into the
         // window's layout (a binding loop).
-        if sessions.length == 0 && !wall_fullscreen && !settings_page_shown: Rectangle {
+        if sessions.length == 0 && !wall_fullscreen && !settings_page_shown && !wall_page_shown: Rectangle {
             height: 46px;
             min-width: 0px;
             max-width: 100000px;
@@ -238,7 +240,7 @@ export component MainWindow inherits Window {
             }
         }
 
-        if sessions.length == 0 && !wall_fullscreen && !settings_page_shown: Rectangle {
+        if sessions.length == 0 && !wall_fullscreen && !settings_page_shown && !wall_page_shown: Rectangle {
             height: 1px;
             background: Theme.divider;
         }

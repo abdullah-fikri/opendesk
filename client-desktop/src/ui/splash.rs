@@ -67,3 +67,17 @@ pub fn start(win: &MainWindow) -> Option<Timer> {
     });
     Some(timer)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_embedded_pack_parses_and_every_frame_decodes() {
+        let pack = parse(PACK).expect("splash.bin parses");
+        assert!(pack.fps > 0 && pack.frames.len() > 1);
+        for (i, f) in pack.frames.iter().enumerate() {
+            assert!(decode(f).is_some(), "frame {i} decodes");
+        }
+    }
+}

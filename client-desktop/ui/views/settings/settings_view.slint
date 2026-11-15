@@ -49,14 +49,6 @@ component NavItem inherits Rectangle {
             overflow: elide;
         }
     }
-    if root.active && !root.tab: Rectangle {
-        x: 0;
-        y: (parent.height - self.height) / 2;
-        width: 3px;
-        height: 16px;
-        border-radius: 2px;
-        background: Theme.accent;
-    }
 }
 
 // Small on/off switch.
@@ -362,7 +354,7 @@ export component SettingsView inherits Rectangle {
 
         // ---- Narrow window: back and the pane tabs on top
         if root.narrow: Rectangle {
-            background: Theme.bar;
+            background: Theme.bg;
             height: 96px;
             VerticalLayout {
                 padding: 10px;
@@ -412,11 +404,6 @@ export component SettingsView inherits Rectangle {
                 }
             }
         }
-        if root.narrow: Rectangle {
-            height: 1px;
-            background: Theme.divider;
-        }
-
         HorizontalLayout {
             vertical-stretch: 1;
 
@@ -424,7 +411,7 @@ export component SettingsView inherits Rectangle {
             if !root.narrow: Rectangle {
                 width: 232px;
                 horizontal-stretch: 0;
-                background: Theme.bar;
+                background: Theme.bg;
 
                 VerticalLayout {
                     padding: 14px;
@@ -503,12 +490,6 @@ export component SettingsView inherits Rectangle {
                     NavItem { kind: 3; label: "Mouse"; active: root.page == 3; clicked => { root.go(3); } }
                 }
             }
-            if !root.narrow: Rectangle {
-                width: 1px;
-                horizontal-stretch: 0;
-                background: Theme.divider;
-            }
-
             // ---- Stage
             Rectangle {
                 horizontal-stretch: 1;
