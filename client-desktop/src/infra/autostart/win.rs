@@ -35,6 +35,8 @@ pub const ELEVATED_TASK_NAME: &str = "OpenDesk Autostart";
 pub const STOP_FLAG: &str = "user_exit.flag";
 const WM_LBUTTONUP: isize = 0x0202;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+/// `AllowSetForegroundWindow`: any process may take the foreground.
+const ASFW_ANY: u32 = u32::MAX;
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -49,6 +51,7 @@ unsafe extern "system" {
     fn FindWindowW(lp_class_name: *const u16, lp_window_name: *const u16) -> HWND;
     fn PostMessageW(h_wnd: HWND, msg: u32, w_param: usize, l_param: isize) -> BOOL;
     fn ChangeWindowMessageFilter(message: u32, dw_flag: u32) -> BOOL;
+    fn AllowSetForegroundWindow(dw_process_id: u32) -> BOOL;
 }
 
 #[link(name = "advapi32")]
@@ -236,6 +239,9 @@ pub fn ensure_single_instance(start_in_background: bool) {
             if !start_in_background && !cfg!(feature = "headless") {
                 let hwnd = find_tray_window();
                 if !hwnd.is_null() {
+                    // This launch just got the user's click, so it may hand the foreground to the running copy;
+                    // without that Windows only flashes the taskbar button and the user has to click again.
+                    AllowSetForegroundWindow(ASFW_ANY);
                     PostMessageW(hwnd, WM_TRAYICON, 0, WM_LBUTTONUP);
                 }
             }

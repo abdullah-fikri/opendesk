@@ -1,7 +1,7 @@
 //! Start-up splash: a short video, stored as JPEG frames (`assets/splash.bin`, packed by
 //! `scripts/pack_splash.py`), played over the window until it ends or the user clicks or presses a key.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -10,6 +10,12 @@ use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Timer, TimerM
 use super::MainWindow;
 
 static PACK: &[u8] = include_bytes!("../../assets/splash.bin");
+
+thread_local! {
+    /// The splash plays once per process; the timer of one started from the tray is parked here.
+    static PLAYED: Cell<bool> = const { Cell::new(false) };
+    static PARKED: RefCell<Option<Timer>> = const { RefCell::new(None) };
+}
 
 /// One frame's JPEG bytes by index, or `None` past the end or on a damaged pack.
 struct Pack {
@@ -40,6 +46,7 @@ fn decode(jpeg: &[u8]) -> Option<Image> {
 /// Plays the splash over `win`. Returns the timer, which must stay alive while the window runs. A damaged pack
 /// shows no splash.
 pub fn start(win: &MainWindow) -> Option<Timer> {
+    PLAYED.with(|p| p.set(true));
     let pack = parse(PACK)?;
     let first = decode(pack.frames[0])?;
     win.set_splash_frame(first);
@@ -66,6 +73,16 @@ pub fn start(win: &MainWindow) -> Option<Timer> {
         }
     });
     Some(timer)
+}
+
+/// An instance that started hidden in the tray (autostart, installer) plays the splash the first time the user
+/// opens its window, so a launch from the shortcut still shows it. Does nothing after that, nor during a session.
+pub fn play_once(win: &MainWindow) {
+    if PLAYED.with(|p| p.get()) || win.get_hosting() {
+        return;
+    }
+    let timer = start(win);
+    PARKED.with(|t| *t.borrow_mut() = timer);
 }
 
 #[cfg(test)]
