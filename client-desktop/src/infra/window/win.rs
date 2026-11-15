@@ -102,6 +102,7 @@ unsafe extern "system" {
     fn DragAcceptFiles(h_wnd: HWND, f_accept: BOOL);
     fn DragQueryFileW(h_drop: HDROP, i_file: UINT, lpsz_file: *mut u16, cch: UINT) -> UINT;
     fn DragFinish(h_drop: HDROP);
+    fn DragQueryPoint(h_drop: HDROP, pt: *mut [i32; 2]) -> BOOL;
 }
 
 #[link(name = "comdlg32")]
@@ -115,7 +116,9 @@ unsafe extern "system" {
 }
 
 static mut ORIG_WNDPROC: LONG_PTR = 0;
-static mut DROP_CALLBACK: Option<Box<dyn Fn(Vec<PathBuf>) + Send + Sync>> = None;
+/// Called with the dropped paths and the drop point in client pixels.
+type DropCallback = Box<dyn Fn(Vec<PathBuf>, Option<(i32, i32)>) + Send + Sync>;
+static mut DROP_CALLBACK: Option<DropCallback> = None;
 
 unsafe extern "system" fn subclass_wndproc(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> isize {
     unsafe {
@@ -129,6 +132,9 @@ unsafe extern "system" fn subclass_wndproc(hwnd: HWND, msg: u32, wparam: usize, 
             let hdrop = wparam as HDROP;
             let count = DragQueryFileW(hdrop, 0xFFFFFFFF, ptr::null_mut(), 0);
             let mut paths = Vec::with_capacity(count as usize);
+            // Where in the window's client area the files were dropped (0 when the point is outside it).
+            let mut at = [0i32; 2];
+            let inside = DragQueryPoint(hdrop, &mut at) != 0;
 
             for i in 0..count {
                 let len = DragQueryFileW(hdrop, i, ptr::null_mut(), 0);
@@ -147,7 +153,7 @@ unsafe extern "system" fn subclass_wndproc(hwnd: HWND, msg: u32, wparam: usize, 
             if !paths.is_empty()
                 && let Some(ref cb) = *ptr::addr_of!(DROP_CALLBACK)
             {
-                cb(paths);
+                cb(paths, inside.then_some((at[0], at[1])));
             }
             return 0;
         }
@@ -177,10 +183,11 @@ pub fn is_window_shown(window_title: &str) -> bool {
     }
 }
 
-/// Accepts files dropped on the window titled `window_title` and calls `callback` with their paths. Must run on the UI thread once the window exists; returns false until it does.
+/// Accepts files dropped on the window titled `window_title` and calls `callback` with their paths and the drop
+/// point in client pixels. Must run on the UI thread once the window exists; returns false until it does.
 pub fn register_window_file_drop<F>(window_title: &str, callback: F) -> bool
 where
-    F: Fn(Vec<PathBuf>) + Send + Sync + 'static,
+    F: Fn(Vec<PathBuf>, Option<(i32, i32)>) + Send + Sync + 'static,
 {
     unsafe {
         let title_wide: Vec<u16> = window_title.encode_utf16().chain(std::iter::once(0)).collect();

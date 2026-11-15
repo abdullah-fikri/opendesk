@@ -143,6 +143,7 @@ struct MSG {
 unsafe extern "system" {
     fn OleInitialize(pv_reserved: *mut c_void) -> HRESULT;
     fn OleSetClipboard(p_data_obj: *mut c_void) -> HRESULT;
+    fn DoDragDrop(p_data_obj: *mut c_void, p_drop_source: *mut c_void, ok_effects: u32, effect: *mut u32) -> HRESULT;
     fn OleIsCurrentClipboard(p_data_obj: *mut c_void) -> HRESULT;
     fn ReleaseStgMedium(p_medium: *mut STGMEDIUM);
 }
@@ -922,10 +923,259 @@ unsafe extern "system" fn data_enum_d_advise(_: *mut c_void, _: *mut *mut c_void
 }
 
 // ---------------------------------------------------------------------------------------------
+// Drag onto the pointer (`file-drop`).
+
+const DRAGDROP_S_DROP: HRESULT = 0x0004_0100;
+const DRAGDROP_S_CANCEL: HRESULT = 0x0004_0101;
+const DRAGDROP_S_USEDEFAULTCURSORS: HRESULT = 0x0004_0102;
+/// How long the drag hovers over the target before the drop, so it sees `DragEnter` and `DragOver` first.
+const DROP_HOVER: std::time::Duration = std::time::Duration::from_millis(400);
+
+#[repr(C)]
+struct IDropSourceVtbl {
+    query_interface: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+    add_ref: unsafe extern "system" fn(*mut c_void) -> u32,
+    release: unsafe extern "system" fn(*mut c_void) -> u32,
+    query_continue_drag: unsafe extern "system" fn(*mut c_void, i32, u32) -> HRESULT,
+    give_feedback: unsafe extern "system" fn(*mut c_void, u32) -> HRESULT,
+}
+
+#[repr(C)]
+struct DropSource {
+    vtbl: *const IDropSourceVtbl,
+    started: std::time::Instant,
+    released: std::sync::atomic::AtomicBool,
+}
+
+static DROP_SOURCE_VTBL: IDropSourceVtbl = IDropSourceVtbl {
+    query_interface: source_qi,
+    add_ref: source_ref,
+    release: source_ref,
+    query_continue_drag: source_continue,
+    give_feedback: source_feedback,
+};
+
+// `[i32; 2]` is the same layout as the POINT other modules declare.
+#[allow(clashing_extern_declarations)]
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn GetCursorPos(pt: *mut [i32; 2]) -> i32;
+    fn SetCursorPos(x: i32, y: i32) -> i32;
+    fn mouse_event(flags: u32, dx: i32, dy: i32, data: u32, extra: usize);
+}
+
+const MK_LBUTTON: u32 = 1;
+const MOUSEEVENTF_LEFTDOWN: u32 = 0x0002;
+const MOUSEEVENTF_LEFTUP: u32 = 0x0004;
+
+unsafe extern "system" fn source_qi(this: *mut c_void, _riid: *const GUID, out: *mut *mut c_void) -> HRESULT {
+    // Only IUnknown and IDropSource are ever asked for, and both are this object.
+    unsafe { *out = this };
+    S_OK
+}
+
+/// The source lives on the stack of `drag_onto_pointer`; OLE's references never outlive `DoDragDrop`.
+unsafe extern "system" fn source_ref(_: *mut c_void) -> u32 {
+    1
+}
+
+unsafe extern "system" fn source_continue(this: *mut c_void, escape: i32, keys: u32) -> HRESULT {
+    // SAFETY: `this` is the `DropSource` passed to `DoDragDrop`.
+    let source = unsafe { &*(this as *const DropSource) };
+    if escape != 0 {
+        return DRAGDROP_S_CANCEL;
+    }
+    if source.released.load(Ordering::SeqCst) {
+        // Our button press is over: this is the drop.
+        return if keys & MK_LBUTTON == 0 { DRAGDROP_S_DROP } else { S_OK };
+    }
+    if source.started.elapsed() >= DROP_HOVER {
+        // Release the held button; OLE has the mouse captured, so only the drag sees it.
+        source.released.store(true, Ordering::SeqCst);
+        unsafe { mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0) };
+    }
+    S_OK
+}
+
+unsafe extern "system" fn source_feedback(_: *mut c_void, _effect: u32) -> HRESULT {
+    DRAGDROP_S_USEDEFAULTCURSORS
+}
+
+/// What the catcher window's button press starts: the data object to drag and where the pointer is.
+static DRAG_JOB: Mutex<Option<(usize, [i32; 2])>> = Mutex::new(None);
+/// Verdict of the last drag; `None` while it runs.
+static DRAG_RESULT: Mutex<Option<HRESULT>> = Mutex::new(None);
+
+#[repr(C)]
+struct WNDCLASSW {
+    style: u32,
+    wnd_proc: unsafe extern "system" fn(*mut c_void, u32, usize, isize) -> isize,
+    cls_extra: i32,
+    wnd_extra: i32,
+    instance: *mut c_void,
+    icon: *mut c_void,
+    cursor: *mut c_void,
+    background: *mut c_void,
+    menu_name: *const u16,
+    class_name: *const u16,
+}
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn RegisterClassW(class: *const WNDCLASSW) -> u16;
+    fn CreateWindowExW(
+        ex_style: u32,
+        class: *const u16,
+        title: *const u16,
+        style: u32,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        parent: *mut c_void,
+        menu: *mut c_void,
+        instance: *mut c_void,
+        param: *mut c_void,
+    ) -> *mut c_void;
+    fn DefWindowProcW(hwnd: *mut c_void, msg: u32, w: usize, l: isize) -> isize;
+    fn DestroyWindow(hwnd: *mut c_void) -> i32;
+    fn SetWindowPos(hwnd: *mut c_void, after: *mut c_void, x: i32, y: i32, w: i32, h: i32, flags: u32) -> i32;
+    fn ReleaseCapture() -> i32;
+}
+
+const WM_LBUTTONDOWN: u32 = 0x0201;
+const WS_POPUP: u32 = 0x8000_0000;
+const WS_VISIBLE: u32 = 0x1000_0000;
+const WS_EX_TOPMOST: u32 = 0x8;
+const WS_EX_TOOLWINDOW: u32 = 0x80;
+const WS_EX_NOACTIVATE: u32 = 0x0800_0000;
+const SWP_NOSIZE: u32 = 0x1;
+const SWP_NOACTIVATE: u32 = 0x10;
+
+/// Window under the pointer for one drag. A drag can only start from a button press inside a window of this
+/// thread (Windows gives that window the mouse), so the press lands here, not in the application below, which
+/// therefore never sees a click. The window then moves away and the drag runs from its message.
+unsafe extern "system" fn catcher_proc(hwnd: *mut c_void, msg: u32, w: usize, l: isize) -> isize {
+    if msg == WM_LBUTTONDOWN {
+        let job = DRAG_JOB.lock().take();
+        if let Some((obj, home)) = job {
+            // SAFETY: plain Win32 calls; `obj` is the data object `drag_onto_pointer` keeps alive until it ends.
+            let hr = unsafe {
+                SetWindowPos(hwnd, ptr::null_mut(), -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+                let mut source = DropSource {
+                    vtbl: &DROP_SOURCE_VTBL,
+                    started: std::time::Instant::now(),
+                    released: std::sync::atomic::AtomicBool::new(false),
+                };
+                // OLE looks at the drag when the mouse moves, and nobody is moving it: nudge it one pixel and
+                // back so the target gets its `DragEnter` / `DragOver` here.
+                let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let nudger = {
+                    let done = Arc::clone(&done);
+                    std::thread::spawn(move || {
+                        let mut step = 0;
+                        while !done.load(Ordering::SeqCst) {
+                            SetCursorPos(home[0] + step % 2, home[1]);
+                            step += 1;
+                            std::thread::sleep(Duration::from_millis(15));
+                        }
+                    })
+                };
+                let mut effect = 0u32;
+                let hr = DoDragDrop(
+                    obj as *mut c_void,
+                    &mut source as *mut DropSource as *mut c_void,
+                    DROPEFFECT_COPY,
+                    &mut effect,
+                );
+                if !source.released.load(Ordering::SeqCst) {
+                    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                }
+                done.store(true, Ordering::SeqCst);
+                let _ = nudger.join();
+                SetCursorPos(home[0], home[1]);
+                ReleaseCapture();
+                hr
+            };
+            *DRAG_RESULT.lock() = Some(hr);
+        }
+        return 0;
+    }
+    // SAFETY: forwards a message to the default procedure.
+    unsafe { DefWindowProcW(hwnd, msg, w, l) }
+}
+
+/// OLE thread: drags `offer` (as virtual files) onto what is under the pointer and drops it there.
+fn drag_onto_pointer(offer: Offer) {
+    let name = offer.files.first().map(|f| f.name.clone()).unwrap_or_default();
+    let obj = Box::into_raw(Box::new(DataObject { vtbl: &DATA_VTBL, refs: AtomicU32::new(1), offer: Arc::new(offer) }))
+        as *mut c_void;
+    let wide = |t: &str| t.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let class = wide("OpenDeskDropCatcher");
+    let mut home = [0, 0];
+    // SAFETY: plain Win32 calls; the window, the data object and the job outlive the message loop below.
+    let hr = unsafe {
+        GetCursorPos(&mut home);
+        let wc = WNDCLASSW {
+            style: 0,
+            wnd_proc: catcher_proc,
+            cls_extra: 0,
+            wnd_extra: 0,
+            instance: ptr::null_mut(),
+            icon: ptr::null_mut(),
+            cursor: ptr::null_mut(),
+            background: ptr::null_mut(),
+            menu_name: ptr::null(),
+            class_name: class.as_ptr(),
+        };
+        RegisterClassW(&wc); // already registered on later drags: harmless
+        let hwnd = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            class.as_ptr(),
+            class.as_ptr(),
+            WS_POPUP | WS_VISIBLE,
+            home[0] - 2,
+            home[1] - 2,
+            5,
+            5,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+        );
+        *DRAG_RESULT.lock() = None;
+        *DRAG_JOB.lock() = Some((obj as usize, home));
+        let mut result = None;
+        if !hwnd.is_null() {
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+            // The press arrives as a message of this thread; the drag then runs inside it.
+            let mut msg: MSG = std::mem::zeroed();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while result.is_none() && std::time::Instant::now() < deadline {
+                while PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, 1) != 0 {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                result = *DRAG_RESULT.lock();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            DestroyWindow(hwnd);
+        }
+        DRAG_JOB.lock().take();
+        result
+    };
+    let verdict = if hr == Some(DRAGDROP_S_DROP) { "accepted" } else { "not accepted" };
+    logger::info("clipbrd.capture", &format!("Dropped {name} at {},{}: {verdict}", home[0], home[1]));
+    // SAFETY: `obj` is our own reference, created above.
+    unsafe { data_release(obj) };
+}
+
+// ---------------------------------------------------------------------------------------------
 // OLE clipboard thread (STA with a message loop, as OleSetClipboard requires).
 
 enum Cmd {
     Set(Offer),
+    Drop(Offer),
     Clear(String),
 }
 
@@ -965,6 +1215,7 @@ fn ole_thread() -> &'static OleThread {
                                     data_release(old);
                                 }
                             }
+                            Cmd::Drop(offer) => drag_onto_pointer(offer),
                             Cmd::Clear(partner) => {
                                 if let Some((obj, _)) =
                                     current.take_if(|(_, from)| *from == partner || partner.is_empty())
@@ -1031,6 +1282,16 @@ fn parse_offer_files(list: &[OfferEntry]) -> Result<Vec<OfferFile>, String> {
 
 /// Partner copied files: expose them on our clipboard as virtual files. Nothing is downloaded yet.
 pub fn set_offer(from: &str, payload: &FilePayload, tx_out: Sender<Outgoing>) -> Option<String> {
+    place_offer(from, payload, tx_out, false)
+}
+
+/// Partner dropped files on our screen: the pointer is already there. Drag them onto whatever is under it, as
+/// if a local Explorer window had been dragged from; the clipboard stays as it was.
+pub fn drop_offer(from: &str, payload: &FilePayload, tx_out: Sender<Outgoing>) -> Option<String> {
+    place_offer(from, payload, tx_out, true)
+}
+
+fn place_offer(from: &str, payload: &FilePayload, tx_out: Sender<Outgoing>, drop: bool) -> Option<String> {
     let offer_id = payload.id.clone();
     let files = match parse_offer_files(payload.files.as_deref()?) {
         Ok(files) if files.is_empty() => return None,
@@ -1046,20 +1307,22 @@ pub fn set_offer(from: &str, payload: &FilePayload, tx_out: Sender<Outgoing>) ->
     logger::info("clipbrd.capture", &format!("Received file offer {} ({} files).", offer_id, files.len()));
     if crate::infra::clipboard_helper::ready() {
         // SYSTEM agent: the helper puts it on the user's clipboard; we keep our copy to check its pulls.
-        let msg = ToHelper::Set { from: from.to_string(), offer_id: offer_id.clone(), files: payload.files.clone()? };
+        let msg =
+            ToHelper::Set { from: from.to_string(), offer_id: offer_id.clone(), files: payload.files.clone()?, drop };
         let mut offers = AGENT_OFFERS.lock();
         offers.push(Offer { from: from.to_string(), offer_id, files, route: Route::Local(tx_out) });
         let excess = offers.len().saturating_sub(KEPT_AGENT_OFFERS);
         offers.drain(..excess);
-        drop(offers);
+        std::mem::drop(offers);
         if crate::infra::clipboard_helper::send(&msg) {
             return Some(status);
         }
         logger::warn("clipbrd.capture", "Clipboard helper unavailable; offer not placed.");
         return None;
     }
-    post(Cmd::Set(Offer { from: from.to_string(), offer_id, files, route: Route::Local(tx_out) }));
-    Some(status)
+    let offer = Offer { from: from.to_string(), offer_id, files, route: Route::Local(tx_out) };
+    post(if drop { Cmd::Drop(offer) } else { Cmd::Set(offer) });
+    Some(if drop { "Dropping files...".to_string() } else { status })
 }
 
 /// Session with `partner` ended (empty = any): its offers can no longer be pulled.
@@ -1125,8 +1388,11 @@ pub fn helper_lost() {
 /// Helper: a command from the agent.
 pub fn helper_command(msg: ToHelper) {
     match msg {
-        ToHelper::Set { from, offer_id, files } => match parse_offer_files(&files) {
-            Ok(files) if !files.is_empty() => post(Cmd::Set(Offer { from, offer_id, files, route: Route::Agent })),
+        ToHelper::Set { from, offer_id, files, drop } => match parse_offer_files(&files) {
+            Ok(files) if !files.is_empty() => {
+                let offer = Offer { from, offer_id, files, route: Route::Agent };
+                post(if drop { Cmd::Drop(offer) } else { Cmd::Set(offer) })
+            }
             _ => logger::warn("clipbrd.capture", "Agent sent an unusable offer; ignored."),
         },
         ToHelper::Clear { partner } => post(Cmd::Clear(partner)),
@@ -1271,6 +1537,56 @@ mod tests {
         };
         clear_offer("");
         result
+    }
+
+    /// A window of another process accepts a drag started with no mouse button held, at the pointer position.
+    /// Moves the real pointer, so run it by hand: `cargo test file_drop_reaches_a_window -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn file_drop_reaches_a_window_under_the_pointer() {
+        let dir = std::env::temp_dir().join(format!("opendesk-drop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (ready, got) = (dir.join("ready"), dir.join("formats"));
+        let script = format!(
+            "Add-Type -AssemblyName System.Windows.Forms; $f=New-Object System.Windows.Forms.Form; \
+             $f.StartPosition='Manual'; $f.Location=New-Object System.Drawing.Point(300,300); $f.Size=New-Object System.Drawing.Size(400,300); \
+             $f.TopMost=$true; $f.AllowDrop=$true; \
+             $f.Add_DragEnter({{ $_.Effect='Copy' }}); \
+             $f.Add_DragDrop({{ [IO.File]::WriteAllText('{got}', ($_.Data.GetFormats() -join ',')); $f.Close() }}); \
+             $f.Add_Shown({{ [IO.File]::WriteAllText('{ready}', '1') }}); \
+             $t=New-Object System.Windows.Forms.Timer; $t.Interval=20000; $t.Add_Tick({{ $f.Close() }}); $t.Start(); \
+             [void]$f.ShowDialog()",
+            got = got.display(),
+            ready = ready.display()
+        );
+        let mut ps =
+            std::process::Command::new("powershell").args(["-NoProfile", "-STA", "-Command", &script]).spawn().unwrap();
+        for _ in 0..100 {
+            if ready.exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert!(ready.exists(), "the target window never opened");
+        let (tx_out, _rx) = mpsc::channel();
+        let offer = json!({ "id": "of_d", "files": [{ "name": "dropped.bin", "size": 10 }] });
+        // The host's dispatcher puts the pointer on the spot first.
+        unsafe { SetCursorPos(500, 450) };
+        thread::sleep(Duration::from_millis(200));
+        assert!(drop_offer("111", &payload(offer), tx_out).is_some());
+        for _ in 0..80 {
+            if got.exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        let _ = ps.kill();
+        let _ = ps.wait();
+        let formats = std::fs::read_to_string(&got).expect("the window never received the drop");
+        assert!(formats.contains("FileGroupDescriptorW"), "formats: {formats}");
+        clear_offer("");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Real Explorer paste across processes. Overwrites the clipboard, so run it by hand:

@@ -17,7 +17,7 @@ pub fn is_window_shown(_window_title: &str) -> bool {
 /// No native drop target outside Windows (see [`super::FILE_DROP_SUPPORTED`]).
 pub fn register_window_file_drop<F>(_window_title: &str, _callback: F) -> bool
 where
-    F: Fn(Vec<PathBuf>) + Send + Sync + 'static,
+    F: Fn(Vec<PathBuf>, Option<(i32, i32)>) + Send + Sync + 'static,
 {
     false
 }

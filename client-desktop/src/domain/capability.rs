@@ -33,6 +33,9 @@ pub const FILE_DEFLATE: &str = "file-deflate";
 /// With `file-ack`: a transfer cut by a lost connection or P2P path continues where the receiver stands (a
 /// `start` with `resumeOf`, answered by a `pull` with `resumeAt`). Both sides list it.
 pub const FILE_RESUME: &str = "file-resume";
+/// An `offer` may carry the point of the host screen it was dropped on (`dropX`, `dropY`, 0..10000): the host
+/// drops the files there as a drag, without touching its clipboard. Both sides list it with `file-offer`.
+pub const FILE_DROP: &str = "file-drop";
 /// The viewer draws its own cursor in the host's shape.
 pub const CURSOR_SHAPE: &str = "cursor-shape";
 /// The viewer locks its pointer and sends relative motion while a host application captured the mouse
@@ -116,6 +119,8 @@ pub struct PeerCaps {
     pub file_deflate: bool,
     /// Cut transfers to and from the partner resume ([`FILE_RESUME`]).
     pub file_resume: bool,
+    /// Dropped files may go to the partner as a drag onto its screen ([`FILE_DROP`]).
+    pub file_drop: bool,
     pub cursor_shape: bool,
     /// The viewer can lock its pointer for relative motion ([`MOUSE_RELATIVE`]).
     pub mouse_relative: bool,
@@ -162,6 +167,7 @@ impl PeerCaps {
             file_p2p: has(P2P) && has(FILE_BINARY) && has(FILE_P2P),
             file_deflate: has(FILE_BINARY) && has(FILE_DEFLATE),
             file_resume: has(FILE_ACK) && has(FILE_RESUME),
+            file_drop: has(FILE_OFFER) && has(FILE_DROP),
             cursor_shape: has(CURSOR_SHAPE),
             mouse_relative: has(MOUSE_RELATIVE),
             clipboard_image: has(CLIPBOARD_IMAGE),

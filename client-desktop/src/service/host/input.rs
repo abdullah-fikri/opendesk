@@ -27,6 +27,12 @@ fn place(ctx: &AppContext, norm_x: f64, norm_y: f64) {
     ctx.injector.set_cursor_pos(x, y);
 }
 
+/// Puts the pointer at the point the viewer dropped files on, even when an application captured the mouse.
+pub fn move_pointer_for_drop(ctx: &AppContext, norm_x: f64, norm_y: f64) {
+    let (x, y) = to_screen(ctx, norm_x, norm_y);
+    ctx.injector.set_cursor_pos(x, y);
+}
+
 /// Handles one event from the viewer this machine hosts. Events arriving while nothing is hosted are ignored:
 /// only an active session may drive this machine.
 pub fn apply(ctx: &AppContext, event: InputEvent) {

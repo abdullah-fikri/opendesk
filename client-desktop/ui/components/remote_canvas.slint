@@ -24,6 +24,9 @@ export component RemoteViewerCanvas inherits Rectangle {
     callback release_remote_keys();
     // Canvas size in physical pixels, for the host's automatic stream resolution.
     callback viewport_resized(int, int);
+    // Where the remote picture sits in the window, physical pixels (x, y, width, height): files dropped on the
+    // window land at the matching point of the host screen.
+    callback frame_rect(int, int, int, int);
 
     // Multi-session additions. Defaults keep the single-session behaviour unchanged.
     // `focused`: this canvas owns the keyboard; when it becomes true (and `auto_focus`) it takes key focus.
@@ -93,6 +96,19 @@ export component RemoteViewerCanvas inherits Rectangle {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             background: #000000;
+
+            Timer {
+                interval: 400ms;
+                running: root.focused;
+                triggered => {
+                    root.frame_rect(
+                        parent.absolute-position.x / 1phx,
+                        parent.absolute-position.y / 1phx,
+                        parent.width / 1phx,
+                        parent.height / 1phx
+                    );
+                }
+            }
 
             Image {
                 source: remote_frame;

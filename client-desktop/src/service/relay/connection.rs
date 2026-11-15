@@ -514,6 +514,8 @@ impl Connection {
         }
         caps.push(capability::FILE_DEFLATE);
         caps.push(capability::FILE_RESUME);
+        #[cfg(windows)]
+        caps.push(capability::FILE_DROP);
         let stored = storage::load_settings();
         let mut caps: Vec<String> = caps.into_iter().map(String::from).collect();
         // Right before `fps-N`: a relay that keeps only 16 names drops it first, which only turns host sound off.

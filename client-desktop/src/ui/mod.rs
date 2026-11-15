@@ -25,9 +25,10 @@ use crate::domain::settings::Settings;
 use crate::infra::tray::{SystemTray, TrayAction, bring_main_window_to_front};
 use crate::infra::{autostart, logger, privacy, window};
 use crate::service::context::Ctx;
-use crate::service::file_transfer::sender;
+use crate::service::file_transfer::{self, offer, sender};
 use crate::service::history::History;
 use crate::service::sessions;
+use crate::service::viewer::drop_point;
 
 pub use presenter::SlintUi;
 
@@ -128,9 +129,17 @@ pub fn enable_file_drop(win: &MainWindow, ctx: &Ctx, hide_after: bool) {
             let registered = Arc::new(AtomicBool::new(false));
             let (flag, drop_ctx, title) = (Arc::clone(&registered), Arc::clone(&ctx), ctx.window_title.clone());
             let _ = weak.upgrade_in_event_loop(move |_| {
-                let on_drop = move |paths| {
+                let on_drop = move |paths: Vec<std::path::PathBuf>, at: Option<(i32, i32)>| {
                     let target = drop_ctx.partner();
-                    if !target.is_empty() {
+                    if target.is_empty() {
+                        return;
+                    }
+                    // Dropped on the remote picture of a host that takes drops: drag them onto what is there.
+                    let point = at.and_then(|(x, y)| drop_point::norm_at(&target, x, y));
+                    if point.is_some() && file_transfer::caps_of(&target).file_drop {
+                        logger::info("ui", &format!("Files dropped at {point:?} of {target}'s screen."));
+                        offer::offer_files_at(&drop_ctx, paths, target, point);
+                    } else {
                         // Auto-paste into the Explorer folder open on the other side.
                         sender::send_files(&drop_ctx, paths, target, true);
                     }

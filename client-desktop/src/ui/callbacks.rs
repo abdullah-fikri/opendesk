@@ -165,6 +165,7 @@ fn bind_sessions(win: &MainWindow, ctx: &Ctx) {
     });
     on!(win, ctx, on_close_session, |_w, c, id| {
         VIEWPORT_TIMERS.with(|t| t.borrow_mut().remove(id.as_str()));
+        crate::service::viewer::drop_point::forget(&id);
         controller::close(c, &id, None);
     });
     on!(win, ctx, on_set_view_layout, |_w, c, layout| controller::set_layout(c, layout));
@@ -184,6 +185,9 @@ fn bind_sessions(win: &MainWindow, ctx: &Ctx) {
         controller::key_event(c, &id, &text, pressed, repeat, Mods { ctrl, alt, shift });
     });
     on!(win, ctx, on_session_release_keys, |_w, c, id| controller::release_keys(c, &id));
+    on!(win, ctx, on_session_frame_rect, |_w, _c, id, x, y, w, h| {
+        crate::service::viewer::drop_point::set_rect(&id, [x, y, w, h]);
+    });
     on!(win, ctx, on_session_viewport_resized, |_w, c, id, width, height| {
         controller::viewport_changed(c, &id, width, height);
         let timer = VIEWPORT_TIMERS

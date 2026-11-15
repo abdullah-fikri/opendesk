@@ -90,6 +90,12 @@ pub struct FilePayload {
     /// the receiver's clipboard.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// `offer` of dropped files (`file-drop`): where on the host's screen, 0..10000 each, they were dropped. The
+    /// host drags them there instead of putting them on its clipboard.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drop_x: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drop_y: Option<u32>,
 }
 
 /// One entry of a clipboard file offer.
@@ -184,5 +190,16 @@ mod tests {
         assert_eq!(serde_json::from_value::<FilePayload>(v).unwrap(), p);
         let odd: FilePayload = serde_json::from_value(json!({ "action": "resume", "id": "x" })).unwrap();
         assert_eq!(odd.action, FileAction::Unknown);
+    }
+
+    #[test]
+    fn dropped_offer_carries_its_point_and_old_offers_have_none() {
+        let p = FilePayload { drop_x: Some(2500), drop_y: Some(7500), ..FilePayload::offer("of_1", vec![]) };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["dropX"], 2500);
+        assert_eq!(v["dropY"], 7500);
+        assert_eq!(serde_json::from_value::<FilePayload>(v).unwrap(), p);
+        let plain = serde_json::to_value(FilePayload::offer("of_2", vec![])).unwrap();
+        assert!(plain.get("dropX").is_none());
     }
 }

@@ -28,5 +28,10 @@ pub fn set_offer(_from: &str, _payload: &FilePayload, _tx_out: Sender<Outgoing>)
     None
 }
 
+/// Offers are not advertised; one from a misbehaving peer is ignored.
+pub fn drop_offer(_from: &str, _payload: &FilePayload, _tx_out: Sender<Outgoing>) -> Option<String> {
+    None
+}
+
 /// Nothing to clear.
 pub fn clear_offer(_partner: &str) {}

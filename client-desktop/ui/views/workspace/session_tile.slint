@@ -17,6 +17,7 @@ export component SessionTile inherits Rectangle {
     callback key_event(string, string, bool, bool, bool, bool, bool);
     callback release_keys(string);
     callback viewport_resized(string, int, int);
+    callback frame_rect(string, int, int, int, int);
 
     background: Theme.canvas;
 
@@ -81,6 +82,7 @@ export component SessionTile inherits Rectangle {
                 send_key_event(t, p, r, c, a, sh) => { root.key_event(root.s.id, t, p, r, c, a, sh); }
                 release_remote_keys => { root.release_keys(root.s.id); }
                 viewport_resized(w, h) => { root.viewport_resized(root.s.id, w, h); }
+                frame_rect(x, y, w, h) => { root.frame_rect(root.s.id, x, y, w, h); }
             }
 
             // Relay connection lost, no live direct path: the last frame stays under this until the session

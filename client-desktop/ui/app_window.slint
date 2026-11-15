@@ -150,6 +150,7 @@ export component MainWindow inherits Window {
     callback session_release_keys(string);
     // Physical pixels of the session's canvas or tile.
     callback session_viewport_resized(string, int, int);
+    callback session_frame_rect(string, int, int, int, int);
     callback select_monitor(string, int);
     callback session_send_files(string);
     callback session_toggle_mic(string);
@@ -251,6 +252,7 @@ export component MainWindow inherits Window {
             session_key_event(id, t, p, r, c, a, sh) => { root.session_key_event(id, t, p, r, c, a, sh); }
             session_release_keys(id) => { root.session_release_keys(id); }
             session_viewport_resized(id, w, h) => { root.session_viewport_resized(id, w, h); }
+            session_frame_rect(id, x, y, w, h) => { root.session_frame_rect(id, x, y, w, h); }
             select_monitor(id, i) => { root.select_monitor(id, i); }
             session_send_files(id) => { root.session_send_files(id); }
             session_toggle_mic(id) => { root.session_toggle_mic(id); }

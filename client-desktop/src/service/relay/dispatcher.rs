@@ -431,6 +431,18 @@ impl Connection {
                 logger::info("clipboard", &format!("Ignored file offer from unfocused session {from}."));
             }
             FileAction::Offer if payload.image.is_some() => self.on_clipboard_image(&from, &payload),
+            // Files dropped on our screen by the viewer: pointer to the spot, then drag them onto what is there.
+            FileAction::Offer if payload.drop_x.is_some() && payload.drop_y.is_some() => {
+                let (x, y) = (payload.drop_x.unwrap_or(0), payload.drop_y.unwrap_or(0));
+                if ctx.is_hosting() && ctx.partner() == from {
+                    crate::service::host::input::move_pointer_for_drop(&ctx, x as f64 / 10_000.0, y as f64 / 10_000.0);
+                    if let Some(status) = virtual_clipboard::drop_offer(&from, &payload, ctx.outbox.clone()) {
+                        ctx.ui.status(status);
+                    }
+                } else if let Some(status) = virtual_clipboard::set_offer(&from, &payload, ctx.outbox.clone()) {
+                    ctx.ui.status(status);
+                }
+            }
             FileAction::Offer => {
                 if let Some(status) = virtual_clipboard::set_offer(&from, &payload, ctx.outbox.clone()) {
                     ctx.ui.status(status);

@@ -101,8 +101,15 @@ unsafe extern "system" {
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 #[serde(tag = "t", rename_all = "kebab-case")]
 pub enum ToHelper {
-    /// Put the partner's offer on the clipboard (the helper validates `files` again).
-    Set { from: String, offer_id: String, files: Vec<OfferEntry> },
+    /// Put the partner's offer on the clipboard (the helper validates `files` again). With `drop` it is dragged
+    /// onto the window under the cursor instead and the clipboard stays as it is.
+    Set {
+        from: String,
+        offer_id: String,
+        files: Vec<OfferEntry>,
+        #[serde(default)]
+        drop: bool,
+    },
     /// Session with `partner` ended (empty = any).
     Clear { partner: String },
     /// Paste stream `tid` is complete (`ok`) or failed.
