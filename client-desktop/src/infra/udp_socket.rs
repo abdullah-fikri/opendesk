@@ -3,12 +3,27 @@
 
 use std::io;
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6, UdpSocket};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
+
+use super::tcp_path::TcpPath;
 
 pub struct PathSocket {
     sock: UdpSocket,
     /// Bound to `[::]` with IPv4 mapped in: IPv6 peers are reachable too.
     dual: bool,
+    /// Direct TCP to the partner for networks that drop UDP; idle until `P2p` opens it.
+    tcp: Arc<TcpPath>,
+    /// Tests: pretend the network drops all UDP.
+    #[cfg(test)]
+    pub block_udp: std::sync::atomic::AtomicBool,
+}
+
+impl Drop for PathSocket {
+    fn drop(&mut self) {
+        self.tcp.close();
+    }
 }
 
 impl PathSocket {
@@ -27,11 +42,27 @@ impl PathSocket {
             && raw.set_only_v6(false).is_ok()
             && raw.bind(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)).into()).is_ok()
         {
-            return Ok(Self { sock: raw.into(), dual: true });
+            let sock: UdpSocket = raw.into();
+            let tcp = TcpPath::new(sock.local_addr().map(|a| a.port()).unwrap_or(0), true);
+            return Ok(Self {
+                sock,
+                dual: true,
+                tcp,
+                #[cfg(test)]
+                block_udp: Default::default(),
+            });
         }
         let raw = open(Domain::IPV4)?;
         raw.bind(&SocketAddr::from(([0, 0, 0, 0], 0)).into())?;
-        Ok(Self { sock: raw.into(), dual: false })
+        let sock: UdpSocket = raw.into();
+        let tcp = TcpPath::new(sock.local_addr().map(|a| a.port()).unwrap_or(0), false);
+        Ok(Self {
+            sock,
+            dual: false,
+            tcp,
+            #[cfg(test)]
+            block_udp: Default::default(),
+        })
     }
 
     /// True when IPv6 candidates can be offered and reached.
@@ -43,13 +74,53 @@ impl PathSocket {
         self.sock.local_addr().map(|a| a.port()).unwrap_or(0)
     }
 
+    /// The direct TCP side of this path.
+    pub fn tcp(&self) -> &Arc<TcpPath> {
+        &self.tcp
+    }
+
+    /// Sends over the TCP stream to `to` while one exists and UDP from there is silent, else as a datagram.
     pub fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
+        if self.tcp.active.load(Ordering::Relaxed) && self.tcp.send(buf, to) {
+            return Ok(buf.len());
+        }
+        #[cfg(test)]
+        if self.block_udp.load(Ordering::SeqCst) {
+            return Ok(buf.len());
+        }
         self.sock.send_to(buf, self.wire(to)?)
     }
 
+    /// The next datagram, from UDP or from a TCP stream.
     pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-        let (n, from) = self.sock.recv_from(buf)?;
-        Ok((n, canonical(from)))
+        loop {
+            let tcp_on = self.tcp.active.load(Ordering::Relaxed);
+            if tcp_on && let Some(got) = self.tcp.recv(buf) {
+                return Ok(got);
+            }
+            let (n, from) = match self.sock.recv_from(buf) {
+                Ok(got) => got,
+                Err(e) => {
+                    // A stream may have delivered while UDP waited.
+                    return match self.tcp.recv(buf) {
+                        Some(got) => Ok(got),
+                        None => Err(e),
+                    };
+                }
+            };
+            let from = canonical(from);
+            if self.tcp.is_wake(&buf[..n], from) {
+                continue;
+            }
+            #[cfg(test)]
+            if self.block_udp.load(Ordering::SeqCst) {
+                continue;
+            }
+            if tcp_on {
+                self.tcp.heard_udp(from);
+            }
+            return Ok((n, from));
+        }
     }
 
     pub fn set_read_timeout(&self, wait: Option<Duration>) -> io::Result<()> {

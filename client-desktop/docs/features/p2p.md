@@ -52,6 +52,19 @@ which opens the host's backpressure gate. Input uses a reliable, ordered channel
 Voice is sent as is. Only viewer-to-host input uses the path; host events such as cursor shape and monitors take
 the relay.
 
+## Direct TCP (K3)
+
+Some networks (offices, hotels) drop UDP but let TCP through. When UDP probes get no answer for 2 s, both ends also
+connect over TCP to the partner's candidate addresses (same IP and port number as the UDP candidate), from the same
+local port number they listen on, so a TCP hole punch (simultaneous open) can work too. The Noise-sealed datagrams
+travel unchanged, each prefixed with a 2-byte length, so nothing above the socket knows which way they went
+(`infra/tcp_path.rs`, plugged into `PathSocket`). A stream carries a datagram only while no UDP arrives from the
+same address; UDP heard again takes the traffic back. Order of preference: UDP P2P, TCP direct, UDP relay, relay
+WebSocket. At most 8 streams; a frame over 2 KiB closes its stream; nothing is accepted before the 2 s mark and
+every datagram still has to open under the session keys. `OPENDESK_TCP_PATH=0` turns it off. The log says
+`P2P path active: direct TCP via ...`. Router port mapping (K1) maps UDP only, so across two NATs TCP works only
+when the NATs allow the punch.
+
 ## Lost fragments (`video-nack`)
 
 When both sides list `video-nack`, a lost fragment no longer loses its frame (and, for H.264 or delta video,
