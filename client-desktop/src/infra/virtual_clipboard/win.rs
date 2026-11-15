@@ -233,6 +233,40 @@ struct Offer {
     offer_id: String,
     files: Vec<OfferFile>,
     route: Route,
+    /// Small files already being pulled before Explorer asks for them, by entry index.
+    prefetch: Mutex<HashMap<usize, Prefetched>>,
+}
+
+/// How many following small files are pulled ahead while Explorer pastes a list.
+const PREFETCH_AHEAD: usize = 8;
+/// Files up to this size are pulled ahead (they cost a round trip each, not bandwidth).
+const PREFETCH_MAX_BYTES: u64 = 256 * 1024;
+
+/// A pull started for an entry nobody has opened yet: its stream is built when Explorer asks for it.
+struct Prefetched {
+    tid: String,
+    rx: Option<Receiver<SinkMsg>>,
+}
+
+impl Prefetched {
+    /// Hands the stream over for use: nothing is forgotten when `self` is dropped afterwards.
+    fn into_parts(mut self) -> (String, Receiver<SinkMsg>) {
+        let rx = self.rx.take().expect("a prefetched stream is taken once");
+        (std::mem::take(&mut self.tid), rx)
+    }
+}
+
+impl Drop for Prefetched {
+    /// Never opened (the offer was replaced): forget the stream so the bytes stop being kept.
+    fn drop(&mut self) {
+        if self.rx.is_none() {
+            return;
+        }
+        with_sinks(|sinks| sinks.remove(&self.tid));
+        if helper_streams(|m| m.remove(&self.tid)).is_some() {
+            crate::infra::clipboard_helper::to_agent(&ToAgent::Close { tid: self.tid.clone() });
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -563,8 +597,8 @@ unsafe extern "system" fn stream_clone(_: *mut c_void, out: *mut *mut c_void) ->
     }
 }
 
-/// Starts pulling `index` from the offer and returns an owned IStream (refcount 1) that yields its bytes.
-fn open_pull(offer: &Offer, index: usize) -> *mut c_void {
+/// Starts pulling entry `index` from the partner under a new transfer ID.
+fn start_pull(offer: &Offer, index: usize) -> Prefetched {
     let entry = &offer.files[index];
     let (name, size) = (entry.name.clone(), entry.size);
     let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_micros();
@@ -590,6 +624,28 @@ fn open_pull(offer: &Offer, index: usize) -> *mut c_void {
             }
         }
     }
+    Prefetched { tid, rx: Some(rx) }
+}
+
+/// Pulls the next few small files before Explorer asks for them: pasting a hundred small files otherwise costs
+/// a round trip per file, one after the other.
+fn prefetch_after(offer: &Offer, index: usize) {
+    let mut ahead = offer.prefetch.lock();
+    let next = (index + 1..offer.files.len())
+        .filter(|i| !offer.files[*i].dir && !ahead.contains_key(i))
+        .take_while(|i| offer.files[*i].size <= PREFETCH_MAX_BYTES)
+        .take(PREFETCH_AHEAD.saturating_sub(ahead.len()));
+    for i in next.collect::<Vec<_>>() {
+        ahead.insert(i, start_pull(offer, i));
+    }
+}
+
+/// Returns an owned IStream (refcount 1) that yields the bytes of entry `index`, pulled on demand or ahead.
+fn open_pull(offer: &Offer, index: usize) -> *mut c_void {
+    let size = offer.files[index].size;
+    let pulled = offer.prefetch.lock().remove(&index).unwrap_or_else(|| start_pull(offer, index));
+    let (tid, rx) = pulled.into_parts();
+    prefetch_after(offer, index);
     let stream = Box::new(PullStream {
         vtbl: &STREAM_VTBL,
         refs: AtomicU32::new(1),
@@ -1310,17 +1366,28 @@ fn place_offer(from: &str, payload: &FilePayload, tx_out: Sender<Outgoing>, drop
         let msg =
             ToHelper::Set { from: from.to_string(), offer_id: offer_id.clone(), files: payload.files.clone()?, drop };
         let mut offers = AGENT_OFFERS.lock();
-        offers.push(Offer { from: from.to_string(), offer_id, files, route: Route::Local(tx_out) });
+        offers.push(Offer {
+            from: from.to_string(),
+            offer_id,
+            files,
+            route: Route::Local(tx_out),
+            prefetch: Default::default(),
+        });
         let excess = offers.len().saturating_sub(KEPT_AGENT_OFFERS);
         offers.drain(..excess);
         std::mem::drop(offers);
+        if !drop {
+            *LAST_SET.lock() =
+                Some((from.to_string(), payload.id.clone(), payload.files.clone()?, std::time::Instant::now()));
+        }
         if crate::infra::clipboard_helper::send(&msg) {
             return Some(status);
         }
         logger::warn("clipbrd.capture", "Clipboard helper unavailable; offer not placed.");
         return None;
     }
-    let offer = Offer { from: from.to_string(), offer_id, files, route: Route::Local(tx_out) };
+    let offer =
+        Offer { from: from.to_string(), offer_id, files, route: Route::Local(tx_out), prefetch: Default::default() };
     post(if drop { Cmd::Drop(offer) } else { Cmd::Set(offer) });
     Some(if drop { "Dropping files...".to_string() } else { status })
 }
@@ -1329,6 +1396,7 @@ fn place_offer(from: &str, payload: &FilePayload, tx_out: Sender<Outgoing>, drop
 pub fn clear_offer(partner: &str) {
     post(Cmd::Clear(partner.to_string()));
     AGENT_OFFERS.lock().retain(|o| !partner.is_empty() && o.from != partner);
+    LAST_SET.lock().take_if(|(from, _, _, _)| partner.is_empty() || from == partner);
     crate::infra::clipboard_helper::send(&ToHelper::Clear { partner: partner.to_string() });
 }
 
@@ -1337,6 +1405,13 @@ pub fn clear_offer(partner: &str) {
 
 /// Offers the agent passed to the helper, newest last; the helper may pull only from these.
 static AGENT_OFFERS: Mutex<Vec<Offer>> = Mutex::new(Vec::new());
+/// The offer last placed on the user's clipboard through the helper, so a new helper (the user switched between
+/// the console and a remote desktop session, or logged on again) gets it back and the copy is not lost.
+static LAST_SET: Mutex<Option<LastSet>> = Mutex::new(None);
+/// Partner, offer ID, entries and when it was placed.
+type LastSet = (String, String, Vec<OfferEntry>, std::time::Instant);
+/// A copy older than this is not put back: the user may have copied something else since.
+const RESTORE_WITHIN: Duration = Duration::from_secs(120);
 /// Offers kept for pulls (same as the sender's `KEPT_OFFERS`).
 const KEPT_AGENT_OFFERS: usize = 4;
 /// Helper process: paste streams waiting for bytes from the agent, by transfer ID.
@@ -1381,8 +1456,19 @@ pub fn helper_request(msg: ToAgent) {
 
 /// Agent: the helper is gone; its paste streams and offers went with it.
 pub fn helper_lost() {
+    // Running pastes died with the helper, but the offers are still the partner's: they come back with the next one.
     with_sinks(|sinks| sinks.retain(|_, s| matches!(s.out, SinkOut::Local(_))));
-    AGENT_OFFERS.lock().clear();
+}
+
+/// Agent: a helper connected; it gets the last offer back if the partner still holds it.
+pub fn helper_connected() {
+    let last = LAST_SET.lock().clone();
+    let Some((from, offer_id, files, _)) = last.filter(|l| l.3.elapsed() < RESTORE_WITHIN) else { return };
+    if !AGENT_OFFERS.lock().iter().any(|o| o.from == from && o.offer_id == offer_id) {
+        return;
+    }
+    logger::info("clipbrd.capture", &format!("New clipboard helper: putting offer {offer_id} back on the clipboard."));
+    crate::infra::clipboard_helper::send(&ToHelper::Set { from, offer_id, files, drop: false });
 }
 
 /// Helper: a command from the agent.
@@ -1390,7 +1476,7 @@ pub fn helper_command(msg: ToHelper) {
     match msg {
         ToHelper::Set { from, offer_id, files, drop } => match parse_offer_files(&files) {
             Ok(files) if !files.is_empty() => {
-                let offer = Offer { from, offer_id, files, route: Route::Agent };
+                let offer = Offer { from, offer_id, files, route: Route::Agent, prefetch: Default::default() };
                 post(if drop { Cmd::Drop(offer) } else { Cmd::Set(offer) })
             }
             _ => logger::warn("clipbrd.capture", "Agent sent an unusable offer; ignored."),
@@ -1761,6 +1847,7 @@ mod tests {
                 remote: 0,
             }],
             route: Route::Local(tx_out),
+            prefetch: Default::default(),
         };
         let obj =
             Box::into_raw(Box::new(DataObject { vtbl: &DATA_VTBL, refs: AtomicU32::new(1), offer: Arc::new(offer) }))
@@ -1797,6 +1884,7 @@ mod tests {
                 remote: 0,
             }],
             route: Route::Local(tx_out),
+            prefetch: Default::default(),
         };
         let stream = open_pull(&offer, 0);
         let tid = unsafe { (*(stream as *const PullStream)).tid.clone() };
@@ -1823,6 +1911,58 @@ mod tests {
         }
     }
 
+    /// Opening the first of many small files already starts pulling the next ones; opening those later reuses them.
+    #[test]
+    fn small_files_are_pulled_ahead_of_explorer() {
+        let (tx_out, rx_out) = mpsc::channel();
+        let file = |name: &str, size: u64, remote: usize| OfferFile {
+            name: name.into(),
+            size,
+            dir: false,
+            mtime: None,
+            ctime: None,
+            atime: None,
+            attrs: 0,
+            remote,
+        };
+        let mut files: Vec<OfferFile> = (0..12).map(|i| file(&format!("s{i}.txt"), 100, i)).collect();
+        files.insert(3, file("big.bin", PREFETCH_MAX_BYTES + 1, 99));
+        let offer = Offer {
+            from: "111".into(),
+            offer_id: "of_pf".into(),
+            files,
+            route: Route::Local(tx_out),
+            prefetch: Default::default(),
+        };
+        let pulls = |n: usize| -> Vec<u64> {
+            (0..n)
+                .map(|_| match rx_out.recv_timeout(Duration::from_secs(2)).unwrap() {
+                    Outgoing::Message(ClientMessage::RelayFile { payload, .. }) => payload.index.unwrap(),
+                    _ => panic!("unexpected message"),
+                })
+                .collect()
+        };
+        let first = open_pull(&offer, 0);
+        // Entry 0 plus the two small files before the big one; nothing past the big one.
+        assert_eq!(pulls(3), vec![0, 1, 2]);
+        assert!(rx_out.recv_timeout(Duration::from_millis(100)).is_err(), "pulled past a big file");
+        // Opening entry 1 reuses its pull and pulls nothing new (the next entry is the big one).
+        let second = open_pull(&offer, 1);
+        assert!(rx_out.recv_timeout(Duration::from_millis(100)).is_err(), "pulled again");
+        let big = open_pull(&offer, 3);
+        assert_eq!(pulls(1), vec![99]);
+        // Entries after the big file are pulled ahead from there: 8 at most, entry 2 still being one of them.
+        assert_eq!(pulls(PREFETCH_AHEAD - 1), (3..3 + PREFETCH_AHEAD as u64 - 1).collect::<Vec<_>>());
+        assert!(rx_out.recv_timeout(Duration::from_millis(100)).is_err(), "pulled more than the window");
+        unsafe {
+            stream_release(first);
+            stream_release(second);
+            stream_release(big);
+        }
+        drop(offer); // forgets the streams nobody opened
+        with_sinks(|sinks| assert!(sinks.is_empty(), "left {} sinks", sinks.len()));
+    }
+
     #[test]
     fn binary_chunks_feed_the_stream_in_order_only() {
         let (tx_out, _rx_out) = mpsc::channel();
@@ -1840,6 +1980,7 @@ mod tests {
                 remote: 0,
             }],
             route: Route::Local(tx_out),
+            prefetch: Default::default(),
         };
         let stream = open_pull(&offer, 0);
         let tid = unsafe { (*(stream as *const PullStream)).tid.clone() };

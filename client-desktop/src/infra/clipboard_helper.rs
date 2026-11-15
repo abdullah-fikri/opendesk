@@ -406,6 +406,7 @@ fn run_once() -> Result<(), String> {
 fn serve(to_helper: Pipe, from_helper: &Pipe) {
     *LINK.lock() = Some(Arc::new(to_helper));
     set_ready(true);
+    virtual_clipboard::helper_connected();
     while let Some((tag, body)) = from_helper.recv() {
         let msg = (tag == TAG_JSON).then(|| serde_json::from_slice::<ToAgent>(&body).ok()).flatten();
         match msg {
