@@ -111,9 +111,9 @@ pub fn decode(payload: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
             if indices.len() != n || indices.iter().any(|&i| i as usize >= count) {
                 return None;
             }
-            let pal: Vec<[u8; 4]> = colors.chunks_exact(3).map(|c| [c[0], c[1], c[2], 255]).collect();
+            let pal: Vec<[u8; 4]> = colors.as_chunks::<3>().0.iter().map(|c| [c[0], c[1], c[2], 255]).collect();
             rgba.resize(n * 4, 0);
-            for (out, &i) in rgba.chunks_exact_mut(4).zip(&indices) {
+            for (out, &i) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(&indices) {
                 out.copy_from_slice(&pal[i as usize]);
             }
         }
@@ -123,7 +123,7 @@ pub fn decode(payload: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
                 return None;
             }
             rgba.resize(n * 4, 255);
-            for (out, c) in rgba.chunks_exact_mut(4).zip(rgb.chunks_exact(3)) {
+            for (out, c) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(rgb.as_chunks::<3>().0) {
                 out[..3].copy_from_slice(c);
             }
         }

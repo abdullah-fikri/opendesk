@@ -1329,6 +1329,8 @@ impl P2p {
     }
 
     /// The connection processed `bytes` of received file stream payload: the advertised window grows back.
+    // `fetch_update` is deprecated (renamed `try_update`) on newer toolchains; kept for older ones.
+    #[allow(deprecated)]
     pub fn bulk_consumed(&self, bytes: usize) {
         let _ = self.bulk_pending.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |p| Some(p.saturating_sub(bytes)));
     }

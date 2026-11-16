@@ -204,6 +204,7 @@ impl H264Encoder {
         Err(err("no GPU input"))
     }
 
+    /// Encodes one BGRA frame; `None` when the encoder skipped it, else the stream bytes and whether it is a key frame.
     pub fn encode(&mut self, bgra: &[u32], stride: usize) -> Result<Option<(Vec<u8>, bool)>> {
         let (w, h) = (self.width as usize, self.height as usize);
         bgra_to_nv12(bgra, stride, w, h, &mut self.nv12);

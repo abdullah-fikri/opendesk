@@ -459,9 +459,9 @@ mod tests {
         controller::set_stats_overlay(&viewer, true);
         let deadline = Instant::now() + Duration::from_secs(10);
         let values = loop {
-            // The host's summary fills "Host grab"; until then it shows a dash.
+            // The host's summary fills "Host capture"; until then it shows a dash.
             if let Some((labels, values)) = ui.stats.lock().clone()
-                && let Some(row) = labels.lines().position(|l| l == "Host grab")
+                && let Some(row) = labels.lines().position(|l| l == "Host capture")
                 && values.lines().nth(row).is_some_and(|v| v != "–")
             {
                 break values;

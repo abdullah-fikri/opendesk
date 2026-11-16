@@ -874,7 +874,7 @@ mod tests {
             viewer.dirty = union(viewer.dirty, Some((y0, y1)));
             let (buf, rows) = viewer.output();
             assert_eq!(buf.as_bytes(), &viewer.comp.fb[..], "step {step}");
-            let (a, b) = rows.map_or((0, h as usize), |(a, b)| (a, b));
+            let (a, b) = rows.unwrap_or((0, h as usize));
             screen[a * row..b * row].copy_from_slice(&buf.as_bytes()[a * row..b * row]);
             assert_eq!(screen, viewer.comp.fb, "step {step}: rows {rows:?} miss a change");
             if step % 3 == 0 {
