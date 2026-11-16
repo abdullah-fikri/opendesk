@@ -5,6 +5,17 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-11-16
+
+Patch release: no protocol change; update both sides of a session.
+
+### Fixed
+- Files sent over the direct P2P path (new in 1.4.0) were never confirmed: the relay dropped the receiver's
+  confirmation, so each file failed after two minutes with "no confirmation from the receiver" even though it had
+  arrived. Pasting a few small files took minutes, and files sent late landed in `Downloads\OpenDesk` instead of
+  where they were pasted. The confirmation now goes back over the P2P path.
+- The direct TCP path opens on Linux and macOS too (`SO_REUSEPORT` on its sockets).
+
 ## [1.4.0] - 2026-11-16
 
 Minor release: every protocol addition below is negotiated per peer, so 1.3.x peers keep working.
@@ -321,6 +332,7 @@ First public release.
 - Windows binaries are not code-signed yet (SmartScreen warns on first run); Linux packages are unsigned `.deb`
   files. Verify downloads against `SHA256SUMS.txt`.
 
+[1.4.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.4.1
 [1.4.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.4.0
 [1.3.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.3.1
 [1.3.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.3.0
