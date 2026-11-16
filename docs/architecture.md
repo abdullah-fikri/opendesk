@@ -35,7 +35,7 @@ time (static dispatch, no trait objects in the capture or encode path):
 
 - `core-engine`: `capture`, `input`, `clipboard`, `desktop`, `codec::jpeg` and `codec::h264` each have a Windows
   backend (`win`, `gdiplus`, `mf`) and a backend for other systems (`x11`, `unix`, `portable`, `cisco`).
-- `client-desktop/src/infra`: `audio`, `autostart`, `privacy`, `tray`, `virtual_clipboard` and `window` are
+- `client-desktop/src/infra`: `audio`, `autostart`, `privacy`, `transfer_badge`, `tray`, `virtual_clipboard` and `window` are
   directories with `win.rs` and `unix.rs`; small differences (paths, clock, device name) are inline `cfg`s.
 - Features a platform lacks are not faked: the peer advertises what it can do (`host-features`, `viewer-only`,
   `file-offer`, `video-h264`) and the other side hides or avoids the rest.

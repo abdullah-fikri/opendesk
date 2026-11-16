@@ -57,6 +57,8 @@ pub struct SecurityView {
 /// A decoded frame ready for display. The pixel buffer is shared, not copied, on its way to the UI.
 pub struct Frame {
     pub pixels: SharedPixelBuffer<Rgba8Pixel>,
+    /// Rows `start..end` that differ from the session's previous frame; None for the whole picture.
+    pub rows: Option<(usize, usize)>,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -151,7 +153,7 @@ pub struct WallView {
 pub enum TransferState {
     /// Bytes are moving.
     Active,
-    /// Every byte was sent; waiting for the receiver to verify it.
+    /// Every byte reached the relay; the receiver is saving and verifying it ("Finishing").
     Verifying,
     Done,
     Failed(String),

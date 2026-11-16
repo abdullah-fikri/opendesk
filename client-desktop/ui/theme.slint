@@ -1,14 +1,16 @@
-// Colors, sizes and stroke icons shared by every view. Square corners everywhere.
+// Colors, sizes and stroke icons shared by every view. Soft corners (radius tokens below), layered dark surfaces.
 
 export global Theme {
-    out property <color> bg: #09090b;
+    out property <color> bg: #101013;
     out property <color> canvas: #050507;
-    out property <color> surface: #111114;
-    out property <color> surface-2: #18181b;
-    out property <color> raised: #141418;
-    out property <color> hover: #1f1f23;
-    out property <color> divider: #1f1f23;
-    out property <color> border: #27272a;
+    out property <color> bar: #0c0c0f;
+    out property <color> surface: #17171c;
+    out property <color> surface-2: #202027;
+    out property <color> raised: #1c1c22;
+    out property <color> input: #0b0b0e;
+    out property <color> hover: #26262e;
+    out property <color> divider: #ffffff11;
+    out property <color> border: #ffffff1c;
     out property <color> text: #f4f4f5;
     out property <color> text-2: #a1a1aa;
     out property <color> text-3: #71717a;
@@ -19,6 +21,9 @@ export global Theme {
     out property <color> relay: #38bdf8;
     out property <color> wait: #f59e0b;
     // Shared sizes
+    out property <length> radius-sm: 6px;
+    out property <length> radius-md: 8px;
+    out property <length> radius-lg: 10px;
     out property <length> control-h: 28px;
     out property <length> font-ui: 11px;
 
@@ -46,6 +51,9 @@ export global Icons {
     out property <string> clock: "M6 1 A5 5 0 1 0 6 11 A5 5 0 1 0 6 1 M6 3.5 L6 6 L8 7.5";
     out property <string> server: "M1.5 1.5 L10.5 1.5 L10.5 5.5 L1.5 5.5 Z M1.5 6.5 L10.5 6.5 L10.5 10.5 L1.5 10.5 Z M3.5 3.5 L5 3.5 M3.5 8.5 L5 8.5";
     out property <string> grid: "M1 1 L5 1 L5 5 L1 5 Z M7 1 L11 1 L11 5 L7 5 Z M1 7 L5 7 L5 11 L1 11 Z M7 7 L11 7 L11 11 L7 11 Z";
+    // Sliders: the Settings button.
+    out property <string> settings: "M1.5 3.5 L10.5 3.5 M1.5 8.5 L10.5 8.5 M4 1.5 L4 5.5 M8 6.5 L8 10.5";
+    out property <string> back: "M11 6 L1.5 6 M5.5 2 L1.5 6 L5.5 10";
     // Opens another view or window.
     out property <string> external: "M5 2 L2 2 L2 10 L10 10 L10 7 M7 2 L10 2 L10 5 M10 2 L5.5 6.5";
 }

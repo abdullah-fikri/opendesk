@@ -138,7 +138,7 @@ mod tests {
             let s = reg.get(host).expect("frame for an open tab");
             s.inbox.push(payload.to_vec());
             let out = decoders.entry(host.to_string()).or_insert_with(ViewerDecoder::new).process(s.inbox.drain());
-            let ViewerOutput::Frame(buf, w, h) = out else { panic!("frame from {host} did not decode") };
+            let ViewerOutput::Frame(buf, w, h, _) = out else { panic!("frame from {host} did not decode") };
             assert_eq!((w, h), (64, 48));
             let px = buf.as_bytes();
             let (r, b) = (px[0], px[2]);

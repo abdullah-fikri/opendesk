@@ -9,10 +9,12 @@ use std::time::Instant;
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Image, Weak};
 
-use super::{MainWindow, dashboard_model, session_model, transfer_model, view_model};
+use super::{MainWindow, dashboard_model, gl_frames, session_model, transfer_model, view_model};
 use crate::domain::history::HistoryRecord;
+use crate::infra::logger;
 use crate::service::file_transfer::{self, IN_FLIGHT_CHUNKS, LAST_RECEIVED_MS};
 use crate::service::ui_port::{Frame, RelayStatus, RemoteHost, SessionChange, TransferUpdate, UiPort};
+use crate::service::viewer::stats::FrameLatency;
 
 /// The frame-rate line in the status bar yields to file-transfer progress for this long after a transfer.
 const TRANSFER_STATUS_HOLD_MS: u64 = 2000;
@@ -22,6 +24,10 @@ const TRANSFER_STATUS_HOLD_MS: u64 = 2000;
 /// overwritten here are display-only: the decoder has already applied every delta to its own framebuffer.
 type PendingFrames = Arc<Mutex<HashMap<String, Frame>>>;
 
+/// Latency of the newest frame per session that is in the window's model but not yet rendered; the rendering
+/// notifier records it as presented. A frame replaced before a render was never on screen and records nothing.
+type PendingPresent = Arc<Mutex<HashMap<String, FrameLatency>>>;
+
 /// Newest monitor-wall thumbnail per host not yet shown; non-empty exactly while a closure is queued.
 #[cfg(feature = "admin")]
 type PendingWall = Arc<Mutex<HashMap<String, slint::SharedPixelBuffer<slint::Rgba8Pixel>>>>;
@@ -30,6 +36,8 @@ type PendingWall = Arc<Mutex<HashMap<String, slint::SharedPixelBuffer<slint::Rgb
 pub struct SlintUi {
     window: Weak<MainWindow>,
     frames: PendingFrames,
+    /// None where the renderer cannot report rendering: frames then count as presented when handed to Slint.
+    presented: Option<PendingPresent>,
     #[cfg(feature = "admin")]
     wall: PendingWall,
 }
@@ -45,6 +53,7 @@ impl SlintUi {
         Self {
             window: window.as_weak(),
             frames: PendingFrames::default(),
+            presented: present_on_render(window),
             #[cfg(feature = "admin")]
             wall: PendingWall::default(),
         }
@@ -52,6 +61,36 @@ impl SlintUi {
 
     fn apply(&self, f: impl FnOnce(&MainWindow) + Send + 'static) {
         let _ = self.window.upgrade_in_event_loop(move |w| f(&w));
+    }
+}
+
+/// Records frames as presented when Slint has rendered them (`AfterRendering`: the scene is drawn and about to
+/// be swapped to the screen), the latency overlay's Display end point. None if the renderer does not support it.
+fn present_on_render(window: &MainWindow) -> Option<PendingPresent> {
+    let pending = PendingPresent::default();
+    let sink = Arc::clone(&pending);
+    let installed = window.window().set_rendering_notifier(move |state, api| {
+        if gl_frames::on_rendering(&state, api) {
+            // Outside rendering: rows switch to their new texture (or back to plain images after a teardown).
+            let _ = slint::invoke_from_event_loop(|| {
+                for (id, image) in gl_frames::take_ready() {
+                    session_model::update(&id, |r| r.frame = image);
+                }
+            });
+        }
+        if matches!(state, slint::RenderingState::AfterRendering) {
+            let now = Instant::now();
+            for (_, latency) in sink.lock().drain() {
+                latency.shown(now);
+            }
+        }
+    });
+    match installed {
+        Ok(()) => Some(pending),
+        Err(e) => {
+            logger::info("ui", &format!("No rendering notifier ({e:?}); latency ends when a frame reaches the UI."));
+            None
+        }
     }
 }
 
@@ -153,14 +192,27 @@ impl UiPort for SlintUi {
         });
     }
 
-    fn session_frame(&self, id: String, frame: Frame) {
-        if self.frames.lock().insert(id.clone(), frame).is_some() {
-            return; // the queued closure shows this newer frame instead
+    fn session_frame(&self, id: String, mut frame: Frame) {
+        {
+            let mut pending = self.frames.lock();
+            if let Some(older) = pending.remove(&id) {
+                // The older frame is never shown: its changed rows travel with this one.
+                frame.rows = gl_frames::union(older.rows, frame.rows);
+                pending.insert(id, frame);
+                return; // the queued closure shows this newer frame instead
+            }
+            pending.insert(id.clone(), frame);
         }
         let pending = Arc::clone(&self.frames);
+        let presented = self.presented.clone();
         self.apply(move |w| {
             let Some(frame) = pending.lock().remove(&id) else { return };
-            let image = Image::from_rgba8(frame.pixels);
+            // Our own texture when OpenGL is there (only changed rows are uploaded, at the next render).
+            let textured = gl_frames::offer(&id, &frame.pixels, frame.rows);
+            if textured.is_some() {
+                w.window().request_redraw();
+            }
+            let image = textured.unwrap_or_else(|| Image::from_rgba8(frame.pixels));
             let path = frame.path;
             let (width, height) = (frame.width as i32, frame.height as i32);
             let fps = frame.fps as i32;
@@ -187,7 +239,12 @@ impl UiPort for SlintUi {
                 }
             });
             if found {
-                latency.shown(Instant::now());
+                match &presented {
+                    Some(p) => {
+                        p.lock().insert(id.clone(), latency);
+                    }
+                    None => latency.shown(Instant::now()),
+                }
             }
             if found && w.get_focused_session() == id.as_str() && !w.get_hosting() && !transfer_busy() {
                 w.set_status_text(format!("{width}x{height} • {} FPS • {path}", frame.fps).into());
@@ -231,6 +288,7 @@ impl UiPort for SlintUi {
         self.frames.lock().remove(&id);
         self.apply(move |w| {
             session_model::remove(&id);
+            gl_frames::forget(&id);
             if session_model::is_empty() {
                 w.set_show_new_session(false);
                 if !w.get_hosting() {

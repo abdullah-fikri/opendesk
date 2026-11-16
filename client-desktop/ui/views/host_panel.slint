@@ -17,7 +17,8 @@ export component HostActiveView inherits VerticalLayout {
 
         Rectangle {
             width: 460px;
-            background: #111114;
+            border-radius: 12px;
+            background: #17171c;
             border-width: 1px;
             border-color: #27272a;
             clip: true;
@@ -57,7 +58,7 @@ export component HostActiveView inherits VerticalLayout {
 
                     Rectangle {
                         height: 68px;
-                        background: #0a0a0c;
+                        background: #0b0b0e;
                         border-width: 1px;
                         border-color: #1f1f24;
 
@@ -94,7 +95,8 @@ export component HostActiveView inherits VerticalLayout {
 
                         Rectangle {
                             height: 36px;
-                            background: !is_mic_muted ? #dc262628 : (ta-host-mic.has-hover ? #1c1c21 : #141418);
+                            border-radius: 6px;
+                            background: !is_mic_muted ? #dc262628 : (ta-host-mic.has-hover ? #26262e : #1c1c22);
                             border-width: 1px;
                             border-color: !is_mic_muted ? #dc2626 : #27272a;
                             ta-host-mic := TouchArea {
@@ -113,6 +115,7 @@ export component HostActiveView inherits VerticalLayout {
 
                         Rectangle {
                             height: 36px;
+                            border-radius: 6px;
                             background: ta-stop.has-hover ? #b91c1c : #dc2626;
                             ta-stop := TouchArea {
                                 mouse-cursor: pointer;

@@ -6,7 +6,7 @@ mod gdi;
 mod monitor;
 mod win32;
 
-pub use cursor::cursor_shape;
+pub use cursor::{cursor_shape, pointer_captured};
 pub use gdi::GdiScreenCapturer;
 pub use monitor::{enable_per_monitor_dpi_awareness, enumerate_monitors, refresh_rate};
 
@@ -125,6 +125,44 @@ impl DesktopCapturer {
         match self {
             DesktopCapturer::Dxgi(d) => d.dirty_hint(),
             DesktopCapturer::Gdi(_) => None,
+        }
+    }
+
+    /// Zero-copy source for the H.264 encoder: DXGI, native or scaled (the encoder scales on the GPU with the same
+    /// area average as the CPU path). None for GDI or a device that cannot keep GPU frames.
+    pub fn gpu_source(&mut self) -> Option<crate::codec::h264::GpuSource> {
+        match self {
+            DesktopCapturer::Dxgi(d) => {
+                let device = d.enable_gpu_frames().ok()?;
+                Some(crate::codec::h264::GpuSource {
+                    device,
+                    src_w: d.screen_width as u32,
+                    src_h: d.screen_height as u32,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// The last image on the GPU (after [`Self::gpu_source`]).
+    pub fn gpu_texture(&self) -> Option<crate::codec::h264::GpuTexture> {
+        match self {
+            DesktopCapturer::Dxgi(d) => d.gpu_texture().cloned(),
+            DesktopCapturer::Gdi(_) => None,
+        }
+    }
+
+    /// Off: the next grabs leave the image on the GPU (see `DxgiCapturer::set_cpu_frames`); GDI ignores it.
+    pub fn set_cpu_frames(&mut self, on: bool) {
+        if let DesktopCapturer::Dxgi(d) = self {
+            d.set_cpu_frames(on);
+        }
+    }
+
+    /// Brings `pixels` up to date after GPU-only grabs (one full readback). A failure leaves the last pixels.
+    pub fn read_back(&mut self) {
+        if let DesktopCapturer::Dxgi(d) = self {
+            let _ = d.read_back();
         }
     }
 

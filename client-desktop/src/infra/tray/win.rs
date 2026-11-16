@@ -25,6 +25,8 @@ const WM_NULL: u32 = 0x0000;
 const WM_USER: u32 = 0x0400;
 /// Window message the tray icon sends; a second app instance posts it to wake the first.
 pub const WM_TRAYICON: u32 = WM_USER + 101;
+/// `wParam` of a `WM_TRAYICON` posted by a second launch, so it is told apart from a click on the tray icon.
+pub const LAUNCH_WPARAM: usize = 0x4F44;
 
 const WM_LBUTTONUP: u32 = 0x0202;
 const WM_LBUTTONDBLCLK: u32 = 0x0203;
@@ -154,11 +156,16 @@ unsafe extern "system" {
     fn PostMessageW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) -> BOOL;
     fn FindWindowW(lpClassName: *const u16, lpWindowName: *const u16) -> HWND;
     fn ShowWindow(hWnd: HWND, nCmdShow: i32) -> BOOL;
+    fn GetForegroundWindow() -> HWND;
+    fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: *mut u32) -> u32;
+    fn AttachThreadInput(idAttach: u32, idAttachTo: u32, fAttach: BOOL) -> BOOL;
+    fn BringWindowToTop(hWnd: HWND) -> BOOL;
 }
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetModuleHandleW(lp_module_name: *const u16) -> *mut c_void;
+    fn GetCurrentThreadId() -> u32;
 }
 
 #[link(name = "shell32")]
@@ -176,9 +183,19 @@ pub fn bring_main_window_to_front(window_title: &str) {
         let wide_title = to_wide(window_title);
         let hwnd = FindWindowW(ptr::null(), wide_title.as_ptr());
         if !hwnd.is_null() {
+            // Windows only lets the foreground thread's input queue take the foreground. Joining it for the call
+            // makes the window really come up instead of just flashing its taskbar button.
+            let fg = GetForegroundWindow();
+            let fg_thread = if fg.is_null() { 0 } else { GetWindowThreadProcessId(fg, ptr::null_mut()) };
+            let me = GetCurrentThreadId();
+            let attached = fg_thread != 0 && fg_thread != me && AttachThreadInput(me, fg_thread, 1) != 0;
             ShowWindow(hwnd, SW_RESTORE);
             ShowWindow(hwnd, SW_SHOW);
+            BringWindowToTop(hwnd);
             SetForegroundWindow(hwnd);
+            if attached {
+                AttachThreadInput(me, fg_thread, 0);
+            }
         }
     }
 }
@@ -235,7 +252,8 @@ unsafe extern "system" fn tray_proc(hwnd: HWND, msg: u32, wparam: usize, lparam:
                     return 0;
                 }
                 WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
-                    dispatch_tray_action(TrayAction::ShowWindow);
+                    let action = if wparam == LAUNCH_WPARAM { TrayAction::Launched } else { TrayAction::ShowWindow };
+                    dispatch_tray_action(action);
                     return 0;
                 }
                 _ => {}

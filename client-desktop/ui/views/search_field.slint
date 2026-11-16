@@ -21,17 +21,18 @@ export component SearchField inherits Rectangle {
         root.edited("");
     }
 
-    height: 30px;
+    height: 40px;
     horizontal-stretch: 1;
-    min-width: 120px;
-    background: #0a0a0c;
+    min-width: 100px;
+    border-radius: Theme.radius-md;
+    background: Theme.input;
     border-width: 1px;
     border-color: input.has-focus ? Theme.accent : Theme.border;
 
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 4px;
-        spacing: 8px;
+        padding-left: 13px;
+        padding-right: 6px;
+        spacing: 10px;
 
         Icon {
             y: (parent.height - self.height) / 2;
@@ -46,14 +47,14 @@ export component SearchField inherits Rectangle {
                 height: parent.height;
                 text: root.placeholder;
                 color: #52525b;
-                font-size: 12px;
+                font-size: 13.5px;
                 vertical-alignment: center;
                 overflow: elide;
             }
             input := TextInput {
                 text <=> root.text;
                 color: Theme.text;
-                font-size: 12px;
+                font-size: 13.5px;
                 vertical-alignment: center;
                 single-line: true;
                 edited => { root.edited(self.text); }
@@ -61,8 +62,9 @@ export component SearchField inherits Rectangle {
         }
 
         if root.text != "": Rectangle {
-            width: 22px;
-            height: 22px;
+            width: 24px;
+            height: 24px;
+            border-radius: Theme.radius-sm;
             y: (parent.height - self.height) / 2;
             background: ta-clear.has-hover ? Theme.hover : transparent;
             ta-clear := TouchArea {

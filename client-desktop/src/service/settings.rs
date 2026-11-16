@@ -83,6 +83,17 @@ pub fn set_mic_on_at_start(on: bool) {
     logger::info("settings", &format!("Microphone when a session starts: {}", if on { "on" } else { "off" }));
 }
 
+/// Stores the pointer lock setting (Settings › Mouse).
+pub fn set_pointer_lock(on: bool) {
+    let mut settings = storage::load_settings();
+    if settings.pointer_lock == Some(on) {
+        return;
+    }
+    settings.pointer_lock = Some(on);
+    storage::save_settings(&settings);
+    logger::info("settings", &format!("Pointer lock for games: {}", if on { "on" } else { "off" }));
+}
+
 /// "What's new" to show now as (title, body), once per update. Never in the Host edition, which has no window.
 /// When there is nothing to show (new install, rollback, no highlights, turned off), the running version is
 /// stored as seen right away.

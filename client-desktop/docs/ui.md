@@ -14,7 +14,7 @@ files contain layout and presentation logic only.
 | `ui/views/` | Screens: `HeaderBar`, `DashboardView` (with its `DashboardTab` and `SearchField`), `HostActiveView` |
 | `ui/views/workspace/` | Viewer sessions: `SessionWorkspace` with `SessionTab`, `SessionToolbar`, `SessionTile`, `MonitorPicker` |
 | `ui/views/monitor/` | Monitor wall (admin edition): `MonitorWallView` with `MonitorTileView`; layout, rotation and the device picker `MonitorPicker` sit in its Settings side panel; Full screen shows tiles only (Esc leaves) |
-| `ui/views/settings/` | Settings (admin edition): `SettingsView` in two groups: Relay (Settings › Security › Client token, stored on the relay) and This device (Settings › Audio › Microphone, stored in `config.json`) |
+| `ui/views/settings/` | Settings (admin edition): `SettingsView`, a sidebar with four panes: Relay › Security (client-token allowlist, stored on the relay) and This device › Server (relay address, viewing performance), Audio (microphone) and Mouse (pointer lock), stored in `config.json` |
 | `ui/components/scroll_area.slint` | `ScrollArea`: wheel/drag scrolling with a draggable scrollbar, used by the dashboard lists and the client-token list |
 | `ui/dialogs/` | Relay settings, rename and delete dialogs; `WhatsNewModal` after an update (`show_whats_new`, `whats_new_title`, `whats_new_body`, `whats_new_closed(dont_show_again)`) |
 
@@ -42,5 +42,13 @@ to 0..10000 of the remote screen; viewport sizes are physical pixels.
 
 ## Visual rules
 
-Square corners (radius 0, at most 2 px where a shape needs it). Palette: background `#09090b`, surfaces
-`#111114`/`#18181b`, dividers `#1f1f23`/`#27272a`, text `#f4f4f5`/`#a1a1aa`/`#71717a`, accent `#dc2626`.
+Soft corners from `Theme` (`radius-sm` 6 px for buttons, `radius-md` 8 px for inputs and rows, `radius-lg` 10 px
+for cards, 12 px for dialogs). Layered dark surfaces: background `#101013`, top bar `#0c0c0f`, cards `#17171c`,
+inputs `#0b0b0e`, hairlines and fills as white at low alpha (`Theme.divider`, `#ffffff0a`..`#ffffff14`), text
+`#f4f4f5`/`#a1a1aa`/`#71717a`, accent `#dc2626`. Settings icons are solid and coloured (`SolidIcon`).
+
+Responsive: the dashboard stacks its two cards and moves the tabs above the search below 700 px width; Settings
+turns its sidebar into a row of tabs below 640 px; the top bar hides the status text below 760 px. The window
+minimum is 640 x 480, and 880 x 560 while a viewer session is open (its toolbar needs the width). A component
+must not derive its own layout from its own width through `if` branches directly under the window layout: that
+makes a binding loop (see the wrapper around `HeaderBar` in `app_window.slint`).

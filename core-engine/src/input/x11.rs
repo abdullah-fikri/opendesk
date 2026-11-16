@@ -159,21 +159,32 @@ impl InputInjector {
         self.with(|t| t.fake(MOTION_NOTIFY_EVENT, 0, x as i16, y as i16));
     }
 
+    /// Moves the pointer by (`dx`, `dy`) pixels.
+    pub fn mouse_move_relative(&self, dx: i32, dy: i32) {
+        let clamp = |v: i32| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        // XTest motion with detail 1 is relative.
+        self.with(|t| t.fake(MOTION_NOTIFY_EVENT, 1, clamp(dx), clamp(dy)));
+    }
+
     fn button(&self, button: i32, down: bool) {
+        // X core buttons: 1 left, 2 middle, 3 right, 8 back, 9 forward.
         let detail = match button {
             0 => 1,
+            1 => 2,
             2 => 3,
+            3 => 8,
+            4 => 9,
             _ => return,
         };
         self.with(|t| t.fake(if down { BUTTON_PRESS_EVENT } else { BUTTON_RELEASE_EVENT }, detail, 0, 0));
     }
 
-    /// Presses mouse button `button`: 0 left, 2 right; other values are ignored.
+    /// Presses mouse button `button`: 0 left, 1 middle, 2 right, 3 back, 4 forward; other values are ignored.
     pub fn mouse_down(&self, button: i32) {
         self.button(button, true);
     }
 
-    /// Releases mouse button `button`: 0 left, 2 right; other values are ignored.
+    /// Releases mouse button `button`: 0 left, 1 middle, 2 right, 3 back, 4 forward; other values are ignored.
     pub fn mouse_up(&self, button: i32) {
         self.button(button, false);
     }
@@ -185,6 +196,22 @@ impl InputInjector {
         }
         let notches = if delta_y.abs() < 40 { delta_y.abs() } else { (delta_y.abs() / 120).max(1) };
         let detail = if delta_y > 0 { 4 } else { 5 };
+        self.with(|t| {
+            for _ in 0..notches.min(20) {
+                t.fake(BUTTON_PRESS_EVENT, detail, 0, 0)?;
+                t.fake(BUTTON_RELEASE_EVENT, detail, 0, 0)?;
+            }
+            Ok(())
+        });
+    }
+
+    /// Scrolls sideways by `delta_x` (120 = one notch right): X buttons 6 (left) and 7 (right).
+    pub fn mouse_hwheel(&self, delta_x: i32) {
+        if delta_x == 0 {
+            return;
+        }
+        let notches = if delta_x.abs() < 40 { delta_x.abs() } else { (delta_x.abs() / 120).max(1) };
+        let detail = if delta_x > 0 { 7 } else { 6 };
         self.with(|t| {
             for _ in 0..notches.min(20) {
                 t.fake(BUTTON_PRESS_EVENT, detail, 0, 0)?;

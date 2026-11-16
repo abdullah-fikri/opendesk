@@ -8,7 +8,12 @@
 //!   (copy and scale, without DXGI's wait for a desktop change), that wait itself (the whole tick budget on an
 //!   idle screen; not a cost), `StreamEncoder::encode` (block diff + JPEG/H.264) and the wait for the previous
 //!   frame to leave (`can_send_frame`).
+//! - `convert`, `codec`: the two parts of `encode`: pixel preparation (moves, block diff) and the codec.
 //! - `latency`: avg/max ms from capture to handing a sent frame to the outbox (the `Host` overlay row).
+//! - `send`: avg/max ms from the sender taking a frame to its last byte in the socket (relay: flushed; P2P:
+//!   every fragment sent); `-` when nothing was sent.
+//! - `ack_rtt`, `window`: P2P only (`-` otherwise): a frame sent to its acknowledgement, avg/max ms, and the
+//!   frames allowed in flight.
 //! - `kbps`: video message bytes sent, in kilobits per second.
 //! - `idle_frames`: grabs that produced nothing to send (no change); `gate_skips`: ticks skipped because the
 //!   previous frame was still on its way when the tick ended.

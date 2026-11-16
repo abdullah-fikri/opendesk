@@ -12,7 +12,8 @@ use parking_lot::Mutex;
 
 use crate::domain::keyboard::KeyForwarder;
 use crate::domain::latency::LatencyMeter;
-use crate::infra::power;
+use crate::domain::link_quality::LossMeter;
+use crate::infra::{power, wifi};
 use crate::service::viewer::decoder::VideoInbox;
 use crate::service::viewer::stats::SessionStats;
 
@@ -54,6 +55,10 @@ pub struct Session {
     pub offered_seq: AtomicU32,
     /// The host announced its monitors; otherwise monitor changes use `switch-monitor`.
     pub has_monitors: AtomicBool,
+    /// The host's cursor shape code (`cursor-shape`), shown again when a pointer lock ends.
+    pub cursor_shape: AtomicI32,
+    /// The host asked to lock the pointer (`pointer-lock`): mouse moves go as `mouse-delta`.
+    pub pointer_locked: AtomicBool,
     /// Keys this viewer holds down on the host.
     pub keys: Mutex<KeyForwarder>,
     /// The stats overlay is shown: the decoder thread refreshes [`Session::stats`] and pings the host.
@@ -61,8 +66,12 @@ pub struct Session {
     pub stats: Mutex<SessionStats>,
     /// Latency stages of displayed frames: the decoder thread, the presenter and `stats-pong` feed it.
     pub latency: Arc<Mutex<LatencyMeter>>,
+    /// Video fragments received and lost on the UDP path; the P2P link feeds it.
+    pub udp_loss: Arc<Mutex<LossMeter>>,
     /// Full speed (no EcoQoS) from opening the session until it is dropped.
     _awake: power::Awake,
+    /// Wi-Fi media streaming mode (no background scans) from opening the session until it is dropped.
+    _wifi: wifi::Streaming,
 }
 
 impl Session {
@@ -89,11 +98,15 @@ impl Session {
             clip_seq: AtomicU32::new(0),
             offered_seq: AtomicU32::new(0),
             has_monitors: AtomicBool::new(false),
+            cursor_shape: AtomicI32::new(1),
+            pointer_locked: AtomicBool::new(false),
             keys: Mutex::default(),
             stats_on: AtomicBool::new(false),
             stats: Mutex::default(),
             latency: Arc::default(),
+            udp_loss: Arc::default(),
             _awake: power::awake(),
+            _wifi: wifi::streaming(),
         }
     }
 

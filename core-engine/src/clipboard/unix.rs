@@ -48,6 +48,16 @@ pub fn set_text(text: &str) -> bool {
     with_clipboard(|c| c.set_text(text.to_owned()).ok()).is_some()
 }
 
+/// Clipboard images are Windows-only for now.
+pub fn image() -> Option<super::ClipImage> {
+    None
+}
+
+/// Clipboard images are Windows-only for now.
+pub fn set_image(_dib: &[u8], _png: Option<&[u8]>) -> bool {
+    false
+}
+
 /// Putting a file list on the clipboard is Windows-only; received files stay in the download folder.
 pub fn set_files(_file_paths: &[String]) -> bool {
     false

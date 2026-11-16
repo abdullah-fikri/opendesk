@@ -68,6 +68,34 @@ pub struct FilePayload {
     /// Ack verdict.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
+    /// Last write time of the file in Unix milliseconds (`start`); the receiver keeps it. Older peers ignore it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtime: Option<u64>,
+    /// Creation and last access time in Unix milliseconds (`start`). Older peers omit and ignore them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ctime: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atime: Option<u64>,
+    /// Windows file attributes the receiver keeps (`start`): read-only, hidden and archive only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attrs: Option<u32>,
+    /// `start` resuming a cut transfer (`file-resume`): the cut transfer's ID. The receiver continues that
+    /// file under this new ID and answers with a `pull` carrying `resumeAt`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_of: Option<String>,
+    /// `pull` from a receiver (`file-resume`): it holds this many bytes of transfer `id` and wants the rest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_at: Option<u64>,
+    /// A copied image instead of files (`offer` to partners with `clipboard-image`): base64 PNG, put straight on
+    /// the receiver's clipboard.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// `offer` of dropped files (`file-drop`): where on the host's screen, 0..10000 each, they were dropped. The
+    /// host drags them there instead of putting them on its clipboard.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drop_x: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drop_y: Option<u32>,
 }
 
 /// One entry of a clipboard file offer.
@@ -79,6 +107,17 @@ pub struct OfferEntry {
     pub size: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dir: Option<bool>,
+    /// Last write time in Unix milliseconds, kept on paste ("Date Modified"). Older peers omit and ignore it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtime: Option<u64>,
+    /// Creation and last access time in Unix milliseconds; older peers omit and ignore them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ctime: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atime: Option<u64>,
+    /// Windows file attributes kept on paste: read-only, hidden and archive only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attrs: Option<u32>,
 }
 
 impl FilePayload {
@@ -89,6 +128,11 @@ impl FilePayload {
     /// `start` of a single file.
     pub fn start(id: &str, name: &str, size: u64) -> Self {
         Self { name: Some(name.to_string()), size: Some(size), ..Self::new(FileAction::Start, id) }
+    }
+
+    /// A copied image (`offer` with `image`): `png` goes on the receiver's clipboard as it is.
+    pub fn clipboard_image(id: &str, png: &[u8]) -> Self {
+        Self { image: Some(core_engine::codec::to_base64(png)), ..Self::new(FileAction::Offer, id) }
     }
 
     /// `chunk` carrying base64 `data`.
@@ -116,6 +160,11 @@ impl FilePayload {
         Self { files: Some(files), ..Self::new(FileAction::Offer, id) }
     }
 
+    /// Receiver -> sender (`file-resume`): it holds `offset` bytes of transfer `id`; send the rest.
+    pub fn resume_at(id: &str, offset: u64) -> Self {
+        Self { tid: Some(id.to_string()), resume_at: Some(offset), ..Self::new(FileAction::Pull, id) }
+    }
+
     /// Requests entry `index` of offer `offer_id`, to be sent as transfer `tid`.
     // Only the Windows virtual clipboard pulls offered files.
     #[cfg_attr(not(windows), allow(dead_code))]
@@ -141,5 +190,16 @@ mod tests {
         assert_eq!(serde_json::from_value::<FilePayload>(v).unwrap(), p);
         let odd: FilePayload = serde_json::from_value(json!({ "action": "resume", "id": "x" })).unwrap();
         assert_eq!(odd.action, FileAction::Unknown);
+    }
+
+    #[test]
+    fn dropped_offer_carries_its_point_and_old_offers_have_none() {
+        let p = FilePayload { drop_x: Some(2500), drop_y: Some(7500), ..FilePayload::offer("of_1", vec![]) };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["dropX"], 2500);
+        assert_eq!(v["dropY"], 7500);
+        assert_eq!(serde_json::from_value::<FilePayload>(v).unwrap(), p);
+        let plain = serde_json::to_value(FilePayload::offer("of_2", vec![])).unwrap();
+        assert!(plain.get("dropX").is_none());
     }
 }

@@ -14,17 +14,20 @@ import { ServerSettingsModal } from "dialogs/server_settings_dialog.slint";
 import { RenameDeviceModal } from "dialogs/rename_device_dialog.slint";
 import { DeleteConfirmModal } from "dialogs/delete_confirm_dialog.slint";
 import { WhatsNewModal } from "dialogs/whats_new_dialog.slint";
+import { Theme } from "theme.slint";
 
 export { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem, TransferItem }
 
 export component MainWindow inherits Window {
     title: "OpenDesk - " + local_desk_id;
     icon: @image-url("icon.png");
-    min-width: 880px;
-    min-height: 560px;
+    // Dashboard, settings and the monitor wall adapt down to a small window; a viewer session needs the full
+    // toolbar, so it keeps the earlier minimum.
+    min-width: sessions.length > 0 ? 880px : 640px;
+    min-height: sessions.length > 0 ? 560px : 480px;
     preferred-width: 920px;
     preferred-height: 600px;
-    background: #09090b;
+    background: Theme.bg;
 
     // ---- Device and relay ----
     in property <string> local_desk_id;
@@ -92,6 +95,9 @@ export component MainWindow inherits Window {
     // Settings › This device › Audio › Microphone (config.json `mic_on_at_start`).
     in property <bool> mic_on_at_start: true;
     callback save_mic_on_at_start(bool);
+    // Settings › This device › Mouse › Pointer lock (config.json `pointer_lock`).
+    in property <bool> pointer_lock: false;
+    callback save_pointer_lock(bool);
 
     // ---- Dialogs (UI-owned) ----
     in-out property <bool> show_settings: false;
@@ -108,6 +114,10 @@ export component MainWindow inherits Window {
     in property <string> whats_new_title: "";
     in property <string> whats_new_body: "";
     callback whats_new_closed(bool);  // true = Don't show again
+
+    // ---- Start-up splash (Rust plays the frames; any click or key skips it) ----
+    in property <image> splash_frame;
+    in-out property <bool> show_splash: false;
 
     // ---- Dashboard ----
     callback request_connect(string);
@@ -141,12 +151,13 @@ export component MainWindow inherits Window {
     callback session_mouse_move(string, int, int);
     callback session_mouse_down(string, int, int, int);
     callback session_mouse_up(string, int, int, int);
-    callback session_mouse_wheel(string, int, int, int);
+    callback session_mouse_wheel(string, int, int, int, int);
     // (id, text, pressed, repeat, ctrl, alt, shift)
     callback session_key_event(string, string, bool, bool, bool, bool, bool);
     callback session_release_keys(string);
     // Physical pixels of the session's canvas or tile.
     callback session_viewport_resized(string, int, int);
+    callback session_frame_rect(string, int, int, int, int);
     callback select_monitor(string, int);
     callback session_send_files(string);
     callback session_toggle_mic(string);
@@ -185,43 +196,53 @@ export component MainWindow inherits Window {
 
     // The monitor wall in full screen shows nothing but the screens.
     property <bool> wall_fullscreen: is_admin && monitor_open && !settings_open && sessions.length == 0 && root.full-screen;
+    // The monitor wall has its own toolbar with Back, so no top bar there either.
+    property <bool> wall_page_shown: is_admin && monitor_open && !settings_open && sessions.length == 0;
+    // Settings has its own sidebar with Back; the top bar returns in full screen so it can always be left.
+    property <bool> settings_page_shown: is_admin && settings_open && sessions.length == 0 && !root.full-screen;
 
     VerticalLayout {
         padding: 0px;
         spacing: 0px;
 
-        // Accent line
-        if !wall_fullscreen: Rectangle {
-            height: 2px;
-            background: #dc2626;
-        }
-
-        if sessions.length == 0 && !wall_fullscreen: HeaderBar {
-            fullscreen <=> root.full-screen;
-            is_relay_online: root.is_relay_online;
-            status_text: root.status_text;
-            is_admin: root.is_admin;
-            hosting: root.hosting;
-            is_mic_muted: root.hosting_mic_muted;
-            show_settings <=> root.show_settings;
-            settings_open: root.settings_open;
-            open_admin_settings => {
-                root.monitor_open = false;
-                root.close_monitor();
-                root.settings_page = 0;
-                root.settings_open = !root.settings_open;
-                if (root.settings_open) {
-                    root.security_refresh();
+        // Wrapped in a fixed-height Rectangle: the bar adapts to its own width, which must not feed back into the
+        // window's layout (a binding loop).
+        if sessions.length == 0 && !wall_fullscreen && !settings_page_shown && !wall_page_shown: Rectangle {
+            height: 46px;
+            min-width: 0px;
+            max-width: 100000px;
+            preferred-width: 0px;
+            HeaderBar {
+                width: 100%;
+                height: 100%;
+                fullscreen <=> root.full-screen;
+                is_relay_online: root.is_relay_online;
+                status_text: root.status_text;
+                is_admin: root.is_admin;
+                hosting: root.hosting;
+                is_mic_muted: root.hosting_mic_muted;
+                show_settings <=> root.show_settings;
+                settings_open: root.settings_open;
+                show_refresh: root.is_admin && root.active_dashboard_tab == 1 && !root.settings_open && !root.monitor_open;
+                refresh => { root.refresh_hosts(); }
+                open_admin_settings => {
+                    root.monitor_open = false;
+                    root.close_monitor();
+                    root.settings_page = 0;
+                    root.settings_open = !root.settings_open;
+                    if (root.settings_open) {
+                        root.security_refresh();
+                    }
                 }
+                open_file_picker => { root.hosting_send_files(); }
+                toggle_mic => { root.hosting_toggle_mic(); }
+                disconnect_session => { root.end_hosting(); }
             }
-            open_file_picker => { root.hosting_send_files(); }
-            toggle_mic => { root.hosting_toggle_mic(); }
-            disconnect_session => { root.end_hosting(); }
         }
 
-        if sessions.length == 0 && !wall_fullscreen: Rectangle {
+        if sessions.length == 0 && !wall_fullscreen && !settings_page_shown && !wall_page_shown: Rectangle {
             height: 1px;
-            background: #1f1f23;
+            background: Theme.divider;
         }
 
         if sessions.length > 0: SessionWorkspace {
@@ -244,10 +265,11 @@ export component MainWindow inherits Window {
             session_mouse_move(id, x, y) => { root.session_mouse_move(id, x, y); }
             session_mouse_down(id, x, y, b) => { root.session_mouse_down(id, x, y, b); }
             session_mouse_up(id, x, y, b) => { root.session_mouse_up(id, x, y, b); }
-            session_mouse_wheel(id, x, y, d) => { root.session_mouse_wheel(id, x, y, d); }
+            session_mouse_wheel(id, x, y, dx, d) => { root.session_mouse_wheel(id, x, y, dx, d); }
             session_key_event(id, t, p, r, c, a, sh) => { root.session_key_event(id, t, p, r, c, a, sh); }
             session_release_keys(id) => { root.session_release_keys(id); }
             session_viewport_resized(id, w, h) => { root.session_viewport_resized(id, w, h); }
+            session_frame_rect(id, x, y, w, h) => { root.session_frame_rect(id, x, y, w, h); }
             select_monitor(id, i) => { root.select_monitor(id, i); }
             session_send_files(id) => { root.session_send_files(id); }
             session_toggle_mic(id) => { root.session_toggle_mic(id); }
@@ -305,11 +327,15 @@ export component MainWindow inherits Window {
         // Body while no viewer session is open: the monitor wall, the dashboard, or the hosting panel.
         if sessions.length == 0: Rectangle {
             vertical-stretch: 1;
-            background: #09090b;
+            background: Theme.bg;
             clip: true;
 
             if is_admin && settings_open: SettingsView {
                 page <=> root.settings_page;
+                gateway_url <=> root.gateway_url;
+                performance: root.performance;
+                save_gateway_url(url) => { root.save_gateway_url(url); }
+                save_performance(preset) => { root.save_performance(preset); }
                 relay_online: root.is_relay_online;
                 security_supported: root.security_supported;
                 security_enabled: root.security_enabled;
@@ -324,6 +350,8 @@ export component MainWindow inherits Window {
                 reset_device(id) => { root.security_reset(id); }
                 mic_on_at_start: root.mic_on_at_start;
                 set_mic_on_at_start(on) => { root.save_mic_on_at_start(on); }
+                pointer_lock: root.pointer_lock;
+                set_pointer_lock(on) => { root.save_pointer_lock(on); }
             }
 
             if is_admin && monitor_open && !settings_open: MonitorWallView {
@@ -446,6 +474,36 @@ export component MainWindow inherits Window {
         closed(dont_show_again) => {
             root.show_whats_new = false;
             root.whats_new_closed(dont_show_again);
+        }
+    }
+
+    // Last child: the splash covers everything, including dialogs.
+    if show_splash: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #000000;
+        Image {
+            width: 100%;
+            height: 100%;
+            source: root.splash_frame;
+            image-fit: contain;
+        }
+        Text {
+            x: parent.width - self.width - 20px;
+            y: parent.height - self.height - 16px;
+            text: "Click or press any key to skip";
+            color: #ffffff55;
+            font-size: 11px;
+        }
+        TouchArea {
+            clicked => { root.show_splash = false; }
+        }
+        splash-keys := FocusScope {
+            init => { self.focus(); }
+            key-pressed(e) => {
+                root.show_splash = false;
+                accept
+            }
         }
     }
 }

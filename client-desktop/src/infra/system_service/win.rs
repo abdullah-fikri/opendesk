@@ -144,6 +144,7 @@ unsafe extern "system" {
         ph_new_token: *mut HANDLE,
     ) -> BOOL;
     fn IsWellKnownSid(sid: *const c_void, well_known_sid_type: u32) -> BOOL;
+    fn ConvertSidToStringSidW(sid: *const c_void, string_sid: *mut *mut u16) -> BOOL;
     fn CreateProcessAsUserW(
         h_token: HANDLE,
         lp_application_name: *const u16,
@@ -163,6 +164,7 @@ unsafe extern "system" {
 unsafe extern "system" {
     fn GetCurrentProcess() -> HANDLE;
     fn GetCurrentProcessId() -> u32;
+    fn GetProcessId(process: HANDLE) -> u32;
     fn ProcessIdToSessionId(dw_process_id: u32, p_session_id: *mut u32) -> BOOL;
     fn WTSGetActiveConsoleSessionId() -> u32;
     fn CreateEventW(
@@ -177,6 +179,7 @@ unsafe extern "system" {
     fn TerminateProcess(h_process: HANDLE, u_exit_code: u32) -> BOOL;
     fn CloseHandle(h_object: HANDLE) -> BOOL;
     fn GetLastError() -> u32;
+    fn LocalFree(h_mem: *mut c_void) -> *mut c_void;
 }
 
 #[link(name = "wtsapi32")]
@@ -411,6 +414,65 @@ pub fn run_as_session_user(args: &str) -> bool {
     }
 }
 
+/// A process started as the session user by [`start_as_session_user`]; the handle is closed on drop.
+pub struct UserProcess {
+    handle: HANDLE,
+    pub pid: u32,
+}
+
+// SAFETY: a process handle may be waited on and closed from any thread.
+unsafe impl Send for UserProcess {}
+unsafe impl Sync for UserProcess {}
+
+impl UserProcess {
+    /// Waits up to `ms` for the process to exit; true when it has exited.
+    pub fn wait_exit(&self, ms: u32) -> bool {
+        unsafe { WaitForSingleObject(self.handle, ms) != WAIT_TIMEOUT }
+    }
+
+    pub fn terminate(&self) {
+        unsafe { TerminateProcess(self.handle, 0) };
+    }
+}
+
+impl Drop for UserProcess {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.handle) };
+    }
+}
+
+/// The session of this process; None when it cannot be read.
+fn own_session() -> Option<u32> {
+    let mut session = 0u32;
+    (unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) } != 0).then_some(session)
+}
+
+/// The SID (`S-1-5-21-...`) of the user logged on to this process's session; None when nobody is.
+pub fn session_user_sid() -> Option<String> {
+    Token::of_session_user(own_session()?)?.user_sid()
+}
+
+/// The SID of the user this process runs as (tests stand in for the agent with it).
+#[cfg(test)]
+pub fn process_user_sid() -> Option<String> {
+    let mut own: HANDLE = ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut own) } == 0 {
+        return None;
+    }
+    Token(own).user_sid()
+}
+
+/// Starts this executable with `args` as the user logged on to this process's session, without waiting (the
+/// SYSTEM agent's clipboard helper).
+pub fn start_as_session_user(args: &str) -> Result<UserProcess, String> {
+    let session = own_session().ok_or_else(|| last_error("ProcessIdToSessionId"))?;
+    let user = Token::of_session_user(session).ok_or("nobody is logged on to this session")?;
+    let env = Environment::of(&user)?;
+    let handle = spawn(&user, args, &env)?;
+    let pid = unsafe { GetProcessId(handle) };
+    Ok(UserProcess { handle, pid })
+}
+
 /// An owned access token.
 struct Token(HANDLE);
 
@@ -419,6 +481,30 @@ impl Token {
     fn of_session_user(session: u32) -> Option<Token> {
         let mut token: HANDLE = ptr::null_mut();
         (unsafe { WTSQueryUserToken(session, &mut token) } != 0).then_some(Token(token))
+    }
+
+    /// The token user's SID as a string.
+    fn user_sid(&self) -> Option<String> {
+        unsafe {
+            // TOKEN_USER is a SID_AND_ATTRIBUTES followed by the SID itself.
+            let mut buf = [0u64; 16];
+            let mut len = 0u32;
+            if GetTokenInformation(self.0, TOKEN_USER_CLASS, buf.as_mut_ptr() as *mut c_void, 128, &mut len) == 0 {
+                return None;
+            }
+            let sid = (*(buf.as_ptr() as *const SID_AND_ATTRIBUTES)).sid;
+            let mut text: *mut u16 = ptr::null_mut();
+            if ConvertSidToStringSidW(sid, &mut text) == 0 || text.is_null() {
+                return None;
+            }
+            let mut n = 0;
+            while *text.add(n) != 0 {
+                n += 1;
+            }
+            let out = String::from_utf16_lossy(std::slice::from_raw_parts(text, n));
+            LocalFree(text as *mut c_void);
+            Some(out)
+        }
     }
 
     /// A primary copy of this process's SYSTEM token, moved to `session`.

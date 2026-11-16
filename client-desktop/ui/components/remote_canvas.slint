@@ -16,13 +16,17 @@ export component RemoteViewerCanvas inherits Rectangle {
     callback send_mouse_move(int, int);
     callback send_mouse_down(int, int, int);
     callback send_mouse_up(int, int, int);
-    callback send_mouse_wheel(int, int, int);
+    /// Position (0..10000) and notches: horizontal (120 = right), vertical (120 = up).
+    callback send_mouse_wheel(int, int, int, int);
     // (text, pressed, repeat, ctrl, alt, shift): every physical press AND release goes to the host.
     callback send_key_event(string, bool, bool, bool, bool, bool);
     // Lift every key held on the host (focus lost / window deactivated) so nothing stays stuck.
     callback release_remote_keys();
     // Canvas size in physical pixels, for the host's automatic stream resolution.
     callback viewport_resized(int, int);
+    // Where the remote picture sits in the window, physical pixels (x, y, width, height): files dropped on the
+    // window land at the matching point of the host screen.
+    callback frame_rect(int, int, int, int);
 
     // Multi-session additions. Defaults keep the single-session behaviour unchanged.
     // `focused`: this canvas owns the keyboard; when it becomes true (and `auto_focus`) it takes key focus.
@@ -46,8 +50,8 @@ export component RemoteViewerCanvas inherits Rectangle {
     changed width => { root.viewport_resized(self.width / 1phx, self.height / 1phx); }
     changed height => { root.viewport_resized(self.width / 1phx, self.height / 1phx); }
 
-    property <bool> left-down: false;
-    property <bool> right-down: false;
+    // Buttons pressed on the canvas, one bit per wire button (0 left, 1 middle, 2 right, 3 back, 4 forward).
+    property <int> buttons-down: 0;
     property <float> frame_w: remote_frame.width > 0 ? remote_frame.width : 16;
     property <float> frame_h: remote_frame.height > 0 ? remote_frame.height : 9;
     property <float> scale_x: self.width / (frame_w * 1px);
@@ -93,6 +97,19 @@ export component RemoteViewerCanvas inherits Rectangle {
             y: (parent.height - self.height) / 2;
             background: #000000;
 
+            Timer {
+                interval: 400ms;
+                running: root.focused;
+                triggered => {
+                    root.frame_rect(
+                        parent.absolute-position.x / 1phx,
+                        parent.absolute-position.y / 1phx,
+                        parent.width / 1phx,
+                        parent.height / 1phx
+                    );
+                }
+            }
+
             Image {
                 source: remote_frame;
                 width: parent.width;
@@ -106,7 +123,9 @@ export component RemoteViewerCanvas inherits Rectangle {
                 height: parent.height;
                 // A hidden host cursor (0) shows as the default arrow: the user still points with this one,
                 // and the host hides its cursor for keyboard use (Start, Alt+Tab, typing) without a mouse move.
-                mouse-cursor: remote_cursor == 2 ? MouseCursor.text
+                // -1: the pointer is locked for a host game's mouse look.
+                mouse-cursor: remote_cursor == -1 ? MouseCursor.none
+                    : remote_cursor == 2 ? MouseCursor.text
                     : remote_cursor == 3 ? MouseCursor.pointer
                     : remote_cursor == 4 ? MouseCursor.wait
                     : remote_cursor == 5 ? MouseCursor.progress
@@ -133,30 +152,32 @@ export component RemoteViewerCanvas inherits Rectangle {
                     }
                     viewer-focus.focus();
                     if (self.width > 0px && self.height > 0px) {
-                        if (event.kind == PointerEventKind.down) {
-                            if (event.button == PointerEventButton.right) {
-                                root.right-down = true;
-                            } else {
-                                root.left-down = true;
+                        // Wire button numbers: 0 left, 1 middle, 2 right, 3 back, 4 forward (-1: none of them).
+                        let button = event.button == PointerEventButton.left ? 0
+                            : event.button == PointerEventButton.middle ? 1
+                            : event.button == PointerEventButton.right ? 2
+                            : event.button == PointerEventButton.back ? 3
+                            : event.button == PointerEventButton.forward ? 4
+                            : -1;
+                        let bit = button == 0 ? 1 : button == 1 ? 2 : button == 2 ? 4 : button == 3 ? 8 : 16;
+                        if (button >= 0 && event.kind == PointerEventKind.down) {
+                            if (Math.mod(Math.floor(root.buttons-down / bit), 2) == 0) {
+                                root.buttons-down += bit;
                             }
                             send_mouse_down(
                                 (self.mouse-x / self.width) * 10000,
                                 (self.mouse-y / self.height) * 10000,
-                                event.button == PointerEventButton.right ? 2 : 0
+                                button
                             );
-                        } else if (event.kind == PointerEventKind.up
-                            && (event.button == PointerEventButton.right ? root.right-down : root.left-down)) {
+                        } else if (button >= 0 && event.kind == PointerEventKind.up
+                            && Math.mod(Math.floor(root.buttons-down / bit), 2) == 1) {
                             // Only release what was pressed here: a click that closed a popover
                             // delivers just the release, which must not reach the host.
-                            if (event.button == PointerEventButton.right) {
-                                root.right-down = false;
-                            } else {
-                                root.left-down = false;
-                            }
+                            root.buttons-down -= bit;
                             send_mouse_up(
                                 (self.mouse-x / self.width) * 10000,
                                 (self.mouse-y / self.height) * 10000,
-                                event.button == PointerEventButton.right ? 2 : 0
+                                button
                             );
                         }
                     }
@@ -164,11 +185,12 @@ export component RemoteViewerCanvas inherits Rectangle {
 
                 scroll-event(event) => {
                     viewer-focus.focus();
-                    if (self.width > 0px && self.height > 0px && event.delta-y != 0px) {
+                    if (self.width > 0px && self.height > 0px && (event.delta-y != 0px || event.delta-x != 0px)) {
                         send_mouse_wheel(
                             (self.mouse-x / self.width) * 10000,
                             (self.mouse-y / self.height) * 10000,
-                            event.delta-y > 0px ? 120 : -120
+                            event.delta-x > 0px ? -120 : event.delta-x < 0px ? 120 : 0,
+                            event.delta-y > 0px ? 120 : event.delta-y < 0px ? -120 : 0
                         );
                     }
                     accept

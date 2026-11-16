@@ -7,21 +7,27 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use core_engine::capture::{DesktopCapturer, MonitorBounds, cursor_shape, enumerate_monitors, refresh_rate};
+use core_engine::capture::{
+    DesktopCapturer, MonitorBounds, cursor_shape, enumerate_monitors, pointer_captured, refresh_rate,
+};
 use core_engine::codec::frame::{self, FrameStamp};
+use core_engine::codec::h264::GpuSource;
 use core_engine::stream::{FrameInput, H264Mode, StreamEncoder};
 
 use crate::domain::frame_rate::{self, FpsGovernor};
-use crate::domain::perf_stats::{Counter, PerfWindow, ProcessUsage, STATS_INTERVAL, Stage, kbps};
+use crate::domain::perf_stats::{Counter, PerfWindow, ProcessUsage, STATS_INTERVAL, Stage, StageSummary, kbps};
 use crate::domain::{latency, resolution};
 use crate::infra::process_usage::UsageSampler;
-use crate::infra::{logger, power};
+use crate::infra::send_gate::LinkStats;
+use crate::infra::{logger, power, wifi};
 use crate::protocol::{HostStats, InputEvent, MonitorInfo, Outgoing};
 use crate::service::context::Ctx;
 use crate::service::sessions;
 
 /// How often the loop re-enumerates monitors to notice plugged, unplugged or resized displays.
 const MONITOR_POLL: Duration = Duration::from_secs(2);
+/// How often the capture loop checks whether an application captured the mouse (`pointer-lock`).
+const LOCK_POLL: Duration = Duration::from_millis(50);
 /// Time a tick keeps for the grab: it stops waiting for the backpressure gate this long before the tick ends.
 const GATE_MARGIN: Duration = Duration::from_millis(1);
 
@@ -65,6 +71,9 @@ struct HostPerf {
     grab: Stage,
     wait: Stage,
     encode: Stage,
+    /// The two parts of `encode`: pixel preparation and the codec.
+    convert: Stage,
+    codec: Stage,
     /// Capture to hand-off of a sent frame.
     latency: Stage,
     gate: Stage,
@@ -75,18 +84,33 @@ struct HostPerf {
 }
 
 impl HostPerf {
-    /// The window's log line (`target` = current target frame rate); resets the counters.
-    fn take_line(&mut self, secs: f64, h264: Option<&str>, target: u32, usage: Option<ProcessUsage>) -> String {
+    /// The window's log line (`target` = current target frame rate); resets the counters, including the
+    /// senders' (`link`).
+    fn take_line(
+        &mut self,
+        link: &mut LinkStats,
+        secs: f64,
+        h264: Option<&str>,
+        target: u32,
+        usage: Option<ProcessUsage>,
+    ) -> String {
         let h264 = h264.map_or_else(|| "off".to_string(), |name| format!("on({name})"));
         let usage = usage.map_or_else(String::new, |u| format!(" {u}"));
+        let measured = |s: StageSummary| if s.count == 0 { "-".to_string() } else { s.to_string() };
+        let window = link.window.map_or_else(|| "-".to_string(), |w| w.to_string());
+        let resent = std::mem::take(&mut link.resent);
         format!(
-            "fps={:.1} target={target} grab avg/max={} wait={} encode={} gate={} latency={} kbps={} idle_frames={} gate_skips={} h264={h264}{usage}",
+            "fps={:.1} target={target} grab avg/max={} wait={} encode={} convert={} codec={} gate={} latency={} send={} ack_rtt={} window={window} resent={resent} kbps={} idle_frames={} gate_skips={} h264={h264}{usage}",
             self.sent.take() as f64 / secs,
             self.grab.take_summary(),
             self.wait.take_summary(),
             self.encode.take_summary(),
+            self.convert.take_summary(),
+            self.codec.take_summary(),
             self.gate.take_summary(),
             self.latency.take_summary(),
+            measured(link.send.take_summary()),
+            measured(link.ack_rtt.take_summary()),
             kbps(self.bytes.take(), secs),
             self.idle.take(),
             self.gate_skips.take(),
@@ -96,6 +120,7 @@ impl HostPerf {
     /// The `host-stats` summary since the previous one, independent of the log window.
     fn take_stats(
         &mut self,
+        link: &mut LinkStats,
         secs: f64,
         target: u32,
         congestion: f32,
@@ -103,6 +128,10 @@ impl HostPerf {
         usage: Option<ProcessUsage>,
     ) -> HostStats {
         let (grab, encode) = (self.grab.take_lap(), self.encode.take_lap());
+        let (convert, codec) = (self.convert.take_lap(), self.codec.take_lap());
+        let (send, ack_rtt) = (link.send.take_lap(), link.ack_rtt.take_lap());
+        let avg = |s: &StageSummary| (s.count > 0).then_some(s.avg_ms as f32);
+        let max = |s: &StageSummary| (s.count > 0).then_some(s.max_ms as f32);
         self.wait.take_lap();
         self.latency.take_lap();
         self.gate.take_lap();
@@ -120,6 +149,15 @@ impl HostPerf {
             encoder: encoder.unwrap_or_default().to_string(),
             cpu: usage.map(|u| u.cpu_pct),
             ram_mb: usage.map(|u| u.ram_mb),
+            convert_ms: avg(&convert),
+            convert_max_ms: max(&convert),
+            codec_ms: avg(&codec),
+            codec_max_ms: max(&codec),
+            send_ms: avg(&send),
+            send_max_ms: max(&send),
+            ack_rtt_ms: avg(&ack_rtt),
+            ack_rtt_max_ms: max(&ack_rtt),
+            window: link.window.map(|w| w as u32),
         }
     }
 }
@@ -145,6 +183,13 @@ fn params(mode: usize, bounds: MonitorBounds) -> (i32, u32) {
 
 /// H.264 policy: `OPENDESK_VIDEO_H264=0` disables it, `=always` uses it for every changed frame, otherwise it
 /// is used for motion when the viewer supports it.
+/// Zero-copy H.264 source (`OPENDESK_ZERO_COPY=0` turns it off): only with H.264 on and a viewer that draws its
+/// own cursor, since frames that stay on the GPU never get the cursor painted in.
+fn zero_copy_source(capturer: &mut DesktopCapturer, viewer_cursor: bool, h264: H264Mode) -> Option<GpuSource> {
+    let on = std::env::var("OPENDESK_ZERO_COPY").map_or(true, |v| v != "0");
+    if on && viewer_cursor && h264 != H264Mode::Off { capturer.gpu_source() } else { None }
+}
+
 fn h264_mode(viewer_supports: bool) -> H264Mode {
     match std::env::var("OPENDESK_VIDEO_H264").unwrap_or_default().as_str() {
         "0" => H264Mode::Off,
@@ -172,7 +217,11 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     let host = &ctx.host;
     // Full speed for the whole session, before the first capture.
     let _awake = power::awake();
+    // No background Wi-Fi scans (latency spikes) while the viewer watches.
+    let _wifi = wifi::streaming();
     power::raise_thread_priority();
+    // Capture and encode ahead of whatever else loads the host (a game included).
+    let _mmcss = power::mmcss(power::Mmcss::Games);
     // Follow the secure desktop (UAC / lock screen) when running as SYSTEM; a no-op otherwise.
     core_engine::desktop::switch_to_input_desktop();
     let mut monitors = enumerate_monitors();
@@ -195,7 +244,9 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     // The viewer's performance preset; `set-performance` may change it during the session.
     let mut preset = caps.performance;
     encoder.set_preset(preset.bitrate_factor(), preset.prefers_h264());
+    encoder.set_gpu_source(zero_copy_source(&mut capturer, local_cursor, h264));
     encoder.set_h264(h264);
+    encoder.set_lossless(caps.tile_lossless);
     let mut h264_logged = false;
     let mut last_shape = u8::MAX;
     let mut congestion = CongestionMeter::new();
@@ -226,6 +277,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     let mut sent_monitors: Option<InputEvent> = None;
     let mut monitors_dirty = true;
     let mut last_monitor_poll = Instant::now();
+    let (mut last_lock_poll, mut lock_reading) = (last_monitor_poll, false);
     let mut perf = HostPerf::default();
     let mut perf_window = PerfWindow::new(last_monitor_poll);
     let mut stats_window = PerfWindow::every(last_monitor_poll, STATS_INTERVAL);
@@ -238,12 +290,21 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
         if let Some(secs) = perf_window.due(frame_start) {
             let h264 = if h264 == H264Mode::Off { None } else { Some(encoder.h264_name.as_deref().unwrap_or("idle")) };
             let usage = perf_usage.sample(frame_start);
-            logger::info("host.perf", &perf.take_line(secs, h264, target_fps, usage));
+            let line = perf.take_line(&mut host.video_link.stats.lock(), secs, h264, target_fps, usage);
+            logger::info("host.perf", &line);
         }
         // Laps run while the overlay is hidden too, so its first summary covers only the last second.
         if let Some(secs) = stats_window.due(frame_start) {
             let usage = stats_usage.sample(frame_start);
-            let stats = perf.take_stats(secs, target_fps, congestion.level(), encoder.h264_name.as_deref(), usage);
+            let stats = perf.take_stats(
+                &mut host.video_link.stats.lock(),
+                secs,
+                target_fps,
+                congestion.level(),
+                encoder.h264_name.as_deref(),
+                usage,
+            );
+            host.video_link.set_kbps(stats.kbps);
             if host.stats_requested.load(Ordering::Relaxed) {
                 ctx.send_input(partner, InputEvent::HostStats(stats));
             }
@@ -271,6 +332,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             drop(capturer);
             capturer = DesktopCapturer::new_for_monitor(bounds, max_width);
             capturer.set_hide_viewer_cursor(local_cursor);
+            encoder.set_gpu_source(zero_copy_source(&mut capturer, local_cursor, h264));
             encoder.reconfigure(capturer.width(), capturer.height(), base_quality);
             monitors_dirty = true;
             logger::info(
@@ -309,6 +371,22 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             }
         }
 
+        let lock_wanted = caps.mouse_relative && !host.pointer_lock_declined.load(Ordering::SeqCst);
+        if lock_wanted && frame_start.duration_since(last_lock_poll) >= LOCK_POLL {
+            last_lock_poll = frame_start;
+            let captured = pointer_captured();
+            // Two equal readings in a row: a game switching windows briefly drops its clip.
+            if captured == lock_reading && captured != host.pointer_locked.load(Ordering::SeqCst) {
+                if captured {
+                    // Buttons then act where the game keeps the pointer, not at the last absolute position.
+                    core_engine::input::LAST_INJECTED_POS.store(i64::MIN, Ordering::Relaxed);
+                }
+                host.pointer_locked.store(captured, Ordering::SeqCst);
+                logger::info("host.capture", &format!("Mouse captured by an application: {captured}."));
+                ctx.send_input(partner, InputEvent::PointerLock { on: captured });
+            }
+            lock_reading = captured;
+        }
         if local_cursor {
             let shape = cursor_shape();
             if shape != last_shape {
@@ -362,6 +440,8 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             perf.gate.record(Duration::ZERO);
         }
         last_level = level;
+        // The P2P path sizes its window of frames in flight by these (`domain::udp_window`).
+        host.video_link.set_rate(target_fps, level);
         // Above 60 FPS congestion first lowers the rate (see `FpsGovernor`), then quality.
         encoder.set_congestion(FpsGovernor::quality_level(level, target_fps));
         if can_send {
@@ -369,6 +449,9 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             // That wait is recorded apart from the grab's work; the image was captured when it ended.
             let budget = interval.saturating_sub(frame_start.elapsed());
             let backend = capturer.backend();
+            // Zero-copy H.264 running: the image stays on the GPU, no readback to system memory.
+            let gpu_only = encoder.gpu_frames_only();
+            capturer.set_cpu_frames(!gpu_only);
             let grab_start = Instant::now();
             capturer.grab(budget.as_millis() as u32);
             let grabbed = grab_start.elapsed();
@@ -376,19 +459,31 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
             let captured = grab_start + waited;
             perf.grab.record(grabbed - waited);
             perf.wait.record(waited);
+            let gpu_only = gpu_only && capturer.backend() == backend;
             if capturer.backend() != backend {
                 logger::warn("host.capture", "DXGI duplication lost for good; falling back to GDI capture.");
+                encoder.set_gpu_source(None);
                 encoder.request_key();
             }
+            encoder.set_gpu_frame(capturer.gpu_texture());
+            let stride = capturer.width() as usize;
             let frame = FrameInput {
-                pixels: capturer.pixels(),
-                stride: capturer.width() as usize,
+                pixels: if gpu_only { &[] } else { capturer.pixels() },
+                stride,
                 dirty_hint: capturer.dirty_hint(),
                 moves: capturer.moves(),
             };
-            let sent = encoder.encode(&frame);
+            let mut sent = encoder.encode(&frame);
+            if encoder.take_want_pixels() {
+                // Leaving zero-copy H.264 (a sharp key frame ends motion): one full readback.
+                capturer.read_back();
+                let frame = FrameInput { pixels: capturer.pixels(), stride, dirty_hint: None, moves: &[] };
+                sent = encoder.encode_with_pixels(&frame);
+            }
             // `encode` times itself; reuse that instead of another clock read.
             perf.encode.record(Duration::from_micros(encoder.last.encode_us));
+            perf.convert.record(Duration::from_micros(encoder.last.convert_us));
+            perf.codec.record(Duration::from_micros(encoder.last.encode_us.saturating_sub(encoder.last.convert_us)));
             if let Some(mut msg) = sent {
                 let host_time = captured.elapsed();
                 perf.latency.record(host_time);
@@ -453,14 +548,22 @@ mod tests {
         p.idle += 12;
         p.wait.record(Duration::from_millis(15));
         p.latency.record(Duration::from_micros(4500));
+        p.convert.record(Duration::from_micros(600));
+        p.codec.record(Duration::from_micros(2500));
+        let mut link = LinkStats { window: Some(2), ..Default::default() };
+        link.send.record(Duration::from_micros(800));
+        link.ack_rtt.record(Duration::from_millis(12));
         let usage = ProcessUsage { cpu_pct: 3.3, ram_mb: 148.4 };
-        let line = p.take_line(10.0, Some("Intel QSV (hardware MFT)"), 60, Some(usage));
+        let line = p.take_line(&mut link, 10.0, Some("Intel QSV (hardware MFT)"), 60, Some(usage));
         assert_eq!(
             line,
-            "fps=58.9 target=60 grab avg/max=1.2/4.0ms wait=15.0/15.0ms encode=3.1/3.1ms gate=0.4/0.4ms latency=4.5/4.5ms kbps=2450 idle_frames=12 gate_skips=0 h264=on(Intel QSV (hardware MFT)) cpu=3.3% ram=148MB"
+            "fps=58.9 target=60 grab avg/max=1.2/4.0ms wait=15.0/15.0ms encode=3.1/3.1ms convert=0.6/0.6ms codec=2.5/2.5ms gate=0.4/0.4ms latency=4.5/4.5ms send=0.8/0.8ms ack_rtt=12.0/12.0ms window=2 resent=0 kbps=2450 idle_frames=12 gate_skips=0 h264=on(Intel QSV (hardware MFT)) cpu=3.3% ram=148MB"
         );
-        assert!(p.take_line(10.0, None, 60, None).starts_with("fps=0.0 target=60 grab avg/max=0.0/0.0ms"));
-        assert!(p.take_line(10.0, None, 144, None).starts_with("fps=0.0 target=144 "));
+        link.window = None;
+        let line = p.take_line(&mut link, 10.0, None, 60, None);
+        assert!(line.starts_with("fps=0.0 target=60 grab avg/max=0.0/0.0ms"));
+        assert!(line.contains(" send=- ack_rtt=- window=- resent=0 "), "{line}");
+        assert!(p.take_line(&mut link, 10.0, None, 144, None).starts_with("fps=0.0 target=144 "));
     }
 
     #[test]
@@ -479,9 +582,15 @@ mod tests {
         p.sent += 30;
         p.bytes += 250_000;
         p.gate_skips += 3;
-        p.take_line(10.0, None, 60, None);
+        p.convert.record(Duration::from_micros(500));
+        p.codec.record(Duration::from_micros(2000));
+        let mut link = LinkStats { window: Some(3), ..Default::default() };
+        link.send.record(Duration::from_micros(1500));
+        p.take_line(&mut link, 10.0, None, 60, None);
+        link.ack_rtt.record(Duration::from_millis(10));
+        link.ack_rtt.record(Duration::from_millis(20));
         let usage = ProcessUsage { cpu_pct: 2.5, ram_mb: 120.0 };
-        let s = p.take_stats(0.5, 60, 0.25, Some("Intel QSV (hardware MFT)"), Some(usage));
+        let s = p.take_stats(&mut link, 0.5, 60, 0.25, Some("Intel QSV (hardware MFT)"), Some(usage));
         assert_eq!(
             s,
             HostStats {
@@ -498,9 +607,22 @@ mod tests {
                 encoder: "Intel QSV (hardware MFT)".into(),
                 cpu: Some(2.5),
                 ram_mb: Some(120.0),
+                convert_ms: Some(0.5),
+                convert_max_ms: Some(0.5),
+                codec_ms: Some(2.0),
+                codec_max_ms: Some(2.0),
+                send_ms: Some(1.5),
+                send_max_ms: Some(1.5),
+                ack_rtt_ms: Some(15.0),
+                ack_rtt_max_ms: Some(20.0),
+                window: Some(3),
             }
         );
-        assert_eq!(p.take_stats(1.0, 60, 0.0, None, None), HostStats { target_fps: 60, ..Default::default() });
+        link.window = None;
+        assert_eq!(
+            p.take_stats(&mut link, 1.0, 60, 0.0, None, None),
+            HostStats { target_fps: 60, ..Default::default() }
+        );
     }
 
     #[test]

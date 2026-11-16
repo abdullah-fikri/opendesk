@@ -9,14 +9,18 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use core_engine::codec::delta::{Applied, Compositor};
-use core_engine::codec::frame::{FLAG_IDR, FrameHeader, KIND_DELTA, KIND_H264, KIND_KEY, is_framed, read_stamp};
+use core_engine::codec::frame::{
+    FLAG_IDR, FLAG_LOSSLESS, FrameHeader, KIND_DELTA, KIND_H264, KIND_KEY, is_framed, read_stamp, split_mixed,
+};
 use core_engine::codec::h264::H264Decoder;
+use core_engine::codec::lossless;
 use image::ImageReader;
 use parking_lot::{Condvar, Mutex};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 use crate::domain::capability;
 use crate::domain::latency;
+use crate::domain::link_quality::EventRate;
 use crate::domain::perf_stats::{Counter, PerfWindow, STATS_INTERVAL, Stage, kbps};
 use crate::infra::logger;
 use crate::infra::process_usage::UsageSampler;
@@ -124,8 +128,8 @@ pub struct Batch {
 
 /// What a decoded batch means for the screen.
 pub enum ViewerOutput {
-    /// Show this frame.
-    Frame(SharedPixelBuffer<Rgba8Pixel>, u32, u32),
+    /// Show this frame; the rows that differ from the previous one (None: all of them).
+    Frame(SharedPixelBuffer<Rgba8Pixel>, u32, u32, Rows),
     /// Nothing to redraw.
     Unchanged,
     /// Delta chain broken or undecodable; ask the host for a key frame.
@@ -142,6 +146,36 @@ pub struct ViewerDecoder {
     /// Output buffers, reused round-robin (see [`ViewerDecoder::output`]).
     pool: Vec<SharedPixelBuffer<Rgba8Pixel>>,
     next: usize,
+    /// Framebuffer rows changed since the last output.
+    dirty: Rows,
+    /// Rows changed by the message being applied.
+    last_rows: Rows,
+    /// Per pool buffer: framebuffer rows it is missing (changed since it was last filled).
+    stale: [Rows; ViewerDecoder::POOL],
+}
+
+/// A band of framebuffer rows `start..end`, or None for no rows.
+type Rows = Option<(usize, usize)>;
+
+/// The smallest band holding both.
+fn union(a: Rows, b: Rows) -> Rows {
+    match (a, b) {
+        (Some((a0, a1)), Some((b0, b1))) => Some((a0.min(b0), a1.max(b1))),
+        (a, None) => a,
+        (None, b) => b,
+    }
+}
+
+/// Rows a delta writes (moved and patched destinations), clipped to the frame.
+fn delta_rows(h: &FrameHeader) -> Rows {
+    let height = h.height as usize;
+    let band = |y: u16, rows: u16| {
+        let (y, end) = (y as usize, (y as usize + rows as usize).min(height));
+        (y < end).then_some((y, end))
+    };
+    let moves = h.moves.iter().map(|m| band(m.dst_y, m.h));
+    let patches = h.patches.iter().map(|p| band(p.dst_y, p.h));
+    moves.chain(patches).fold(None, union)
 }
 
 impl ViewerDecoder {
@@ -155,14 +189,19 @@ impl ViewerDecoder {
         let mut changed = false;
         let mut need_key = false;
         for msg in batch {
-            match self.apply(&msg) {
-                Applied::Updated => changed = true,
+            let (applied, rows) = self.apply(&msg);
+            match applied {
+                Applied::Updated => {
+                    changed = true;
+                    self.dirty = union(self.dirty, rows);
+                }
                 Applied::Unchanged => {}
                 Applied::NeedKey => need_key = true,
             }
         }
         if changed {
-            ViewerOutput::Frame(self.output(), self.comp.width, self.comp.height)
+            let (pixels, rows) = self.output();
+            ViewerOutput::Frame(pixels, self.comp.width, self.comp.height, rows)
         } else if need_key {
             ViewerOutput::NeedKey
         } else {
@@ -173,30 +212,60 @@ impl ViewerDecoder {
     /// Bound on reused output buffers: one on screen, one waiting for the UI thread, one being filled.
     const POOL: usize = 3;
 
-    /// Copies the framebuffer into an output buffer. Buffers are reused round-robin; one the UI still holds
-    /// is shared, so `make_mut_bytes` copies it first and the picture on screen is never written to.
-    fn output(&mut self) -> SharedPixelBuffer<Rgba8Pixel> {
+    /// Copies the framebuffer into an output buffer. Buffers are reused round-robin, and a reused buffer gets
+    /// only the rows that changed since it was last filled (typing touches a few rows, not the whole 8 MB of a
+    /// 1080p frame). One the UI still holds is shared, so `make_mut_bytes` copies it first and the picture on
+    /// screen is never written to.
+    /// Also returns the rows that differ from the previous output; None (all rows) for the first outputs of a
+    /// size, when nothing on screen can be built on.
+    fn output(&mut self) -> (SharedPixelBuffer<Rgba8Pixel>, Rows) {
         let (w, h) = (self.comp.width, self.comp.height);
+        let dirty = self.dirty.take();
         if self.pool.first().is_some_and(|b| (b.width(), b.height()) != (w, h)) {
             self.pool.clear();
         }
+        let fresh = self.pool.is_empty();
         if self.pool.len() < Self::POOL {
+            for stale in &mut self.stale[..self.pool.len()] {
+                *stale = union(*stale, dirty);
+            }
             self.pool.push(to_pixel_buffer(&self.comp.fb, w, h));
+            self.stale[self.pool.len() - 1] = None;
             self.next = 0;
-            return self.pool.last().unwrap().clone();
+            return (self.pool.last().unwrap().clone(), if fresh { None } else { dirty });
         }
-        let buf = &mut self.pool[self.next];
+        for stale in &mut self.stale {
+            *stale = union(*stale, dirty);
+        }
+        let i = self.next;
         self.next = (self.next + 1) % Self::POOL;
-        buf.make_mut_bytes().copy_from_slice(&self.comp.fb);
-        buf.clone()
+        let row = w as usize * 4;
+        if let Some((y0, y1)) = self.stale[i].take() {
+            let (a, b) = (y0 * row, (y1 * row).min(self.comp.fb.len()));
+            self.pool[i].make_mut_bytes()[a..b].copy_from_slice(&self.comp.fb[a..b]);
+        }
+        (self.pool[i].clone(), dirty)
     }
 
-    fn apply(&mut self, msg: &[u8]) -> Applied {
+    /// Applies one message; on `Updated` also the rows it changed.
+    fn apply(&mut self, msg: &[u8]) -> (Applied, Rows) {
+        let applied = self.apply_inner(msg);
+        let rows = match applied {
+            Applied::Updated => self.last_rows.take(),
+            _ => None,
+        };
+        (applied, rows)
+    }
+
+    fn apply_inner(&mut self, msg: &[u8]) -> Applied {
+        // Every picture that is not a delta replaces the whole frame.
+        self.last_rows = Some((0, self.comp.height as usize));
         if !is_framed(msg) {
             self.h264_ready = false;
             return match decode_jpeg_rgba(msg) {
                 Some((rgba, w, h)) => {
                     self.comp.set_full(None, rgba, w, h);
+                    self.last_rows = Some((0, h as usize));
                     Applied::Updated
                 }
                 None => Applied::Unchanged,
@@ -205,6 +274,10 @@ impl ViewerDecoder {
         let Some((header, payload)) = FrameHeader::parse(msg) else {
             self.comp.invalidate();
             return Applied::NeedKey;
+        };
+        self.last_rows = match header.kind {
+            KIND_DELTA => delta_rows(&header),
+            _ => Some((0, header.height as usize)),
         };
         if header.kind != KIND_H264 {
             self.h264_ready = false;
@@ -220,6 +293,7 @@ impl ViewerDecoder {
                     Applied::NeedKey
                 }
             },
+            KIND_DELTA if header.flags & FLAG_LOSSLESS != 0 => self.apply_lossless_delta(&header, payload),
             KIND_DELTA => {
                 if payload.is_empty() || header.patches.is_empty() {
                     return self.comp.apply_delta(&header, None);
@@ -238,6 +312,20 @@ impl ViewerDecoder {
         }
     }
 
+    /// A delta with a JPEG atlas and a lossless text/UI atlas (`tile-lossless`).
+    fn apply_lossless_delta(&mut self, header: &FrameHeader, payload: &[u8]) -> Applied {
+        let decoded = split_mixed(payload).and_then(|(jpeg, tiles)| {
+            let jpeg = if jpeg.is_empty() { None } else { Some(decode_jpeg_rgba(jpeg)?) };
+            Some((jpeg, lossless::decode(tiles)?))
+        });
+        let Some((jpeg, (tiles, tw, th))) = decoded else {
+            self.comp.invalidate();
+            return Applied::NeedKey;
+        };
+        let jpeg = jpeg.as_ref().map(|(rgba, w, h)| (rgba.as_slice(), *w, *h));
+        self.comp.apply_mixed(header, jpeg, Some((&tiles, tw, th)))
+    }
+
     fn apply_h264(&mut self, h: &FrameHeader, au: &[u8]) -> Applied {
         let idr = h.flags & FLAG_IDR != 0;
         let (w, hh) = (h.width as u32, h.height as u32);
@@ -248,6 +336,10 @@ impl ViewerDecoder {
         }
         if idr && self.h264.as_ref().is_none_or(|(_, dw, dh)| (*dw, *dh) != (w, hh)) {
             self.h264 = H264Decoder::new(w, hh).ok().map(|d| (d, w, hh));
+            if let Some((d, ..)) = &self.h264 {
+                let kind = if d.is_hardware() { "GPU (DXVA)" } else { "software" };
+                logger::info("viewer", &format!("H.264 decoder for {w}x{hh}: {kind}."));
+            }
         }
         let Some((dec, _, _)) = self.h264.as_mut() else {
             self.comp.invalidate();
@@ -345,11 +437,14 @@ where
     }
     let name = format!("viewer-decoder-{}", sess.id);
     crate::infra::thread::spawn_supervised(&name, on_panic, move || {
+        let _mmcss = crate::infra::power::mmcss(crate::infra::power::Mmcss::Games);
         let mut frame_count = 0u32;
         let mut fps_timer = Instant::now();
         let mut current_fps = 0u32;
         let mut decoder: Option<ViewerDecoder> = None;
         let mut last_key_request: Option<Instant> = None;
+        // Key frames asked for because the delta chain broke (loss), for the overlay.
+        let mut key_requests = EventRate::default();
         let mut was_visible = sess.visible.load(Ordering::SeqCst);
         let mut perf = ViewerPerf::default();
         let mut perf_window = PerfWindow::new(Instant::now());
@@ -389,12 +484,15 @@ where
                 let mut viewer = perf.take_stats(secs);
                 viewer.usage = stats_usage.sample(Instant::now());
                 let latency = sess.latency.lock().take_lap();
+                let loss = sess.udp_loss.lock().take_lap();
                 if stats_on {
                     ping(&sess, &outbox);
                     let columns = {
                         let mut stats = sess.stats.lock();
                         stats.viewer = viewer;
                         stats.latency = latency;
+                        stats.loss = sess.p2p_active.load(Ordering::Relaxed).then_some(loss);
+                        stats.key_requests = key_requests.per_minute(Instant::now());
                         stats.columns(path_of(&sess), sess.e2e_active())
                     };
                     show_stats(&sess, columns);
@@ -416,12 +514,13 @@ where
             let out = decoder.get_or_insert_with(ViewerDecoder::new).process(batch);
             let decoded = Instant::now();
             perf.process.record(decoded - process_start);
-            let (pixels, width, height) = match out {
-                ViewerOutput::Frame(buf, w, h) => (buf, w, h),
+            let (pixels, width, height, rows) = match out {
+                ViewerOutput::Frame(buf, w, h, rows) => (buf, w, h, rows),
                 ViewerOutput::Unchanged => continue,
                 ViewerOutput::NeedKey => {
                     if last_key_request.is_none_or(|t| t.elapsed() >= KEY_REQUEST_INTERVAL) {
                         last_key_request = Some(Instant::now());
+                        key_requests.record(Instant::now());
                         logger::info("viewer.video", "Delta chain broken; requesting a key frame.");
                         request_key(&outbox, &sess.id);
                     }
@@ -443,7 +542,7 @@ where
                 received: received.unwrap_or(process_start),
                 decoded,
             };
-            show(&sess, Frame { pixels, width, height, fps: current_fps, path, latency });
+            show(&sess, Frame { pixels, rows, width, height, fps: current_fps, path, latency });
             perf.handoff.record(handoff_start.elapsed());
             perf.shown += 1;
         }
@@ -579,6 +678,78 @@ mod tests {
         assert!(psnr(&frame, &viewer.comp.fb) > 20.0);
     }
 
+    /// `tile-lossless`: text typed on a plain background arrives pixel-exact, photo-like blocks stay JPEG, and
+    /// both kinds can share one delta.
+    #[test]
+    fn lossless_tiles_reproduce_text_exactly_end_to_end() {
+        let (w, h) = (320usize, 200usize);
+        // Plain window background with a gradient "photo" in the right half.
+        let mut frame: Vec<u32> = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                if x >= 192 {
+                    (((x * 7 + y * 3) as u32 & 0xFF) << 16) | (((y as u32 * 5) & 0xFF) << 8) | 0x40
+                } else {
+                    0x00F3_F3F3
+                }
+            })
+            .collect();
+        let mut enc = StreamEncoder::new(w as i32, h as i32, 85, true);
+        enc.set_lossless(true);
+        let mut viewer = ViewerDecoder::new();
+        assert!(shown(viewer.process(vec![enc.encode(&input(&frame, w)).unwrap()])));
+
+        let text = |x: usize, y: usize| (x * 7 + y * 13) % 5 < 2; // dense two-tone "glyphs"
+        for t in 0..4 {
+            for y in 40..56 {
+                for x in 10 + t * 30..34 + t * 30 {
+                    if text(x, y) {
+                        frame[y * w + x] = 0x0020_2020;
+                    }
+                }
+            }
+            // The last tick also touches the photo half: one delta with both atlases.
+            if t == 3 {
+                for y in 100..140 {
+                    for x in 200..260 {
+                        frame[y * w + x] ^= 0x0033_1100;
+                    }
+                }
+            }
+            let msg = enc.encode(&input(&frame, w)).unwrap();
+            let (hdr, _) = FrameHeader::parse(&msg).unwrap();
+            assert_eq!((hdr.kind, hdr.flags & FLAG_LOSSLESS), (KIND_DELTA, FLAG_LOSSLESS));
+            assert!(shown(viewer.process(vec![msg])));
+        }
+        // Still screen: the refine pass resends the rest of the plain background (key-frame JPEG) pixel-exact.
+        let mut refined = false;
+        for _ in 0..10 {
+            if let Some(msg) = enc.encode(&input(&frame, w)) {
+                assert_eq!(FrameHeader::parse(&msg).unwrap().0.flags & FLAG_LOSSLESS, FLAG_LOSSLESS);
+                assert!(shown(viewer.process(vec![msg])));
+                refined = true;
+                break;
+            }
+        }
+        assert!(refined, "no refine pass");
+        // Every pixel left of the photo is exact.
+        for y in 0..h {
+            for x in 0..192 {
+                let (p, o) = (frame[y * w + x], (y * w + x) * 4);
+                let got = [viewer.comp.fb[o], viewer.comp.fb[o + 1], viewer.comp.fb[o + 2]];
+                assert_eq!(got, [(p >> 16) as u8, (p >> 8) as u8, p as u8], "pixel ({x}, {y})");
+            }
+        }
+        assert!(psnr(&frame, &viewer.comp.fb) > 20.0);
+
+        // A viewer without the capability never gets lossless tiles.
+        let mut plain = StreamEncoder::new(w as i32, h as i32, 85, true);
+        let _key = plain.encode(&input(&frame, w)).unwrap();
+        frame[45 * w + 12] = 0;
+        let msg = plain.encode(&input(&frame, w)).unwrap();
+        assert_eq!(FrameHeader::parse(&msg).unwrap().0.flags & FLAG_LOSSLESS, 0);
+    }
+
     #[test]
     fn h264_motion_then_sharp_key_end_to_end() {
         let (w, h) = (320usize, 192usize);
@@ -667,8 +838,9 @@ mod tests {
             assert_eq!(buf.as_bytes(), &fb[..], "a frame the UI holds is never rewritten");
         }
         assert_eq!(viewer.pool.len(), ViewerDecoder::POOL);
-        let ViewerOutput::Frame(buf, w, h) = viewer.process(vec![jpeg(16, 4, 128)]) else { panic!() };
+        let ViewerOutput::Frame(buf, w, h, rows) = viewer.process(vec![jpeg(16, 4, 128)]) else { panic!() };
         assert_eq!((buf.width(), buf.height(), w, h), (16, 4, 16, 4), "a new stream size resets the pool");
+        assert_eq!(rows, None, "the first frame of a size is whole");
         assert_eq!(viewer.pool.len(), 1);
 
         // Buffers the UI has released are refilled in place, not reallocated.
@@ -681,6 +853,50 @@ mod tests {
             let _ = viewer.process(vec![jpeg(16, 4, 9)]);
         }
         assert_eq!(ptrs(&viewer), before);
+    }
+
+    #[test]
+    fn reused_buffers_copy_only_changed_rows_yet_always_match_the_framebuffer() {
+        let (w, h) = (8u32, 16u32);
+        let mut viewer = ViewerDecoder::new();
+        viewer.comp.set_full(None, vec![0; (w * h * 4) as usize], w, h);
+        viewer.dirty = Some((0, h as usize));
+        let mut held = Vec::new();
+        let mut seed = 7u32;
+        // What a texture fed only the reported rows shows (V2): always the framebuffer.
+        let mut screen = vec![0u8; (w * h * 4) as usize];
+        for step in 0..200u32 {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let y0 = (seed >> 8) as usize % h as usize;
+            let y1 = (y0 + 1 + (seed >> 16) as usize % 4).min(h as usize);
+            let row = w as usize * 4;
+            viewer.comp.fb[y0 * row..y1 * row].fill(step as u8);
+            viewer.dirty = union(viewer.dirty, Some((y0, y1)));
+            let (buf, rows) = viewer.output();
+            assert_eq!(buf.as_bytes(), &viewer.comp.fb[..], "step {step}");
+            let (a, b) = rows.map_or((0, h as usize), |(a, b)| (a, b));
+            screen[a * row..b * row].copy_from_slice(&buf.as_bytes()[a * row..b * row]);
+            assert_eq!(screen, viewer.comp.fb, "step {step}: rows {rows:?} miss a change");
+            if step % 3 == 0 {
+                held.push((buf, viewer.comp.fb.clone()));
+                if held.len() > 2 {
+                    held.remove(0);
+                }
+            }
+        }
+        for (buf, fb) in &held {
+            assert_eq!(buf.as_bytes(), &fb[..], "a frame the UI holds is never rewritten");
+        }
+    }
+
+    #[test]
+    fn delta_rows_cover_moves_and_patches_clipped_to_the_frame() {
+        use core_engine::codec::frame::{MoveRect, Patch};
+        let mut h = core_engine::codec::delta::key_header(1, 8, 100);
+        assert_eq!(delta_rows(&h), None);
+        h.moves.push(MoveRect { src_x: 0, src_y: 50, dst_x: 0, dst_y: 40, w: 8, h: 10 });
+        h.patches.push(Patch { dst_x: 0, dst_y: 90, w: 8, h: 32, atlas_x: 0, atlas_y: 0 });
+        assert_eq!(delta_rows(&h), Some((40, 100)));
     }
 
     #[test]
@@ -908,6 +1124,7 @@ screen {}x{} mode={} q={} | GDI capture {:.2} ms/frame | {} first frame {:.2} ms
             ] {
                 let mut enc = StreamEncoder::new(w as i32, h as i32, quality, delta);
                 enc.set_h264(h264);
+                enc.set_lossless(std::env::var("BENCH_LOSSLESS").is_ok_and(|v| v == "1"));
                 enc.wait_h264_ready();
                 let mut viewer = ViewerDecoder::new();
                 let (mut bytes, mut sent, mut enc_sent_us, mut enc_max, mut host_us, mut dec_us) =

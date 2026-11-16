@@ -24,3 +24,47 @@ pub fn cursor_shape() -> u8 {
     }
     handles.iter().position(|&h| h == ci.h_cursor as usize).map_or(1, |i| i as u8 + 1)
 }
+
+const SM_XVIRTUALSCREEN: i32 = 76;
+const SM_YVIRTUALSCREEN: i32 = 77;
+const SM_CXVIRTUALSCREEN: i32 = 78;
+const SM_CYVIRTUALSCREEN: i32 = 79;
+
+#[repr(C)]
+#[derive(Default)]
+struct ClipRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn GetClipCursor(rect: *mut ClipRect) -> BOOL;
+}
+
+/// True while an application captured the mouse the way games do for mouse look: the cursor is hidden and
+/// confined to less than the whole virtual desktop. Such an application reads relative motion, so absolute
+/// pointer positions from the viewer would spin its camera. A cursor hidden only while typing is not confined.
+pub fn pointer_captured() -> bool {
+    let mut ci = CURSORINFO {
+        cb_size: std::mem::size_of::<CURSORINFO>() as DWORD,
+        flags: 0,
+        h_cursor: ptr::null_mut(),
+        pt_screen_pos: POINT { x: 0, y: 0 },
+    };
+    // SAFETY: plain out-parameters sized as the API expects.
+    unsafe {
+        if GetCursorInfo(&mut ci) == 0 || (ci.flags & CURSOR_SHOWING) != 0 {
+            return false;
+        }
+        let mut clip = ClipRect::default();
+        if GetClipCursor(&mut clip) == 0 {
+            return false;
+        }
+        let (vx, vy) = (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN));
+        let (vw, vh) = (GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        clip.left > vx || clip.top > vy || clip.right < vx + vw || clip.bottom < vy + vh
+    }
+}

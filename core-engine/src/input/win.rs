@@ -27,7 +27,14 @@ const MOUSEEVENTF_LEFTDOWN: DWORD = 0x0002;
 const MOUSEEVENTF_LEFTUP: DWORD = 0x0004;
 const MOUSEEVENTF_RIGHTDOWN: DWORD = 0x0008;
 const MOUSEEVENTF_RIGHTUP: DWORD = 0x0010;
+const MOUSEEVENTF_MIDDLEDOWN: DWORD = 0x0020;
+const MOUSEEVENTF_MIDDLEUP: DWORD = 0x0040;
+const MOUSEEVENTF_XDOWN: DWORD = 0x0080;
+const MOUSEEVENTF_XUP: DWORD = 0x0100;
+const XBUTTON1: DWORD = 0x0001;
+const XBUTTON2: DWORD = 0x0002;
 const MOUSEEVENTF_WHEEL: DWORD = 0x0800;
+const MOUSEEVENTF_HWHEEL: DWORD = 0x1000;
 const MOUSEEVENTF_VIRTUALDESK: DWORD = 0x4000;
 const MOUSEEVENTF_ABSOLUTE: DWORD = 0x8000;
 
@@ -140,9 +147,14 @@ fn key_input(vk: BYTE, up: bool) -> INPUT {
 
 /// One mouse input with `flags`; `dx`, `dy` are absolute coordinates when the flags carry a position, else 0.
 fn mouse_input(flags: DWORD, dx: i32, dy: i32) -> INPUT {
+    mouse_input_data(flags, dx, dy, 0)
+}
+
+/// [`mouse_input`] with `mouse_data` (which X button, wheel amount).
+fn mouse_input_data(flags: DWORD, dx: i32, dy: i32, mouse_data: DWORD) -> INPUT {
     INPUT {
         type_: INPUT_MOUSE,
-        data: INPUT_DATA { mi: MOUSEINPUT { dx, dy, mouse_data: 0, dw_flags: flags, time: 0, dw_extra_info: 0 } },
+        data: INPUT_DATA { mi: MOUSEINPUT { dx, dy, mouse_data, dw_flags: flags, time: 0, dw_extra_info: 0 } },
     }
 }
 
@@ -185,32 +197,39 @@ fn absolute_move(x: i32, y: i32) -> INPUT {
     )
 }
 
-/// The flag that presses (`up` false) or releases `button` (0 left, 2 right); None for other buttons.
-fn button_flag(button: i32, up: bool) -> Option<DWORD> {
-    match (button, up) {
-        (0, false) => Some(MOUSEEVENTF_LEFTDOWN),
-        (0, true) => Some(MOUSEEVENTF_LEFTUP),
-        (2, false) => Some(MOUSEEVENTF_RIGHTDOWN),
-        (2, true) => Some(MOUSEEVENTF_RIGHTUP),
-        _ => None,
-    }
+/// The flag and mouse data that press (`up` false) or release `button` (0 left, 1 middle, 2 right, 3 back,
+/// 4 forward); None for other buttons.
+fn button_flag(button: i32, up: bool) -> Option<(DWORD, DWORD)> {
+    Some(match (button, up) {
+        (0, false) => (MOUSEEVENTF_LEFTDOWN, 0),
+        (0, true) => (MOUSEEVENTF_LEFTUP, 0),
+        (1, false) => (MOUSEEVENTF_MIDDLEDOWN, 0),
+        (1, true) => (MOUSEEVENTF_MIDDLEUP, 0),
+        (2, false) => (MOUSEEVENTF_RIGHTDOWN, 0),
+        (2, true) => (MOUSEEVENTF_RIGHTUP, 0),
+        (3, false) => (MOUSEEVENTF_XDOWN, XBUTTON1),
+        (3, true) => (MOUSEEVENTF_XUP, XBUTTON1),
+        (4, false) => (MOUSEEVENTF_XDOWN, XBUTTON2),
+        (4, true) => (MOUSEEVENTF_XUP, XBUTTON2),
+        _ => return None,
+    })
 }
 
 /// Presses or releases `button`. On the absolute path the button goes in one batch with a move to the last
 /// injected position, so it lands where the viewer pointed even if the local mouse moved in between, and the end
 /// of a drag is a real move with the button still held.
 fn press(button: i32, up: bool) {
-    let Some(flag) = button_flag(button, up) else { return };
+    let Some((flag, data)) = button_flag(button, up) else { return };
     if !absolute_input() {
         // SAFETY: mouse_event takes plain values.
-        unsafe { mouse_event(flag, 0, 0, 0, 0) };
+        unsafe { mouse_event(flag, 0, 0, data, 0) };
         return;
     }
     let packed = LAST_INJECTED_POS.load(Ordering::Relaxed);
     if packed == i64::MIN {
-        send(&[mouse_input(flag, 0, 0)]);
+        send(&[mouse_input_data(flag, 0, 0, data)]);
     } else {
-        send(&[absolute_move((packed >> 32) as i32, packed as i32), mouse_input(flag, 0, 0)]);
+        send(&[absolute_move((packed >> 32) as i32, packed as i32), mouse_input_data(flag, 0, 0, data)]);
     }
 }
 
@@ -262,16 +281,23 @@ impl InputInjector {
         }
     }
 
-    /// Presses mouse button `button` at the last position given to [`Self::set_cursor_pos`]: 0 left, 2 right;
-    /// other values are ignored.
+    /// Presses mouse button `button` at the last position given to [`Self::set_cursor_pos`]: 0 left, 1 middle,
+    /// 2 right, 3 back, 4 forward; other values are ignored.
     pub fn mouse_down(&self, button: i32) {
         press(button, false);
     }
 
-    /// Releases mouse button `button` at the last position given to [`Self::set_cursor_pos`]: 0 left, 2 right;
-    /// other values are ignored.
+    /// Releases mouse button `button` at the last position given to [`Self::set_cursor_pos`]: 0 left, 1 middle,
+    /// 2 right, 3 back, 4 forward; other values are ignored.
     pub fn mouse_up(&self, button: i32) {
         press(button, true);
+    }
+
+    /// Moves the pointer by (`dx`, `dy`) mickeys, as a physical mouse does: what games that captured the mouse read.
+    pub fn mouse_move_relative(&self, dx: i32, dy: i32) {
+        if dx != 0 || dy != 0 {
+            send(&[mouse_input(MOUSEEVENTF_MOVE, dx, dy)]);
+        }
     }
 
     /// Scrolls by `delta_y` (120 = one notch up).
@@ -280,6 +306,12 @@ impl InputInjector {
             let win_delta = if delta_y.abs() < 40 { delta_y * 120 } else { delta_y };
             mouse_event(MOUSEEVENTF_WHEEL, 0, 0, win_delta as u32, 0);
         }
+    }
+
+    /// Scrolls sideways by `delta_x` (120 = one notch right).
+    pub fn mouse_hwheel(&self, delta_x: i32) {
+        let win_delta = if delta_x.abs() < 40 { delta_x * 120 } else { delta_x };
+        send(&[mouse_input_data(MOUSEEVENTF_HWHEEL, 0, 0, win_delta as u32)]);
     }
 
     /// Presses virtual key `vk`.
@@ -386,11 +418,13 @@ mod tests {
     }
 
     #[test]
-    fn only_left_and_right_buttons_map_to_flags() {
-        assert_eq!(button_flag(0, false), Some(MOUSEEVENTF_LEFTDOWN));
-        assert_eq!(button_flag(0, true), Some(MOUSEEVENTF_LEFTUP));
-        assert_eq!(button_flag(2, false), Some(MOUSEEVENTF_RIGHTDOWN));
-        assert_eq!(button_flag(2, true), Some(MOUSEEVENTF_RIGHTUP));
-        assert_eq!(button_flag(1, false), None);
+    fn five_buttons_map_to_flags() {
+        assert_eq!(button_flag(0, false), Some((MOUSEEVENTF_LEFTDOWN, 0)));
+        assert_eq!(button_flag(0, true), Some((MOUSEEVENTF_LEFTUP, 0)));
+        assert_eq!(button_flag(1, false), Some((MOUSEEVENTF_MIDDLEDOWN, 0)));
+        assert_eq!(button_flag(2, true), Some((MOUSEEVENTF_RIGHTUP, 0)));
+        assert_eq!(button_flag(3, false), Some((MOUSEEVENTF_XDOWN, XBUTTON1)));
+        assert_eq!(button_flag(4, true), Some((MOUSEEVENTF_XUP, XBUTTON2)));
+        assert_eq!(button_flag(5, false), None);
     }
 }

@@ -47,7 +47,7 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {
     bind_hosting(win, ctx);
     bind_sessions(win, ctx);
     win.on_dismiss_transfer(|id| transfer_model::remove_finished(&id));
-    bind_device_settings(win);
+    bind_device_settings(win, ctx);
     #[cfg(feature = "admin")]
     bind_monitor_wall(win, ctx);
     #[cfg(feature = "admin")]
@@ -56,7 +56,15 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {
 
 /// Settings › This device: kept in the local `config.json`. Bound in every edition so the settings stay one
 /// code path; only the admin edition shows the page today.
-fn bind_device_settings(win: &MainWindow) {
+fn bind_device_settings(win: &MainWindow, ctx: &Ctx) {
+    let (weak, ctx) = (win.as_weak(), Arc::clone(ctx));
+    win.on_save_pointer_lock(move |on| {
+        settings::set_pointer_lock(on);
+        controller::set_pointer_lock_allowed(&ctx, on);
+        if let Some(w) = weak.upgrade() {
+            w.set_pointer_lock(on);
+        }
+    });
     let weak = win.as_weak();
     win.on_whats_new_closed(settings::whats_new_seen);
     win.on_save_mic_on_at_start(move |on| {
@@ -157,6 +165,7 @@ fn bind_sessions(win: &MainWindow, ctx: &Ctx) {
     });
     on!(win, ctx, on_close_session, |_w, c, id| {
         VIEWPORT_TIMERS.with(|t| t.borrow_mut().remove(id.as_str()));
+        crate::service::viewer::drop_point::forget(&id);
         controller::close(c, &id, None);
     });
     on!(win, ctx, on_set_view_layout, |_w, c, layout| controller::set_layout(c, layout));
@@ -165,11 +174,20 @@ fn bind_sessions(win: &MainWindow, ctx: &Ctx) {
     on!(win, ctx, on_session_mouse_move, |_w, c, id, x, y| controller::mouse(c, &id, Mouse::Move, x, y));
     on!(win, ctx, on_session_mouse_down, |_w, c, id, x, y, b| controller::mouse(c, &id, Mouse::Down(b), x, y));
     on!(win, ctx, on_session_mouse_up, |_w, c, id, x, y, b| controller::mouse(c, &id, Mouse::Up(b), x, y));
-    on!(win, ctx, on_session_mouse_wheel, |_w, c, id, x, y, d| controller::mouse(c, &id, Mouse::Wheel(d), x, y));
+    on!(win, ctx, on_session_mouse_wheel, |_w, c, id, x, y, dx, d| controller::mouse(
+        c,
+        &id,
+        Mouse::Wheel(dx, d),
+        x,
+        y
+    ));
     on!(win, ctx, on_session_key_event, |_w, c, id, text, pressed, repeat, ctrl, alt, shift| {
         controller::key_event(c, &id, &text, pressed, repeat, Mods { ctrl, alt, shift });
     });
     on!(win, ctx, on_session_release_keys, |_w, c, id| controller::release_keys(c, &id));
+    on!(win, ctx, on_session_frame_rect, |_w, _c, id, x, y, w, h| {
+        crate::service::viewer::drop_point::set_rect(&id, [x, y, w, h]);
+    });
     on!(win, ctx, on_session_viewport_resized, |_w, c, id, width, height| {
         controller::viewport_changed(c, &id, width, height);
         let timer = VIEWPORT_TIMERS

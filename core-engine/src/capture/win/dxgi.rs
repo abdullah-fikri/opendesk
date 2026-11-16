@@ -7,9 +7,10 @@ use std::ptr;
 use windows::Win32::Foundation::{HMODULE, RECT};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
-    D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
-    ID3D11Texture2D,
+    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_CPU_ACCESS_READ,
+    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device,
+    ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_UNSPECIFIED, DXGI_SAMPLE_DESC,
@@ -36,6 +37,8 @@ const CURSOR_SHOWING: u32 = 1;
 const DI_NORMAL: u32 = 3;
 /// Cursor tile; large accessibility cursors are clipped to it.
 const TILE: i32 = 128;
+/// More changed rectangles than this in one frame are read back with one full copy instead.
+const MAX_PARTIAL_COPIES: usize = 48;
 
 #[repr(C)]
 struct ICONINFO {
@@ -139,6 +142,12 @@ pub struct DxgiCapturer {
     rect_buf: Vec<u8>,
     /// Horizontally reduced source rows used by the scaler.
     hrows: Vec<u32>,
+    /// GPU copy of the latest desktop image (zero-copy H.264), once [`Self::enable_gpu_frames`] was called.
+    gpu_copy: Option<ID3D11Texture2D>,
+    /// False while frames only need to exist on the GPU: `grab` then skips the readback to system memory.
+    cpu_frames: bool,
+    /// `frame` (and the staging texture) missed GPU-only grabs: the next readback copies everything.
+    cpu_stale: bool,
 }
 
 unsafe impl Send for DxgiCapturer {}
@@ -196,17 +205,30 @@ impl DxgiCapturer {
             let (sw, sh) = (r.right - r.left, r.bottom - r.top);
             let mut device = None;
             let mut ctx = None;
-            D3D11CreateDevice(
-                &adapter,
-                D3D_DRIVER_TYPE_UNKNOWN,
-                HMODULE::default(),
+            // Video support lets the zero-copy H.264 path convert and encode on this device; drivers without it
+            // still capture.
+            let flag_sets = [
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                Some(&[D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0]),
-                D3D11_SDK_VERSION,
-                Some(&mut device),
-                None,
-                Some(&mut ctx),
-            )?;
+            ];
+            for (i, flags) in flag_sets.into_iter().enumerate() {
+                let made = D3D11CreateDevice(
+                    &adapter,
+                    D3D_DRIVER_TYPE_UNKNOWN,
+                    HMODULE::default(),
+                    flags,
+                    Some(&[D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0]),
+                    D3D11_SDK_VERSION,
+                    Some(&mut device),
+                    None,
+                    Some(&mut ctx),
+                );
+                match made {
+                    Ok(()) => break,
+                    Err(e) if i + 1 == flag_sets.len() => return Err(e),
+                    Err(_) => {}
+                }
+            }
             let (device, ctx) = (device.unwrap(), ctx.unwrap());
             let output: IDXGIOutput1 = output.cast()?;
             let dup = output.DuplicateOutput(&device)?;
@@ -277,6 +299,9 @@ impl DxgiCapturer {
                 hotspots: Vec::new(),
                 rect_buf: Vec::new(),
                 hrows: Vec::new(),
+                gpu_copy: None,
+                cpu_frames: true,
+                cpu_stale: false,
             })
         }
     }
@@ -304,6 +329,76 @@ impl DxgiCapturer {
     /// Framebuffer moves of the last grab (only when not scaling).
     pub fn moves(&self) -> &[MoveRect] {
         &self.moves
+    }
+
+    /// Keeps a GPU copy of every desktop image from now on (see [`Self::gpu_texture`]) and returns the device it
+    /// lives on, for an encoder that reads it directly.
+    pub fn enable_gpu_frames(&mut self) -> windows::core::Result<ID3D11Device> {
+        if self.gpu_copy.is_none() {
+            let desc = D3D11_TEXTURE2D_DESC {
+                Width: self.screen_width as u32,
+                Height: self.screen_height as u32,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+                CPUAccessFlags: 0,
+                MiscFlags: 0,
+            };
+            let mut tex = None;
+            unsafe {
+                self.device.CreateTexture2D(&desc, None, Some(&mut tex))?;
+                let tex = tex.ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_FAIL))?;
+                // Start from the current image (the staging texture holds all of it) until the next change.
+                self.ctx.CopyResource(&tex, &self.staging);
+                self.gpu_copy = Some(tex);
+            }
+        }
+        Ok(self.device.clone())
+    }
+
+    /// The latest desktop image on the GPU (native size, BGRA), once GPU frames are enabled.
+    pub fn gpu_texture(&self) -> Option<&ID3D11Texture2D> {
+        self.gpu_copy.as_ref()
+    }
+
+    /// Off: `grab` leaves the image on the GPU (dirty rectangles still reported) until [`Self::read_back`] or
+    /// turning it on again. Only with GPU frames enabled.
+    pub fn set_cpu_frames(&mut self, on: bool) {
+        self.cpu_frames = on || self.gpu_copy.is_none();
+    }
+
+    /// Brings `pixels` up to date with the GPU image after GPU-only grabs (one full copy); `dirty_hint` then
+    /// reports the whole frame. Nothing to do when nothing was skipped.
+    pub fn read_back(&mut self) -> windows::core::Result<()> {
+        let Some(gpu) = self.gpu_copy.clone().filter(|_| self.cpu_stale) else { return Ok(()) };
+        let all = RECT { left: 0, top: 0, right: self.screen_width, bottom: self.screen_height };
+        unsafe {
+            self.ctx.CopyResource(&self.staging, &gpu);
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            self.ctx.Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+            let pitch = mapped.RowPitch as usize / 4;
+            let src = std::slice::from_raw_parts(mapped.pData as *const u32, pitch * self.screen_height as usize);
+            self.update_region(src, pitch, &all);
+            self.ctx.Unmap(&self.staging, 0);
+        }
+        self.cpu_stale = false;
+        // The old cursor's saved pixels went with the rewrite.
+        self.cursor = None;
+        if self.cpu_frames {
+            self.draw_cursor();
+        }
+        self.dirty = None;
+        Ok(())
+    }
+
+    /// Benchmarks: a full readback as after GPU-only grabs.
+    #[cfg(test)]
+    pub(crate) fn read_back_all_for_bench(&mut self) {
+        self.cpu_stale = true;
+        self.read_back().unwrap();
     }
 
     /// Waits up to `timeout_ms` for a new desktop image or cursor update.
@@ -337,13 +432,16 @@ impl DxgiCapturer {
 
         let mut dirty: Vec<Rect> = Vec::new();
         // Take the old cursor out first so updates land on clean pixels; its area must be re-examined.
-        if let Some(c) = self.cursor.take() {
+        if self.cpu_frames
+            && let Some(c) = self.cursor.take()
+        {
             self.blit_rect(&c.rect, &c.under);
             dirty.push(c.rect);
         }
 
         // Pointer-only updates carry no valid desktop image (it can even be black right after creation).
         let image_updated = info.LastPresentTime != 0;
+        let stale_before = self.cpu_stale;
         let result = match resource.filter(|_| image_updated) {
             Some(res) => self.copy_image(&dup, &res, &mut dirty),
             None => Ok(()),
@@ -359,10 +457,12 @@ impl DxgiCapturer {
             }
         }
 
-        if let Some(r) = self.draw_cursor() {
+        if self.cpu_frames
+            && let Some(r) = self.draw_cursor()
+        {
             dirty.push(r);
         }
-        if self.fresh && image_updated {
+        if (self.fresh || (stale_before && !self.cpu_stale)) && image_updated {
             self.fresh = false;
             self.has_image = true;
             self.dirty = None;
@@ -378,11 +478,17 @@ impl DxgiCapturer {
         res: &IDXGIResource,
         dirty: &mut Vec<Rect>,
     ) -> windows::core::Result<()> {
-        let (src_rects, src_moves) = if self.fresh {
+        // A readback after GPU-only grabs covers everything those skipped.
+        let full = self.fresh || (self.cpu_frames && self.cpu_stale);
+        let (src_rects, src_moves) = if full {
             (vec![RECT { left: 0, top: 0, right: self.screen_width, bottom: self.screen_height }], Vec::new())
         } else {
             self.frame_metadata(dup)?
         };
+        if let Some(gpu) = &self.gpu_copy {
+            // GPU to GPU: a fraction of a millisecond even for 4K.
+            unsafe { self.ctx.CopyResource(gpu, &res.cast::<ID3D11Texture2D>()?) };
+        }
         if src_rects.is_empty() && src_moves.is_empty() {
             return Ok(());
         }
@@ -405,10 +511,29 @@ impl DxgiCapturer {
             // finds that a moved area matches the moved reference and sends nothing for it.
             regions.push(m.DestinationRect);
         }
+        if !self.cpu_frames {
+            // GPU-only: report what changed, in output space, without reading any pixel back.
+            self.cpu_stale = true;
+            dirty.extend(regions.iter().filter_map(|r| self.output_rect(r)));
+            return Ok(());
+        }
+        self.cpu_stale = false;
 
         unsafe {
             let tex: ID3D11Texture2D = res.cast()?;
-            self.ctx.CopyResource(&self.staging, &tex);
+            // Only what changed crosses to system memory (a typing frame moves a few KB, not the whole
+            // 8 MB of a 1080p screen); the staging texture keeps the rest from earlier frames, and only
+            // the copied boxes are read below.
+            let boxes: Vec<D3D11_BOX> = regions.iter().filter_map(|r| self.source_box(r)).collect();
+            let area: u64 = boxes.iter().map(|b| u64::from(b.right - b.left) * u64::from(b.bottom - b.top)).sum();
+            let screen = self.screen_width as u64 * self.screen_height as u64;
+            if full || boxes.len() > MAX_PARTIAL_COPIES || area * 2 > screen {
+                self.ctx.CopyResource(&self.staging, &tex);
+            } else {
+                for b in &boxes {
+                    self.ctx.CopySubresourceRegion(&self.staging, 0, b.left, b.top, 0, &tex, 0, Some(b));
+                }
+            }
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             self.ctx.Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
             let pitch = mapped.RowPitch as usize / 4;
@@ -463,6 +588,52 @@ impl DxgiCapturer {
         }
     }
 
+    /// Output pixels whose source footprint touches the clamped source rect `(l, t, r, b)` (1 px margin for the
+    /// filter), as `(ox0, oy0, ox1, oy1)`; scaled capture only.
+    fn output_span(&self, l: i32, t: i32, rr: i32, b: i32) -> (usize, usize, usize, usize) {
+        let (sw, sh, w, h) =
+            (self.screen_width as i64, self.screen_height as i64, self.width as i64, self.height as i64);
+        let ox0 = ((l as i64 * w) / sw - 1).max(0) as usize;
+        let oy0 = ((t as i64 * h) / sh - 1).max(0) as usize;
+        let ox1 = (((rr as i64 * w) + sw - 1) / sw + 1).min(w) as usize;
+        let oy1 = (((b as i64 * h) + sh - 1) / sh + 1).min(h) as usize;
+        (ox0, oy0, ox1, oy1)
+    }
+
+    /// The source pixels `update_region` reads for rect `r`: the rect itself, or with scaling the whole
+    /// footprint of the output pixels it touches. None when the rect is empty.
+    fn source_box(&self, r: &RECT) -> Option<D3D11_BOX> {
+        let (sw, sh) = (self.screen_width, self.screen_height);
+        let (l, t) = (r.left.clamp(0, sw), r.top.clamp(0, sh));
+        let (rr, b) = (r.right.clamp(0, sw), r.bottom.clamp(0, sh));
+        if rr <= l || b <= t {
+            return None;
+        }
+        let (l, t, rr, b) = if self.width == sw && self.height == sh {
+            (l as usize, t as usize, rr as usize, b as usize)
+        } else {
+            let (ox0, oy0, ox1, oy1) = self.output_span(l, t, rr, b);
+            let end = |s: &Span| s.start + s.weights.len();
+            (self.xspans[ox0].start, self.yspans[oy0].start, end(&self.xspans[ox1 - 1]), end(&self.yspans[oy1 - 1]))
+        };
+        Some(D3D11_BOX { left: l as u32, top: t as u32, front: 0, right: rr as u32, bottom: b as u32, back: 1 })
+    }
+
+    /// The output-space rect `update_region` would rewrite for source rect `r`, without touching pixels.
+    fn output_rect(&self, r: &RECT) -> Option<Rect> {
+        let (sw, sh) = (self.screen_width, self.screen_height);
+        let (l, t) = (r.left.clamp(0, sw), r.top.clamp(0, sh));
+        let (rr, b) = (r.right.clamp(0, sw), r.bottom.clamp(0, sh));
+        if rr <= l || b <= t {
+            return None;
+        }
+        if self.width == sw && self.height == sh {
+            return Some(Rect { x: l, y: t, width: rr - l, height: b - t });
+        }
+        let (ox0, oy0, ox1, oy1) = self.output_span(l, t, rr, b);
+        Some(Rect { x: ox0 as i32, y: oy0 as i32, width: (ox1 - ox0) as i32, height: (oy1 - oy0) as i32 })
+    }
+
     /// Copies (and downscales) one source-space rectangle into the frame; returns the output-space rect.
     fn update_region(&mut self, src: &[u32], pitch: usize, r: &RECT) -> Rect {
         let (sw, sh, w, h) = (self.screen_width, self.screen_height, self.width, self.height);
@@ -479,11 +650,7 @@ impl DxgiCapturer {
             }
             return Rect { x: l, y: t, width: rr - l, height: b - t };
         }
-        // Output pixels whose source footprint touches the rect (1 px margin for the filter).
-        let ox0 = ((l as i64 * w as i64) / sw as i64 - 1).max(0) as usize;
-        let oy0 = ((t as i64 * h as i64) / sh as i64 - 1).max(0) as usize;
-        let ox1 = (((rr as i64 * w as i64) + sw as i64 - 1) / sw as i64 + 1).min(w as i64) as usize;
-        let oy1 = (((b as i64 * h as i64) + sh as i64 - 1) / sh as i64 + 1).min(h as i64) as usize;
+        let (ox0, oy0, ox1, oy1) = self.output_span(l, t, rr, b);
         // Separable area average: each source row of the band is reduced horizontally once (R|B and G
         // packed in u32 lanes, weights sum to 256 so lanes cannot overflow), then rows are blended vertically.
         let (sy0, sy1) = (self.yspans[oy0].start, self.yspans[oy1 - 1].start + self.yspans[oy1 - 1].weights.len());
@@ -650,6 +817,37 @@ mod tests {
 #[cfg(test)]
 mod bench {
     use super::*;
+
+    /// Partial readback: an image built from many frames of changed boxes matches a fresh full copy. Move
+    /// windows or type while it runs (`cargo test --release --lib partial_readback -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn partial_readback_matches_a_full_copy() {
+        let mon = crate::capture::enumerate_monitors()[0];
+        for max_w in [0, 1280] {
+            let mut d = DxgiCapturer::new_for_monitor(mon, max_w).expect("DXGI duplication");
+            let (t, mut frames, mut rects) = (std::time::Instant::now(), 0, 0);
+            while t.elapsed() < std::time::Duration::from_secs(4) {
+                if matches!(d.grab(50).unwrap(), Grab::Changed) && d.has_image() {
+                    frames += 1;
+                    rects += d.dirty.as_ref().map_or(0, |v| v.len());
+                }
+            }
+            // One duplication per output and process: the full copy comes from a new one after this ends.
+            d.grab(100).unwrap();
+            let (built, w, h) = (d.pixels().to_vec(), d.width, d.height);
+            drop(d);
+            let mut fresh = DxgiCapturer::new_for_monitor(mon, max_w).unwrap();
+            let t = std::time::Instant::now();
+            while !fresh.has_image() && t.elapsed() < std::time::Duration::from_secs(2) {
+                fresh.grab(100).unwrap();
+            }
+            let same = built.iter().zip(fresh.pixels()).filter(|(a, b)| (**a ^ **b) & 0x00FF_FFFF == 0).count();
+            let frac = same as f64 / built.len() as f64;
+            eprintln!("{}x{}: {frames} frames, {rects} rects; identical to a full copy: {:.3}%", w, h, frac * 100.0);
+            assert!(frac > 0.99, "partial readback drifted from the screen");
+        }
+    }
 
     /// `cargo test --release --lib bench_dxgi_capture -- --ignored --nocapture` (needs a real desktop).
     #[test]

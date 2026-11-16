@@ -131,6 +131,11 @@ pub fn enumerate_monitors() -> Vec<MonitorBounds> {
     with_shared(query_monitors).filter(|l| !l.is_empty()).unwrap_or_else(|| vec![FALLBACK_MONITOR])
 }
 
+/// Whether an application captured the mouse for mouse look; not detected on X11.
+pub fn pointer_captured() -> bool {
+    false
+}
+
 /// Current host cursor as a portable shape code (see the Windows backend for the list): the XFixes cursor
 /// name mapped through [`shape_from_cursor_name`], 0 when the cursor image is fully transparent.
 pub fn cursor_shape() -> u8 {
@@ -312,6 +317,22 @@ impl DesktopCapturer {
     pub fn last_wait(&self) -> std::time::Duration {
         std::time::Duration::ZERO
     }
+
+    /// No zero-copy source on X11: frames always reach system memory.
+    pub fn gpu_source(&mut self) -> Option<crate::codec::h264::GpuSource> {
+        None
+    }
+
+    /// No GPU frames here.
+    pub fn gpu_texture(&self) -> Option<crate::codec::h264::GpuTexture> {
+        None
+    }
+
+    /// Frames always reach system memory here.
+    pub fn set_cpu_frames(&mut self, _on: bool) {}
+
+    /// Nothing to bring back: every grab reads system memory.
+    pub fn read_back(&mut self) {}
 
     /// The last captured image as BGRX pixels, `width()` per row.
     pub fn pixels(&self) -> &[u32] {

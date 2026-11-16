@@ -9,6 +9,7 @@ use std::sync::atomic::Ordering;
 use crate::domain::capability::PeerCaps;
 use crate::domain::keyboard::{KeyOut, Mods};
 use crate::domain::{desk_id, resolution};
+use crate::infra::pointer_lock::{self, Motion};
 use crate::infra::{audio, logger, privacy, storage, user_clipboard, virtual_clipboard, window};
 use crate::protocol::{ClientMessage, InputEvent, Outgoing};
 use crate::service::context::{AppContext, Ctx};
@@ -17,6 +18,8 @@ use crate::service::viewer::decoder;
 use crate::service::viewer::registry::{Open, Session, clipboard_push_needed};
 use crate::service::{file_transfer, settings};
 
+/// Cursor code the canvas shows as no cursor at all: the pointer is locked for relative motion.
+const CURSOR_LOCKED: i32 = -1;
 const MSG_FULL_MULTI: &str = "At most 4 sessions can be open at once. Close one first.";
 const MSG_FULL_SINGLE: &str = "This relay supports one session at a time. Close the running session first.";
 
@@ -26,7 +29,8 @@ pub enum Mouse {
     Move,
     Down(i32),
     Up(i32),
-    Wheel(i32),
+    /// Horizontal (120 = right) and vertical (120 = up) notches.
+    Wheel(i32, i32),
 }
 
 // ---- Focus ----
@@ -42,6 +46,7 @@ pub fn apply_focus(ctx: &AppContext) {
             None => privacy::set_viewer_hook_state(false, ""),
         }
     }
+    pointer_lock::set_locked(focused.as_ref().is_some_and(|s| s.pointer_locked.load(Ordering::SeqCst)));
     if let Some(s) = focused {
         ctx.voice.is_mic_muted.store(s.mic_muted.load(Ordering::SeqCst), Ordering::SeqCst);
         ctx.voice.audio_quality.store(s.audio_quality.load(Ordering::SeqCst), Ordering::SeqCst);
@@ -81,12 +86,16 @@ fn push_clipboard(ctx: &AppContext, s: &Arc<Session>) {
     s.clip_seq.store(current, Ordering::SeqCst);
     // The clipboard watcher must not send the same copy again.
     ctx.clipboard_seq.store(current, Ordering::SeqCst);
-    let clip = user_clipboard::read();
+    let clip = user_clipboard::read(file_transfer::caps_of(&s.id).clipboard_image);
     if file_transfer::caps_of(&s.id).file_offer {
         let files = clip.files;
         if !files.is_empty() {
-            // Files that came from a host are never offered back.
-            if !file_transfer::is_received_clipboard(&files) {
+            // Items that came from this host are never offered back to it.
+            let files = file_transfer::without_echoes(&s.id, files);
+            if files.is_empty() {
+                file_transfer::log_clipboard_files(&s.id, &files, "skip", "focus change; items came from it", false);
+            } else {
+                file_transfer::log_clipboard_files(&s.id, &files, "offer", "focus change; host not offered yet", false);
                 s.offered_seq.store(current, Ordering::SeqCst);
                 file_transfer::offer::offer_files(ctx, files, s.id.clone());
             }
@@ -95,6 +104,8 @@ fn push_clipboard(ctx: &AppContext, s: &Arc<Session>) {
     }
     if let Some(text) = clip.text {
         ctx.send(ClientMessage::RelayClipboard { target_clean: s.id.clone(), text });
+    } else if let Some(png) = clip.image {
+        file_transfer::send_clipboard_image(ctx, &s.id, &png);
     }
 }
 
@@ -289,12 +300,45 @@ pub fn end_all(ctx: &AppContext) -> Vec<String> {
 
 // ---- Events from a viewed host ----
 
+/// Applies the pointer lock setting to every open session: off releases a held lock and tells each host to
+/// stop following mouse capture; on lets hosts lock again.
+pub fn set_pointer_lock_allowed(ctx: &AppContext, on: bool) {
+    pointer_lock::set_allowed(on);
+    for s in ctx.viewers.all().into_iter().filter(|s| s.is_connected()) {
+        if !on && s.pointer_locked.swap(false, Ordering::SeqCst) {
+            ctx.ui.session_changed(s.id.clone(), SessionChange::Cursor(s.cursor_shape.load(Ordering::SeqCst)));
+        }
+        if file_transfer::caps_of(&s.id).mouse_relative {
+            ctx.send_input(&s.id, InputEvent::PointerLock { on });
+        }
+    }
+    apply_focus(ctx);
+}
+
 /// Applies an event sent by host `sess` (cursor, monitors, microphone, voice quality).
 pub fn on_host_event(ctx: &AppContext, sess: &Session, event: InputEvent) {
     let id = sess.id.clone();
     let focused = ctx.viewers.is_focused(&id);
     match event {
-        InputEvent::CursorShape { shape } => ctx.ui.session_changed(id, SessionChange::Cursor(shape)),
+        InputEvent::CursorShape { shape } => {
+            sess.cursor_shape.store(shape, Ordering::SeqCst);
+            // A locked pointer stays hidden; the shape shows again when the lock ends.
+            if !sess.pointer_locked.load(Ordering::SeqCst) {
+                ctx.ui.session_changed(id, SessionChange::Cursor(shape));
+            }
+        }
+        InputEvent::PointerLock { on: true } if !pointer_lock::is_allowed() => {
+            // Turned off in the settings: the host goes back to absolute positions.
+            ctx.send_input(&id, InputEvent::PointerLock { on: false });
+        }
+        InputEvent::PointerLock { on } => {
+            sess.pointer_locked.store(on, Ordering::SeqCst);
+            if focused {
+                pointer_lock::set_locked(on);
+            }
+            let shape = if on { CURSOR_LOCKED } else { sess.cursor_shape.load(Ordering::SeqCst) };
+            ctx.ui.session_changed(id, SessionChange::Cursor(shape));
+        }
         // A remote peer may silence this microphone, but only the local user can enable it.
         InputEvent::SetMic { muted: true } => {
             sess.mic_muted.store(true, Ordering::SeqCst);
@@ -366,6 +410,7 @@ fn send_key_outs(ctx: &AppContext, id: &str, outs: Vec<KeyOut>) {
 
 /// Lifts every key still held on host `id` (focus loss, window deactivation, tab switch).
 pub fn release_keys(ctx: &AppContext, id: &str) {
+    pointer_lock::suspend();
     if let Some(s) = ctx.viewers.get(id) {
         let outs = s.keys.lock().release_all();
         send_key_outs(ctx, id, outs);
@@ -388,18 +433,27 @@ pub fn key_event(ctx: &AppContext, id: &str, text: &str, pressed: bool, repeat: 
             send_key_outs(ctx, id, vec![out]);
             continue;
         }
-        let clip = user_clipboard::read();
-        let files = clip.files;
-        // Files that just came from the host are already there, and files offered to this host in this session
+        // Copied images went on copy or focus change; only the keystroke follows.
+        let clip = user_clipboard::read(false);
+        // Items that came from this host are already there, and files offered to this host in this session
         // are on its clipboard as virtual entries: only the keystroke is forwarded. Anything else (copied
         // before the session or before this host had focus) is sent and pasted, like a drop.
         let seq = core_engine::clipboard::sequence_number();
         let offered = file_transfer::caps_of(id).file_offer && sess.offered_seq.load(Ordering::SeqCst) == seq;
-        if !files.is_empty() && !file_transfer::is_received_clipboard(&files) && !offered {
+        let copied = clip.files;
+        let files = if offered { copied.clone() } else { file_transfer::without_echoes(id, copied.clone()) };
+        let received = !copied.is_empty() && files.is_empty();
+        if received || (offered && !files.is_empty()) {
+            let reason = if received { "items came from this host; it pastes its own copy" } else { "already offered" };
+            file_transfer::log_clipboard_files(id, &copied, "skip", &format!("Ctrl+V; {reason}"), false);
+        }
+        if !files.is_empty() && !received && !offered {
             // A second Ctrl+V while the first copy is still on its way would send and paste the files twice.
             if file_transfer::sender::is_sending(id, &files) {
+                file_transfer::log_clipboard_files(id, &files, "skip", "Ctrl+V; still sending these", false);
                 ctx.ui.status("Still sending these files; they are pasted when they arrive".into());
             } else {
+                file_transfer::log_clipboard_files(id, &files, "send", "Ctrl+V; not offered to this host", false);
                 file_transfer::sender::send_files(ctx, files, id.to_string(), true);
             }
             continue;
@@ -434,6 +488,24 @@ pub fn mouse(ctx: &AppContext, id: &str, kind: Mouse, x_10000: i32, y_10000: i32
     if !sess.is_connected() {
         return;
     }
+    match kind {
+        Mouse::Move => match pointer_lock::on_move() {
+            Motion::Absolute => {}
+            Motion::Delta(0, 0) => return,
+            Motion::Delta(dx, dy) => return ctx.send_input(id, InputEvent::MouseDelta { dx, dy }),
+            Motion::Released => {
+                let shape = sess.cursor_shape.load(Ordering::SeqCst);
+                return ctx.ui.session_changed(id.to_string(), SessionChange::Cursor(shape));
+            }
+        },
+        // A click on the remote screen takes the cursor back after Ctrl+Alt; the click itself stays here.
+        Mouse::Down(_) if pointer_lock::is_user_released() => {
+            pointer_lock::resume();
+            *ctx.viewers.swallowed_click.lock() = Some(id.to_string());
+            return ctx.ui.session_changed(id.to_string(), SessionChange::Cursor(CURSOR_LOCKED));
+        }
+        _ => {}
+    }
     let norm_x = (x_10000 as f64 / 10000.0).clamp(0.0, 1.0);
     let norm_y = (y_10000 as f64 / 10000.0).clamp(0.0, 1.0);
     let event = match kind {
@@ -444,7 +516,7 @@ pub fn mouse(ctx: &AppContext, id: &str, kind: Mouse, x_10000: i32, y_10000: i32
         }
         Mouse::Down(button) => InputEvent::MouseDown { norm_x, norm_y, button },
         Mouse::Up(button) => InputEvent::MouseUp { norm_x, norm_y, button },
-        Mouse::Wheel(delta_y) => InputEvent::Wheel { norm_x, norm_y, delta_y },
+        Mouse::Wheel(delta_x, delta_y) => InputEvent::Wheel { norm_x, norm_y, delta_y, delta_x },
     };
     ctx.send_input(id, event);
 }

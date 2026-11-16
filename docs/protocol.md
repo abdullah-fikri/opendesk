@@ -144,9 +144,19 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `file-ack` | client | Answers `end` with an `ack`. |
 | `file-offer` | client + relay | Copy-paste of files by offer and pull. |
 | `file-folder` | client | Folder transfers (`group`/`rel`). |
+| `file-group` | client, with `file-folder` | Several loose files may arrive as one group, closed by a bare group end (below), and are put on the clipboard and pasted once. Listed late (relays up to 1.2.0 may drop it, which only sends loose files one by one). |
 | `file-binary` | client + relay | File chunks as binary messages (`0x12`, below) instead of base64 JSON. The relay sends them only to clients that list it. |
+| `file-pull-bin` | client, with `file-binary` | Bytes of a pulled clipboard offer (a paste stream) may arrive as binary chunks too. Without it pulled offers stay base64 JSON (clients up to 1.3.x). |
+| `file-deflate` | client, with `file-binary` | Binary file chunks to it may be deflated (raw DEFLATE, level 1): bit 63 of the offset marks them and the data inflates to at most 128 KiB at the offset without that bit. The sender compresses only chunks that shrink by at least 1/8, skips packed formats (zip, mp4, jpg, ...) and stops while the link outruns the compressor. `OPENDESK_FILE_DEFLATE=0` sends raw. |
+| `file-drop` | client, with `file-offer` | An `offer` of files dropped on the viewer window may carry `dropX` / `dropY` (0..10000 of the host screen). The host moves its pointer there and drags the offered files onto the window under it (`DoDragDrop` with the same virtual files as a paste, started from a button press on a tiny window of its own so the application below sees no click), leaving its clipboard alone. A viewer sends them only to a host that lists `file-drop`; otherwise a drop is sent and pasted as before. |
+| `file-resume` | client, with `file-ack` | A transfer cut by a lost relay connection or P2P path continues where the receiver stands. The sender sends `start` again under a new ID with `resumeOf` (the cut ID); the receiver moves the kept file to the new ID and answers with a `pull` whose `id`/`tid` are the new ID and `resumeAt` is its byte count, and the sender continues from there (the final `sha256` covers the whole file). A receiver that lost its own connection keeps the file for 90 s and asks with a `pull` carrying the cut ID and `resumeAt`. Unknown `resumeOf` starts over (`resumeAt` 0). `OPENDESK_FILE_RESUME=0` turns it off. |
 | `cursor-shape` | client | Draws its own cursor from `cursor-shape` events; the host stops painting it. |
+| `mouse-relative` | client (Windows) | Locks its pointer while a host application captured the mouse (`pointer-lock`) and sends `mouse-delta`; the host sends `pointer-lock` only to viewers listing it. Ctrl+Alt hands the cursor back on the viewer, a click takes it again. |
 | `video-delta` | client | Framed key/delta video; without it the host sends plain JPEGs. |
+| `clipboard-image` | client (Windows) | Copied images follow the clipboard like text: an `offer` whose `image` holds a base64 PNG (at most 11 MB; screenshots go as RGB PNG, the clipboard's own PNG as is). The receiver puts it on its clipboard as CF_DIB plus "PNG". Sent on copy and on a focus change, only to partners listing it; Ctrl+V forwards only the keystroke. |
+| `file-p2p` | client, with `p2p.v1` and `file-binary` | File transfers may run over the P2P path as a reliable stream (`K_BULK` segments, `K_BULK_ACK` cumulative + selective acks, delay-based window, receiver window). Each transfer (a folder: each folder) keeps the path its `start` took; offers, pulls and acks stay on the relay. If the path drops mid-transfer the transfer is cancelled. `OPENDESK_FILE_P2P=0` turns it off. See `client-desktop/src/domain/bulk.rs`. |
+| `video-nack` | client, with `p2p.v1` | Lost P2P video fragments are requested (`K_NACK`) and resent from the host's last frames; a viewer waits for them only from a host that lists it. See `client-desktop/docs/features/p2p.md`. |
+| `tile-lossless` | client, with `video-delta` | Deltas may carry lossless text/UI tiles (flag bit 2, below); the host sends them only to viewers that list it. |
 | `video-h264` | client | H.264 inside the framed format. |
 | `frame-stamp` | client | Framed video to this viewer may end in a capture stamp (below) for the stats overlay's latency rows. |
 | `audio-opus` | client | Decodes Opus voice (`[0x02][0x4F]...`); voice to it is Opus, to everyone else PCM. |
@@ -170,7 +180,7 @@ Per platform (see [platforms.md](platforms.md)):
 
 - Windows: `file-ack`, `file-offer`, `file-folder`, `file-binary`, `cursor-shape`, `video-delta`, `frame-stamp`,
   `video-h264` (when the Media Foundation decoder exists), `audio-opus`, `audio-system`, `p2p.v1`, `multi-session`,
-  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`). No `host-features`: Windows hosts have every host control.
+  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`), `file-group`, `file-pull-bin`, `tile-lossless`, `mouse-relative`, `clipboard-image`, `file-p2p`, `file-deflate`, `file-resume`, `file-drop`, `video-nack`. No `host-features`: Windows hosts have every host control.
 - Linux: the same without `file-offer` and `audio-system`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
 - Android: `viewer-only`, `video-delta` and `e2e`, so it receives framed JPEG video (no H.264) and single-session
@@ -188,7 +198,7 @@ Per platform (see [platforms.md](platforms.md)):
 | --- | --- | --- |
 | `mousemove` | `normX`, `normY` | viewer to host |
 | `mousedown`, `mouseup`, `click`, `dblclick` | `normX`, `normY`, `button` (0 left, 2 right) | viewer to host |
-| `wheel` | `normX`, `normY`, `deltaY` | viewer to host |
+| `wheel` | `normX`, `normY`, `deltaY`, optional `deltaX` (horizontal, 120 = one notch right; older hosts ignore it) | viewer to host |
 | `keydown`, `keyup` | `keyCode` (Win32 virtual-key) | viewer to host |
 | `keycombo` | `keyCode`, `ctrl`, `alt`, `shift` | viewer to host |
 | `text` | `text` | viewer to host (typed characters) |
@@ -205,13 +215,17 @@ Per platform (see [platforms.md](platforms.md)):
 | `set-mic` | `muted` | either; only `muted: true` is honored |
 | `set-host-sound` | `on` | viewer to host, both listing `audio-system`: at session start and when the viewer toggles host sound. `on: true` streams the host's sound and pauses voice; `false` stops the capture and resumes voice (see [Host sound](#host-sound)) |
 | `cursor-shape` | `shape` (0 hidden, 1 arrow, 2 text, 3 hand, ...) | host to viewer |
+| `pointer-lock` | `on`: a host application (a game with mouse look) hid and confined the cursor, or released it. From the viewer: its pointer lock setting; `false` makes the host ignore mouse capture (absolute positions) until `true` | both ways (`mouse-relative`) |
+| `mouse-delta` | `dx`, `dy`: relative motion while the pointer is locked; positions of button and wheel events are then ignored | viewer to host |
 | `monitors` | `list[]` (`index`, `width`, `height`, `primary`), `active` | host to viewer |
 | `stats` | `on` | viewer to host: stats overlay shown or hidden |
 | `stats-ping` | `t` (viewer clock, ms) | viewer to host, once a second while the overlay is shown |
 | `stats-pong` | `t` (copied from `stats-ping`), `h` (host monotonic clock, µs; absent up to 1.2.0) | host to viewer, at once |
-| `host-stats` | `fps`, `targetFps`, `grabMs`, `grabMaxMs` (capture work, without waiting for a screen change), `encodeMs`, `encodeMaxMs`, `kbps`, `idle`, `gateSkips`, `congestion` (0..1), `encoder` (H.264 name, empty = JPEG), `cpu` (host process, % of the machine), `ramMb` (its working set) | host to viewer, once a second between `stats` on and off |
+| `host-stats` | `fps`, `targetFps`, `grabMs`, `grabMaxMs` (capture work, without waiting for a screen change), `encodeMs`, `encodeMaxMs`, `kbps`, `idle`, `gateSkips`, `congestion` (0..1), `encoder` (H.264 name, empty = JPEG), `cpu` (host process, % of the machine), `ramMb` (its working set); optional, omitted by hosts up to 1.3.1: `convertMs`/`convertMaxMs` and `codecMs`/`codecMaxMs` (the two parts of `encodeMs`: pixel preparation, then the codec), `sendMs`/`sendMaxMs` (sender taking a frame until its last byte is in the socket), and on the UDP path `ackRttMs`/`ackRttMaxMs` (frame sent until the viewer's frame acknowledgement) and `window` (frames allowed in flight) | host to viewer, once a second between `stats` on and off |
 
-Peers ignore actions they do not know, so a viewer never gets `host-stats` from a host that predates it.
+Peers ignore actions they do not know, so a viewer never gets `host-stats` from a host that predates it. Every
+field reads as zero or absent when missing, and the optional ones are left out when unmeasured, so viewers and
+hosts of any version understand each other's `host-stats`; `encodeMs` keeps its meaning (the whole encode).
 
 ## File transfer
 
@@ -219,15 +233,26 @@ Peers ignore actions they do not know, so a viewer never gets `host-stats` from 
 
 | `action` | Fields | Rule |
 | --- | --- | --- |
-| `start` | `id`, `name`, `size`; folders: `dir`, `group`, `rel`, `groupEnd`, `autoPaste` | Needs an active session; creates a grant bound to the two connections. |
+| `start` | `id`, `name`, `size`, optional `mtime`, `ctime`, `atime`, `attrs`; folders: `dir`, `group`, `rel`, `groupEnd`, `autoPaste` | Needs an active session; creates a grant bound to the two connections. |
 | `chunk` | `id`, `chunk` (base64, at most 32 KiB decoded) | Needs the grant. With `file-binary` a binary chunk replaces it. |
 | `end` | `id`, `name`, `sha256` (hex), `autoPaste` | Needs the grant. |
 | `ack` | `id`, `ok` | Receiver to sender; consumes the grant. |
-| `offer` | `id`, `files[]` (`name`, `size` or `dir`) | Clipboard offer; needs an active session. |
+| `offer` | `id`, `files[]` (`name`, `size` or `dir`, optional `mtime`, `ctime`, `atime`, `attrs`), or `image` (base64 PNG, `clipboard-image`) | Clipboard offer, or a copied image; needs an active session. |
 | `pull` | `id` (offer), `index`, `tid` | Ask the offerer to send entry `index` as transfer `tid`. |
+
+`mtime` is the file's last write time in Unix milliseconds; receivers keep it as the pasted or saved file's
+"Date Modified". `ctime` and `atime` are the creation and last access times, same unit. `attrs` holds Windows
+file attribute bits; only read-only (0x1), hidden (0x2) and archive (0x20) are sent or applied. Older clients
+neither send nor read any of these.
 
 A grant lets a transfer finish after its screen session ends, for 60 s of idleness, but only between the
 same two connections. At most 8 grants per sender. See `client-desktop/docs/features/file-transfer.md`.
+
+Loose files to a `file-group` receiver: each file's `start` carries `group` and its plain name as `rel`, and
+after the last file comes a bare group end, a `start` with `dir: true`, `group`, `groupEnd: true`, `size: 0`, a
+placeholder `name` and no `rel`. The receiver closes only a group the same sender opened, answers with an `ack`
+and puts every file it saved on its clipboard at once. Receivers without `file-group` get one transfer per file,
+exactly as before.
 
 When the receiver and the relay both list `file-binary`, chunks are binary messages (below) and everything else
 stays JSON. The relay authorizes a binary chunk exactly like a JSON one: the grant for this sender, `id` and
@@ -264,7 +289,7 @@ Framed video (`video-delta`), all integers big-endian:
 0   FF D8 00 4F   magic (starts like a JPEG; 0x00 never follows SOI in a real JPEG)
 4   version = 1
 5   kind: 1 key (payload = JPEG), 2 delta (payload = JPEG atlas), 3 H.264 access unit
-6   flags: bit 0 = H.264 IDR, bit 1 = stamped
+6   flags: bit 0 = H.264 IDR, bit 1 = stamped, bit 2 = lossless tiles (delta, `tile-lossless` viewers)
 7   reserved
 8   seq (u32): a delta applies only on top of seq-1
 12  width, height (u16)
@@ -277,6 +302,13 @@ Framed video (`video-delta`), all integers big-endian:
       host_us (u32): capture to hand-off for sending on the host, µs
 ```
 
+A delta with flag bit 2 carries two atlases: payload = JPEG length (u32), the JPEG atlas (may be empty), then a
+lossless atlas: `width, height (u16), mode (u8)`; mode 1 = palette (`count-1` u8, `count` x RGB, deflated
+one-byte indices), mode 0 = deflated RGB. Patches whose `atlas_x` has bit 15 set come from the lossless atlas (at
+`atlas_x & 0x7FFF`). The host sends 32x32 blocks with at most 48 colours (text, UI) this way at full quality,
+and once the screen is still it resends such blocks that the viewer has only as JPEG (after a key frame), so text
+ends pixel-exact. `OPENDESK_LOSSLESS_TILES=0` on the host turns it off.
+
 The viewer maps `captured_us` onto its own clock with the offset from `stats-ping`/`stats-pong` (`h` taken as
 halfway through the round trip) to split a frame's latency into host, network, decode and display.
 
@@ -285,7 +317,8 @@ Opus voice keeps the `0x02` marker, so every relay version forwards it as audio.
 short gaps. Receivers always accept PCM, and a sender uses Opus only toward a partner that listed `audio-opus`.
 
 The relay keeps at most 8 queued frames per receiver. A key frame or IDR flushes the queue; a delta that does
-not fit flushes it too, and the viewer then sends `video-keyframe`.
+not fit flushes it too, and so does a delta that waited longer than the relay's age limit (50 ms by default;
+the deltas behind it up to the next key frame are dropped with it). The viewer then sends `video-keyframe`.
 
 ## Host sound
 

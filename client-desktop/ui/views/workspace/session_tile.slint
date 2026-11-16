@@ -13,10 +13,11 @@ export component SessionTile inherits Rectangle {
     callback mouse_move(string, int, int);
     callback mouse_down(string, int, int, int);
     callback mouse_up(string, int, int, int);
-    callback mouse_wheel(string, int, int, int);
+    callback mouse_wheel(string, int, int, int, int);
     callback key_event(string, string, bool, bool, bool, bool, bool);
     callback release_keys(string);
     callback viewport_resized(string, int, int);
+    callback frame_rect(string, int, int, int, int);
 
     background: Theme.canvas;
 
@@ -77,10 +78,11 @@ export component SessionTile inherits Rectangle {
                 send_mouse_move(nx, ny) => { root.mouse_move(root.s.id, nx, ny); }
                 send_mouse_down(nx, ny, b) => { root.mouse_down(root.s.id, nx, ny, b); }
                 send_mouse_up(nx, ny, b) => { root.mouse_up(root.s.id, nx, ny, b); }
-                send_mouse_wheel(nx, ny, d) => { root.mouse_wheel(root.s.id, nx, ny, d); }
+                send_mouse_wheel(nx, ny, dx, d) => { root.mouse_wheel(root.s.id, nx, ny, dx, d); }
                 send_key_event(t, p, r, c, a, sh) => { root.key_event(root.s.id, t, p, r, c, a, sh); }
                 release_remote_keys => { root.release_keys(root.s.id); }
                 viewport_resized(w, h) => { root.viewport_resized(root.s.id, w, h); }
+                frame_rect(x, y, w, h) => { root.frame_rect(root.s.id, x, y, w, h); }
             }
 
             // Relay connection lost, no live direct path: the last frame stays under this until the session

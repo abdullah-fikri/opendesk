@@ -45,7 +45,7 @@ go test -race ./...
 | `internal/dto` | Wire DTOs | JSON message shapes |
 | `internal/repository/postgres` | Storage | Repositories and versioned SQL migrations |
 | `internal/model` | Domain | Desk IDs, capabilities, hosts, sessions |
-| `internal/config`, `internal/metrics`, `internal/version` | Support | Settings, counters, build version |
+| `internal/config`, `internal/metrics`, `internal/memlimit`, `internal/version` | Support | Settings, counters, GC memory limit, build version |
 
 ## Documentation
 

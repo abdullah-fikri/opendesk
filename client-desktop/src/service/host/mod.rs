@@ -9,7 +9,7 @@ pub mod input;
 pub mod monitor_stream;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use core_engine::capture::{MonitorBounds, enumerate_monitors};
 use core_engine::input::InputInjector;
@@ -17,7 +17,7 @@ use parking_lot::Mutex;
 
 use crate::domain::capability::PeerCaps;
 use crate::domain::{desk_id, resolution};
-use crate::infra::send_gate::SendGate;
+use crate::infra::send_gate::{SendGate, VideoLink};
 use crate::infra::{audio, logger, privacy};
 use crate::protocol::InputEvent;
 use crate::service::context::{AppContext, Ctx};
@@ -36,6 +36,8 @@ pub struct HostState {
     /// Backpressure gate: the capture loop only encodes while the previous frame has left the socket.
     /// Shared with the P2P path, whose frame acknowledgements also open it.
     pub can_send_frame: Arc<SendGate>,
+    /// What the video senders measure (send time, P2P acknowledgements), for `host-stats`.
+    pub video_link: Arc<VideoLink>,
     /// The hosted session's video goes over a direct P2P path (updated by the relay connection).
     pub p2p_active: AtomicBool,
     /// What the hosted viewer supports.
@@ -46,6 +48,13 @@ pub struct HostState {
     pub stats_requested: AtomicBool,
     /// Keys injected as down and not yet released, so a session end never leaves one stuck.
     held_keys: Mutex<Vec<u8>>,
+    /// Mouse buttons the viewer holds, one bit per wire button number.
+    held_buttons: AtomicU8,
+    /// A host application captured the mouse and the viewer was told (`pointer-lock`): it sends relative motion.
+    pub pointer_locked: AtomicBool,
+    /// The viewer turned pointer lock off in its settings (`pointer-lock` `on: false` from it): mouse capture
+    /// by an application is not followed and absolute positions keep working.
+    pub pointer_lock_declined: AtomicBool,
     /// An administrator's monitor wall shows this machine (see [`monitor_stream`]).
     pub monitored: AtomicBool,
     /// Bumped on every monitor-stream start and stop; a stream thread exits once its generation is stale.
@@ -61,11 +70,15 @@ impl Default for HostState {
             resolution_mode: AtomicUsize::new(resolution::DEFAULT_PRESET),
             monitor_bounds: Mutex::new(enumerate_monitors()[0]),
             can_send_frame: Arc::new(SendGate::new(true)),
+            video_link: Arc::default(),
             p2p_active: AtomicBool::new(false),
             peer_caps: Mutex::default(),
             keyframe_requested: AtomicBool::new(false),
             stats_requested: AtomicBool::new(false),
             held_keys: Mutex::new(Vec::new()),
+            held_buttons: AtomicU8::new(0),
+            pointer_locked: AtomicBool::new(false),
+            pointer_lock_declined: AtomicBool::new(false),
             monitored: AtomicBool::new(false),
             monitor_generation: AtomicU64::new(0),
         }
@@ -98,11 +111,33 @@ impl HostState {
         self.held_keys.lock().retain(|&k| k != vk);
     }
 
-    /// Releases every key the viewer left pressed (disconnect, lost relay, viewer crash).
+    /// Presses mouse `button` and remembers it.
+    pub fn mouse_down(&self, injector: &InputInjector, button: i32) {
+        injector.mouse_down(button);
+        if (0..8).contains(&button) {
+            self.held_buttons.fetch_or(1 << button, Ordering::SeqCst);
+        }
+    }
+
+    /// Releases mouse `button`.
+    pub fn mouse_up(&self, injector: &InputInjector, button: i32) {
+        injector.mouse_up(button);
+        if (0..8).contains(&button) {
+            self.held_buttons.fetch_and(!(1 << button), Ordering::SeqCst);
+        }
+    }
+
+    /// Releases every key and mouse button the viewer left pressed (disconnect, lost relay, viewer crash).
     pub fn release_all_keys(&self, injector: &InputInjector) {
         let keys = std::mem::take(&mut *self.held_keys.lock());
         for vk in keys.into_iter().rev() {
             injector.key_up(vk);
+        }
+        let buttons = self.held_buttons.swap(0, Ordering::SeqCst);
+        for b in 0..8 {
+            if buttons & (1 << b) != 0 {
+                injector.mouse_up(b);
+            }
         }
     }
 }
@@ -124,6 +159,8 @@ pub fn start(ctx: &Ctx, partner: &str, caps: PeerCaps, mic_muted: bool) {
     ctx.host.can_send_frame.open();
     ctx.host.p2p_active.store(false, Ordering::SeqCst);
     ctx.host.stats_requested.store(false, Ordering::SeqCst);
+    ctx.host.pointer_locked.store(false, Ordering::SeqCst);
+    ctx.host.pointer_lock_declined.store(false, Ordering::SeqCst);
     ctx.host.active.store(true, Ordering::SeqCst);
     let generation = ctx.host.capture_generation.fetch_add(1, Ordering::SeqCst) + 1;
     capture::spawn(Arc::clone(ctx), partner.to_string(), generation);

@@ -25,9 +25,9 @@ fn dispatch(action: TrayAction) {
     }
 }
 
-/// Shows the main window, as a click on the tray icon does (a second launch of the app calls this).
+/// A second launch of the app: shows the main window and plays the start-up splash.
 pub fn request_show() {
-    dispatch(TrayAction::ShowWindow);
+    dispatch(TrayAction::Launched);
 }
 
 /// Slint's `show()` raises the window; nothing to do natively.

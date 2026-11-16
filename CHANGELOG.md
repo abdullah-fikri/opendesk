@@ -5,6 +5,59 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-16
+
+Minor release: every protocol addition below is negotiated per peer, so 1.3.x peers keep working.
+
+### Highlights
+- A redesigned interface: softer rounded surfaces, a cleaner home screen, and a Settings page with a sidebar, solid
+  coloured icons and the OpenDesk logo. It adapts to small windows.
+- Much faster, smoother remote screens: GPU H.264 decoding and encoding without CPU copies, less data per frame,
+  and lossless text.
+- File transfer reworked: copied files keep their dates and attributes, transfers resume after a dropped
+  connection, run over the direct P2P path when there is one, and drop onto the exact spot of the host's screen.
+- Better connections between networks: IPv6, router port mapping and a direct TCP path when UDP is blocked.
+- Games: relative mouse (pointer lock), horizontal scrolling and the middle/back/forward mouse buttons.
+
+### Changed
+- Interface: new theme (rounded corners, layered dark surfaces), plain Relay Hosts / Session History / Monitor
+  Wall tabs (a count shows only while a search filters the list), the two home cards sit side by side and stack in
+  a narrow window. Settings is a sidebar (Security, Server, Audio, Mouse); in the admin edition the relay address
+  and viewing performance moved from the "Server" dialog into Settings › Server. The window can shrink to
+  640 × 480 outside viewer sessions (viewer sessions keep their 880 × 560 minimum for the toolbar).
+- Pointer lock is off by default.
+- A short launch video plays as a start-up splash on every launch from the shortcut or Start menu, also when
+  the service already runs the app in the tray; a click or key skips it. Clicking the tray icon does not play it.
+
+### Added
+- Settings › Mouse › Pointer lock, and relative mouse for games that capture the mouse (`mouse-relative`).
+- Horizontal scrolling (tilt wheel, touchpad); middle, back and forward mouse buttons; held buttons are released
+  on disconnect.
+- Copied images follow the clipboard (`clipboard-image`).
+- Files: send several loose files as one group (`file-group`), keep creation/access times and read-only/hidden/
+  archive attributes, resume transfers cut by a lost connection or P2P path (`file-resume`), adaptive deflate
+  for binary chunks (`file-deflate`), transfers over the P2P path (`file-p2p`), incoming files shown on the
+  host's screen, and files dropped under the dropped point on the host's screen.
+- Network: direct TCP path when UDP is dropped, router port mapping and global IPv6 as extra P2P candidates,
+  retransmission of lost P2P video fragments on request (`video-nack`), a Wi-Fi media streaming mode.
+- Viewer: latency overlay completed; lossless text and UI tiles for viewers that ask for them (`tile-lossless`).
+- Relay: logs the UDP socket buffers the kernel granted; derives its GC memory limit from the container limit.
+
+### Performance
+- H.264 decoded on the GPU in the viewer; zero-copy hardware H.264 encoding on the host, also when the stream is
+  scaled down; only changed screen boxes are read back from the GPU and only changed rows are refilled.
+- Remote screens use their own GL textures and upload changed rows only; NV12→RGBA conversion uses AVX2.
+- Latency-critical threads join MMCSS; P2P video is paced over half a frame interval and its window follows the
+  ack round trip; file transfers are paced by the relay round trip.
+- Relay drops WebSocket video deltas that waited too long in a viewer's queue.
+
+### Fixed
+- A video frame is never decoded twice after a retransmit.
+- Copied files are sent only for a real new copy and never pasted back to their sender; the sent percentage
+  follows the bytes the relay has read.
+- The clipboard offer survives a new helper process; a Windows service host uses a clipboard helper that runs as
+  the session user.
+
 ## [1.3.1] - 2026-11-13
 
 ### Highlights
@@ -268,6 +321,7 @@ First public release.
 - Windows binaries are not code-signed yet (SmartScreen warns on first run); Linux packages are unsigned `.deb`
   files. Verify downloads against `SHA256SUMS.txt`.
 
+[1.4.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.4.0
 [1.3.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.3.1
 [1.3.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.3.0
 [1.2.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.2.1

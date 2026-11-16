@@ -10,7 +10,7 @@ use std::sync::mpsc::Sender;
 use parking_lot::Mutex;
 
 use super::sender::{SKIPPED_FOLDERS, send_pulled};
-use super::{caps_of, now_micros, tree};
+use super::{Stamp, caps_of, now_micros, tree};
 use crate::domain::transfer::{MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, is_safe_id};
 use crate::infra::logger;
 use crate::protocol::{ClientMessage, FilePayload, OfferEntry, Outgoing};
@@ -36,6 +36,13 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// Offers copied `paths` to `target` and sets the status line. Folders go only to `file-folder` partners; their
 /// walk runs on its own thread so the clipboard watcher keeps polling.
 pub fn offer_files(ctx: &AppContext, paths: Vec<PathBuf>, target: String) {
+    offer_files_at(ctx, paths, target, None);
+}
+
+/// Like [`offer_files`]; `drop` (0..10000 each) says the files were dropped at that point of the partner's
+/// screen, so it drags them there instead of putting them on its clipboard (`file-drop` partners only).
+pub fn offer_files_at(ctx: &AppContext, paths: Vec<PathBuf>, target: String, drop: Option<(u32, u32)>) {
+    let drop = drop.filter(|_| caps_of(&target).file_drop);
     if target.is_empty() || paths.is_empty() {
         return;
     }
@@ -46,14 +53,15 @@ pub fn offer_files(ctx: &AppContext, paths: Vec<PathBuf>, target: String) {
         let files: Vec<(Option<PathBuf>, OfferEntry)> = paths
             .iter()
             .filter_map(|p| {
-                let size = fs::metadata(p).ok().filter(|m| m.is_file() && m.len() <= MAX_FILE_BYTES)?.len();
+                let meta = fs::metadata(p).ok().filter(|m| m.is_file() && m.len() <= MAX_FILE_BYTES)?;
                 let name = p.file_name()?.to_str()?.to_string();
-                Some((Some(p.clone()), OfferEntry { name, size: Some(size), dir: None }))
+                let entry = Stamp::of(&meta).entry(name, Some(meta.len()), None);
+                Some((Some(p.clone()), entry))
             })
             .take(MAX_OFFER_FILES)
             .collect();
         let count = files.len();
-        let status = match (publish(generation, files, &target, &ctx.outbox), has_dir) {
+        let status = match (publish(generation, files, &target, &ctx.outbox, drop), has_dir) {
             (true, false) => Some(format!("{count} files ready to paste on the other device")),
             (true, true) => Some(format!("{count} files ready to paste. {SKIPPED_FOLDERS}")),
             (false, true) => Some(SKIPPED_FOLDERS.to_string()),
@@ -71,12 +79,15 @@ pub fn offer_files(ctx: &AppContext, paths: Vec<PathBuf>, target: String) {
             Ok(entries) => {
                 let listing = entries
                     .into_iter()
-                    .map(|e| match e.dir {
-                        true => (None, OfferEntry { name: e.rel, size: None, dir: Some(true) }),
-                        false => (Some(e.path), OfferEntry { name: e.rel, size: Some(e.size), dir: None }),
+                    .map(|e| {
+                        let stamp = Stamp::of_path(&e.path);
+                        match e.dir {
+                            true => (None, stamp.entry(e.rel, None, Some(true))),
+                            false => (Some(e.path), stamp.entry(e.rel, Some(e.size), None)),
+                        }
                     })
                     .collect();
-                publish(generation, listing, &target, &outbox)
+                publish(generation, listing, &target, &outbox, drop)
                     .then(|| format!("{} items ready to paste on the other device", paths.len()))
             }
             Err(status) => Some(status),
@@ -93,6 +104,7 @@ fn publish(
     entries: Vec<(Option<PathBuf>, OfferEntry)>,
     target: &str,
     outbox: &Sender<Outgoing>,
+    drop: Option<(u32, u32)>,
 ) -> bool {
     if entries.is_empty() {
         return false;
@@ -108,7 +120,12 @@ fn publish(
     offers.push(Offer { id: id.clone(), partner: target.to_string(), paths });
     let excess = offers.len().saturating_sub(KEPT_OFFERS);
     offers.drain(..excess);
-    let _ = outbox.send(Outgoing::Message(ClientMessage::file(target, FilePayload::offer(&id, listing))));
+    let mut payload = FilePayload::offer(&id, listing);
+    if let Some((x, y)) = drop {
+        payload.drop_x = Some(x.min(10_000));
+        payload.drop_y = Some(y.min(10_000));
+    }
+    let _ = outbox.send(Outgoing::Message(ClientMessage::file(target, payload)));
     true
 }
 

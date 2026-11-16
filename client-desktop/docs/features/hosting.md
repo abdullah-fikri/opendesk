@@ -25,6 +25,10 @@ One thread per hosted session (`capture.rs`):
 - Follows the viewer's performance preset (`perf-*` or `set-performance`, Medium without one): the H.264 bitrate
   is halved on Low and doubled on High, and on High with a hardware encoder motion switches to H.264 at once.
   A preset change applies on the next frame.
+- On Windows the H.264 encoder favours speed (`AVEncCommonQualityVsSpeed` 33) and gets a VBV buffer of two
+  frames at the target bitrate, so encode time stays steady and a key frame cannot burst to many times a
+  normal frame. Each setting is applied only where the encoder supports it; the host log's
+  `H.264 motion encoder` line lists what was applied. `OPENDESK_ENCODER_TUNING=0` leaves both out.
 - While its video goes over the WebSocket relay, the relay socket's send buffer shrinks to 512 KiB
   (`OPENDESK_WS_SNDBUF`), so frames cannot pile up in an auto-tuned kernel buffer of several megabytes and
   congestion shows sooner; 512 KiB still carries about 17 Mbps at 234 ms RTT. Afterwards it is set to 4 MiB

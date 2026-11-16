@@ -46,6 +46,14 @@ type Config struct {
 	// MoveCoalescingDisabled keeps every relayed mouse move in its own queue slot (OPENDESK_RELAY_COALESCE_MOVES=0),
 	// an emergency switch should merging queued moves ever misbehave.
 	MoveCoalescingDisabled bool `json:"-"`
+	// FrameMaxAgeMS drops a WebSocket video frame that waited longer than this many milliseconds in a viewer's
+	// queue (OPENDESK_WS_FRAME_MAX_AGE_MS, default 50); 0 keeps only the 8-frame queue bound.
+	FrameMaxAgeMS int `json:"-"`
+}
+
+// FrameMaxAge is the WebSocket video frame age limit; zero means none.
+func (c Config) FrameMaxAge() time.Duration {
+	return time.Duration(c.FrameMaxAgeMS) * time.Millisecond
 }
 
 // PingInterval is the WebSocket keep-alive period.
@@ -106,6 +114,13 @@ func Load(path string) (Config, error) {
 	cfg.UDPRelayMbps = 50
 	if err := overrideInt(&cfg.UDPRelayMbps, "OPENDESK_UDP_RELAY_MBPS"); err != nil {
 		return Config{}, err
+	}
+	cfg.FrameMaxAgeMS = 50
+	if err := overrideInt(&cfg.FrameMaxAgeMS, "OPENDESK_WS_FRAME_MAX_AGE_MS"); err != nil {
+		return Config{}, err
+	}
+	if cfg.FrameMaxAgeMS < 0 {
+		return Config{}, fmt.Errorf("OPENDESK_WS_FRAME_MAX_AGE_MS must be 0 (off) or positive, got %d", cfg.FrameMaxAgeMS)
 	}
 	if cfg.UDPRelayPublic != "" {
 		if _, err := netip.ParseAddrPort(cfg.UDPRelayPublic); err != nil {

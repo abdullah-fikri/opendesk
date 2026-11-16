@@ -6,8 +6,11 @@ use std::time::Instant;
 
 use crate::codec::JpegEncoder;
 use crate::codec::delta::{build_atlas, key_header, pack_atlas};
-use crate::codec::frame::{FLAG_IDR, FrameHeader, KIND_DELTA, KIND_H264, MoveRect};
-use crate::codec::h264::H264Encoder;
+use crate::codec::frame::{
+    FLAG_IDR, FLAG_LOSSLESS, FrameHeader, KIND_DELTA, KIND_H264, LOSSLESS_PATCH, MoveRect, Patch, mixed_payload,
+};
+use crate::codec::h264::{GpuSource, GpuTexture, H264Encoder};
+use crate::codec::lossless;
 
 /// What `H264Encoder::encode` / `take_ready` return, with the backend's error dropped (any error means the same).
 type H264Result = Result<Option<(Vec<u8>, bool)>, ()>;
@@ -84,8 +87,11 @@ pub struct FrameStats {
     pub kind: SentKind,
     /// Message size in bytes.
     pub bytes: usize,
-    /// Encoding time in microseconds.
+    /// Encoding time in microseconds, including `convert_us`.
     pub encode_us: u64,
+    /// Part of `encode_us` spent preparing pixels before any codec runs: applying the OS-reported moves and
+    /// comparing blocks against the previous frame. Colour conversion inside the H.264 encoder counts as codec time.
+    pub convert_us: u64,
     /// Changed 32 px blocks.
     pub dirty_blocks: usize,
     /// JPEG quality used.
@@ -148,6 +154,19 @@ pub struct StreamEncoder {
     /// The viewer prefers H.264 during motion: on a hardware encoder `Auto` follows the high-frame-rate rule at
     /// any rate (see [`enters_h264`]).
     prefer_h264: bool,
+    /// The viewer takes lossless text/UI tiles (`tile-lossless`).
+    lossless: bool,
+    /// Blocks the viewer has only as JPEG since the last key frame; with `lossless`, text/UI among them are
+    /// resent pixel-exact once the screen is still (the refine pass).
+    refine: Vec<bool>,
+    /// Zero-copy H.264: the capture device the encoder reads textures from (see [`Self::set_gpu_source`]).
+    gpu_source: Option<GpuSource>,
+    /// This tick's desktop image on the GPU (see [`Self::set_gpu_frame`]).
+    gpu_frame: Option<GpuTexture>,
+    /// A frame without pixels needed them (a JPEG key frame ends H.264): see [`Self::take_want_pixels`].
+    want_pixels: bool,
+    /// Frames without pixels were encoded: the block comparison's reference is old.
+    diff_stale: bool,
 }
 
 impl StreamEncoder {
@@ -182,7 +201,71 @@ impl StreamEncoder {
             high_fps_policy: std::env::var("OPENDESK_H264_HIGH_FPS").map(|v| v != "0").unwrap_or(true),
             bitrate_factor: 1.0,
             prefer_h264: false,
+            lossless: false,
+            refine: vec![false; blocks],
+            gpu_source: None,
+            gpu_frame: None,
+            want_pixels: false,
+            diff_stale: false,
         }
+    }
+
+    /// Zero-copy H.264 from `source` (the capture device; native size only). The encoder is rebuilt to read
+    /// textures given with [`Self::set_gpu_frame`]; without a hardware encoder that takes them, the ordinary
+    /// encoder is used. None returns to system-memory frames.
+    pub fn set_gpu_source(&mut self, source: Option<GpuSource>) {
+        let had = self.gpu_source.is_some();
+        self.gpu_source = source;
+        if had || self.gpu_source.is_some() {
+            self.rebuild_h264();
+        }
+    }
+
+    /// The desktop image of the coming `encode` on the GPU (with a GPU source).
+    pub fn set_gpu_frame(&mut self, frame: Option<GpuTexture>) {
+        self.gpu_frame = frame;
+    }
+
+    /// True while frames need not reach system memory: H.264 runs on the zero-copy encoder. The capturer can
+    /// then skip its readback and pass `encode` a frame with empty `pixels` (dirty rectangles still set).
+    pub fn gpu_frames_only(&self) -> bool {
+        self.in_h264 && !self.needs_key && self.gpu_frame.is_some() && self.h264.as_ref().is_some_and(|e| e.is_gpu())
+    }
+
+    /// True once after a frame without pixels needed them: read the frame back and call
+    /// [`Self::encode_with_pixels`] in the same tick.
+    pub fn take_want_pixels(&mut self) -> bool {
+        std::mem::take(&mut self.want_pixels)
+    }
+
+    /// Finishes a tick whose frame needed pixels: a sharp key frame from the full image.
+    pub fn encode_with_pixels(&mut self, f: &FrameInput) -> Option<Vec<u8>> {
+        let t0 = Instant::now();
+        self.diff.reset();
+        let _ = self.diff.diff(f.pixels, f.stride, None);
+        self.diff_stale = false;
+        self.idle_ticks = 0;
+        let out = self.send_key(f, false);
+        self.last.encode_us += t0.elapsed().as_micros() as u64;
+        self.last.bytes = out.as_ref().map_or(0, |b| b.len());
+        out
+    }
+
+    /// Changed blocks according to the OS's dirty rectangles (frames without pixels): (changed, total).
+    fn hinted_blocks(&self, hint: Option<&[Rect]>) -> (usize, usize) {
+        let (gw, gh) = (self.diff.grid_w, self.diff.grid_h);
+        let total = (gw * gh).max(1);
+        let Some(rects) = hint else { return (total, total) };
+        let mut grid = vec![false; gw * gh];
+        for r in rects {
+            let (x0, y0) = ((r.x.max(0) / BLOCK) as usize, (r.y.max(0) / BLOCK) as usize);
+            let x1 = (((r.x + r.width).min(self.width) + BLOCK - 1) / BLOCK) as usize;
+            let y1 = (((r.y + r.height).min(self.height) + BLOCK - 1) / BLOCK) as usize;
+            for y in y0..y1.min(gh) {
+                grid[y * gw + x0.min(gw)..y * gw + x1.min(gw)].fill(true);
+            }
+        }
+        (grid.iter().filter(|&&b| b).count(), total)
     }
 
     /// Allows H.264 for motion. Needs delta framing and even dimensions (NV12).
@@ -193,8 +276,10 @@ impl StreamEncoder {
             let (tx, rx) = mpsc::channel();
             let (w, h, fps, bps) = (self.width as u32, self.height as u32, self.fps, self.h264_bitrate());
             let allow_hw = std::env::var("OPENDESK_H264_HW").map(|v| v != "0").unwrap_or(true);
+            let gpu = self.gpu_source.clone().filter(|_| allow_hw);
             std::thread::spawn(move || {
-                let _ = tx.send(H264Encoder::new(w, h, fps, bps, allow_hw).ok());
+                let zero_copy = gpu.and_then(|g| g.encoder(w, h, fps, bps));
+                let _ = tx.send(zero_copy.or_else(|| H264Encoder::new(w, h, fps, bps, allow_hw).ok()));
             });
             self.h264_pending = Some(rx);
         }
@@ -266,6 +351,12 @@ impl StreamEncoder {
         self.high_fps() || (self.high_fps_policy && self.prefer_h264 && self.h264_hardware())
     }
 
+    /// Sends text and UI blocks pixel-exact (`tile-lossless` viewers only; `OPENDESK_LOSSLESS_TILES=0` turns it
+    /// off).
+    pub fn set_lossless(&mut self, on: bool) {
+        self.lossless = on && std::env::var("OPENDESK_LOSSLESS_TILES").map_or(true, |v| v != "0");
+    }
+
     /// Frame rate of the capture loop; a change rebuilds the H.264 encoder for the new rate.
     pub fn set_fps(&mut self, fps: u32) {
         if fps != self.fps {
@@ -289,6 +380,7 @@ impl StreamEncoder {
             self.height = height;
             self.diff = BlockDiff::new(width, height, BLOCK);
             self.lowq = vec![false; self.diff.grid_w * self.diff.grid_h];
+            self.refine = vec![false; self.lowq.len()];
             // The encoder is bound to the old size.
             self.rebuild_h264();
         }
@@ -315,6 +407,9 @@ impl StreamEncoder {
 
     /// Processes one captured frame. Returns the message to send, if any.
     pub fn encode(&mut self, f: &FrameInput) -> Option<Vec<u8>> {
+        if f.pixels.is_empty() {
+            return self.encode_gpu_only(f);
+        }
         let t0 = Instant::now();
         self.last = FrameStats::default();
         if self.delta {
@@ -330,9 +425,11 @@ impl StreamEncoder {
             }
         }
         let force_key = self.needs_key;
-        let dirty = self.diff.diff(f.pixels, f.stride, if force_key { None } else { f.dirty_hint });
+        let whole = force_key || std::mem::take(&mut self.diff_stale);
+        let dirty = self.diff.diff(f.pixels, f.stride, if whole { None } else { f.dirty_hint });
         let total = dirty.len().max(1);
         let n_dirty = dirty.iter().filter(|&&d| d).count();
+        self.last.convert_us = t0.elapsed().as_micros() as u64;
         let changed = n_dirty > 0 || (self.delta && !f.moves.is_empty());
         let heavy = n_dirty * 4 > total;
         self.last.dirty_blocks = n_dirty;
@@ -363,7 +460,8 @@ impl StreamEncoder {
         } else {
             self.idle_ticks += 1;
             let n_low = self.lowq.iter().filter(|&&d| d).count();
-            if n_low > 0 && self.idle_ticks >= scaled_ticks(SETTLE_TICKS, self.fps) {
+            let settled = self.idle_ticks >= scaled_ticks(SETTLE_TICKS, self.fps);
+            if n_low > 0 && settled {
                 if n_low * 2 > total {
                     self.send_key(f, false)
                 } else {
@@ -371,6 +469,11 @@ impl StreamEncoder {
                     let q = self.quality(false);
                     self.send_delta(f, &blocks, q)
                 }
+            } else if settled && self.refine.iter().any(|&r| r) {
+                // Refine pass: text and UI the viewer has only as JPEG become pixel-exact; photos stay JPEG.
+                let blocks = std::mem::replace(&mut self.refine, vec![false; total]);
+                let (_, flat) = self.split_flat(f, &blocks);
+                if flat.iter().any(|&b| b) { self.send_delta(f, &flat, self.quality(false)) } else { None }
             } else if self.idle_ticks >= scaled_ticks(KEEPALIVE_TICKS, self.fps) {
                 self.idle_ticks = 0;
                 self.send_delta(f, &[], self.base_quality)
@@ -378,6 +481,11 @@ impl StreamEncoder {
                 None
             }
         };
+        self.finish_tick(t0, out, changed, heavy)
+    }
+
+    /// Stats and the motion streak after a tick.
+    fn finish_tick(&mut self, t0: Instant, out: Option<Vec<u8>>, changed: bool, heavy: bool) -> Option<Vec<u8>> {
         self.last.encode_us = t0.elapsed().as_micros() as u64;
         self.last.bytes = out.as_ref().map_or(0, |b| b.len());
         let motion = heavy || (self.last.kind == SentKind::Delta && self.last.bytes > H264_MOTION_BYTES);
@@ -389,6 +497,27 @@ impl StreamEncoder {
             0
         };
         out
+    }
+
+    /// A frame that exists only on the GPU (see [`Self::gpu_frames_only`]): H.264 goes on from the OS's dirty
+    /// rectangles; anything that needs pixels sets `want_pixels`.
+    fn encode_gpu_only(&mut self, f: &FrameInput) -> Option<Vec<u8>> {
+        let t0 = Instant::now();
+        self.last = FrameStats::default();
+        self.diff_stale = true;
+        let (n_dirty, total) = self.hinted_blocks(f.dirty_hint);
+        self.last.convert_us = t0.elapsed().as_micros() as u64;
+        self.last.dirty_blocks = n_dirty;
+        let changed = n_dirty > 0 || !f.moves.is_empty();
+        let heavy = n_dirty * 4 > total;
+        let out = match self.encode_h264_path(f, changed, heavy, self.needs_key) {
+            Some(out) => out,
+            None => {
+                self.want_pixels = true;
+                None
+            }
+        };
+        self.finish_tick(t0, out, changed, heavy)
     }
 
     /// H.264 state machine. Returns None when the JPEG paths should handle this tick.
@@ -450,7 +579,17 @@ impl StreamEncoder {
             enc.set_bitrate(target);
         }
         enc.set_pipelined(pipelined);
-        let result = enc.encode(f.pixels, f.stride).map_err(drop);
+        let result = if enc.is_gpu() {
+            // Zero-copy: the texture straight from the capturer; a missing one is a broken pipeline.
+            match &self.gpu_frame {
+                Some(tex) => enc.encode_texture(tex).map_err(drop),
+                None => Err(()),
+            }
+        } else if f.pixels.is_empty() {
+            Err(())
+        } else {
+            enc.encode(f.pixels, f.stride).map_err(drop)
+        };
         self.h264_out(f, result)
     }
 
@@ -511,12 +650,17 @@ impl StreamEncoder {
     }
 
     fn send_key(&mut self, f: &FrameInput, heavy: bool) -> Option<Vec<u8>> {
+        if f.pixels.is_empty() {
+            self.want_pixels = true;
+            return None;
+        }
         let q = self.quality(heavy);
         self.jpeg.set_quality(q);
         let jpeg = self.jpeg.encode_bgra(f.pixels, self.width, self.height, f.stride)?;
         self.needs_key = false;
         let blurry = q < self.quality(false);
         self.lowq.fill(blurry);
+        self.refine.fill(self.lossless && self.delta);
         self.seq = self.seq.wrapping_add(1);
         self.last.kind = SentKind::Key;
         self.last.quality = q;
@@ -524,9 +668,26 @@ impl StreamEncoder {
     }
 
     fn send_delta(&mut self, f: &FrameInput, blocks: &[bool], q: u32) -> Option<Vec<u8>> {
-        let rects = merge_blocks(blocks, self.diff.grid_w, BLOCK, self.width, self.height);
-        let (aw, ah, patches) = pack_atlas(&rects, self.width);
-        let payload = if patches.is_empty() {
+        if f.pixels.is_empty() {
+            self.want_pixels = true;
+            return None;
+        }
+        // At full quality, text and UI blocks go pixel-exact; reduced quality (motion, congestion) stays JPEG.
+        let (blocks, flat) = if self.lossless && self.delta && q >= self.quality(false) {
+            self.split_flat(f, blocks)
+        } else {
+            (blocks.to_vec(), Vec::new())
+        };
+        let full = q >= self.quality(false);
+        for (r, (&j, &l)) in self.refine.iter_mut().zip(blocks.iter().zip(flat.iter())) {
+            // A block resent at full quality is final (exact, or a photo); a blurry one waits for `lowq` first.
+            if l || (j && full) {
+                *r = false;
+            }
+        }
+        let rects = merge_blocks(&blocks, self.diff.grid_w, BLOCK, self.width, self.height);
+        let (aw, ah, mut patches) = pack_atlas(&rects, self.width);
+        let mut payload = if patches.is_empty() {
             Vec::new()
         } else {
             let atlas = build_atlas(f.pixels, f.stride, &patches, aw, ah);
@@ -540,12 +701,25 @@ impl StreamEncoder {
                 }
             }
         };
+        let mut flags = 0;
+        if flat.iter().any(|&b| b) {
+            let rects = merge_blocks(&flat, self.diff.grid_w, BLOCK, self.width, self.height);
+            let (lw, lh, lpatches) = pack_atlas(&rects, self.width);
+            if lw as u16 >= LOSSLESS_PATCH {
+                self.request_key();
+                return None;
+            }
+            let atlas = build_atlas(f.pixels, f.stride, &lpatches, lw, lh);
+            payload = mixed_payload(&payload, &lossless::encode(&atlas, lw as usize, lh as usize));
+            patches.extend(lpatches.into_iter().map(|p| Patch { atlas_x: p.atlas_x | LOSSLESS_PATCH, ..p }));
+            flags = FLAG_LOSSLESS;
+        }
         self.seq = self.seq.wrapping_add(1);
         self.last.kind = SentKind::Delta;
         self.last.quality = q;
         let header = FrameHeader {
             kind: KIND_DELTA,
-            flags: 0,
+            flags,
             seq: self.seq,
             width: self.width as u16,
             height: self.height as u16,
@@ -554,11 +728,36 @@ impl StreamEncoder {
         };
         Some(header.encode(&payload))
     }
+
+    /// Splits `blocks` into `(JPEG blocks, lossless blocks)`: a block with few colours (text, UI) goes lossless.
+    fn split_flat(&self, f: &FrameInput, blocks: &[bool]) -> (Vec<bool>, Vec<bool>) {
+        let (gw, b) = (self.diff.grid_w, BLOCK as usize);
+        let (w, h) = (self.width as usize, self.height as usize);
+        let mut jpeg = blocks.to_vec();
+        let mut flat = vec![false; blocks.len()];
+        for (i, _) in blocks.iter().enumerate().filter(|(_, d)| **d) {
+            let (x, y) = ((i % gw) * b, (i / gw) * b);
+            if x < w && y < h && lossless::is_flat(f.pixels, f.stride, x, y, b.min(w - x), b.min(h - y)) {
+                jpeg[i] = false;
+                flat[i] = true;
+            }
+        }
+        (jpeg, flat)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn convert_time_is_part_of_the_encode_time() {
+        let mut enc = StreamEncoder::new(64, 64, 80, true);
+        let pixels = vec![0x00FF_8040u32; 64 * 64];
+        let frame = FrameInput { pixels: &pixels, stride: 64, dirty_hint: None, moves: &[] };
+        assert!(enc.encode(&frame).is_some(), "the first frame is a key frame");
+        assert!(enc.last.convert_us <= enc.last.encode_us);
+    }
 
     #[test]
     fn h264_bitrate_scales_with_sqrt_of_fps() {

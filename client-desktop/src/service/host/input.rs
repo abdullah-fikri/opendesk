@@ -17,6 +17,22 @@ const MAX_MONITOR_INDEX: u64 = 63;
 const INJECTION_WARN_EVERY_MS: u64 = 10_000;
 static LAST_INJECTION_WARN_MS: AtomicU64 = AtomicU64::new(0);
 
+/// Moves the pointer to where the viewer pointed, unless an application captured the mouse (`pointer-lock`):
+/// then the viewer sends relative motion and buttons act where the pointer is.
+fn place(ctx: &AppContext, norm_x: f64, norm_y: f64) {
+    if ctx.host.pointer_locked.load(Ordering::SeqCst) {
+        return;
+    }
+    let (x, y) = to_screen(ctx, norm_x, norm_y);
+    ctx.injector.set_cursor_pos(x, y);
+}
+
+/// Puts the pointer at the point the viewer dropped files on, even when an application captured the mouse.
+pub fn move_pointer_for_drop(ctx: &AppContext, norm_x: f64, norm_y: f64) {
+    let (x, y) = to_screen(ctx, norm_x, norm_y);
+    ctx.injector.set_cursor_pos(x, y);
+}
+
 /// Handles one event from the viewer this machine hosts. Events arriving while nothing is hosted are ignored:
 /// only an active session may drive this machine.
 pub fn apply(ctx: &AppContext, event: InputEvent) {
@@ -30,37 +46,47 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
     let injector = &ctx.injector;
     match event {
         InputEvent::MouseMove { norm_x, norm_y } => {
-            let (x, y) = to_screen(ctx, norm_x, norm_y);
-            injector.set_cursor_pos(x, y);
+            place(ctx, norm_x, norm_y);
         }
         InputEvent::MouseDown { norm_x, norm_y, button } => {
-            let (x, y) = to_screen(ctx, norm_x, norm_y);
-            injector.set_cursor_pos(x, y);
-            injector.mouse_down(button);
+            place(ctx, norm_x, norm_y);
+            ctx.host.mouse_down(injector, button);
         }
         InputEvent::MouseUp { norm_x, norm_y, button } => {
-            let (x, y) = to_screen(ctx, norm_x, norm_y);
-            injector.set_cursor_pos(x, y);
-            injector.mouse_up(button);
+            place(ctx, norm_x, norm_y);
+            ctx.host.mouse_up(injector, button);
         }
         InputEvent::Click { norm_x, norm_y, button } => {
-            let (x, y) = to_screen(ctx, norm_x, norm_y);
-            injector.set_cursor_pos(x, y);
+            place(ctx, norm_x, norm_y);
             injector.mouse_down(button);
             injector.mouse_up(button);
         }
         InputEvent::DoubleClick { norm_x, norm_y, button } => {
-            let (x, y) = to_screen(ctx, norm_x, norm_y);
-            injector.set_cursor_pos(x, y);
+            place(ctx, norm_x, norm_y);
             for _ in 0..2 {
                 injector.mouse_down(button);
                 injector.mouse_up(button);
             }
         }
-        InputEvent::Wheel { norm_x, norm_y, delta_y } => {
-            let (x, y) = to_screen(ctx, norm_x, norm_y);
-            injector.set_cursor_pos(x, y);
-            injector.mouse_wheel(delta_y);
+        InputEvent::Wheel { norm_x, norm_y, delta_y, delta_x } => {
+            place(ctx, norm_x, norm_y);
+            if delta_y != 0 {
+                injector.mouse_wheel(delta_y);
+            }
+            if delta_x != 0 {
+                injector.mouse_hwheel(delta_x);
+            }
+        }
+        InputEvent::MouseDelta { dx, dy } if host.pointer_locked.load(Ordering::SeqCst) => {
+            injector.mouse_move_relative(dx, dy)
+        }
+        // From the viewer: its pointer lock setting. Off ends a lock at once (absolute positions apply again);
+        // on lets the capture loop lock again while the application still holds the mouse.
+        InputEvent::PointerLock { on } => {
+            host.pointer_lock_declined.store(!on, Ordering::SeqCst);
+            if !on {
+                host.pointer_locked.store(false, Ordering::SeqCst);
+            }
         }
         InputEvent::KeyDown { key_code } if key_code > 0 => {
             if key_code == VK_LWIN {

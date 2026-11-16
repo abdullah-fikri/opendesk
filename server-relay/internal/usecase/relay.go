@@ -28,6 +28,10 @@ type Options struct {
 	MoveCoalescingDisabled bool
 	// ResumeGrace is how long a lost connection's sessions wait for it; zero means DefaultResumeGrace.
 	ResumeGrace time.Duration
+	// FrameMaxAge drops video frames that waited longer than this in a receiver's queue (see frameQueue.pop), so
+	// a slow relay-to-viewer leg cannot hold up to 8 frames (about 133 ms at 60 fps) of latency. Zero keeps only
+	// the length bound.
+	FrameMaxAge time.Duration
 }
 
 // Relay is the in-memory session broker. All exported methods are safe for concurrent use.
@@ -49,6 +53,7 @@ type Relay struct {
 	p2pDisabled  bool
 	mergeMoves   bool
 	resumeGrace  time.Duration
+	frameMaxAge  time.Duration
 	log          *slog.Logger
 }
 
@@ -83,6 +88,7 @@ func New(hosts HostRepository, sessions SessionRepository, m FrameMetrics, opts 
 		p2pDisabled:  opts.P2PDisabled,
 		mergeMoves:   !opts.MoveCoalescingDisabled,
 		resumeGrace:  opts.ResumeGrace,
+		frameMaxAge:  opts.FrameMaxAge,
 		log:          log.With("component", "relay"),
 	}
 }
@@ -134,7 +140,9 @@ func (r *Relay) RegisterResume(conn Conn, info PeerInfo, token, resumeToken stri
 	}
 	info.IsAdmin = auth.admin
 	info.Caps = model.SanitizeCapabilities(info.Caps)
-	peer := newPeer(info, model.FormatDeskID(info.CleanID), slices.Contains(info.Caps, model.CapMultiSession), conn, r.metrics)
+	peer := buildPeer(info, model.FormatDeskID(info.CleanID), slices.Contains(info.Caps, model.CapMultiSession), conn, r.metrics)
+	peer.frameMaxAge = r.frameMaxAge
+	go peer.writeLoop()
 	peer.EnrollToken = auth.token
 	if peer.Resume {
 		peer.ResumeToken = newResumeToken()

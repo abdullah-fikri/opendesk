@@ -9,11 +9,41 @@ pub const FILE_ACK: &str = "file-ack";
 pub const FILE_OFFER: &str = "file-offer";
 /// Folder transfer (relative paths, `group`/`rel`).
 pub const FILE_FOLDER: &str = "file-folder";
+/// With `file-folder`: loose files (no folder) may arrive as one group, closed by a bare group end, so the
+/// receiver puts them on its clipboard and pastes them once.
+pub const FILE_GROUP: &str = "file-group";
 /// File chunks as binary messages instead of base64 JSON. From a client: it accepts them; from the relay: it
 /// forwards them. Used only when both the partner and the relay list it.
 pub const FILE_BINARY: &str = "file-binary";
+/// With `file-binary`: bytes of a pulled (pasted) offer may arrive as binary chunks too. Peers up to 1.3.x read
+/// paste streams from JSON only.
+pub const FILE_PULL_BIN: &str = "file-pull-bin";
+/// Framed deltas may carry lossless text/UI tiles (`FLAG_LOSSLESS`, see `core_engine::codec::lossless`). From a
+/// viewer: it decodes them; a host sends them only to viewers that list it.
+pub const TILE_LOSSLESS: &str = "tile-lossless";
+/// P2P video: the viewer asks for lost fragments (`K_NACK`) and the host resends them from its last frames. Both
+/// sides list it; a viewer waits for retransmits only from a host that does.
+pub const VIDEO_NACK: &str = "video-nack";
+/// File transfers between the partners may run over the P2P path (`domain::bulk`, kinds `K_BULK` and
+/// `K_BULK_ACK`) instead of the relay. Both sides list it; each transfer keeps the path it started on.
+pub const FILE_P2P: &str = "file-p2p";
+/// With `file-binary`: file chunks may arrive deflated, flagged by `domain::file_squeeze::OFFSET_DEFLATED` in
+/// their offset. Both sides list it; a sender compresses only toward a receiver that does.
+pub const FILE_DEFLATE: &str = "file-deflate";
+/// With `file-ack`: a transfer cut by a lost connection or P2P path continues where the receiver stands (a
+/// `start` with `resumeOf`, answered by a `pull` with `resumeAt`). Both sides list it.
+pub const FILE_RESUME: &str = "file-resume";
+/// An `offer` may carry the point of the host screen it was dropped on (`dropX`, `dropY`, 0..10000): the host
+/// drops the files there as a drag, without touching its clipboard. Both sides list it with `file-offer`.
+pub const FILE_DROP: &str = "file-drop";
 /// The viewer draws its own cursor in the host's shape.
 pub const CURSOR_SHAPE: &str = "cursor-shape";
+/// The viewer locks its pointer and sends relative motion while a host application captured the mouse
+/// (`pointer-lock`, `mouse-delta`): games with mouse look. Hosts send `pointer-lock` only to viewers listing it.
+pub const MOUSE_RELATIVE: &str = "mouse-relative";
+/// Copied images follow the clipboard like text (an `offer` carrying a PNG, see `domain::clip_image`). Both
+/// sides list it; an image goes only to a partner that does.
+pub const CLIPBOARD_IMAGE: &str = "clipboard-image";
 /// Framed key/delta video.
 pub const VIDEO_DELTA: &str = "video-delta";
 /// H.264 motion frames inside the framed format.
@@ -77,11 +107,31 @@ pub struct PeerCaps {
     /// Offers need relay support too, so this is the partner's capability AND the relay's.
     pub file_offer: bool,
     pub file_folder: bool,
+    /// Loose files may go to the partner as one group ([`FILE_GROUP`]).
+    pub file_group: bool,
     /// The partner accepts binary file chunks (the relay must list `file-binary` too, see [`RelayCaps`]).
     pub file_binary: bool,
+    /// Pulled offers may be sent in binary chunks ([`FILE_PULL_BIN`]); implies `file_binary`.
+    pub file_pull_bin: bool,
+    /// Transfers may run over the P2P path ([`FILE_P2P`]).
+    pub file_p2p: bool,
+    /// Binary chunks to the partner may be deflated ([`FILE_DEFLATE`]).
+    pub file_deflate: bool,
+    /// Cut transfers to and from the partner resume ([`FILE_RESUME`]).
+    pub file_resume: bool,
+    /// Dropped files may go to the partner as a drag onto its screen ([`FILE_DROP`]).
+    pub file_drop: bool,
     pub cursor_shape: bool,
+    /// The viewer can lock its pointer for relative motion ([`MOUSE_RELATIVE`]).
+    pub mouse_relative: bool,
+    /// The partner takes copied images ([`CLIPBOARD_IMAGE`]).
+    pub clipboard_image: bool,
     pub video_delta: bool,
     pub video_h264: bool,
+    /// Deltas to this viewer may carry lossless tiles ([`TILE_LOSSLESS`]).
+    pub tile_lossless: bool,
+    /// The partner resends lost P2P video fragments on request ([`VIDEO_NACK`]).
+    pub video_nack: bool,
     /// Framed video to this viewer may carry capture stamps.
     pub frame_stamp: bool,
     /// Voice to this partner may be Opus (we always decode it, so the partner's word is enough).
@@ -111,10 +161,20 @@ impl PeerCaps {
             file_ack: has(FILE_ACK),
             file_offer: has(FILE_OFFER) && relay_offer,
             file_folder: has(FILE_FOLDER),
+            file_group: has(FILE_FOLDER) && has(FILE_GROUP),
             file_binary: has(FILE_BINARY),
+            file_pull_bin: has(FILE_BINARY) && has(FILE_PULL_BIN),
+            file_p2p: has(P2P) && has(FILE_BINARY) && has(FILE_P2P),
+            file_deflate: has(FILE_BINARY) && has(FILE_DEFLATE),
+            file_resume: has(FILE_ACK) && has(FILE_RESUME),
+            file_drop: has(FILE_OFFER) && has(FILE_DROP),
             cursor_shape: has(CURSOR_SHAPE),
+            mouse_relative: has(MOUSE_RELATIVE),
+            clipboard_image: has(CLIPBOARD_IMAGE),
             video_delta: has(VIDEO_DELTA),
             video_h264: has(VIDEO_H264),
+            tile_lossless: has(VIDEO_DELTA) && has(TILE_LOSSLESS),
+            video_nack: has(VIDEO_NACK),
             frame_stamp: has(FRAME_STAMP),
             audio_opus: has(AUDIO_OPUS),
             audio_system: has(AUDIO_SYSTEM),
@@ -225,6 +285,21 @@ mod tests {
             assert_eq!(PeerCaps::from_list(&[max_fps_cap(30), p.cap().to_string()], true).performance, p);
         }
         assert_eq!(PeerCaps::from_list(&["perf-ultra".to_string()], true).performance, Performance::Medium);
+    }
+
+    #[test]
+    fn loose_file_groups_need_folder_support_too() {
+        let caps = |list: &[&str]| PeerCaps::from_list(&list.iter().map(|c| c.to_string()).collect::<Vec<_>>(), true);
+        assert!(caps(&[FILE_FOLDER, FILE_GROUP]).file_group);
+        assert!(!caps(&[FILE_GROUP]).file_group);
+        assert!(!caps(&[FILE_FOLDER]).file_group, "1.3.x receivers get loose files one by one");
+    }
+
+    #[test]
+    fn deflated_chunks_need_binary_chunks_too() {
+        let caps = |list: &[&str]| PeerCaps::from_list(&list.iter().map(|c| c.to_string()).collect::<Vec<_>>(), true);
+        assert!(caps(&[FILE_BINARY, FILE_DEFLATE]).file_deflate);
+        assert!(!caps(&[FILE_DEFLATE]).file_deflate && !caps(&[FILE_BINARY]).file_deflate);
     }
 
     #[test]

@@ -74,6 +74,7 @@ unsafe extern "system" {
     fn FindWindowW(lp_class_name: *const u16, lp_window_name: *const u16) -> HWND;
     fn GetForegroundWindow() -> HWND;
     fn GetClassNameW(h_wnd: HWND, lp_class_name: *mut u16, n_max_count: i32) -> i32;
+    fn GetWindowTextW(h_wnd: HWND, lp_string: *mut u16, n_max_count: i32) -> i32;
     fn GetWindowThreadProcessId(h_wnd: HWND, lpdw_process_id: *mut u32) -> u32;
     fn GetWindowLongPtrW(h_wnd: HWND, n_index: i32) -> LONG_PTR;
     fn SetWindowLongPtrW(h_wnd: HWND, n_index: i32, dw_new_long: LONG_PTR) -> LONG_PTR;
@@ -101,6 +102,7 @@ unsafe extern "system" {
     fn DragAcceptFiles(h_wnd: HWND, f_accept: BOOL);
     fn DragQueryFileW(h_drop: HDROP, i_file: UINT, lpsz_file: *mut u16, cch: UINT) -> UINT;
     fn DragFinish(h_drop: HDROP);
+    fn DragQueryPoint(h_drop: HDROP, pt: *mut [i32; 2]) -> BOOL;
 }
 
 #[link(name = "comdlg32")]
@@ -114,7 +116,9 @@ unsafe extern "system" {
 }
 
 static mut ORIG_WNDPROC: LONG_PTR = 0;
-static mut DROP_CALLBACK: Option<Box<dyn Fn(Vec<PathBuf>) + Send + Sync>> = None;
+/// Called with the dropped paths and the drop point in client pixels.
+type DropCallback = Box<dyn Fn(Vec<PathBuf>, Option<(i32, i32)>) + Send + Sync>;
+static mut DROP_CALLBACK: Option<DropCallback> = None;
 
 unsafe extern "system" fn subclass_wndproc(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> isize {
     unsafe {
@@ -128,6 +132,9 @@ unsafe extern "system" fn subclass_wndproc(hwnd: HWND, msg: u32, wparam: usize, 
             let hdrop = wparam as HDROP;
             let count = DragQueryFileW(hdrop, 0xFFFFFFFF, ptr::null_mut(), 0);
             let mut paths = Vec::with_capacity(count as usize);
+            // Where in the window's client area the files were dropped (0 when the point is outside it).
+            let mut at = [0i32; 2];
+            let inside = DragQueryPoint(hdrop, &mut at) != 0;
 
             for i in 0..count {
                 let len = DragQueryFileW(hdrop, i, ptr::null_mut(), 0);
@@ -146,7 +153,7 @@ unsafe extern "system" fn subclass_wndproc(hwnd: HWND, msg: u32, wparam: usize, 
             if !paths.is_empty()
                 && let Some(ref cb) = *ptr::addr_of!(DROP_CALLBACK)
             {
-                cb(paths);
+                cb(paths, inside.then_some((at[0], at[1])));
             }
             return 0;
         }
@@ -176,10 +183,11 @@ pub fn is_window_shown(window_title: &str) -> bool {
     }
 }
 
-/// Accepts files dropped on the window titled `window_title` and calls `callback` with their paths. Must run on the UI thread once the window exists; returns false until it does.
+/// Accepts files dropped on the window titled `window_title` and calls `callback` with their paths and the drop
+/// point in client pixels. Must run on the UI thread once the window exists; returns false until it does.
 pub fn register_window_file_drop<F>(window_title: &str, callback: F) -> bool
 where
-    F: Fn(Vec<PathBuf>) + Send + Sync + 'static,
+    F: Fn(Vec<PathBuf>, Option<(i32, i32)>) + Send + Sync + 'static,
 {
     unsafe {
         let title_wide: Vec<u16> = window_title.encode_utf16().chain(std::iter::once(0)).collect();
@@ -239,6 +247,14 @@ pub fn foreground_class() -> String {
     let mut buf = [0u16; 128];
     let len = unsafe { GetClassNameW(GetForegroundWindow(), buf.as_mut_ptr(), buf.len() as i32) };
     if len <= 0 { "(none)".into() } else { String::from_utf16_lossy(&buf[..len as usize]) }
+}
+
+/// Title of the focused window (an Explorer window shows its folder's name); empty when it has none.
+pub fn foreground_title() -> String {
+    let mut buf = [0u16; 256];
+    // SAFETY: the buffer outlives the call and its length is passed; a stale window handle only fails.
+    let len = unsafe { GetWindowTextW(GetForegroundWindow(), buf.as_mut_ptr(), buf.len() as i32) };
+    if len <= 0 { String::new() } else { String::from_utf16_lossy(&buf[..len as usize]) }
 }
 
 /// Shows the multi-select "Choose Files to Send" dialog; empty when cancelled.

@@ -30,12 +30,18 @@ Received files go to `%USERPROFILE%\Downloads\OpenDesk` (Windows) or `~/Download
 | `OPENDESK_P2P` | on | `0` keeps every session on the relay. |
 | `OPENDESK_UDP_RELAY` | on | `0` never routes the P2P path through the relay's UDP forwarder. |
 | `OPENDESK_E2E` | on | `0` turns end-to-end encryption off ([e2e](features/e2e.md)). |
+| `OPENDESK_DYNAMIC_WINDOW` | on | Host: `0` keeps the P2P video window fixed at 2 frames in flight instead of sizing it from the acknowledgement round trip ([p2p](features/p2p.md#video-window-and-pacing)). |
+| `OPENDESK_UDP_PACING` | on | Host: `0` sends each P2P video frame's fragments in one burst instead of pacing large frames over up to half a frame interval ([p2p](features/p2p.md#video-window-and-pacing)). |
+| `OPENDESK_IPV6` | on | `0` keeps the P2P socket IPv4-only and offers no IPv6 candidate ([p2p](features/p2p.md#setup)). |
+| `OPENDESK_PORT_MAPPING` | on | `0` stops asking the router (NAT-PMP / UPnP) to forward the P2P port ([p2p](features/p2p.md#setup)). |
 | `OPENDESK_STUN` | `stun.l.google.com:19302` | STUN server for the public P2P candidate; `off` uses LAN candidates only. |
 | `OPENDESK_VIDEO_H264` | auto | `0` disables H.264; `always` uses it for every changed frame. |
 | `OPENDESK_MAX_FPS` | unset | Caps the frame rate on both sides, whatever the preset (`60` restores the 60 FPS pipeline). |
 | `OPENDESK_WS_HIGH_FPS` | on | Host: `0` keeps sessions on the WebSocket relay at 60 FPS (more only over P2P or the UDP relay). |
 | `OPENDESK_WS_SNDBUF` | 524288 | Host: socket send buffer in bytes while a hosted session's video goes over the WebSocket relay; `0` leaves the OS default ([hosting](features/hosting.md#capture-loop)). |
+| `OPENDESK_ENCODER_TUNING` | on | Windows host: `0` skips the H.264 encoder's speed preset and VBV limit ([hosting](features/hosting.md#capture-loop)). |
 | `OPENDESK_CAPTURE` | DXGI | Windows: `gdi` forces GDI capture (for machines where Desktop Duplication misbehaves). |
+| `OPENDESK_WIFI_STREAMING` | on | Windows: `0` leaves Wi-Fi alone during sessions instead of requesting media streaming mode ([Wi-Fi streaming mode](features/wifi-streaming.md)). |
 | `OPENDESK_INPUT_ABSOLUTE` | on | Windows host: `0` moves the pointer with `SetCursorPos` instead of absolute `SendInput` (drags then fail in some apps; [hosting](features/hosting.md#input)). |
 | `OPENDESK_OPENH264` | search path | Linux: path of Cisco's `libopenh264-2.6.0-*.so` (see [core-engine](../../core-engine/README.md)). |
 | `OPENDESK_NO_AUTOSTART` | unset | Linux: any value stops the app from writing `~/.config/autostart/opendesk.desktop`. |

@@ -7,6 +7,7 @@
 
 pub mod controller;
 pub mod decoder;
+pub mod drop_point;
 pub mod registry;
 pub mod stats;
 

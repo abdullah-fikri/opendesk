@@ -1,6 +1,7 @@
 //! Turns relay messages into service calls. Each handler decodes nothing itself: `ServerMessage` and
 //! `InputEvent` are already typed, so handlers only decide which use case runs.
 
+use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -42,7 +43,7 @@ impl Connection {
             }
             ServerMessage::InputCommand { event, from_clean } => self.on_input(&event, from_clean.as_deref()),
             ServerMessage::ClipboardSync { text, from_clean } => self.on_clipboard(text, from_clean.as_deref()),
-            ServerMessage::FileTransfer { from_clean, payload } => self.on_file(from_clean, payload),
+            ServerMessage::FileTransfer { from_clean, payload } => self.on_file(from_clean, *payload),
             ServerMessage::P2pSignal { from_clean, candidate } => self.on_signal(&from_clean, &candidate),
             ServerMessage::UdpRelayOffer { target_clean, addr, token } => {
                 if let Some(p) = self.links.iter().find(|p| p.partner == target_clean) {
@@ -188,6 +189,7 @@ impl Connection {
         }
         let p2p_ok = relay.p2p_signal && caps.p2p && p2p::enabled();
         logger::info("relay", &format!("Session started: partner={target} role={role} p2p={p2p_ok}"));
+        file_transfer::log_session_path(target, &caps, relay.file_offer, is_host);
 
         privacy::reset_host_privacy();
         ctx.voice.is_session_active.store(true, Ordering::SeqCst);
@@ -205,6 +207,9 @@ impl Connection {
                     voice: Arc::clone(&ctx.voice),
                     input: self.p2p_input_tx.clone(),
                     audio_gate: None,
+                    loss: None,
+                    nack: false,
+                    bulk: self.bulk_sink(target, caps),
                 };
                 self.start_link(true, target, sinks);
             }
@@ -219,9 +224,24 @@ impl Connection {
                 voice: Arc::clone(&ctx.voice),
                 input: self.p2p_input_tx.clone(),
                 audio_gate: Some(Arc::clone(&sess.audio_on)),
+                loss: Some(Arc::clone(&sess.udp_loss)),
+                nack: caps.video_nack && p2p::nack_enabled(),
+                bulk: self.bulk_sink(target, caps),
             };
             self.start_link(false, target, sinks);
         }
+    }
+
+    /// Where file stream messages from `partner` go (`file-p2p`): the connection thread handles them like
+    /// relay file messages.
+    fn bulk_sink(&self, partner: &str, caps: PeerCaps) -> Option<p2p::BulkSink> {
+        if !(caps.file_p2p && p2p::file_p2p_enabled()) {
+            return None;
+        }
+        let (tx, from) = (Mutex::new(self.bulk_in_tx.clone()), partner.to_string());
+        Some(Arc::new(move |kind, payload| {
+            let _ = tx.lock().send((from.clone(), kind, payload));
+        }))
     }
 
     fn start_link(&mut self, is_host: bool, partner: &str, sinks: Sinks) {
@@ -232,6 +252,7 @@ impl Connection {
             &ctx.local_id,
             partner.to_string(),
             Arc::clone(&ctx.host.can_send_frame),
+            Arc::clone(&ctx.host.video_link),
             ctx.outbox.clone(),
             sinks,
             e2e,
@@ -373,9 +394,32 @@ impl Connection {
         }
     }
 
+    /// A copied image from the partner (`clipboard-image`) replaces the clipboard, like copied text.
+    fn on_clipboard_image(&self, from: &str, payload: &FilePayload) {
+        let ctx = &self.ctx;
+        let Some((dib, png)) = payload
+            .image
+            .as_deref()
+            .and_then(core_engine::codec::from_base64)
+            .and_then(|png| crate::domain::clip_image::from_png(&png))
+        else {
+            logger::warn("clipboard", "Received a copied image that is not a readable PNG.");
+            return;
+        };
+        if !core_engine::clipboard::set_image(&dib, Some(&png)) {
+            logger::warn("clipboard", "Received a copied image, but the clipboard stayed busy.");
+            return;
+        }
+        logger::info("clipboard", &format!("Received a copied image ({} KB PNG).", png.len() / 1024));
+        let seq = ctx.mark_clipboard_synced();
+        if let Some(s) = ctx.viewers.get(from) {
+            s.clip_seq.store(seq, Ordering::SeqCst);
+        }
+    }
+
     /// `fromClean` is stamped by the relay, never taken from the payload. Outside a session it is the only
     /// sender identity, so a payload without it goes to the current partner (or is dropped without one).
-    fn on_file(&mut self, from: Option<String>, payload: FilePayload) {
+    pub(super) fn on_file(&mut self, from: Option<String>, payload: FilePayload) {
         let ctx = Arc::clone(&self.ctx);
         let from = from.unwrap_or_else(|| ctx.partner());
         if from.is_empty() {
@@ -386,10 +430,26 @@ impl Connection {
             FileAction::Offer if ctx.viewers.get(&from).is_some() && !ctx.viewers.is_focused(&from) => {
                 logger::info("clipboard", &format!("Ignored file offer from unfocused session {from}."));
             }
+            FileAction::Offer if payload.image.is_some() => self.on_clipboard_image(&from, &payload),
+            // Files dropped on our screen by the viewer: pointer to the spot, then drag them onto what is there.
+            FileAction::Offer if payload.drop_x.is_some() && payload.drop_y.is_some() => {
+                let (x, y) = (payload.drop_x.unwrap_or(0), payload.drop_y.unwrap_or(0));
+                if ctx.is_hosting() && ctx.partner() == from {
+                    crate::service::host::input::move_pointer_for_drop(&ctx, x as f64 / 10_000.0, y as f64 / 10_000.0);
+                    if let Some(status) = virtual_clipboard::drop_offer(&from, &payload, ctx.outbox.clone()) {
+                        ctx.ui.status(status);
+                    }
+                } else if let Some(status) = virtual_clipboard::set_offer(&from, &payload, ctx.outbox.clone()) {
+                    ctx.ui.status(status);
+                }
+            }
             FileAction::Offer => {
                 if let Some(status) = virtual_clipboard::set_offer(&from, &payload, ctx.outbox.clone()) {
                     ctx.ui.status(status);
                 }
+            }
+            FileAction::Pull if payload.resume_at.is_some() => {
+                file_transfer::deliver_resume(&from, &payload.id, payload.resume_at.unwrap_or(0))
             }
             FileAction::Pull => offer::serve_pull(&ctx, &from, &payload),
             _ => {

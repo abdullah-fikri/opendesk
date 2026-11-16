@@ -48,6 +48,9 @@ pub enum InputEvent {
         norm_x: f64,
         norm_y: f64,
         delta_y: i32,
+        /// Horizontal scroll (tilt wheel, touchpad), 120 = one notch right. Older hosts ignore it.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        delta_x: i32,
     },
     /// Physical key down (Win32 virtual-key code); tracked so a session end releases it.
     #[serde(rename = "keydown")]
@@ -142,6 +145,16 @@ pub enum InputEvent {
     CursorShape {
         shape: i32,
     },
+    /// Host -> viewer (viewers listing `mouse-relative`): an application on the host captured the mouse for mouse
+    /// look (`on`), or released it. While on, the viewer locks its pointer and sends `mouse-delta`.
+    PointerLock {
+        on: bool,
+    },
+    /// Viewer -> host while the pointer is locked: relative motion in viewer pixels.
+    MouseDelta {
+        dx: i32,
+        dy: i32,
+    },
     /// Host -> viewer: monitor list (primary first) and the streamed index.
     Monitors {
         list: Vec<MonitorInfo>,
@@ -209,6 +222,34 @@ pub struct HostStats {
     pub cpu: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ram_mb: Option<f32>,
+    /// The parts of `encode_ms`: pixel preparation (moves and block diff) and the codec itself. Average and
+    /// maximum milliseconds per tick; absent up to 1.3.1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub convert_ms: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub convert_max_ms: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codec_ms: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codec_max_ms: Option<f32>,
+    /// Sender taking a frame to its last byte in the socket, avg and max ms; absent up to 1.3.1 and while
+    /// nothing was sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_ms: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_max_ms: Option<f32>,
+    /// P2P: a frame sent to its acknowledgement, avg and max ms; absent off the UDP path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ack_rtt_ms: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ack_rtt_max_ms: Option<f32>,
+    /// P2P: video frames that may be in flight unacknowledged; absent off the UDP path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<u32>,
+}
+
+fn is_zero(v: &i32) -> bool {
+    *v == 0
 }
 
 #[cfg(test)]
@@ -225,12 +266,24 @@ mod tests {
         assert_eq!(e, json!({ "action": "set-resolution", "mode": 1080 }));
         assert_eq!(serde_json::to_value(InputEvent::VideoKeyframe).unwrap(), json!({ "action": "video-keyframe" }));
         assert_eq!(
+            serde_json::to_value(InputEvent::PointerLock { on: true }).unwrap(),
+            json!({ "action": "pointer-lock", "on": true })
+        );
+        assert_eq!(
+            serde_json::to_value(InputEvent::MouseDelta { dx: -3, dy: 7 }).unwrap(),
+            json!({ "action": "mouse-delta", "dx": -3, "dy": 7 })
+        );
+        assert_eq!(
             serde_json::to_value(InputEvent::SetHostSound { on: false }).unwrap(),
             json!({ "action": "set-host-sound", "on": false })
         );
         assert_eq!(
-            serde_json::to_value(InputEvent::Wheel { norm_x: 0.5, norm_y: 0.25, delta_y: -120 }).unwrap(),
+            serde_json::to_value(InputEvent::Wheel { norm_x: 0.5, norm_y: 0.25, delta_y: -120, delta_x: 0 }).unwrap(),
             json!({ "action": "wheel", "normX": 0.5, "normY": 0.25, "deltaY": -120 })
+        );
+        assert_eq!(
+            serde_json::to_value(InputEvent::Wheel { norm_x: 0.5, norm_y: 0.25, delta_y: 0, delta_x: 120 }).unwrap(),
+            json!({ "action": "wheel", "normX": 0.5, "normY": 0.25, "deltaY": 0, "deltaX": 120 })
         );
     }
 
@@ -303,10 +356,20 @@ mod tests {
         );
         assert_eq!(InputEvent::parse(&wire), Some(InputEvent::HostStats(stats.clone())));
         assert!(wire.get("cpu").is_none() && wire.get("ramMb").is_none());
-        let with_usage = HostStats { cpu: Some(3.5), ram_mb: Some(148.0), ..stats };
+        let with_usage = HostStats { cpu: Some(3.5), ram_mb: Some(148.0), ..stats.clone() };
         let wire = serde_json::to_value(InputEvent::HostStats(with_usage.clone())).unwrap();
         assert_eq!((&wire["cpu"], &wire["ramMb"]), (&json!(3.5), &json!(148.0)));
         assert_eq!(InputEvent::parse(&wire), Some(InputEvent::HostStats(with_usage)));
+        // The send-path breakdown and UDP numbers (after 1.3.1) are optional both ways.
+        let udp =
+            HostStats { convert_ms: Some(0.5), send_ms: Some(1.5), ack_rtt_ms: Some(12.0), window: Some(3), ..stats };
+        let wire = serde_json::to_value(InputEvent::HostStats(udp.clone())).unwrap();
+        assert_eq!(
+            (&wire["convertMs"], &wire["sendMs"], &wire["ackRttMs"], &wire["window"]),
+            (&json!(0.5), &json!(1.5), &json!(12.0), &json!(3))
+        );
+        assert!(wire.get("codecMs").is_none() && wire.get("ackRttMaxMs").is_none());
+        assert_eq!(InputEvent::parse(&wire), Some(InputEvent::HostStats(udp)));
         // A newer host may add fields, an older one may lack some.
         assert_eq!(
             InputEvent::parse(&json!({ "action": "host-stats", "fps": 30.0, "future": 1 })),

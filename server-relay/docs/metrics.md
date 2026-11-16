@@ -13,7 +13,7 @@ curl -H "Authorization: Bearer $OPENDESK_METRICS_TOKEN" http://127.0.0.1:8088/me
 | `activePeers`, `peakPeers` | Connected devices now and at most since start |
 | `ingress.<kind>.messages/bytes` | Received messages by category: `control`, `input`, `file`, `clipboard`, `signal`, `audio-bin`, `video-bin`, `other` |
 | `egress.messages/bytes` | Messages written to clients |
-| `droppedFrames` | Video frames discarded by full or restarted queues (congested viewers) |
+| `droppedFrames` | Video frames discarded by full or restarted queues, or after waiting longer than `OPENDESK_WS_FRAME_MAX_AGE_MS` (congested viewers) |
 | `droppedAudio` | Voice packets discarded because a receiver's voice queue was full |
 | `slowReceivers` | Connections closed because they stopped taking data with a full control or file queue |
 | `rejected` | Binary or file messages without an authorized receiver |

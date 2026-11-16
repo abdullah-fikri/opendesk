@@ -4,22 +4,31 @@
 
 pub mod audio;
 pub mod autostart;
+#[cfg(windows)]
+pub mod clipboard_helper;
 pub mod clock;
 pub mod console;
 pub mod device;
 pub mod e2e;
+pub mod file_attrs;
 pub mod identity;
 pub mod key_pins;
 pub mod logger;
 pub mod p2p;
+pub mod pointer_lock;
+pub mod port_map;
 pub mod power;
 pub mod privacy;
 pub mod process_usage;
 pub mod send_gate;
 pub mod storage;
 pub mod system_service;
+pub mod tcp_path;
 pub mod thread;
+pub mod transfer_badge;
 pub mod tray;
+pub mod udp_socket;
 pub mod user_clipboard;
 pub mod virtual_clipboard;
+pub mod wifi;
 pub mod window;

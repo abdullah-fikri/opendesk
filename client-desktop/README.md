@@ -53,4 +53,4 @@ See [docs/architecture.md](docs/architecture.md) for the dependency rules and th
 - Features: [relay connection](docs/features/relay-connection.md), [dashboard](docs/features/dashboard.md), [viewer sessions](docs/features/viewer-sessions.md),
   [hosting](docs/features/hosting.md), [file transfer](docs/features/file-transfer.md),
   [clipboard](docs/features/clipboard.md), [direct P2P path](docs/features/p2p.md), [voice](docs/features/voice.md),
-  [autostart and CLI](docs/features/autostart-and-cli.md)
+  [Wi-Fi streaming mode](docs/features/wifi-streaming.md), [autostart and CLI](docs/features/autostart-and-cli.md)
