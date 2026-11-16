@@ -32,8 +32,8 @@ use crate::service::sessions;
 use crate::service::viewer::drop_point;
 
 pub use presenter::SlintUi;
-pub use splash::start as start_splash;
 use splash::play_on_launch as play_launch_splash;
+pub use splash::start as start_splash;
 
 slint::include_modules!();
 

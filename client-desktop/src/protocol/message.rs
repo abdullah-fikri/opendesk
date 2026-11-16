@@ -8,6 +8,8 @@ use super::{FilePayload, InputEvent};
 /// Messages this client sends to the relay.
 #[derive(Serialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "kebab-case", rename_all_fields = "camelCase")]
+// Short-lived (built, serialized, dropped), so the size of the file variant does not matter.
+#[allow(clippy::large_enum_variant)]
 pub enum ClientMessage {
     /// First message on every connection.
     Register {
