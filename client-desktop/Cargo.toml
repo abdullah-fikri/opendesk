@@ -25,7 +25,7 @@ snow = "0.10"
 getrandom = "0.3"
 # Locks that do not poison: a panic while holding one no longer makes every later `lock()` panic too.
 parking_lot = "0.12"
-socket2 = "0.6.5"
+socket2 = { version = "0.6.5", features = ["all"] }
 # Opus voice: libopus 1.3.1 transpiled to Rust (BSD-3-Clause), so no C toolchain and no DLL.
 unsafe-libopus = "0.2.0"
 # Auto-update: ed25519 signature of the release manifest (curve25519-dalek is already used by snow).

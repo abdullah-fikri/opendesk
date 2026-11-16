@@ -144,6 +144,10 @@ impl TcpPath {
             raw.set_only_v6(false)?;
         }
         raw.set_reuse_address(true)?;
+        // Linux and macOS refuse a second socket on the listener's port (EADDRINUSE) unless every socket on it
+        // sets SO_REUSEPORT; the connect sockets must share that port for the simultaneous open.
+        #[cfg(unix)]
+        raw.set_reuse_port(true)?;
         raw.set_tcp_nodelay(true)?;
         let any: SocketAddr = if self.dual {
             SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, self.port))
