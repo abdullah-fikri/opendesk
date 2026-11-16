@@ -479,11 +479,9 @@ mod tests {
         fs::write(&dst, b"x").unwrap();
         let file = fs::File::options().write(true).open(&src).unwrap();
         let old = UNIX_EPOCH + std::time::Duration::from_millis(1_600_000_000_000);
-        let mut times = fs::FileTimes::new().set_modified(old).set_accessed(old);
+        let times = fs::FileTimes::new().set_modified(old).set_accessed(old);
         #[cfg(windows)]
-        {
-            times = std::os::windows::fs::FileTimesExt::set_created(times, old);
-        }
+        let times = std::os::windows::fs::FileTimesExt::set_created(times, old);
         file.set_times(times).unwrap();
         drop(file);
         crate::infra::file_attrs::set(&src, 0x2); // hidden

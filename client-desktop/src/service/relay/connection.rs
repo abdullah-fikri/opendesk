@@ -95,6 +95,7 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
             bulk_in: bulk_rx,
             file_routes: FileRoutes::default(),
             p2p_incoming: Vec::new(),
+            p2p_acks: VecDeque::new(),
             links: Vec::new(),
             e2e: Vec::new(),
             monitor_pending: None,
@@ -179,6 +180,9 @@ pub(super) struct Connection {
     file_routes: FileRoutes,
     /// Incoming transfers (`sender:id`) that arrived over a P2P path, cancelled if that path drops.
     p2p_incoming: Vec<String>,
+    /// P2P transfers (`sender:id`) whose `end` arrived and whose verdict is still to be sent: it goes back over
+    /// the P2P path, because the relay holds no grant for them and would drop it (see [`Self::ack_over_p2p`]).
+    p2p_acks: VecDeque<String>,
     /// One direct path per session: the hosted viewer, or each viewed host.
     pub(super) links: Vec<Arc<P2p>>,
     /// One end-to-end channel per session whose partner lists `e2e`; same lifetime as `links`.
@@ -598,6 +602,8 @@ impl Connection {
         while let Some(item) = self.held.pop_front().or_else(|| self.outbox.try_recv().ok()) {
             self.busy = true;
             match item {
+                Outgoing::Message(ClientMessage::RelayFile { target_clean, payload })
+                    if payload.action == FileAction::Ack && self.ack_over_p2p(&target_clean, &payload) => {}
                 Outgoing::Message(msg) => {
                     let text = match &msg {
                         ClientMessage::RelayInput { target_clean, event } => {
@@ -905,6 +911,23 @@ impl Connection {
         self.file_routes.routed(target, id)
     }
 
+    /// Sends our verdict (ACK/NACK) on a transfer that came over `target`'s P2P path back over that path. The
+    /// relay only forwards an ACK against the grant a relayed `start` opened; a P2P transfer has none, so a
+    /// relayed ACK was dropped and the sender gave up after two minutes ("no confirmation from the receiver"),
+    /// holding its pull slot all that time. False when the transfer did not come over P2P or the path is down.
+    fn ack_over_p2p(&mut self, target: &str, payload: &FilePayload) -> bool {
+        let key = format!("{target}:{}", payload.id);
+        let came_p2p = self.p2p_incoming.contains(&key) || self.p2p_acks.contains(&key);
+        if !came_p2p {
+            return false;
+        }
+        // One verdict per transfer: an ACK ends it, a NACK (rejected start or chunk) too.
+        self.p2p_incoming.retain(|k| *k != key);
+        self.p2p_acks.retain(|k| *k != key);
+        let Ok(json) = serde_json::to_vec(payload) else { return false };
+        self.links.iter().find(|p| p.partner == target).is_some_and(|p| p.send_bulk(bulk::MSG_JSON, &json, None))
+    }
+
     /// Sends one file message over `target`'s P2P path; its in-flight units are released and its progress mark
     /// recorded once the partner acknowledged it. A path that just dropped loses the message: the transfer is
     /// cancelled with it (see `on_bulk`).
@@ -948,6 +971,7 @@ impl Connection {
                 let incoming: Vec<String> =
                     self.p2p_incoming.iter().filter(|k| k.starts_with(&prefix)).cloned().collect();
                 self.p2p_incoming.retain(|k| !k.starts_with(&prefix));
+                self.p2p_acks.retain(|k| !k.starts_with(&prefix));
                 if !incoming.is_empty() {
                     let ctx = Arc::clone(&self.ctx);
                     if let Some(status) = self.receiver.abort_keys(ctx.ui.as_ref(), &incoming) {
@@ -964,7 +988,14 @@ impl Connection {
                     let key = format!("{from}:{}", file.id);
                     match file.action {
                         FileAction::Start if !self.p2p_incoming.contains(&key) => self.p2p_incoming.push(key),
-                        FileAction::End => self.p2p_incoming.retain(|k| *k != key),
+                        FileAction::End => {
+                            self.p2p_incoming.retain(|k| *k != key);
+                            // Its verdict goes back over this path (see `ack_over_p2p`); bounded in case none comes.
+                            if self.p2p_acks.len() >= MAX_P2P_ACKS {
+                                self.p2p_acks.pop_front();
+                            }
+                            self.p2p_acks.push_back(key);
+                        }
                         _ => {}
                     }
                     self.on_file(Some(from.to_string()), file);

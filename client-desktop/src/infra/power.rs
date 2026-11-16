@@ -59,7 +59,8 @@ pub enum Mmcss {
     /// Capture, encode, decode and the P2P path: frames and input (MMCSS "Games": high category, ahead of
     /// ordinary threads under load; Windows keeps 20% of the CPU for everything else).
     Games,
-    /// Microphone, speaker and host sound loops ("Audio").
+    /// Microphone, speaker and host sound loops ("Audio"). Only the Windows audio loops join it.
+    #[cfg_attr(not(windows), allow(dead_code))]
     Audio,
 }
 
@@ -74,6 +75,8 @@ impl Drop for MmcssGuard {
 
 /// Registers the calling thread with MMCSS for `task` until the guard drops; without MMCSS (the service
 /// stopped, `OPENDESK_ECOQOS=0`, not Windows) the thread keeps its priority.
+// Off Windows the handle is a unit struct.
+#[allow(clippy::default_constructed_unit_structs)]
 pub fn mmcss(task: Mmcss) -> MmcssGuard {
     let name = match task {
         Mmcss::Games => "Games",
