@@ -5,7 +5,9 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
 
 ## [Unreleased]
 
-Draft for 1.4.0 (minor release: every protocol addition below is negotiated per peer, so 1.3.x peers keep working).
+## [1.4.0] - 2026-11-16
+
+Minor release: every protocol addition below is negotiated per peer, so 1.3.x peers keep working.
 
 ### Highlights
 - A redesigned interface: softer rounded surfaces, a cleaner home screen, and a Settings page with a sidebar, solid
@@ -24,6 +26,8 @@ Draft for 1.4.0 (minor release: every protocol addition below is negotiated per 
   and viewing performance moved from the "Server" dialog into Settings › Server. The window can shrink to
   640 × 480 outside viewer sessions (viewer sessions keep their 880 × 560 minimum for the toolbar).
 - Pointer lock is off by default.
+- A short launch video plays as a start-up splash on every launch from the shortcut or Start menu, also when
+  the service already runs the app in the tray; a click or key skips it. Clicking the tray icon does not play it.
 
 ### Added
 - Settings › Mouse › Pointer lock, and relative mouse for games that capture the mouse (`mouse-relative`).
@@ -317,6 +321,7 @@ First public release.
 - Windows binaries are not code-signed yet (SmartScreen warns on first run); Linux packages are unsigned `.deb`
   files. Verify downloads against `SHA256SUMS.txt`.
 
+[1.4.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.4.0
 [1.3.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.3.1
 [1.3.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.3.0
 [1.2.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.2.1
