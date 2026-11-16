@@ -15,6 +15,8 @@ pub use unix::*;
 #[derive(Clone, Copy, Debug)]
 pub enum TrayAction {
     ShowWindow,
+    /// The user launched the app (shortcut, Start menu) while a copy already runs: show it and play the splash.
+    Launched,
     DisconnectSession,
     ReconnectRelay,
     RestartApp,

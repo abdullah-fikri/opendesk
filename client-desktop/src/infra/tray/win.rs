@@ -25,6 +25,8 @@ const WM_NULL: u32 = 0x0000;
 const WM_USER: u32 = 0x0400;
 /// Window message the tray icon sends; a second app instance posts it to wake the first.
 pub const WM_TRAYICON: u32 = WM_USER + 101;
+/// `wParam` of a `WM_TRAYICON` posted by a second launch, so it is told apart from a click on the tray icon.
+pub const LAUNCH_WPARAM: usize = 0x4F44;
 
 const WM_LBUTTONUP: u32 = 0x0202;
 const WM_LBUTTONDBLCLK: u32 = 0x0203;
@@ -250,7 +252,8 @@ unsafe extern "system" fn tray_proc(hwnd: HWND, msg: u32, wparam: usize, lparam:
                     return 0;
                 }
                 WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
-                    dispatch_tray_action(TrayAction::ShowWindow);
+                    let action = if wparam == LAUNCH_WPARAM { TrayAction::Launched } else { TrayAction::ShowWindow };
+                    dispatch_tray_action(action);
                     return 0;
                 }
                 _ => {}

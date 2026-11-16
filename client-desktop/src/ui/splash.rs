@@ -12,8 +12,7 @@ use super::MainWindow;
 static PACK: &[u8] = include_bytes!("../../assets/splash.bin");
 
 thread_local! {
-    /// The splash plays once per process; the timer of one started from the tray is parked here.
-    static PLAYED: Cell<bool> = const { Cell::new(false) };
+    /// The timer of a splash started by a launch handed over to the running copy.
     static PARKED: RefCell<Option<Timer>> = const { RefCell::new(None) };
 }
 
@@ -46,7 +45,6 @@ fn decode(jpeg: &[u8]) -> Option<Image> {
 /// Plays the splash over `win`. Returns the timer, which must stay alive while the window runs. A damaged pack
 /// shows no splash.
 pub fn start(win: &MainWindow) -> Option<Timer> {
-    PLAYED.with(|p| p.set(true));
     let pack = parse(PACK)?;
     let first = decode(pack.frames[0])?;
     win.set_splash_frame(first);
@@ -75,10 +73,10 @@ pub fn start(win: &MainWindow) -> Option<Timer> {
     Some(timer)
 }
 
-/// An instance that started hidden in the tray (autostart, installer) plays the splash the first time the user
-/// opens its window, so a launch from the shortcut still shows it. Does nothing after that, nor during a session.
-pub fn play_once(win: &MainWindow) {
-    if PLAYED.with(|p| p.get()) || win.get_hosting() {
+/// A launch from the shortcut or Start menu while a copy already runs (the service's agent, autostart) is handed
+/// to that copy, which plays the splash on every such launch. Not while a session is hosted or it already plays.
+pub fn play_on_launch(win: &MainWindow) {
+    if win.get_show_splash() || win.get_hosting() {
         return;
     }
     let timer = start(win);

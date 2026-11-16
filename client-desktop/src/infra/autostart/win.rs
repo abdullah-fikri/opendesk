@@ -16,7 +16,7 @@ use std::time::Duration;
 use crate::infra::logger;
 use crate::infra::storage::app_dir;
 use crate::infra::system_service;
-use crate::infra::tray::WM_TRAYICON;
+use crate::infra::tray::{LAUNCH_WPARAM, WM_TRAYICON};
 
 type HANDLE = *mut c_void;
 type HWND = *mut c_void;
@@ -119,7 +119,7 @@ fn delegate_to_elevated_task(start_in_background: bool) -> bool {
         for _ in 0..50 {
             let hwnd = find_tray_window();
             if !hwnd.is_null() {
-                unsafe { PostMessageW(hwnd, WM_TRAYICON, 0, WM_LBUTTONUP) };
+                unsafe { PostMessageW(hwnd, WM_TRAYICON, LAUNCH_WPARAM, WM_LBUTTONUP) };
                 break;
             }
             thread::sleep(Duration::from_millis(200));
@@ -143,7 +143,7 @@ fn delegate_to_service(start_in_background: bool) -> bool {
         let hwnd = find_tray_window();
         if !hwnd.is_null() {
             if !start_in_background && !cfg!(feature = "headless") {
-                unsafe { PostMessageW(hwnd, WM_TRAYICON, 0, WM_LBUTTONUP) };
+                unsafe { PostMessageW(hwnd, WM_TRAYICON, LAUNCH_WPARAM, WM_LBUTTONUP) };
             }
             logger::info("app.service", "Launch handed over to the OpenDesk service.");
             return true;
@@ -242,7 +242,7 @@ pub fn ensure_single_instance(start_in_background: bool) {
                     // This launch just got the user's click, so it may hand the foreground to the running copy;
                     // without that Windows only flashes the taskbar button and the user has to click again.
                     AllowSetForegroundWindow(ASFW_ANY);
-                    PostMessageW(hwnd, WM_TRAYICON, 0, WM_LBUTTONUP);
+                    PostMessageW(hwnd, WM_TRAYICON, LAUNCH_WPARAM, WM_LBUTTONUP);
                 }
             }
             std::process::exit(0);

@@ -33,7 +33,7 @@ use crate::service::viewer::drop_point;
 
 pub use presenter::SlintUi;
 pub use splash::start as start_splash;
-use splash::play_once as play_splash_once;
+use splash::play_on_launch as play_launch_splash;
 
 slint::include_modules!();
 
@@ -86,7 +86,13 @@ pub fn install_tray(win: &MainWindow, ctx: &Ctx) -> SystemTray {
             bring_main_window_to_front(&title);
             let _ = weak.upgrade_in_event_loop(|w| {
                 let _ = w.show();
-                play_splash_once(&w);
+            });
+        }
+        TrayAction::Launched => {
+            bring_main_window_to_front(&title);
+            let _ = weak.upgrade_in_event_loop(|w| {
+                let _ = w.show();
+                play_launch_splash(&w);
             });
         }
         TrayAction::DisconnectSession => {
