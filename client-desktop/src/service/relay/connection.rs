@@ -49,6 +49,8 @@ const PANIC_RESTART_DELAY: Duration = Duration::from_secs(2);
 const FILE_BURST_IN_SESSION: usize = 8;
 /// ...and without one (full-speed background transfer).
 const FILE_BURST_IDLE: usize = 64;
+/// Most P2P transfers remembered as waiting for our verdict (a paste of many small files ends many at once).
+const MAX_P2P_ACKS: usize = 256;
 /// Local relay probed when the configured relay is remote (avoids tunnel hairpinning on the relay machine).
 const LOCAL_RELAY: &str = "127.0.0.1:8088";
 /// Pause between ticks while a session runs or traffic flowed recently.
@@ -95,6 +97,7 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
             bulk_in: bulk_rx,
             file_routes: FileRoutes::default(),
             p2p_incoming: Vec::new(),
+            p2p_acks: VecDeque::new(),
             links: Vec::new(),
             e2e: Vec::new(),
             monitor_pending: None,
@@ -179,6 +182,9 @@ pub(super) struct Connection {
     file_routes: FileRoutes,
     /// Incoming transfers (`sender:id`) that arrived over a P2P path, cancelled if that path drops.
     p2p_incoming: Vec<String>,
+    /// P2P transfers (`sender:id`) whose `end` arrived and whose verdict is still to be sent: it goes back over
+    /// the P2P path, because the relay holds no grant for them and would drop it (see [`Self::ack_over_p2p`]).
+    p2p_acks: VecDeque<String>,
     /// One direct path per session: the hosted viewer, or each viewed host.
     pub(super) links: Vec<Arc<P2p>>,
     /// One end-to-end channel per session whose partner lists `e2e`; same lifetime as `links`.
@@ -598,6 +604,8 @@ impl Connection {
         while let Some(item) = self.held.pop_front().or_else(|| self.outbox.try_recv().ok()) {
             self.busy = true;
             match item {
+                Outgoing::Message(ClientMessage::RelayFile { target_clean, payload })
+                    if payload.action == FileAction::Ack && self.ack_over_p2p(&target_clean, &payload) => {}
                 Outgoing::Message(msg) => {
                     let text = match &msg {
                         ClientMessage::RelayInput { target_clean, event } => {
@@ -905,6 +913,23 @@ impl Connection {
         self.file_routes.routed(target, id)
     }
 
+    /// Sends our verdict (ACK/NACK) on a transfer that came over `target`'s P2P path back over that path. The
+    /// relay only forwards an ACK against the grant a relayed `start` opened; a P2P transfer has none, so a
+    /// relayed ACK was dropped and the sender gave up after two minutes ("no confirmation from the receiver"),
+    /// holding its pull slot all that time. False when the transfer did not come over P2P or the path is down.
+    fn ack_over_p2p(&mut self, target: &str, payload: &FilePayload) -> bool {
+        let key = format!("{target}:{}", payload.id);
+        let came_p2p = self.p2p_incoming.contains(&key) || self.p2p_acks.contains(&key);
+        if !came_p2p {
+            return false;
+        }
+        // One verdict per transfer: an ACK ends it, a NACK (rejected start or chunk) too.
+        self.p2p_incoming.retain(|k| *k != key);
+        self.p2p_acks.retain(|k| *k != key);
+        let Ok(json) = serde_json::to_vec(payload) else { return false };
+        self.links.iter().find(|p| p.partner == target).is_some_and(|p| p.send_bulk(bulk::MSG_JSON, &json, None))
+    }
+
     /// Sends one file message over `target`'s P2P path; its in-flight units are released and its progress mark
     /// recorded once the partner acknowledged it. A path that just dropped loses the message: the transfer is
     /// cancelled with it (see `on_bulk`).
@@ -948,6 +973,7 @@ impl Connection {
                 let incoming: Vec<String> =
                     self.p2p_incoming.iter().filter(|k| k.starts_with(&prefix)).cloned().collect();
                 self.p2p_incoming.retain(|k| !k.starts_with(&prefix));
+                self.p2p_acks.retain(|k| !k.starts_with(&prefix));
                 if !incoming.is_empty() {
                     let ctx = Arc::clone(&self.ctx);
                     if let Some(status) = self.receiver.abort_keys(ctx.ui.as_ref(), &incoming) {
@@ -964,7 +990,14 @@ impl Connection {
                     let key = format!("{from}:{}", file.id);
                     match file.action {
                         FileAction::Start if !self.p2p_incoming.contains(&key) => self.p2p_incoming.push(key),
-                        FileAction::End => self.p2p_incoming.retain(|k| *k != key),
+                        FileAction::End => {
+                            self.p2p_incoming.retain(|k| *k != key);
+                            // Its verdict goes back over this path (see `ack_over_p2p`); bounded in case none comes.
+                            if self.p2p_acks.len() >= MAX_P2P_ACKS {
+                                self.p2p_acks.pop_front();
+                            }
+                            self.p2p_acks.push_back(key);
+                        }
                         _ => {}
                     }
                     self.on_file(Some(from.to_string()), file);
@@ -1331,6 +1364,128 @@ mod tests {
         assert_eq!(idle_sleep(Duration::ZERO, false), BUSY_SLEEP);
         assert_eq!(idle_sleep(Duration::from_millis(1999), false), BUSY_SLEEP);
         assert_eq!(idle_sleep(Duration::from_secs(3600), true), BUSY_SLEEP, "a session never backs off");
+    }
+
+    /// One file stream message from a P2P path: sender, kind, payload.
+    type BulkIn = (String, u8, Vec<u8>);
+
+    /// A connection with no relay socket, carrying `links`; its outbox is never read.
+    fn test_conn(ctx: Ctx, links: Vec<Arc<P2p>>, bulk: (Sender<BulkIn>, Receiver<BulkIn>)) -> Connection {
+        let (input_tx, input_rx) = mpsc::channel();
+        let (_keep, outbox) = mpsc::channel();
+        Connection {
+            ctx,
+            outbox,
+            files: VecDeque::new(),
+            pacer: FilePacer::new(),
+            receiver: FileReceiver::new(),
+            p2p_input_tx: input_tx,
+            p2p_input: input_rx,
+            bulk_in_tx: bulk.0,
+            bulk_in: bulk.1,
+            file_routes: FileRoutes::default(),
+            p2p_incoming: Vec::new(),
+            p2p_acks: VecDeque::new(),
+            links,
+            e2e: Vec::new(),
+            monitor_pending: None,
+            monitor_in_flight: false,
+            held: VecDeque::new(),
+            busy: false,
+            last_rx: Instant::now(),
+            signals: SignalPacer::default(),
+            resume: Resume::default(),
+            partner_waits: Vec::new(),
+            url: String::new(),
+            quiet: false,
+        }
+    }
+
+    /// The next file verdict the receiving side queued for the relay socket.
+    fn next_ack(outbox: &Receiver<Outgoing>) -> (String, FilePayload) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Ok(Outgoing::Message(ClientMessage::RelayFile { target_clean, payload })) =
+                outbox.recv_timeout(Duration::from_millis(100))
+                && payload.action == FileAction::Ack
+            {
+                return (target_clean, payload);
+            }
+        }
+        panic!("no ack queued");
+    }
+
+    /// The verdict on a transfer that came over the P2P path goes back over that path and reaches the waiting
+    /// sender: the relay has no grant for such a transfer and dropped a relayed ack, so every P2P transfer
+    /// failed after two minutes with "no confirmation from the receiver". A transfer the path did not carry
+    /// keeps the relay.
+    #[test]
+    fn verdicts_on_p2p_transfers_go_back_over_the_p2p_path() {
+        const VIEWER: &str = "111111111";
+        const HOST: &str = "222222222";
+        // The viewer sends; what reaches it over the path is handed to its connection like the live loop does.
+        let (viewer_tx, viewer_rx) = mpsc::channel::<BulkIn>();
+        let sink_tx = parking_lot::Mutex::new(viewer_tx.clone());
+        let viewer_bulk: p2p::tests::Bulk = Some(Arc::new(move |kind, payload| {
+            let _ = sink_tx.lock().send((HOST.to_string(), kind, payload));
+        }));
+        let (viewer_link, host_link, stop) = p2p::tests::relayed_pair(false, 0, Arc::new(|_| {}), viewer_bulk, None);
+        let (host_ctx, host_out) = crate::service::test_support::context_with_outbox();
+        let mut host = test_conn(host_ctx, vec![Arc::clone(&host_link)], mpsc::channel());
+        let mut viewer =
+            test_conn(crate::service::test_support::context(), vec![Arc::clone(&viewer_link)], (viewer_tx, viewer_rx));
+
+        let mut verdict_reaches_sender = |host: &mut Connection, id: &str, sent: FilePayload| -> bool {
+            let (ack_tx, ack_rx) = mpsc::channel();
+            file_transfer::expect_ack(id, ack_tx);
+            host.on_bulk(VIEWER, bulk::MSG_JSON, &serde_json::to_vec(&sent).unwrap());
+            let (target, ack) = next_ack(&host_out);
+            assert_eq!((target.as_str(), ack.id.as_str(), ack.ok), (VIEWER, id, Some(false)));
+            assert!(host.ack_over_p2p(&target, &ack), "verdict on {id} did not take the P2P path");
+            let (from, kind, payload) = viewer.bulk_in.recv_timeout(Duration::from_secs(5)).expect("nothing arrived");
+            viewer.on_bulk(&from, kind, &payload);
+            ack_rx.recv_timeout(Duration::from_secs(1)) == Ok(false)
+        };
+        // A rejected start (no name) is answered at once; an `end` the receiver knows nothing of is NACKed too.
+        assert!(verdict_reaches_sender(&mut host, "ft_p2pack_start", FilePayload::start("ft_p2pack_start", "", 5)));
+        assert!(verdict_reaches_sender(
+            &mut host,
+            "ft_p2pack_end",
+            FilePayload::end("ft_p2pack_end", "a.txt", "00".into(), false)
+        ));
+        assert!(host.p2p_incoming.is_empty() && host.p2p_acks.is_empty(), "one verdict per transfer");
+
+        // Not carried by the path (a relayed transfer), or already answered: the relay, as before.
+        let relayed = FilePayload::ack("ft_relayed", true);
+        assert!(!host.ack_over_p2p(VIEWER, &relayed));
+        assert!(!host.ack_over_p2p(VIEWER, &FilePayload::ack("ft_p2pack_end", false)));
+
+        // An `end` whose path then drops: its verdict can no longer go that way.
+        host.on_bulk(
+            VIEWER,
+            bulk::MSG_JSON,
+            &serde_json::to_vec(&FilePayload::end("ft_cut", "b", "00".into(), false)).unwrap(),
+        );
+        let (target, ack) = next_ack(&host_out);
+        host.on_bulk(VIEWER, p2p::BULK_LOST, &[]);
+        assert!(!host.ack_over_p2p(&target, &ack), "forgotten with its path");
+
+        stop.store(true, Ordering::SeqCst);
+        viewer_link.close();
+        host_link.close();
+    }
+
+    #[test]
+    fn verdicts_remembered_for_the_p2p_path_are_bounded() {
+        let mut host = test_conn(crate::service::test_support::context(), Vec::new(), mpsc::channel());
+        for n in 0..MAX_P2P_ACKS + 10 {
+            let end = FilePayload::end(&format!("ft_b{n}"), "x", "00".into(), false);
+            host.on_bulk("111111111", bulk::MSG_JSON, &serde_json::to_vec(&end).unwrap());
+        }
+        assert_eq!(host.p2p_acks.len(), MAX_P2P_ACKS);
+        assert_eq!(host.p2p_acks.front().map(String::as_str), Some("111111111:ft_b10"), "oldest dropped first");
+        // No link to that partner: the caller falls back to the relay.
+        assert!(!host.ack_over_p2p("111111111", &FilePayload::ack("ft_b20", true)));
     }
 
     #[test]

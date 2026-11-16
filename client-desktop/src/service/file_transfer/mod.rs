@@ -362,7 +362,7 @@ impl Drop for Resumes {
     }
 }
 
-fn expect_ack(id: &str, tx: Sender<bool>) {
+pub(crate) fn expect_ack(id: &str, tx: Sender<bool>) {
     PENDING_ACKS.lock().push((id.to_string(), tx));
 }
 

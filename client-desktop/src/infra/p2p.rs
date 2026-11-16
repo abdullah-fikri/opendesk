@@ -1450,7 +1450,7 @@ impl P2p {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::thread;
 
@@ -1787,11 +1787,11 @@ mod tests {
         host.close();
     }
 
-    type Bulk = Option<BulkSink>;
+    pub(crate) type Bulk = Option<BulkSink>;
 
     /// A viewer and a host whose path runs through a fake UDP relay that loses every `drop_every`-th full-size
     /// datagram; the returned flag stops the relay.
-    fn relayed_pair(
+    pub(crate) fn relayed_pair(
         nack: bool,
         drop_every: u32,
         video: Arc<dyn Fn(Vec<u8>) + Send + Sync>,

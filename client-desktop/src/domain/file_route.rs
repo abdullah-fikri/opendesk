@@ -12,7 +12,8 @@ pub enum Step {
     End {
         group_end: bool,
     },
-    /// Offers, pulls, acknowledgements: always the relay.
+    /// Offers, pulls, acknowledgements: the relay (the relay connection sends the ack of a P2P transfer back
+    /// over the P2P path itself).
     Other,
 }
 
