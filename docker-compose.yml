@@ -48,5 +48,4 @@ services:
         limits:
           memory: 2048M
         reservations:
-          cpus: "0.5"
           memory: 512M
