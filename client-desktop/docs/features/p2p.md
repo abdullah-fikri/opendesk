@@ -1,6 +1,6 @@
 # Direct P2P path
 
-Code: `src/infra/p2p.rs`; started by `src/service/relay/dispatcher.rs` when both peers advertise `p2p.v1` and the
+Code: `src/infra/p2p/` (`mod.rs` path lifecycle and ticks, `signal.rs` setup and handshake, `candidates.rs` STUN and candidates, `wire.rs` sealing and reassembly, `send.rs`, `receive.rs`, `bulk_stream.rs` files); started by `src/service/relay/dispatcher.rs` when both peers advertise `p2p.v1` and the
 relay advertises `p2p-signal`.
 
 The relay stays the control plane: it authenticates devices, approves the session and carries the handshake.

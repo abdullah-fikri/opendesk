@@ -1,6 +1,6 @@
 # Viewer sessions
 
-Code: `src/service/viewer/` (`registry.rs`, `controller.rs`, `decoder.rs`); UI in `ui/views/workspace/`.
+Code: `src/service/viewer/` (`registry.rs`, `controller.rs`, `decoder/` with `inbox.rs` and `worker.rs`); UI in `ui/views/workspace/`.
 Protocol: [multi-session](../../../docs/features/multi-session.md).
 
 ## Opening and closing
