@@ -49,6 +49,10 @@ class DeviceKeys(context: Context) {
     fun pinned(hostClean: String): ByteArray? =
         prefs.getString(PIN_PREFIX + hostClean, null)?.let { runCatching { Base64.decode(it) }.getOrNull() }
 
+    /** Clean desk IDs of every host with a pinned key. */
+    fun pinnedHosts(): List<String> =
+        prefs.all.keys.filter { it.startsWith(PIN_PREFIX) }.map { it.removePrefix(PIN_PREFIX) }.sorted()
+
     /** Forgets the pin of `hostClean`, so the next session pins the key it presents. */
     fun forget(hostClean: String) {
         prefs.edit().remove(PIN_PREFIX + hostClean).apply()

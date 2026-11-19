@@ -129,4 +129,15 @@ class DomainTest {
         // An emoji is one Backspace on the host, not two.
         assertEquals(1 to "", WindowsKeys.diff("a😀", "a"))
     }
+
+    @Test
+    fun deviceSearchMatchesNamesAndIdDigits() {
+        val item = DeviceItem("123456789", "Office PC", "Windows", null)
+        assertTrue(item.matches(""))
+        assertTrue(item.matches("office"))
+        assertTrue(item.matches("456 78"))
+        assertFalse(item.matches("999"))
+        assertFalse(item.matches("pc 9"))
+        assertEquals("123 456 789", item.formattedId)
+    }
 }

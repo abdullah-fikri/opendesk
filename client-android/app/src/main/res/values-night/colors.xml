@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The redesign's palette, dark theme (the phone is in dark mode). See values/colors.xml. -->
+<resources>
+    <color name="bg">#242424</color>
+    <color name="side">#2B2B2B</color>
+    <color name="surf">#333333</color>
+    <color name="surf2">#303030</color>
+    <color name="elev">#3A3A3A</color>
+    <color name="text">#F5F5F5</color>
+    <color name="text2">#B0B0B0</color>
+    <color name="text3">#8F8F8F</color>
+    <color name="line">#17FFFFFF</color>
+    <color name="field">#14FFFFFF</color>
+    <color name="hover2">#424242</color>
+    <color name="segon">#4A4A4A</color>
+    <color name="nav_bg">#2B2B2B</color>
+    <color name="nav_pill">#4A4A4A</color>
+    <color name="accent">#EC4A57</color>
+    <color name="accent_fill">#D63342</color>
+    <color name="accent_fill_disabled">#7A2A32</color>
+    <color name="accent_soft">#26F04452</color>
+    <color name="accent_soft_strong">#33F04452</color>
+    <color name="accent_tx">#FF7A85</color>
+    <color name="accent_line">#80F04452</color>
+    <color name="green">#4FB587</color>
+    <color name="green_soft">#244FB587</color>
+    <color name="amber">#D9A850</color>
+    <color name="blue">#5B9BF0</color>
+    <color name="purple">#9D8BE0</color>
+    <color name="cyan">#5CB6C6</color>
+    <color name="offline">#7A7A7A</color>
+    <color name="tog_off">#33FFFFFF</color>
+    <color name="menu_scrim">#59000000</color>
+    <color name="menu_bg">#F53A3A3A</color>
+    <color name="menu_gap">#33000000</color>
+</resources>

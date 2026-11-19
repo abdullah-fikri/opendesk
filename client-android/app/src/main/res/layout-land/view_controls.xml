@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Controls side panel (landscape): Trackpad / Touch, then the same tools in a narrower grid on the right. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="300dp"
+    android:layout_height="wrap_content"
+    android:layout_gravity="end|center_vertical"
+    android:layout_marginEnd="12dp"
+    android:background="@drawable/sheet_bg"
+    android:clickable="true"
+    android:elevation="10dp"
+    android:focusable="false"
+    android:orientation="vertical"
+    android:padding="8dp">
+
+    <LinearLayout
+        android:id="@+id/controls_handle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="2dp">
+
+        <include
+            layout="@layout/view_mode_segment"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:orientation="horizontal">
+
+        <TextView android:id="@+id/btn_left_click" style="@style/Od.Tool" android:layout_width="0dp" android:layout_margin="4dp" android:layout_weight="1" android:drawableTop="@drawable/ic_cursor" android:text="@string/left" />
+        <TextView android:id="@+id/btn_double_click" style="@style/Od.Tool" android:layout_width="0dp" android:layout_margin="4dp" android:layout_weight="1" android:drawableTop="@drawable/ic_cursor" android:text="@string/double_click" />
+        <TextView android:id="@+id/btn_right_click" style="@style/Od.Tool" android:layout_width="0dp" android:layout_margin="4dp" android:layout_weight="1" android:drawableTop="@drawable/ic_cursor" android:text="@string/right" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <TextView android:id="@+id/btn_hold_drag" style="@style/Od.Tool" android:layout_width="0dp" android:layout_margin="4dp" android:layout_weight="1" android:drawableTop="@drawable/ic_lock" android:text="@string/hold" />
+        <TextView android:id="@+id/btn_key_esc" style="@style/Od.Tool.Key" android:layout_width="0dp" android:layout_margin="4dp" android:layout_weight="1" android:text="@string/key_esc" />
+        <TextView android:id="@+id/btn_key_tab" style="@style/Od.Tool.Key" android:layout_width="0dp" android:layout_margin="4dp" android:layout_weight="1" android:text="@string/key_tab" />
+        <TextView android:id="@+id/btn_key_win" style="@style/Od.Tool" android:layout_width="0dp" android:layout_margin="4dp" android:layout_weight="1" android:drawableTop="@drawable/ic_win" android:text="@string/key_win" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <TextView android:id="@+id/btn_keyboard" style="@style/Od.Tool" android:layout_width="0dp" android:layout_margin="4dp" android:layout_weight="1" android:drawableTop="@drawable/ic_kbd" android:text="@string/keys" />
+        <TextView android:id="@+id/btn_scroll" style="@style/Od.Tool" android:layout_width="0dp" android:layout_margin="4dp" android:layout_weight="1" android:drawableTop="@drawable/ic_scroll" android:text="@string/scroll" />
+        <TextView android:id="@+id/btn_fit" style="@style/Od.Tool" android:layout_width="0dp" android:layout_margin="4dp" android:layout_weight="1" android:drawableTop="@drawable/ic_fit" android:text="@string/fit_screen" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <TextView android:id="@+id/btn_toggle_mic" style="@style/Od.Tool" android:layout_width="0dp" android:layout_margin="4dp" android:layout_weight="1" android:drawableTop="@drawable/ic_mic" android:text="@string/mic_off" />
+        <TextView android:id="@+id/btn_switch_monitor" style="@style/Od.Tool" android:layout_width="0dp" android:layout_margin="4dp" android:layout_weight="1" android:drawableTop="@drawable/ic_screen" android:text="@string/screen" />
+    </LinearLayout>
+</LinearLayout>

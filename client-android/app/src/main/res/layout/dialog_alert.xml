@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Centred alert: warning mark, title, message, a primary and a secondary button. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/card_elev"
+    android:gravity="center_horizontal"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <FrameLayout
+        android:id="@+id/alert_mark"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:background="@drawable/chip_neutral"
+        android:backgroundTint="@color/accent_soft_strong">
+
+        <ImageView
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:layout_gravity="center"
+            android:importantForAccessibility="no"
+            android:src="@drawable/ic_warn"
+            app:tint="@color/accent_fill" />
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/alert_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:fontFamily="@font/inter_bold"
+        android:gravity="center"
+        android:textColor="@color/text"
+        android:textSize="18sp" />
+
+    <TextView
+        android:id="@+id/alert_body"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
+        android:lineSpacingExtra="3dp"
+        android:textColor="@color/text2"
+        android:textSize="14sp" />
+
+    <EditText
+        android:id="@+id/alert_input"
+        style="@style/Od.Field"
+        android:layout_width="match_parent"
+        android:layout_marginTop="16dp"
+        android:imeOptions="actionDone"
+        android:inputType="textCapWords"
+        android:maxLength="64"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/alert_primary"
+        style="@style/Od.Button.Accent"
+        android:layout_width="match_parent"
+        android:layout_height="46dp"
+        android:layout_marginTop="20dp" />
+
+    <TextView
+        android:id="@+id/alert_secondary"
+        style="@style/Od.Button"
+        android:layout_width="match_parent"
+        android:layout_height="46dp"
+        android:layout_marginTop="8dp" />
+</LinearLayout>

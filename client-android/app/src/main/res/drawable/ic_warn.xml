@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated from the redesign's icon family (solid, single colour); tinted where used. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF000000" android:fillType="evenOdd"
+        android:pathData="M10.3,3.9L2.5,17.6c-0.9,1.6 0.2,3.4 2,3.4h15c1.8,0 2.9,-1.8 2,-3.4L13.7,3.9c-0.9,-1.5 -2.5,-1.5 -3.4,0zM10.80,8.20L10.80,15.00L13.20,15.00L13.20,8.20zM10.75,17.4a1.25,1.25 0 1 0 2.5,0a1.25,1.25 0 1 0 -2.5,0z" />
+</vector>

@@ -56,8 +56,8 @@ The same protocol as the desktop ([client-desktop/docs/features/e2e.md](../../cl
 The primitives come from BouncyCastle; the handshake is `crypto/NoiseXX.kt`.
 
 - **Device key.** An X25519 key created on first use, wrapped with an AES-GCM key held by the Android Keystore,
-  stored in app-private preferences that are excluded from backups. Its fingerprint is shown in the relay
-  settings dialog.
+  stored in app-private preferences that are excluded from backups. Its fingerprint is shown on the
+  Security page (Settings).
 - **Pinning.** The first key a host presents is pinned. A changed key, or a pinned host that no longer offers
   `e2e` (or a relay that stops forwarding `p2p-signal`), closes the session with a dialog; **Trust the new key**
   forgets the pin, like `opendesk trust <id>` on a desktop.

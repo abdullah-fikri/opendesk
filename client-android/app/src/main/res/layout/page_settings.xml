@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Settings: the relay and security, this phone (ID, microphone, administrator mode), and about. -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingHorizontal="@dimen/page_pad"
+        android:paddingBottom="24dp">
+
+        <TextView
+            style="@style/Od.LargeTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="44dp"
+            android:paddingStart="4dp"
+            android:text="@string/tab_settings" />
+
+        <TextView
+            style="@style/Od.Section"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="@string/section_connection" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/card"
+            android:elevation="1dp"
+            android:orientation="vertical">
+
+            <include
+                android:id="@+id/set_relay"
+                layout="@layout/row_setting" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginStart="56dp"
+                android:background="@color/line" />
+
+            <include
+                android:id="@+id/set_security"
+                layout="@layout/row_setting" />
+        </LinearLayout>
+
+        <TextView
+            style="@style/Od.Section"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/section_this_phone" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/card"
+            android:elevation="1dp"
+            android:orientation="vertical">
+
+            <include
+                android:id="@+id/set_device_id"
+                layout="@layout/row_setting" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginStart="56dp"
+                android:background="@color/line" />
+
+            <include
+                android:id="@+id/set_mic"
+                layout="@layout/row_setting" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginStart="56dp"
+                android:background="@color/line" />
+
+            <include
+                android:id="@+id/set_admin"
+                layout="@layout/row_setting" />
+        </LinearLayout>
+
+        <TextView
+            style="@style/Od.Section"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/section_appearance" />
+
+        <include
+            android:id="@+id/set_appearance"
+            layout="@layout/view_appearance" />
+
+        <TextView
+            style="@style/Od.Section"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/section_about" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/card"
+            android:elevation="1dp"
+            android:orientation="vertical">
+
+            <include
+                android:id="@+id/set_viewer_only"
+                layout="@layout/row_setting" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/settings_version"
+            style="@style/Od.Caption"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:gravity="center" />
+    </LinearLayout>
+</ScrollView>

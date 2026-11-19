@@ -5,11 +5,15 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import com.google.gson.Gson
 import com.google.gson.JsonParser
 import com.opendesk.app.R
 import com.opendesk.app.data.dto.ApprovalResponse
 import com.opendesk.app.data.dto.ConnectRequest
+import com.opendesk.app.data.dto.GetHosts
+import com.opendesk.app.data.dto.HostInfo
+import com.opendesk.app.data.dto.HostRename
 import com.opendesk.app.data.dto.InputEvent
 import com.opendesk.app.data.dto.MessageType
 import com.opendesk.app.data.dto.P2pSignal
@@ -63,6 +67,9 @@ object RelayConnection : GatewayClient.Listener {
          * encryption. The user may accept that ([trustHost]) and connect again.
          */
         fun onSecurityAlert(hostClean: String, message: String)
+
+        /** Administrator mode: the relay sent its device registry ([hosts]). */
+        fun onHosts() {}
     }
 
     /** What the viewer screen needs. Main thread. */
@@ -98,6 +105,17 @@ object RelayConnection : GatewayClient.Listener {
 
     /** Whether the relay has registered this phone. */
     var online: Boolean = false
+        private set
+
+    /**
+     * Administrator mode: every device the relay knows, from its latest `host-list`; null until one arrived on this
+     * connection (or outside administrator mode, or when the relay does not treat this phone as an administrator).
+     */
+    var hosts: List<HostInfo>? = null
+        private set
+
+    /** When the next automatic reconnect runs (`SystemClock.uptimeMillis`), or 0 when none is scheduled. */
+    var nextRetryAtMs: Long = 0L
         private set
 
     /** Whether the current session is end-to-end encrypted in both directions. */
@@ -205,6 +223,20 @@ object RelayConnection : GatewayClient.Listener {
         keys?.forget(DeskId.clean(hostClean))
     }
 
+    /**
+     * Administrator mode: renames `hostClean` in the relay's registry (at most 64 characters; empty clears it). The
+     * relay sends every administrator the new `host-list`. Returns false while the relay is unreachable.
+     */
+    fun renameHost(hostClean: String, alias: String): Boolean {
+        val c = client
+        if (!online || c == null) return false
+        c.send(HostRename(DeskId.clean(hostClean), alias.trim().take(MAX_ALIAS)))
+        return true
+    }
+
+    /** Clean desk IDs of the hosts whose key this phone pinned. */
+    fun pinnedHosts(): List<String> = keys?.pinnedHosts().orEmpty()
+
     /** Ends the viewer session. */
     fun endViewing() {
         if (viewerPartner.isNotEmpty()) client?.send(SessionDisconnect(viewerPartner))
@@ -252,7 +284,14 @@ object RelayConnection : GatewayClient.Listener {
                 onControl(gson.fromJson(event, RemoteEvent::class.java))
             }
             MessageType.P2P_SIGNAL -> onSignal(message)
-            MessageType.REGISTERED_ACK -> relayCaps = message.caps.orEmpty()
+            MessageType.REGISTERED_ACK -> {
+                relayCaps = message.caps.orEmpty()
+                if (settings?.adminMode == true) client?.send(GetHosts())
+            }
+            MessageType.HOST_LIST -> {
+                hosts = message.hosts.orEmpty().filter { !it.cleanId.isNullOrEmpty() }
+                listener?.onHosts()
+            }
             MessageType.SESSION_CLOSED -> endSession(message.message, notify = true, fromRelay = true)
             MessageType.ERROR -> listener?.onError(message.message)
             // The relay enrolled this phone: zero configuration besides the relay address.
@@ -383,6 +422,8 @@ object RelayConnection : GatewayClient.Listener {
         online = false
         connecting = false
         val url = settings.gatewayUrl
+        hosts = null
+        nextRetryAtMs = 0L
         if (url.isEmpty()) return false
         connecting = true
         val registration = RegisterRequest(
@@ -390,6 +431,7 @@ object RelayConnection : GatewayClient.Listener {
             deviceToken = settings.tokenForGateway,
             deviceName = "Android (${settings.deskId})",
             caps = Capabilities.advertised,
+            isAdmin = settings.adminMode,
         )
         client = GatewayClient(registration, this).also { it.connect(url) }
         return true
@@ -399,6 +441,7 @@ object RelayConnection : GatewayClient.Listener {
         if (settings == null) return
         mainHandler.removeCallbacks(retry)
         mainHandler.postDelayed(retry, retryDelayMs)
+        nextRetryAtMs = SystemClock.uptimeMillis() + retryDelayMs
         retryDelayMs = (retryDelayMs * 2).coerceAtMost(RETRY_MAX_MS)
     }
 
@@ -423,6 +466,7 @@ object RelayConnection : GatewayClient.Listener {
     private const val VOICE_MARKER: Byte = 0x02
     private const val VIDEO_KEYFRAME = "video-keyframe"
     private const val E2E_TIMEOUT_MS = 10_000L
+    private const val MAX_ALIAS = 64
     private const val RETRY_MIN_MS = 1_000L
     private const val RETRY_MAX_MS = 30_000L
 }

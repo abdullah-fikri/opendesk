@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- "Relay connected" pill: green while registered, grey while connecting, offline or not configured. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/relay_chip"
+    android:layout_width="wrap_content"
+    android:layout_height="26dp"
+    android:background="@drawable/chip_green"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingHorizontal="10dp">
+
+    <View
+        android:id="@+id/relay_chip_dot"
+        android:layout_width="6dp"
+        android:layout_height="6dp"
+        android:background="@drawable/dot"
+        android:backgroundTint="@color/green" />
+
+    <TextView
+        android:id="@+id/relay_chip_text"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="6dp"
+        android:fontFamily="@font/inter_semibold"
+        android:textColor="@color/green"
+        android:textSize="12sp" />
+</LinearLayout>

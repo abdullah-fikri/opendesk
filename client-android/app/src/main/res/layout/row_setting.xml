@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A settings row: coloured icon tile, title and subtitle, and one optional trailing control. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/row_bg"
+    android:gravity="center_vertical"
+    android:minHeight="56dp"
+    android:orientation="horizontal"
+    android:paddingHorizontal="14dp"
+    android:paddingVertical="10dp">
+
+    <FrameLayout
+        android:id="@+id/set_tile"
+        android:layout_width="30dp"
+        android:layout_height="30dp"
+        android:background="@drawable/tile_blue">
+
+        <ImageView
+            android:id="@+id/set_icon"
+            android:layout_width="18dp"
+            android:layout_height="18dp"
+            android:layout_gravity="center"
+            android:importantForAccessibility="no"
+            app:tint="@android:color/white" />
+    </FrameLayout>
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/set_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="@font/inter_medium"
+            android:textColor="@color/text"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/set_sub"
+            style="@style/Od.RowSub"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp" />
+    </LinearLayout>
+
+    <ImageView
+        android:id="@+id/set_check"
+        android:layout_width="16dp"
+        android:layout_height="16dp"
+        android:layout_marginStart="8dp"
+        android:importantForAccessibility="no"
+        android:src="@drawable/ic_check"
+        app:tint="@color/green"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/set_trailing_text"
+        style="@style/Od.Caption"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/set_button"
+        style="@style/Od.Button.Small"
+        android:layout_width="wrap_content"
+        android:layout_marginStart="8dp"
+        android:visibility="gone" />
+
+    <androidx.appcompat.widget.SwitchCompat
+        android:id="@+id/set_switch"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:thumb="@drawable/switch_thumb"
+        android:visibility="gone"
+        app:track="@drawable/switch_track" />
+
+    <ImageView
+        android:id="@+id/set_chev"
+        android:layout_width="16dp"
+        android:layout_height="16dp"
+        android:layout_marginStart="8dp"
+        android:importantForAccessibility="no"
+        android:src="@drawable/ic_chev"
+        app:tint="@color/text3"
+        android:visibility="gone" />
+</LinearLayout>

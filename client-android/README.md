@@ -121,12 +121,18 @@ secrets ([docs/ci-cd.md](../docs/ci-cd.md)); `ANDROID_KEYSTORE_BASE64` holds the
 
 | Package | Layer | Contents |
 | --- | --- | --- |
-| `ui.main`, `ui.viewer` | Presentation | `MainActivity`, `RemoteViewerActivity`, `RemoteKeyboardView` |
-| `session` | Use cases | `RelayConnection` (message routing, reconnection), `FileReceiver` |
+| `ui.main` | Presentation: shell | `MainActivity` (navigation, insets, connect state machine) and `MainHost`, the contract its pages use |
+| `ui.devices`, `ui.sessions`, `ui.settings` | Presentation: pages | One package per tab: the Devices list, connect sheet, long-press menu and `DeviceDirectory` (which list to show); Sessions; Settings with Relay and Security |
+| `ui.viewer` | Presentation: remote screen | `RemoteViewerActivity`, `RemoteKeyboardView`, `FrameCompositor` |
+| `ui.common` | Shared UI | `Ui` (view helpers), `Alerts` (dialogs) |
+| `session` | Use cases | `RelayConnection` (message routing, reconnection), `E2eChannel`, `FileReceiver` |
 | `data.dto` | Wire DTOs | Relay messages |
-| `data.network`, `data.settings` | Adapters | `GatewayClient` (WebSocket), `SettingsRepository` (preferences) |
-| `platform` | Android services | Voice |
-| `domain` | Domain | Desk IDs, relay URL rules, capabilities, viewport math, key mapping |
+| `data.network`, `data.settings`, `data.history`, `data.devices`, `data.security` | Repositories | `GatewayClient` (WebSocket), `SettingsRepository` (preferences), `SessionHistory` (sessions this phone opened), `LocalDeviceStore` (names and deletions kept on this phone), `DeviceKeys` |
+| `crypto`, `platform` | Infrastructure | Noise handshake; voice |
+| `domain` | Models and rules (plain Kotlin, unit-tested) | `DeviceItem` and search, desk IDs, relay URL rules, capabilities, viewport math, key mapping |
+
+Dependencies point down the table: pages talk to the activity only through `MainHost`, and nothing below `ui`
+imports Android views.
 
 ## Documentation
 

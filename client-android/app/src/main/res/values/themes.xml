@@ -1,14 +1,180 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
+    <!--
+      DayNight: light by default, dark (values-night) when the phone is in dark mode. Every colour comes from
+      colors.xml, so the whole app, its bars and dialogs follow the device.
+    -->
     <style name="Theme.OpenDesk" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/accent_red</item>
-        <item name="colorPrimaryVariant">@color/accent_red_dark</item>
-        <item name="colorOnPrimary">@color/text_main</item>
-        <item name="android:statusBarColor">@color/bg_surface</item>
-        <item name="android:windowBackground">@color/bg_main</item>
+        <item name="colorPrimary">@color/accent_fill</item>
+        <item name="colorPrimaryVariant">@color/accent_fill</item>
+        <item name="colorOnPrimary">@color/on_accent</item>
+        <item name="colorSecondary">@color/accent_fill</item>
+        <item name="colorAccent">@color/accent</item>
+        <item name="colorControlActivated">@color/accent_fill</item>
+        <item name="android:colorBackground">@color/bg</item>
+        <item name="colorSurface">@color/elev</item>
+        <item name="colorOnSurface">@color/text</item>
+        <item name="android:textColorPrimary">@color/text</item>
+        <item name="android:textColorSecondary">@color/text3</item>
+        <item name="android:textColorHint">@color/text3</item>
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/nav_bg</item>
+        <item name="android:windowLightStatusBar">@bool/light_bars</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="27">@bool/light_bars</item>
+        <item name="android:fontFamily">@font/inter</item>
+        <item name="android:textCursorDrawable">@drawable/cursor_accent</item>
     </style>
 
     <style name="Theme.OpenDesk.Fullscreen" parent="Theme.OpenDesk">
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowBackground">@color/viewer_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+    <!-- Rounded dialogs on the elevated surface. -->
+    <style name="Theme.OpenDesk.Dialog" parent="Theme.OpenDesk">
+        <item name="android:windowIsFloating">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="windowNoTitle">true</item>
+        <item name="android:windowMinWidthMajor">88%</item>
+        <item name="android:windowMinWidthMinor">88%</item>
+    </style>
+
+    <!-- Long-press menu: a full-screen transparent window that draws its own scrim. -->
+    <style name="Theme.OpenDesk.Menu" parent="Theme.OpenDesk">
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="windowNoTitle">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+    <!-- Text styles from the redesign. -->
+    <style name="Od" />
+    <style name="Od.LargeTitle">
+        <item name="android:textSize">32sp</item>
+        <item name="android:fontFamily">@font/inter_bold</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:letterSpacing">-0.02</item>
+    </style>
+    <style name="Od.Section">
+        <item name="android:textSize">12sp</item>
+        <item name="android:fontFamily">@font/inter_semibold</item>
+        <item name="android:textColor">@color/text3</item>
+        <item name="android:paddingStart">6dp</item>
+        <item name="android:paddingEnd">6dp</item>
+        <item name="android:layout_marginTop">20dp</item>
+        <item name="android:layout_marginBottom">8dp</item>
+    </style>
+    <style name="Od.RowTitle">
+        <item name="android:textSize">15sp</item>
+        <item name="android:fontFamily">@font/inter_semibold</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:ellipsize">end</item>
+    </style>
+    <style name="Od.RowTitle.Regular">
+        <item name="android:fontFamily">@font/inter_medium</item>
+    </style>
+    <style name="Od.RowSub">
+        <item name="android:textSize">12sp</item>
+        <item name="android:fontFamily">@font/inter</item>
+        <item name="android:textColor">@color/text3</item>
+    </style>
+    <style name="Od.Mono">
+        <item name="android:textSize">12sp</item>
+        <item name="android:fontFamily">@font/jetbrains_mono</item>
+        <item name="android:textColor">@color/text3</item>
+        <item name="android:letterSpacing">0.04</item>
+    </style>
+    <style name="Od.Caption">
+        <item name="android:textSize">12sp</item>
+        <item name="android:textColor">@color/text3</item>
+    </style>
+
+    <!-- Buttons: 40 dp (accent, tint, neutral) and 30 dp small. -->
+    <style name="Od.Button">
+        <item name="android:layout_height">40dp</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:paddingStart">16dp</item>
+        <item name="android:paddingEnd">16dp</item>
+        <item name="android:gravity">center</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:fontFamily">@font/inter_semibold</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:background">@drawable/btn_neutral</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:stateListAnimator">@null</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+    </style>
+    <style name="Od.Button.Accent">
+        <item name="android:background">@drawable/btn_accent</item>
+        <item name="android:textColor">@color/on_accent</item>
+    </style>
+    <style name="Od.Button.Small">
+        <item name="android:layout_height">30dp</item>
+        <item name="android:paddingStart">12dp</item>
+        <item name="android:paddingEnd">12dp</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:background">@drawable/btn_neutral_small</item>
+    </style>
+    <style name="Od.Button.Small.Tint">
+        <item name="android:background">@drawable/btn_tint_small</item>
+        <item name="android:textColor">@color/accent_tx</item>
+    </style>
+    <style name="Od.Button.Large">
+        <item name="android:layout_height">52dp</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:background">@drawable/btn_accent_large</item>
+        <item name="android:textColor">@color/on_accent</item>
+    </style>
+
+    <style name="Od.Field">
+        <item name="android:layout_height">46dp</item>
+        <item name="android:background">@drawable/field</item>
+        <item name="android:paddingStart">14dp</item>
+        <item name="android:paddingEnd">14dp</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:textColorHint">@color/text3</item>
+        <item name="android:importantForAutofill" tools:targetApi="26">no</item>
+        <item name="android:maxLines">1</item>
+    </style>
+
+    <!-- Remote-session controls: square tiles with an icon over a label. -->
+    <style name="Od.Tool">
+        <item name="android:layout_height">50dp</item>
+        <item name="android:background">@drawable/tool_tile</item>
+        <item name="android:gravity">center</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:fontFamily">@font/inter_semibold</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="drawableTint">@color/text</item>
+        <item name="android:paddingTop">8dp</item>
+        <item name="android:paddingBottom">6dp</item>
+        <item name="android:drawablePadding">3dp</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:stateListAnimator">@null</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+        <item name="android:maxLines">1</item>
+    </style>
+    <style name="Od.Tool.Key">
+        <item name="android:textSize">15sp</item>
+        <item name="android:fontFamily">@font/inter_bold</item>
+        <item name="android:paddingTop">0dp</item>
+        <item name="android:paddingBottom">0dp</item>
     </style>
 </resources>

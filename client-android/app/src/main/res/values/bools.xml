@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark icons on the status and navigation bars in the light theme (values-night: light icons). -->
+    <bool name="light_bars">true</bool>
+    <!-- Two-pane layout with a navigation rail (tablets, values-sw600dp). -->
+    <bool name="is_tablet">false</bool>
+</resources>

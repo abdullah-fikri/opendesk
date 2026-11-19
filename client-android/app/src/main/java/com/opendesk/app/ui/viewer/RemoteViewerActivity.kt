@@ -3,15 +3,18 @@ package com.opendesk.app.ui.viewer
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.GestureDetector
 import android.view.HapticFeedbackConstants
+import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
-import android.widget.Button
+import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
@@ -19,16 +22,22 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.res.ResourcesCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.widget.TextViewCompat
 import com.opendesk.app.R
 import com.opendesk.app.data.dto.InputEvent
+import com.opendesk.app.data.history.SessionHistory
+import com.opendesk.app.data.settings.SettingsRepository
+import com.opendesk.app.domain.DeskId
 import com.opendesk.app.domain.Viewport
 import com.opendesk.app.domain.WindowsKeys
 import com.opendesk.app.platform.audio.VoiceCallManager
 import com.opendesk.app.session.RelayConnection
+import com.opendesk.app.ui.common.Alerts
 import kotlin.math.abs
 import kotlin.math.hypot
 
@@ -40,7 +49,8 @@ import kotlin.math.hypot
  * moves a virtual cursor and a zoomed view follows it; in touch mode the cursor jumps to the finger.
  *
  * Video is applied on a worker thread and only the newest frame is drawn, so a slow phone never builds up latency. The
- * activity handles rotation itself (see the manifest), so the session, zoom and last frame survive it.
+ * activity handles rotation itself (see the manifest), so the session, zoom and last frame survive it; the controls
+ * overlay is inflated again so portrait gets the bottom sheet and landscape the side panel.
  */
 class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener {
 
@@ -74,11 +84,15 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
     private lateinit var ivScreen: ImageView
     private lateinit var virtualCursor: View
     private lateinit var connectingOverlay: View
-    private lateinit var tvRemoteFps: TextView
-    private lateinit var btnToggleMic: Button
-    private lateinit var btnToggleMode: Button
-    private lateinit var btnHoldDrag: Button
+    private lateinit var overlayHost: ViewGroup
     private lateinit var keyboard: RemoteKeyboardView
+    private lateinit var settings: SettingsRepository
+
+    // The controls overlay (view_overlay), inflated again on rotation.
+    private var overlay: View? = null
+    private var controlsOpen = false
+    private var partnerName = ""
+    private var partnerClean = ""
 
     private val viewport = Viewport()
     private val imageMatrix = Matrix()
@@ -90,6 +104,9 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
     private var trackpadMode = true
     private var leftHeld = false
     private var keyboardVisible = false
+
+    /** One-finger drags turn the wheel instead of moving the pointer (the Scroll control). */
+    private var scrollMode = false
 
     private var lastTouchX = 0f
     private var lastTouchY = 0f
@@ -127,24 +144,36 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
         ivScreen = findViewById(R.id.iv_remote_screen)
         virtualCursor = findViewById(R.id.view_virtual_cursor)
         connectingOverlay = findViewById(R.id.layout_connecting_overlay)
-        tvRemoteFps = findViewById(R.id.tv_remote_fps)
-        btnToggleMic = findViewById(R.id.btn_toggle_mic)
-        btnToggleMode = findViewById(R.id.btn_toggle_mode)
-        btnHoldDrag = findViewById(R.id.btn_hold_drag)
+        overlayHost = findViewById(R.id.overlay_host)
         keyboard = findViewById(R.id.view_remote_keyboard)
+        settings = SettingsRepository(this)
+        val partner = RelayConnection.viewerPartner
+        partnerClean = partner
+        partnerName = SessionHistory(this).records().firstOrNull { it.cleanId == partner }?.name.orEmpty()
+            .ifEmpty { DeskId.format(partner) }
 
         setupWindow()
         virtualCursor.visibility = View.VISIBLE
         ivScreen.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> layoutFrame() }
         retainedFrame?.let { showFrame(it, 0) }
-        updateMicButton()
-        updateStatusBadge()
-        setupButtons()
+        buildOverlay()
         setupKeyboard()
         setupTouch()
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() = finish()
+            override fun handleOnBackPressed() {
+                if (controlsOpen) showControls(false) else finish()
+            }
         })
+        if (!settings.gesturesSeen) {
+            settings.gesturesSeen = true
+            root.post { showGestures() }
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Portrait uses the bottom sheet, landscape the side panel (layout-land/view_controls.xml).
+        buildOverlay()
     }
 
     override fun onStart() {
@@ -185,6 +214,9 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
 
     /** Leaving the screen ends the session, whichever way it was left. Idempotent. */
     private fun leave() {
+        // The Sessions list shows how long it ran (once, however the screen was left).
+        if (partnerClean.isNotEmpty()) SessionHistory(this).finish(partnerClean, System.currentTimeMillis())
+        partnerClean = ""
         RelayConnection.endViewing()
         retainedFrame = null
         isOpen = false
@@ -215,57 +247,155 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime(),
             )
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-            keyboardVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+            val typing = insets.isVisible(WindowInsetsCompat.Type.ime())
+            if (typing != keyboardVisible) {
+                keyboardVisible = typing
+                updateOverlay()
+            }
             WindowInsetsCompat.CONSUMED
         }
     }
 
-    // ---- Buttons ----
+    // ---- Controls overlay ----
 
-    private fun setupButtons() {
-        findViewById<Button>(R.id.btn_exit_remote).setOnClickListener { finish() }
-        btnToggleMic.setOnClickListener {
-            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-            toggleMic()
+    private fun buildOverlay() {
+        overlayHost.removeAllViews()
+        val view = LayoutInflater.from(this).inflate(R.layout.view_overlay, overlayHost, false)
+        overlayHost.addView(view)
+        overlay = view
+        sizeToolIcons(view)
+
+        view.findViewById<View>(R.id.btn_exit_remote).setOnClickListener { finish() }
+        view.findViewById<View>(R.id.tv_partner).setOnClickListener { showGestures() }
+        view.findViewById<View>(R.id.btn_controls).apply {
+            setOnClickListener { showControls(true) }
+            setOnLongClickListener {
+                showGestures()
+                true
+            }
         }
-        btnToggleMode.setOnClickListener {
-            trackpadMode = !trackpadMode
-            btnToggleMode.setText(if (trackpadMode) R.string.mode_trackpad else R.string.mode_touch)
-            updateStatusBadge()
+        view.findViewById<View>(R.id.controls_handle).setOnClickListener { showControls(false) }
+        view.findViewById<View>(R.id.controls_title)?.setOnClickListener { showGestures() }
+        view.findViewById<View>(R.id.seg_trackpad).setOnClickListener { setTrackpadMode(true) }
+        view.findViewById<View>(R.id.seg_touch).setOnClickListener { setTrackpadMode(false) }
+
+        tool(R.id.btn_left_click) { sendMouse("click", BUTTON_LEFT) }
+        tool(R.id.btn_double_click) { sendMouse("dblclick", BUTTON_LEFT) }
+        tool(R.id.btn_right_click, HapticFeedbackConstants.LONG_PRESS) { sendMouse("click", BUTTON_RIGHT) }
+        tool(R.id.btn_hold_drag, HapticFeedbackConstants.LONG_PRESS) { setLeftHeld(!leftHeld) }
+        tool(R.id.btn_key_esc) { sendKey(WindowsKeys.VK_ESCAPE) }
+        tool(R.id.btn_key_tab) { sendKey(WindowsKeys.VK_TAB) }
+        tool(R.id.btn_key_win) { RelayConnection.sendInput(InputEvent(action = "shortcut", name = "win")) }
+        tool(R.id.btn_keyboard) {
+            showControls(false)
+            keyboard.setKeyboardVisible(true)
         }
-        findViewById<Button>(R.id.btn_switch_monitor).setOnClickListener {
-            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-            RelayConnection.sendInput(InputEvent(action = "switch-monitor"))
-            Toast.makeText(this, R.string.switching_monitor, Toast.LENGTH_SHORT).show()
+        tool(R.id.btn_scroll) {
+            scrollMode = !scrollMode
+            if (scrollMode) Toast.makeText(this, R.string.scroll_mode_on, Toast.LENGTH_SHORT).show()
+            updateOverlay()
         }
-        findViewById<Button>(R.id.btn_left_click).setOnClickListener {
-            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-            sendMouse("click", BUTTON_LEFT)
-        }
-        findViewById<Button>(R.id.btn_double_click).setOnClickListener {
-            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-            sendMouse("dblclick", BUTTON_LEFT)
-        }
-        findViewById<Button>(R.id.btn_right_click).setOnClickListener {
-            it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            sendMouse("click", BUTTON_RIGHT)
-        }
-        btnHoldDrag.setOnClickListener {
-            it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            setLeftHeld(!leftHeld)
-        }
-        findViewById<Button>(R.id.btn_scroll_up).setOnClickListener { sendWheel(SCROLL_STEP) }
-        findViewById<Button>(R.id.btn_scroll_down).setOnClickListener { sendWheel(-SCROLL_STEP) }
-        findViewById<Button>(R.id.btn_keyboard).setOnClickListener { keyboard.setKeyboardVisible(!keyboardVisible) }
-        findViewById<Button>(R.id.btn_key_esc).setOnClickListener { sendKey(WindowsKeys.VK_ESCAPE) }
-        findViewById<Button>(R.id.btn_key_tab).setOnClickListener { sendKey(WindowsKeys.VK_TAB) }
-        findViewById<Button>(R.id.btn_key_win).setOnClickListener {
-            RelayConnection.sendInput(InputEvent(action = "shortcut", name = "win"))
-        }
-        findViewById<Button>(R.id.btn_fit).setOnClickListener {
+        tool(R.id.btn_fit) {
             viewport.reset()
             applyMatrix()
         }
+        tool(R.id.btn_toggle_mic) { toggleMic() }
+        tool(R.id.btn_switch_monitor) {
+            RelayConnection.sendInput(InputEvent(action = "switch-monitor"))
+            Toast.makeText(this, R.string.switching_monitor, Toast.LENGTH_SHORT).show()
+        }
+        tool(R.id.kb_esc) { sendKey(WindowsKeys.VK_ESCAPE) }
+        tool(R.id.kb_tab) { sendKey(WindowsKeys.VK_TAB) }
+        tool(R.id.kb_win) { RelayConnection.sendInput(InputEvent(action = "shortcut", name = "win")) }
+        tool(R.id.kb_hide) { keyboard.setKeyboardVisible(false) }
+        updateOverlay()
+    }
+
+    private fun tool(id: Int, haptic: Int = HapticFeedbackConstants.VIRTUAL_KEY, action: () -> Unit) {
+        overlay?.findViewById<View>(id)?.setOnClickListener {
+            it.performHapticFeedback(haptic)
+            action()
+        }
+    }
+
+    /** Compound icons of the control tiles at the design size (18 dp; 15 dp beside a label). */
+    private fun sizeToolIcons(view: View) {
+        val size = (18 * resources.displayMetrics.density).toInt()
+        val small = (15 * resources.displayMetrics.density).toInt()
+        fun walk(v: View) {
+            if (v is ViewGroup) {
+                for (i in 0 until v.childCount) walk(v.getChildAt(i))
+            } else if (v is TextView) {
+                val d = v.compoundDrawablesRelative
+                if (d.all { it == null }) return
+                val px = if (d[0] != null) small else size
+                d.forEach { it?.setBounds(0, 0, px, px) }
+                v.setCompoundDrawablesRelative(d[0], d[1], d[2], d[3])
+            }
+        }
+        walk(view)
+    }
+
+    private fun showControls(open: Boolean) {
+        controlsOpen = open
+        updateOverlay()
+    }
+
+    private fun setTrackpadMode(trackpad: Boolean) {
+        trackpadMode = trackpad
+        updateOverlay()
+    }
+
+    /** Shows the overlay state: which part is visible, the mode, active tools and the session pill. */
+    private fun updateOverlay() {
+        val view = overlay ?: return
+        val panelOpen = controlsOpen && !keyboardVisible
+        view.findViewById<View>(R.id.controls_panel).visibility = if (panelOpen) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.btn_controls).visibility = if (panelOpen || keyboardVisible) View.GONE else View.VISIBLE
+        view.findViewById<View>(R.id.key_bar).visibility = if (keyboardVisible) View.VISIBLE else View.GONE
+
+        segment(view.findViewById(R.id.seg_trackpad), trackpadMode)
+        segment(view.findViewById(R.id.seg_touch), !trackpadMode)
+        val muted = VoiceCallManager.isMuted
+        view.findViewById<TextView>(R.id.btn_toggle_mic).apply {
+            setText(if (muted) R.string.mic_off else R.string.mic_on)
+            active(this, !muted)
+        }
+        active(view.findViewById(R.id.btn_hold_drag), leftHeld)
+        active(view.findViewById(R.id.btn_scroll), scrollMode)
+        updateStatusBadge()
+    }
+
+    private fun segment(view: TextView, on: Boolean) {
+        view.setBackgroundResource(if (on) R.drawable.seg_on else 0)
+        val color = ContextCompat.getColor(this, if (on) R.color.text else R.color.text3)
+        view.setTextColor(color)
+        TextViewCompat.setCompoundDrawableTintList(view, ColorStateList.valueOf(color))
+        view.typeface = ResourcesCompat.getFont(this, if (on) R.font.inter_semibold else R.font.inter_regular)
+    }
+
+    /** A control tile that is on (held button, microphone, scroll mode) is tinted with the accent. */
+    private fun active(view: TextView, on: Boolean) {
+        view.setBackgroundResource(if (on) R.drawable.tool_tile_accent else R.drawable.tool_tile)
+        val color = ContextCompat.getColor(this, if (on) R.color.accent_tx else R.color.text)
+        view.setTextColor(color)
+        TextViewCompat.setCompoundDrawableTintList(view, ColorStateList.valueOf(color))
+    }
+
+    private fun showGestures() {
+        Alerts.table(
+            this,
+            getString(R.string.gestures_title),
+            listOf(
+                getString(R.string.gesture_tap) to getString(R.string.gesture_tap_does),
+                getString(R.string.gesture_double) to getString(R.string.gesture_double_does),
+                getString(R.string.gesture_long) to getString(R.string.gesture_long_does),
+                getString(R.string.gesture_two_drag) to getString(R.string.gesture_two_drag_does),
+                getString(R.string.gesture_pinch) to getString(R.string.gesture_pinch_does),
+                getString(R.string.gesture_one_drag) to getString(R.string.gesture_one_drag_does),
+            ),
+            getString(R.string.got_it),
+        )
     }
 
     private fun toggleMic() {
@@ -280,16 +410,11 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
         }
     }
 
-    private fun updateMicButton() {
-        val muted = VoiceCallManager.isMuted
-        btnToggleMic.setText(if (muted) R.string.mic_off else R.string.mic_on)
-        btnToggleMic.setBackgroundColor(ContextCompat.getColor(this, if (muted) android.R.color.transparent else R.color.accent))
-    }
+    private fun updateMicButton() = updateOverlay()
 
     private fun setLeftHeld(held: Boolean) {
         leftHeld = held
-        btnHoldDrag.setText(if (held) R.string.hold_active else R.string.hold)
-        btnHoldDrag.setBackgroundColor(ContextCompat.getColor(this, if (held) R.color.accent else android.R.color.transparent))
+        updateOverlay()
         sendMouse(if (held) "mousedown" else "mouseup", BUTTON_LEFT)
     }
 
@@ -416,6 +541,14 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
     private fun span(event: MotionEvent): Float = hypot(event.getX(0) - event.getX(1), event.getY(0) - event.getY(1))
 
     private fun onMove(event: MotionEvent) {
+        if (scrollMode) {
+            val dy = event.y - lastTouchY
+            if (abs(dy) > SCROLL_THRESHOLD_PX) {
+                sendWheel(if (dy > 0) SCROLL_STEP else -SCROLL_STEP)
+                lastTouchY = event.y
+            }
+            return
+        }
         if (trackpadMode) {
             // Relative to the drawn frame: the same on-screen speed at any zoom, so zooming in gives finer control.
             cursorX = (cursorX + (event.x - lastTouchX) / viewport.drawnWidth.coerceAtLeast(1f) * TRACKPAD_SENSITIVITY).coerceIn(0f, 1f)
@@ -477,12 +610,10 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
     private var lastFps = 0
 
     private fun updateStatusBadge() {
-        val mode = getString(if (trackpadMode) R.string.mode_trackpad else R.string.mode_touch)
-        val w = viewport.imageWidth
-        val h = viewport.imageHeight
-        val resolution = if (w > 0 && h > 0) "${w}x$h • " else ""
-        val e2e = if (RelayConnection.isEndToEnd) getString(R.string.e2e_badge) else ""
-        tvRemoteFps.text = getString(R.string.viewer_status, resolution, lastFps, mode, e2e)
+        val view = overlay ?: return
+        view.findViewById<TextView>(R.id.tv_partner).text = partnerName
+        view.findViewById<TextView>(R.id.tv_remote_fps).text = getString(R.string.fps_label, lastFps)
+        view.findViewById<View>(R.id.tv_e2e).visibility = if (RelayConnection.isEndToEnd) View.VISIBLE else View.GONE
     }
 
     // ---- Input ----
