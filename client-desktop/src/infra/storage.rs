@@ -26,6 +26,7 @@ pub fn dev_instance() -> bool {
 }
 
 /// Name of the config folder: `OpenDesk`, or `OpenDesk-dev` for a [`dev_instance`].
+#[cfg(windows)]
 pub fn app_dir_name() -> &'static str {
     if dev_instance() { "OpenDesk-dev" } else { "OpenDesk" }
 }
