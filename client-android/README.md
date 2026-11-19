@@ -121,9 +121,9 @@ secrets ([docs/ci-cd.md](../docs/ci-cd.md)); `ANDROID_KEYSTORE_BASE64` holds the
 
 | Package | Layer | Contents |
 | --- | --- | --- |
-| `ui.main` | Presentation: shell | `MainActivity` (navigation, insets, connect state machine) and `MainHost`, the contract its pages use |
-| `ui.devices`, `ui.sessions`, `ui.settings` | Presentation: pages | One package per tab: the Devices list, connect sheet, long-press menu and `DeviceDirectory` (which list to show); Sessions; Settings with Relay and Security |
-| `ui.viewer` | Presentation: remote screen | `RemoteViewerActivity`, `RemoteKeyboardView`, `FrameCompositor` |
+| `ui.main` | Presentation: shell | `MainActivity` (wiring and relay events), `NavBar`/`Page` (navigation), `EdgeToEdge` (insets), `ConnectFlow` (one connection attempt: target, state, timeout), `MainHost` (the contract its pages use) |
+| `ui.devices`, `ui.sessions`, `ui.settings` | Presentation: pages | One package per tab: the Devices list, connect sheet, long-press menu (`DeviceMenu` look, `DeviceActions` Connect/Rename/Delete) and `DeviceDirectory` (which list to show); Sessions; Settings with Relay and Security |
+| `ui.viewer` | Presentation: remote screen | `RemoteViewerActivity` (lifecycle and wiring), `FrameDecoder` + `FrameCompositor` (video thread), `ScreenRenderer` (frame, zoom, cursor), `TouchController` (gestures), `ControlsOverlay` (controls), `RemoteInput` (input to the computer), `RemoteKeyboardView` |
 | `ui.common` | Shared UI | `Ui` (view helpers), `Alerts` (dialogs) |
 | `session` | Use cases | `RelayConnection` (message routing, reconnection), `E2eChannel`, `FileReceiver` |
 | `data.dto` | Wire DTOs | Relay messages |

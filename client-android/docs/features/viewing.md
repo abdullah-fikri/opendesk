@@ -1,7 +1,7 @@
 # Viewing a computer
 
-Code: `ui/devices/` (`DevicesPage`, `ConnectSheet`, `DeviceMenu`, `DeviceDirectory`), `data/devices/LocalDeviceStore.kt`, `ui/sessions/SessionsPage.kt`, `ui/viewer/RemoteViewerActivity.kt`,
-`ui/viewer/RemoteKeyboardView.kt`, `domain/Viewport.kt`, `domain/WindowsKeys.kt`, `session/RelayConnection.kt`.
+Code: `ui/devices/` (`DevicesPage`, `ConnectSheet`, `DeviceMenu`, `DeviceActions`, `DeviceDirectory`), `ui/main/ConnectFlow.kt`, `data/devices/LocalDeviceStore.kt`, `ui/sessions/SessionsPage.kt`, `ui/viewer/` (`RemoteViewerActivity`, `TouchController`, `ControlsOverlay`, `ScreenRenderer`, `RemoteInput`, `FrameDecoder`),
+`RemoteKeyboardView`, `domain/Viewport.kt`, `domain/WindowsKeys.kt`, `session/RelayConnection.kt`.
 
 ## Connecting
 

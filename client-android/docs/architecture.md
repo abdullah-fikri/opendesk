@@ -33,7 +33,7 @@ session.RelayConnection (process-wide) ──▶ data.network.GatewayClient ─�
 | --- | --- |
 | Main | Activities, listener callbacks, text messages from the relay, reconnection timer |
 | OkHttp socket | Binary messages: opened by the end-to-end channel, then voice goes to `VoiceCallManager` and video to the viewer's queue |
-| `OpenDesk-FrameDecoder` | Applies video in order (`FrameCompositor`: key frames, deltas, legacy JPEGs) from a queue of at most 8 messages, requests a key frame when the chain breaks or it falls behind, and hands at most one bitmap to the main thread (always the newest) |
+| `OpenDesk-FrameDecoder` | `FrameDecoder` applies video in order (`FrameCompositor`: key frames, deltas, legacy JPEGs) from a queue of at most 8 messages, requests a key frame when the chain breaks or it falls behind, and hands at most one bitmap to the main thread (always the newest) |
 | `OpenDesk-VoiceMic` | Microphone capture while unmuted |
 
 ## Reconnection
