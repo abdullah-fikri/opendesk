@@ -3,7 +3,7 @@
 ; Expects builds\windows\OpenDesk.exe, produced by `make windows`.
 #define MyAppName "OpenDesk"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.4.1"
+  #define MyAppVersion "1.5.0"
 #endif
 #define MyAppPublisher "OpenDesk Team"
 #define MyAppURL "https://github.com/abdullah-fikri/opendesk"

@@ -5,6 +5,10 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-19
+
+Minor release: no protocol change. The Android monitor wall works with any relay that runs the desktop wall.
+
 ### Added
 - Android admin edition (`OpenDesk-Admin-<version>.apk`, application ID `com.opendesk.app.admin`): chosen at
   build time like the desktop's, installable beside the standard app, with its own desk ID.
@@ -12,8 +16,17 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
   turning, full screen, double-tap to connect. View only; nothing streams while the app is in the background.
 
 ### Changed
+- Desktop: redesigned window with its own title bar, new icons and fonts (Inter, JetBrains Mono); the "System"
+  appearance now follows Windows light/dark changes while the app runs.
+- Android: redesigned Devices, Sessions and Settings pages for phones and tablets (rail and detail pane on
+  tablets), light/dark theme with an appearance setting, new launcher icon, and a long-press menu (Connect, Rename,
+  Delete). The admin edition lists devices from the relay's registry with live presence.
 - Android: the "Administrator mode" switch in Settings is gone; the edition decides it.
 - Release APKs and App Bundles are signed with the project's key (no more `-unsigned` assets).
+
+### Fixed
+- Docker deployment: the relay did not start because a CPU reservation conflicted with the CPU limit
+  ("Conflicting options: Nano CPUs and CPU Period"); only the memory reservation is kept.
 
 ## [1.4.1] - 2026-11-16
 
@@ -342,6 +355,7 @@ First public release.
 - Windows binaries are not code-signed yet (SmartScreen warns on first run); Linux packages are unsigned `.deb`
   files. Verify downloads against `SHA256SUMS.txt`.
 
+[1.5.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.5.0
 [1.4.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.4.1
 [1.4.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.4.0
 [1.3.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.3.1
