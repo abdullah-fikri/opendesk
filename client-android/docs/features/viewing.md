@@ -5,8 +5,8 @@ Code: `ui/devices/` (`DevicesPage`, `ConnectSheet`, `DeviceMenu`, `DeviceActions
 
 ## Connecting
 
-- **Devices** lists the computers (see administrator mode in [settings](settings.md)), with search by name or ID.
-  The brand bar shows whether the relay is connected. In administrator mode the list waits up to 4 s for the
+- **Devices** lists the computers (every device on the relay in the admin edition, see [settings](settings.md#edition)), with search by name or ID.
+  The brand bar shows whether the relay is connected. In the admin edition the list waits up to 4 s for the
   relay's registry (skeleton rows), then falls back to recent computers.
 - Tap a computer (phone) to open the connect sheet: its ID and platform, presence, and Connect. The sheet then
   shows Connecting… (the end-to-end handshake may take up to 10 s), and on failure the reason with Try again. A

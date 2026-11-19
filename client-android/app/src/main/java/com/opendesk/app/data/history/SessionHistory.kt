@@ -7,7 +7,7 @@ import org.json.JSONObject
 
 /**
  * Sessions this phone opened, newest first, in app-private `SharedPreferences` (at most [MAX] entries). They fill
- * the Sessions tab, and outside administrator mode they are the Devices list ([knownDevices]).
+ * the Sessions tab, and in the standard edition they are the Devices list ([knownDevices]).
  */
 class SessionHistory(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

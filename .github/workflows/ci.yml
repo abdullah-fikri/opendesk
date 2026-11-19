@@ -169,10 +169,10 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
+      - run: ./gradlew --no-daemon testStandardDebugUnitTest testAdminDebugUnitTest lintStandardDebug lintAdminDebug assembleDebug
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: android-lint-report
-          path: client-android/app/build/reports/lint-results-debug.html
+          path: client-android/app/build/reports/lint-results-*Debug.html
           if-no-files-found: ignore

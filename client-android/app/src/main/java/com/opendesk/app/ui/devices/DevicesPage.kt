@@ -18,6 +18,7 @@ import android.widget.TextView
 import com.opendesk.app.R
 import com.opendesk.app.domain.DeskId
 import com.opendesk.app.domain.DeviceItem
+import com.opendesk.app.domain.Edition
 import com.opendesk.app.session.RelayConnection
 import com.opendesk.app.ui.common.Ui
 import com.opendesk.app.ui.main.ConnectState
@@ -49,6 +50,10 @@ class DevicesPage(private val host: MainHost, parent: ViewGroup) {
         search.addTextChangedListener(watcher { refresh() })
         idField.addTextChangedListener(watcher { idConnect.isEnabled = DeskId.clean(it).isNotEmpty() })
         idConnect.isEnabled = false
+        view.findViewById<View>(R.id.btn_monitor_wall).apply {
+            visibility = if (Edition.isAdmin) View.VISIBLE else View.GONE
+            setOnClickListener { host.showMonitorWall() }
+        }
         idConnect.setOnClickListener { connectTyped() }
         idField.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_GO) {
@@ -107,7 +112,7 @@ class DevicesPage(private val host: MainHost, parent: ViewGroup) {
                 Triple(
                     R.drawable.ic_desktop,
                     context.getString(R.string.devices_none),
-                    context.getString(if (host.settings.adminMode) R.string.devices_empty_admin else R.string.devices_empty_recent),
+                    context.getString(if (Edition.isAdmin) R.string.devices_empty_admin else R.string.devices_empty_recent),
                 ),
             )
             else -> {

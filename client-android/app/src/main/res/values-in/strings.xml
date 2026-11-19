@@ -72,8 +72,8 @@
     <string name="id_copied">ID disalin ke clipboard</string>
     <string name="microphone">Mikrofon</string>
     <string name="microphone_sub">Diminta saat Mic dinyalakan</string>
-    <string name="admin_mode">Mode administrator</string>
-    <string name="admin_mode_sub">Tampilkan semua perangkat di relay beserta statusnya</string>
+    <string name="admin_edition">Edisi admin</string>
+    <string name="admin_edition_sub">Menampilkan semua perangkat di relay dan membuka monitor wall</string>
     <string name="viewer_only">Hanya melihat</string>
     <string name="viewer_only_note">HP ini untuk mengontrol komputer lain. HP ini tidak bisa dikontrol dari jarak jauh.</string>
     <string name="version_label">OpenDesk %1$s</string>
@@ -171,4 +171,31 @@
     <string name="file_receiving">Menerima berkas: %1$s…</string>
     <string name="file_saved">Berkas tersimpan: %1$s</string>
     <string name="file_failed">Gagal menerima berkas</string>
+    <!-- Monitor wall (edisi admin). -->
+    <string name="monitor_wall">Monitor wall</string>
+    <string name="wall_page">%1$d / %2$d</string>
+    <string name="wall_settings">Pengaturan wall</string>
+    <string name="wall_fullscreen">Layar penuh</string>
+    <string name="wall_exit_fullscreen">Keluar dari layar penuh</string>
+    <string name="wall_prev">Halaman sebelumnya</string>
+    <string name="wall_next">Halaman berikutnya</string>
+    <string name="wall_relay_offline">Tidak terhubung ke relay. Wall lanjut lagi saat koneksi kembali.</string>
+    <string name="wall_relay_old">Relay ini belum mendukung monitor wall. Perbarui relay.</string>
+    <string name="wall_loading">Memuat daftar perangkat…</string>
+    <string name="wall_none_online">Tidak ada komputer yang online.</string>
+    <string name="wall_none_selected">Belum ada komputer yang dipilih. Buka pengaturan wall untuk memilih.</string>
+    <string name="wall_denied">Relay tidak menganggap HP ini sebagai administrator.</string>
+    <string name="wall_cellular">Data seluler: satu halaman penuh bisa memakai hingga sekitar 1 MB/s.</string>
+    <string name="wall_hint">Hanya melihat. Ketuk dua kali sebuah layar untuk mengontrolnya, geser untuk ganti halaman.</string>
+    <string name="tile_connecting">Menghubungkan…</string>
+    <string name="tile_waiting">Menunggu gambar…</string>
+    <string name="tile_offline">Offline</string>
+    <string name="tile_unsupported">Tidak bisa dipantau</string>
+    <string name="tile_denied">Tidak diizinkan</string>
+    <string name="wall_layout">Tata letak</string>
+    <string name="wall_rotate">Ganti halaman otomatis</string>
+    <string name="wall_secs">%1$d dtk</string>
+    <string name="wall_all">Semua komputer online</string>
+    <string name="wall_all_sub">Mati: hanya komputer yang Anda pilih, termasuk yang offline</string>
+    <string name="wall_pick">Komputer di wall</string>
 </resources>

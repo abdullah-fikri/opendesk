@@ -5,6 +5,16 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
 
 ## [Unreleased]
 
+### Added
+- Android admin edition (`OpenDesk-Admin-<version>.apk`, application ID `com.opendesk.app.admin`): chosen at
+  build time like the desktop's, installable beside the standard app, with its own desk ID.
+- Monitor wall on Android (admin edition): live thumbnails of up to 16 computers per page, swipe or automatic page
+  turning, full screen, double-tap to connect. View only; nothing streams while the app is in the background.
+
+### Changed
+- Android: the "Administrator mode" switch in Settings is gone; the edition decides it.
+- Release APKs and App Bundles are signed with the project's key (no more `-unsigned` assets).
+
 ## [1.4.1] - 2026-11-16
 
 Patch release: no protocol change; update both sides of a session.

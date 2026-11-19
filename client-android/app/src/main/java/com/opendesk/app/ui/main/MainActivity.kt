@@ -9,17 +9,20 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import com.opendesk.app.R
 import com.opendesk.app.data.history.SessionHistory
 import com.opendesk.app.data.settings.SettingsRepository
 import com.opendesk.app.domain.DeviceItem
+import com.opendesk.app.domain.Edition
 import com.opendesk.app.session.RelayConnection
 import com.opendesk.app.ui.common.Alerts
 import com.opendesk.app.ui.devices.ConnectSheet
 import com.opendesk.app.ui.devices.DeviceActions
 import com.opendesk.app.ui.devices.DeviceDirectory
 import com.opendesk.app.ui.devices.DevicesPage
+import com.opendesk.app.ui.monitor.MonitorWallActivity
 import com.opendesk.app.ui.sessions.SessionsPage
 import com.opendesk.app.ui.settings.RelayPage
 import com.opendesk.app.ui.settings.SecurityPage
@@ -60,6 +63,15 @@ class MainActivity : AppCompatActivity(), RelayConnection.Listener, MainHost {
     private var securityPage: SecurityPage? = null
 
     private val handler = Handler(Looper.getMainLooper())
+
+    /** The monitor wall closes with the computer to connect to when a tile was double-tapped. */
+    private val monitorWall = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val id = result.data?.getStringExtra(MonitorWallActivity.EXTRA_CONNECT) ?: return@registerForActivityResult
+        if (page != Page.DEVICES) showPage(Page.DEVICES)
+        val item = directory.lookup(id)
+        open(item)
+        connect(item)
+    }
     private val registryWait = Runnable { devices?.refresh() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -157,6 +169,10 @@ class MainActivity : AppCompatActivity(), RelayConnection.Listener, MainHost {
     override fun showRelay() = showPage(Page.RELAY)
     override fun showSecurity() = showPage(Page.SECURITY)
     override fun showSettings() = showPage(Page.SETTINGS)
+
+    override fun showMonitorWall() {
+        if (Edition.isAdmin) monitorWall.launch(Intent(this, MonitorWallActivity::class.java))
+    }
 
     private fun refreshAll() {
         devices?.refresh()

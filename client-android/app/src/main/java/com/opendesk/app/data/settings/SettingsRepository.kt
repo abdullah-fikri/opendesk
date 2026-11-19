@@ -3,7 +3,10 @@ package com.opendesk.app.data.settings
 import android.content.Context
 import android.provider.Settings
 import com.opendesk.app.domain.DeskId
+import com.opendesk.app.domain.Edition
 import com.opendesk.app.domain.GatewayUrl
+import com.opendesk.app.domain.MonitorSettings
+import com.opendesk.app.domain.MonitorWall
 
 /** Persistent client settings in `SharedPreferences`. */
 class SettingsRepository(context: Context) {
@@ -37,29 +40,53 @@ class SettingsRepository(context: Context) {
         prefs.edit().putString(KEY_DEVICE_TOKEN, token).putString(KEY_DEVICE_TOKEN_RELAY, gatewayUrl).apply()
     }
 
-    /**
-     * Administrator mode: registers with `isAdmin` so the relay sends the device registry, and Devices lists every
-     * computer on the relay with its presence. Off: Devices lists the computers this phone connected to.
-     */
-    var adminMode: Boolean
-        get() = prefs.getBoolean(KEY_ADMIN_MODE, false)
-        set(value) = prefs.edit().putBoolean(KEY_ADMIN_MODE, value).apply()
 
     /** Light or dark: [APPEARANCE_SYSTEM] (follow the phone, the default), [APPEARANCE_LIGHT] or [APPEARANCE_DARK]. */
     var appearance: Int
         get() = prefs.getInt(KEY_APPEARANCE, APPEARANCE_SYSTEM)
         set(value) = prefs.edit().putInt(KEY_APPEARANCE, value).apply()
 
+    /** Admin edition: the monitor wall's settings; a grid never chosen is `defaultGrid` (by screen size). */
+    fun monitor(defaultGrid: Int): MonitorSettings = MonitorSettings(
+        grid = prefs.getInt(KEY_MONITOR_GRID, 0).takeIf { it > 0 } ?: defaultGrid,
+        rotate = prefs.getBoolean(KEY_MONITOR_ROTATE, false),
+        rotateSecs = prefs.getInt(KEY_MONITOR_ROTATE_SECS, MonitorWall.ROTATE_DEFAULT_SECS),
+        all = prefs.getBoolean(KEY_MONITOR_ALL, true),
+        selected = prefs.getStringSet(KEY_MONITOR_SELECTED, null)?.toSet().orEmpty(),
+    )
+
+    fun saveMonitor(value: MonitorSettings) {
+        prefs.edit()
+            .putInt(KEY_MONITOR_GRID, value.grid)
+            .putBoolean(KEY_MONITOR_ROTATE, value.rotate)
+            .putInt(KEY_MONITOR_ROTATE_SECS, value.rotateSecs)
+            .putBoolean(KEY_MONITOR_ALL, value.all)
+            .putStringSet(KEY_MONITOR_SELECTED, value.selected.toSet())
+            .apply()
+    }
+
     /** The touch-gesture guide was shown once in a remote session. */
     var gesturesSeen: Boolean
         get() = prefs.getBoolean(KEY_GESTURES_SEEN, false)
         set(value) = prefs.edit().putBoolean(KEY_GESTURES_SEEN, value).apply()
 
-    /** This device's desk ID ("123 456 789"), derived from ANDROID_ID once and then kept. */
+    /**
+     * This device's desk ID ("123 456 789"), derived from ANDROID_ID once and then kept. ANDROID_ID is the same for
+     * every app signed with the same key, so the admin edition derives its own: both editions on one phone must not
+     * register the same ID.
+     */
     val deskId: String
-        get() = prefs.getString(KEY_DESK_ID, null) ?: DeskId.fromDeviceIdentifier(androidId ?: FALLBACK_IDENTIFIER).also {
+        get() = prefs.getString(KEY_DESK_ID, null) ?: DeskId.fromDeviceIdentifier(deviceIdentifier()).also {
             prefs.edit().putString(KEY_DESK_ID, it).apply()
         }
+
+    private fun deviceIdentifier(): String =
+        (androidId ?: FALLBACK_IDENTIFIER).let { if (Edition.isAdmin) "$it:admin" else it }
+
+    init {
+        // Administrator mode used to be a switch; the edition decides it now.
+        if (prefs.contains(KEY_LEGACY_ADMIN_MODE)) prefs.edit().remove(KEY_LEGACY_ADMIN_MODE).apply()
+    }
 
     companion object {
         const val APPEARANCE_SYSTEM = 0
@@ -70,9 +97,14 @@ class SettingsRepository(context: Context) {
         private const val KEY_GATEWAY_URL = "gateway_url"
         private const val KEY_DEVICE_TOKEN = "device_token"
         private const val KEY_DEVICE_TOKEN_RELAY = "device_token_relay"
-        private const val KEY_ADMIN_MODE = "admin_mode"
+        private const val KEY_LEGACY_ADMIN_MODE = "admin_mode"
         private const val KEY_GESTURES_SEEN = "gestures_seen"
         private const val KEY_APPEARANCE = "appearance"
+        private const val KEY_MONITOR_GRID = "monitor_grid"
+        private const val KEY_MONITOR_ROTATE = "monitor_rotate"
+        private const val KEY_MONITOR_ROTATE_SECS = "monitor_rotate_secs"
+        private const val KEY_MONITOR_ALL = "monitor_all"
+        private const val KEY_MONITOR_SELECTED = "monitor_selected"
         // Key name kept from earlier builds so existing installs keep their ID.
         private const val KEY_DESK_ID = "hardware_desk_id"
         private const val FALLBACK_IDENTIFIER = "android_opendesk"

@@ -1,6 +1,6 @@
 package com.opendesk.app.domain
 
-/** A computer as the Devices list shows it. `online` is null when this phone cannot know (outside administrator mode). */
+/** A computer as the Devices list shows it. `online` is null when this phone cannot know (standard edition). */
 data class DeviceItem(val cleanId: String, val name: String, val platform: String, val online: Boolean?) {
     val formattedId: String get() = DeskId.format(cleanId)
 

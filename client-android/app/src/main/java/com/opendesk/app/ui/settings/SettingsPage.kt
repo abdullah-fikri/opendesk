@@ -11,12 +11,13 @@ import android.widget.Toast
 import com.opendesk.app.OpenDeskApp
 import com.opendesk.app.R
 import com.opendesk.app.data.settings.SettingsRepository
+import com.opendesk.app.domain.Edition
 import com.opendesk.app.domain.GatewayUrl
 import com.opendesk.app.session.RelayConnection
 import com.opendesk.app.ui.common.Ui
 import com.opendesk.app.ui.main.MainHost
 
-/** Settings tab: relay, security, this phone (ID, microphone, administrator mode) and about. */
+/** Settings tab: relay, security, this phone (ID, microphone), appearance and about (with the edition). */
 class SettingsPage(private val host: MainHost, parent: ViewGroup) {
     val view: View = LayoutInflater.from(parent.context).inflate(R.layout.page_settings, parent, false)
     private val context = view.context
@@ -50,19 +51,6 @@ class SettingsPage(private val host: MainHost, parent: ViewGroup) {
             context.getString(R.string.microphone), context.getString(R.string.microphone_sub),
         )
 
-        val adminRow = view.findViewById<View>(R.id.set_admin)
-        val adminSwitch = Ui.settingSwitch(adminRow)
-        Ui.settingRow(
-            adminRow, R.drawable.tile_blue, R.drawable.ic_desktop,
-            context.getString(R.string.admin_mode), context.getString(R.string.admin_mode_sub),
-        ) { adminSwitch.toggle() }
-        adminSwitch.isChecked = settings.adminMode
-        adminSwitch.setOnCheckedChangeListener { _, checked ->
-            if (settings.adminMode == checked) return@setOnCheckedChangeListener
-            settings.adminMode = checked
-            // The role is sent at registration: reconnect so the relay sees it (and sends its registry).
-            host.restartRelay()
-        }
 
         val choices = listOf(
             SettingsRepository.APPEARANCE_SYSTEM to R.id.appearance_system,
@@ -82,6 +70,14 @@ class SettingsPage(private val host: MainHost, parent: ViewGroup) {
 
         val about = view.findViewById<View>(R.id.set_viewer_only)
         Ui.settingRow(about, R.drawable.tile_cyan, R.drawable.ic_phone, context.getString(R.string.viewer_only), context.getString(R.string.viewer_only_note))
+        // The edition is chosen at build time (domain/Edition.kt); only the admin edition says so.
+        val edition = view.findViewById<View>(R.id.set_edition)
+        if (Edition.isAdmin) {
+            Ui.settingRow(edition, R.drawable.tile_blue, R.drawable.ic_desktop, context.getString(R.string.admin_edition), context.getString(R.string.admin_edition_sub))
+        } else {
+            edition.visibility = View.GONE
+            view.findViewById<View>(R.id.set_edition_line).visibility = View.GONE
+        }
 
         val version = runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull()
         view.findViewById<TextView>(R.id.settings_version).text = version?.let { context.getString(R.string.version_label, it) }

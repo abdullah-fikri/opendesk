@@ -107,7 +107,8 @@ docker-down:
 android:
 	cd client-android && gradlew.bat assembleDebug
 	@if not exist builds\android mkdir builds\android
-	copy /Y client-android\app\build\outputs\apk\debug\app-debug.apk builds\android\OpenDesk.apk
+	copy /Y client-android\app\build\outputs\apk\standard\debug\app-standard-debug.apk builds\android\OpenDesk.apk
+	copy /Y client-android\app\build\outputs\apk\admin\debug\app-admin-debug.apk builds\android\OpenDesk-Admin.apk
 
 # ---- Quality -------------------------------------------------------------------------------
 
@@ -222,7 +223,8 @@ docker-down:
 android:
 	cd client-android && ./gradlew assembleDebug
 	mkdir -p builds/android
-	cp client-android/app/build/outputs/apk/debug/app-debug.apk builds/android/OpenDesk.apk
+	cp client-android/app/build/outputs/apk/standard/debug/app-standard-debug.apk builds/android/OpenDesk.apk
+	cp client-android/app/build/outputs/apk/admin/debug/app-admin-debug.apk builds/android/OpenDesk-Admin.apk
 
 # ---- Quality -------------------------------------------------------------------------------
 

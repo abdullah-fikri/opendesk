@@ -46,4 +46,7 @@ interface MainHost {
 
     /** Reconnects with the stored relay settings. */
     fun restartRelay()
+
+    /** Admin edition: opens the monitor wall. */
+    fun showMonitorWall()
 }

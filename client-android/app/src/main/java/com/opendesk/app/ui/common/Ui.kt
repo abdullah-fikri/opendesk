@@ -129,7 +129,7 @@ internal object Ui {
             p.startsWith("windows") -> "Windows"
             p.startsWith("linux") -> "Linux"
             p.startsWith("mac") -> "macOS"
-            p == "android" -> "Android"
+            p.startsWith("android") -> "Android"
             else -> ""
         }
     }

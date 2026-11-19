@@ -159,22 +159,24 @@ jobs:
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
             echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
           fi
-      - name: Build release APK and App Bundle
+      - name: Build release APKs and App Bundles (standard and admin editions)
         working-directory: client-android
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon assembleRelease bundleRelease
+        run: ./gradlew --no-daemon assembleStandardRelease assembleAdminRelease bundleStandardRelease bundleAdminRelease
       - name: Collect
         run: |
           mkdir -p dist
-          apk=$(ls client-android/app/build/outputs/apk/release/*.apk | head -1)
           suffix=$([ -n "${ANDROID_KEYSTORE_FILE:-}" ] && echo "" || echo "-unsigned")
-          cp "$apk" "dist/OpenDesk-$VERSION$suffix.apk"
-          # The App Bundle is what Google Play (internal testing / closed tracks) takes; see client-android/README.md.
-          aab=$(ls client-android/app/build/outputs/bundle/release/*.aab | head -1)
-          cp "$aab" "dist/OpenDesk-$VERSION$suffix.aab"
+          out=client-android/app/build/outputs
+          for pair in "standard:OpenDesk" "admin:OpenDesk-Admin"; do
+            flavor=${pair%%:*}; stem=${pair#*:}
+            cp "$(ls $out/apk/$flavor/release/*.apk | head -1)" "dist/$stem-$VERSION$suffix.apk"
+            # The App Bundle is what Google Play (internal testing / closed tracks) takes; see client-android/README.md.
+            cp "$(ls $out/bundle/${flavor}Release/*.aab | head -1)" "dist/$stem-$VERSION$suffix.aab"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: android

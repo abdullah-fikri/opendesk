@@ -81,8 +81,8 @@
     <string name="id_copied">ID copied to the clipboard</string>
     <string name="microphone">Microphone</string>
     <string name="microphone_sub">Asked when you turn Mic on</string>
-    <string name="admin_mode">Administrator mode</string>
-    <string name="admin_mode_sub">List every device on the relay with its status</string>
+    <string name="admin_edition">Admin edition</string>
+    <string name="admin_edition_sub">Lists every device on the relay and opens the monitor wall</string>
     <string name="viewer_only">Viewer only</string>
     <string name="viewer_only_note">This phone controls other computers. It cannot be controlled remotely.</string>
     <string name="version_label">OpenDesk %1$s</string>
@@ -192,4 +192,31 @@
     <string name="file_receiving">Receiving %1$s…</string>
     <string name="file_saved">File saved: %1$s</string>
     <string name="file_failed">Could not receive the file</string>
+    <!-- Monitor wall (admin edition). -->
+    <string name="monitor_wall">Monitor wall</string>
+    <string name="wall_page">%1$d / %2$d</string>
+    <string name="wall_settings">Wall settings</string>
+    <string name="wall_fullscreen">Full screen</string>
+    <string name="wall_exit_fullscreen">Leave full screen</string>
+    <string name="wall_prev">Previous page</string>
+    <string name="wall_next">Next page</string>
+    <string name="wall_relay_offline">Not connected to the relay. The wall resumes when the connection is back.</string>
+    <string name="wall_relay_old">This relay does not run the monitor wall. Update the relay.</string>
+    <string name="wall_loading">Loading the device list…</string>
+    <string name="wall_none_online">No computer is online.</string>
+    <string name="wall_none_selected">No computers chosen. Open the wall settings to pick some.</string>
+    <string name="wall_denied">The relay does not treat this phone as an administrator.</string>
+    <string name="wall_cellular">Mobile data: a full page can use up to about 1 MB/s.</string>
+    <string name="wall_hint">View only. Double-tap a screen to control it, swipe to turn pages.</string>
+    <string name="tile_connecting">Connecting…</string>
+    <string name="tile_waiting">Waiting for the picture…</string>
+    <string name="tile_offline">Offline</string>
+    <string name="tile_unsupported">Cannot be monitored</string>
+    <string name="tile_denied">Not allowed</string>
+    <string name="wall_layout">Layout</string>
+    <string name="wall_rotate">Turn pages automatically</string>
+    <string name="wall_secs">%1$d s</string>
+    <string name="wall_all">All online computers</string>
+    <string name="wall_all_sub">Off: only the computers you pick, offline ones included</string>
+    <string name="wall_pick">Computers on the wall</string>
 </resources>

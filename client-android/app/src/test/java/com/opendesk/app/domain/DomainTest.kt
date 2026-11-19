@@ -48,7 +48,9 @@ class DomainTest {
     @Test
     fun registersAsViewerOnlyWithDeltaVideoAndE2e() {
         // Never `video-h264` (no decoder) and never `multi-session` (one session at a time).
-        assertEquals(listOf("viewer-only", "video-delta", "e2e"), Capabilities.advertised)
+        // Only the admin edition shows the monitor wall.
+        val wall = if (Edition.isAdmin) listOf("monitor-view") else emptyList()
+        assertEquals(listOf("viewer-only", "video-delta", "e2e") + wall, Capabilities.advertised)
         // The relay accepts lowercase letters, digits, '-' and '.', at most 32 characters.
         Capabilities.advertised.forEach { assertTrue(it.matches(Regex("[a-z0-9.-]{1,32}"))) }
     }
