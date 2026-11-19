@@ -55,7 +55,7 @@ fn trace_path() -> PathBuf {
 #[cfg(windows)]
 fn trace_path() -> PathBuf {
     if let Ok(appdata) = std::env::var("APPDATA") {
-        let dir = PathBuf::from(appdata).join("OpenDesk");
+        let dir = PathBuf::from(appdata).join(crate::infra::storage::app_dir_name());
         let _ = fs::create_dir_all(&dir);
         dir.join("opendesk.trace")
     } else {

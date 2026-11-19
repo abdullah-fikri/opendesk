@@ -1,13 +1,13 @@
 // Viewer sessions as tabs or a split grid (docs/features/viewer-sessions.md).
 
 import { SessionView } from "../../types.slint";
-import { Theme, Icons } from "../../theme.slint";
-import { Icon } from "../../components/icon.slint";
-import { ToolButton } from "../../components/tool_button.slint";
-import { Segment } from "../../components/segment.slint";
+import { Theme, Brand } from "../../theme.slint";
+import { Glyph } from "../../components/glyph.slint";
+import { Btn, Seg, SegWrap, TipBox } from "../../components/controls.slint";
 import { SessionTab } from "session_tab.slint";
 import { SessionToolbar } from "session_toolbar.slint";
 import { SessionTile } from "session_tile.slint";
+import { DragArea } from "../../components/window_frame.slint";
 
 export component SessionWorkspace inherits Rectangle {
     in property <[SessionView]> sessions;
@@ -15,7 +15,6 @@ export component SessionWorkspace inherits Rectangle {
     in-out property <int> view_layout;
     in-out property <bool> show_new_session;
     in-out property <bool> fullscreen;
-    in-out property <bool> show_settings;
     in property <bool> is_relay_online;
     in property <string> status_text;
     // This PC is also being controlled (host side) while viewing.
@@ -74,124 +73,127 @@ export component SessionWorkspace inherits Rectangle {
         padding: 0px;
         spacing: 0px;
 
-        // ---- Tab strip
+        // ---- Tab strip: logo, rounded tabs, the new-session button, then layout and window tools. The window
+        // buttons sit in the top 32 px of the right corner, above the strip's own controls.
         Rectangle {
-            height: 34px;
-            background: #0c0c0f;
+            height: 44px;
+            background: Theme.side;
+
+            // Empty strip space moves the window (no system title bar).
+            DragArea { }
 
             HorizontalLayout {
-                padding: 0px;
-                spacing: 0px;
+                padding-left: 10px;
+                padding-top: 10px;
+                padding-bottom: 4px;
+                spacing: 4px;
 
-                // Relay status square (details in the tooltip).
+                // Logo with the relay status in its corner (details in the tooltip).
                 Rectangle {
                     width: 30px;
+                    Image {
+                        x: 2px;
+                        y: (parent.height - self.height) / 2;
+                        width: 22px;
+                        height: 22px;
+                        source: Brand.logo;
+                        image-fit: contain;
+                    }
                     Rectangle {
-                        width: 7px;
-                        height: 7px;
-                        background: root.is_relay_online ? Theme.ok : Theme.accent;
+                        x: 18px;
+                        y: (parent.height - 22px) / 2 + 15px;
+                        width: 10px;
+                        height: 10px;
+                        border-radius: 5px;
+                        background: Theme.side;
+                        Rectangle {
+                            width: 7px;
+                            height: 7px;
+                            border-radius: 3.5px;
+                            background: root.is_relay_online ? Theme.green : Theme.amber;
+                        }
                     }
                     Tooltip {
-                        text: @markdown("\{"OpenDesk · " + root.status_text}");
+                        TipBox { text: "OpenDesk · " + root.status_text; }
                     }
                 }
 
                 for s[i] in root.sessions: SessionTab {
+                    y: (parent.height - self.height) / 2;
                     session: s;
                     selected: !root.show_new_session && root.is-shown(s.id, i);
                     select => { root.pick(s.id); }
                     close => { root.close_session(s.id); }
                 }
 
-                // "+" = new session page (dashboard). Max 4 sessions.
-                Rectangle {
-                    width: 34px;
-                    background: root.show_new_session ? Theme.surface : (plus-ta.has-hover && root.count < 4) ? #141418 : transparent;
-                    plus-ta := TouchArea {
-                        mouse-cursor: root.count < 4 ? pointer : default;
-                        clicked => {
-                            if (root.count < 4) {
-                                root.show_new_session = true;
-                                root.new_session_page();
-                            }
+                // New session page (dashboard). At most 4 sessions.
+                Btn {
+                    y: (parent.height - self.height) / 2;
+                    kind: "ghost";
+                    icon: "plus";
+                    icon-size: 13px;
+                    on: root.show_new_session;
+                    enabled: root.count < 4 || root.show_new_session;
+                    tip: root.count < 4 ? "New session" : "At most 4 sessions at once";
+                    clicked => {
+                        if (root.count < 4) {
+                            root.show_new_session = true;
+                            root.new_session_page();
                         }
-                    }
-                    if root.show_new_session: Rectangle {
-                        y: 0;
-                        height: 2px;
-                        background: Theme.accent;
-                    }
-                    Icon {
-                        commands: Icons.plus;
-                        tint: root.count < 4 ? (root.show_new_session ? Theme.text : Theme.text-2) : #3f3f46;
-                    }
-                    Tooltip {
-                        text: @markdown("\{root.count < 4 ? "New session" : "At most 4 sessions at once"}");
                     }
                 }
 
-                Rectangle { horizontal-stretch: 1; min-width: 8px; }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    min-width: 8px;
+                }
 
-                // Right group: everything 28px high, centred in the 34px strip.
+                // Right group, clear of the window buttons in the top-right corner.
                 HorizontalLayout {
-                    padding-top: 3px;
-                    padding-bottom: 3px;
-                    padding-right: 4px;
-                    spacing: 0px;
+                    padding-right: root.fullscreen ? 10px : 150px;
+                    spacing: 6px;
                     horizontal-stretch: 0;
                     if root.host_active: Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        height: 28px;
+                        border-radius: 8px;
                         background: Theme.accent-soft;
-                        border-width: 1px;
-                        border-color: Theme.accent;
                         HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 2px;
+                            padding-left: 10px;
+                            padding-right: 3px;
                             spacing: 8px;
                             Text {
-                                text: "Controlled by: " + root.host_partner;
-                                color: #fca5a5;
-                                font-size: 11px;
-                                font-weight: 600;
+                                text: "Controlled by " + root.host_partner;
+                                color: Theme.accent-tx;
+                                font-size: 12px;
+                                font-weight: 500;
                                 vertical-alignment: center;
                             }
-                            Rectangle {
-                                width: end-txt.preferred-width + 14px;
-                                height: 22px;
+                            Btn {
                                 y: (parent.height - self.height) / 2;
-                                background: end-ta.has-hover ? Theme.accent-hover : Theme.accent;
-                                end-ta := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { root.end_host_session(); }
-                                }
-                                end-txt := Text {
-                                    text: "End";
-                                    color: #ffffff;
-                                    font-size: 11px;
-                                    font-weight: 600;
-                                }
+                                height: 22px;
+                                kind: "acc";
+                                label: "End";
+                                clicked => { root.end_host_session(); }
                             }
                         }
                     }
-                    if root.host_active: Rectangle { width: 10px; }
 
-                    // Layout toggle Tab / Split
-                    HorizontalLayout {
-                        padding-top: 1px;
-                        padding-bottom: 1px;
-                        spacing: 0px;
-                        Segment {
-                            width: 46px;
+                    // Layout: one session fills the window, or all side by side.
+                    SegWrap {
+                        y: (parent.height - self.height) / 2;
+                        Seg {
                             label: "Tab";
+                            tip: "One session fills the window";
                             selected: !root.split;
                             clicked => {
                                 root.view_layout = 0;
                                 root.set_view_layout(0);
                             }
-                            Rectangle { Tooltip { text: @markdown("One session fills the window"); } }
                         }
-                        Segment {
-                            width: 46px;
+                        Seg {
                             label: "Split";
+                            tip: root.count > 1 ? "Show all sessions side by side" : "Open at least 2 sessions to split";
                             enabled: root.count > 1;
                             selected: root.split;
                             clicked => {
@@ -199,49 +201,32 @@ export component SessionWorkspace inherits Rectangle {
                                 root.set_view_layout(1);
                                 root.show_new_session = false;
                             }
-                            Rectangle { Tooltip { text: @markdown("\{root.count > 1 ? "Show all sessions side by side" : "Open at least 2 sessions to split"}"); } }
                         }
                     }
-
-                    Rectangle { width: 6px; }
-
-                    ToolButton {
+                    Btn {
                         y: (parent.height - self.height) / 2;
-                        width: 28px;
-                        pad: 0px;
-                        icon: root.toolbar_hidden ? Icons.chevron-down : Icons.chevron-up;
+                        kind: "ghost";
+                        icon: root.toolbar_hidden ? "chevron-down" : "chevron-up";
+                        icon-size: 12px;
                         tip: root.toolbar_hidden ? "Show toolbar" : "Hide toolbar (more screen space)";
                         clicked => { root.toolbar_hidden = !root.toolbar_hidden; }
                     }
-                    ToolButton {
+                    Btn {
                         y: (parent.height - self.height) / 2;
-                        width: 28px;
-                        pad: 0px;
-                        icon: root.fullscreen ? Icons.fullscreen-exit : Icons.fullscreen;
-                        active: root.fullscreen;
+                        kind: "ghost";
+                        icon: root.fullscreen ? "fullscreen-exit" : "fullscreen";
+                        icon-size: 13px;
+                        on: root.fullscreen;
                         tip: root.fullscreen ? "Exit full screen" : "Full screen";
                         clicked => { root.fullscreen = !root.fullscreen; }
                     }
-                    ToolButton {
-                        y: (parent.height - self.height) / 2;
-                        label: "Server";
-                        open: root.show_settings;
-                        tip: "Relay settings";
-                        clicked => { root.show_settings = !root.show_settings; }
-                    }
                 }
-            }
-
-            Rectangle {
-                y: parent.height - 1px;
-                height: 1px;
-                background: Theme.divider;
             }
         }
 
         // ---- Toolbar for the focused session
         if !root.toolbar_hidden && !root.show_new_session: Rectangle {
-            height: 38px;
+            height: 44px;
             for s[i] in root.sessions: Rectangle {
                 if root.is-shown(s.id, i): SessionToolbar {
                     s: s;
@@ -270,7 +255,7 @@ export component SessionWorkspace inherits Rectangle {
         body := Rectangle {
             vertical-stretch: 1;
             clip: true;
-            background: root.show_new_session ? Theme.bg : root.split ? Theme.divider : Theme.canvas;
+            background: root.show_new_session ? Theme.bg : root.split ? Theme.wallbg : Theme.canvas;
 
             property <int> cols: root.count >= 2 ? 2 : 1;
             property <int> rows: root.count >= 3 ? 2 : 1;
@@ -325,7 +310,7 @@ export component SessionWorkspace inherits Rectangle {
                     y: body.tile-h + body.gap;
                     width: body.tile-w;
                     height: body.tile-h;
-                    background: empty-ta.has-hover ? #0e0e11 : Theme.canvas;
+                    background: empty-ta.has-hover ? Theme.hover-soft : Theme.emptyslot;
                     empty-ta := TouchArea {
                         mouse-cursor: pointer;
                         clicked => {
@@ -338,16 +323,16 @@ export component SessionWorkspace inherits Rectangle {
                         spacing: 6px;
                         HorizontalLayout {
                             alignment: center;
-                            Icon {
+                            Glyph {
+                                name: "plus";
                                 size: 18px;
-                                commands: Icons.plus;
                                 tint: empty-ta.has-hover ? Theme.text : Theme.text-3;
                             }
                         }
                         Text {
                             text: "Open a new session";
-                            color: Theme.text-3;
-                            font-size: 11px;
+                            color: Theme.text-2;
+                            font-size: 12px;
                             horizontal-alignment: center;
                         }
                     }

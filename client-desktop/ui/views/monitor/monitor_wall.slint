@@ -1,14 +1,13 @@
 // Monitor wall (admin edition, docs/features/monitor-wall.md): a read-only grid of hosts' screens, paged
 // 4, 9 or 16 at a time, with optional automatic page rotation. Only the visible page is streamed.
-// The toolbar keeps only navigation; layout, rotation and the device list live in the settings panel.
+// The header holds navigation and the layout; rotation and the device list live in the Wall Settings popover.
 // Full screen hides every control, like a CCTV wall (Esc or the corner button leaves it).
 
 import { MonitorTile, MonitorPick } from "../../types.slint";
-import { Theme, Icons } from "../../theme.slint";
-import { Segment } from "../../components/segment.slint";
-import { ToolButton } from "../../components/tool_button.slint";
-import { MenuCaption } from "../../components/menu.slint";
-import { Icon } from "../../components/icon.slint";
+import { Theme, Brand } from "../../theme.slint";
+import { Glyph } from "../../components/glyph.slint";
+import { Btn, Seg, SegWrap, Pop, AppearancePicker } from "../../components/controls.slint";
+import { DragArea } from "../../components/window_frame.slint";
 import { MonitorTileView } from "monitor_tile.slint";
 import { MonitorPicker } from "monitor_picker.slint";
 
@@ -33,18 +32,26 @@ export component MonitorWallView inherits Rectangle {
     callback set_rotation(bool, int);
     callback set_all(bool);
     callback toggle_host(string);
+    callback save_appearance(int);
 
     property <bool> show_settings: false;
-    property <int> cols: max(2, min(4, grid));
-    property <length> gap: root.fullscreen ? 2px : 4px;
+    property <int> n: max(2, min(4, grid));
+    property <length> gap: root.fullscreen ? 6px : 12px;
+    property <length> label: root.fullscreen ? 0px : 26px;
+    property <int> online_picks: 0;
 
-    background: root.fullscreen ? #000000 : Theme.bg;
+    // Full screen keeps the chosen appearance.
+    background: Theme.wallbg;
 
     // Esc leaves full screen; arrow keys turn pages.
     keys := FocusScope {
         key-pressed(e) => {
             if (e.text == Key.Escape && root.fullscreen) {
                 root.fullscreen = false;
+                return accept;
+            }
+            if (e.text == Key.Escape && root.show_settings) {
+                root.show_settings = false;
                 return accept;
             }
             if (e.text == Key.LeftArrow && root.pages > 1) {
@@ -68,200 +75,348 @@ export component MonitorWallView inherits Rectangle {
         padding: 0px;
         spacing: 0px;
 
-        // ---- Toolbar: navigation only
+        // ---- Header
         if !root.fullscreen: Rectangle {
-            height: 38px;
-            background: #0c0c0f;
+            height: 56px;
+            background: Theme.wallbar;
+            DragArea { }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.line;
+            }
+            // Below the window buttons (top 32 px of the corner).
             HorizontalLayout {
-                padding-left: 10px;
-                padding-right: 10px;
-                padding-top: 6px;
-                padding-bottom: 6px;
-                spacing: 10px;
+                y: 12px;
+                height: parent.height - 12px;
+                padding-left: 12px;
+                padding-right: 150px;
+                spacing: 12px;
 
-                Segment {
-                    width: 60px;
-                    horizontal-stretch: 0;
-                    label: "Back";
+                Btn {
+                    y: (parent.height - self.height) / 2;
+                    kind: "ghost";
+                    icon: "chevron-left";
+                    label: "Devices";
                     clicked => { root.close(); }
                 }
-                Text {
-                    text: "Monitor wall · " + root.total + (root.total == 1 ? " device" : " devices") + " · view only"
-                        + (root.rotate ? " · next page every " + root.rotate_secs + " s" : "");
-                    color: Theme.text-2;
-                    font-size: 11px;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                    overflow: elide;
+                Image {
+                    y: (parent.height - self.height) / 2;
+                    width: 22px;
+                    height: 22px;
+                    source: Brand.logo;
+                    image-fit: contain;
                 }
-                Rectangle { horizontal-stretch: 1; }
-
-                // Pages
-                if root.pages > 1: HorizontalLayout {
-                    spacing: 0px;
-                    horizontal-stretch: 0;
-                    Segment { width: 26px; label: "‹"; clicked => { root.step_page(-1); } }
-                    Rectangle {
-                        width: 64px;
-                        background: Theme.surface-2;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        Text {
-                            text: "Page " + (root.page + 1) + "/" + root.pages;
-                            color: Theme.text-2;
-                            font-size: 11px;
-                        }
+                HorizontalLayout {
+                    spacing: 10px;
+                    min-width: 0px;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: "Monitor Wall";
+                        color: Theme.text;
+                        font-size: 15px;
+                        font-weight: 600;
+                        vertical-alignment: center;
                     }
-                    Segment { width: 26px; label: "›"; clicked => { root.step_page(1); } }
+                    if root.width > 1000px: Text {
+                        horizontal-stretch: 1;
+                        text: root.total + (root.total == 1 ? " device" : " devices") + " · view only";
+                        color: Theme.text-2;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
                 }
 
-                ToolButton {
-                    y: (parent.height - self.height) / 2;
-                    icon: Icons.fullscreen;
-                    label: "Full screen";
-                    tip: "Show only the screens (Esc to leave)";
-                    clicked => { root.fullscreen = true; }
+                if root.rotate && root.width > 1100px: HorizontalLayout {
+                    spacing: 6px;
+                    Glyph {
+                        y: (parent.height - self.height) / 2;
+                        name: "refresh";
+                        size: 12px;
+                        tint: Theme.text-2;
+                    }
+                    Text {
+                        text: "Next page every " + root.rotate_secs + "s";
+                        color: Theme.text-2;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
                 }
-                ToolButton {
+
+                SegWrap {
                     y: (parent.height - self.height) / 2;
-                    label: "Settings";
-                    active: root.show_settings;
-                    tip: "Layout, page rotation and devices on the wall";
+                    Seg { label: "2×2"; selected: root.n == 2; clicked => { root.set_grid(2); } }
+                    Seg { label: "3×3"; selected: root.n == 3; clicked => { root.set_grid(3); } }
+                    Seg { label: "4×4"; selected: root.n == 4; clicked => { root.set_grid(4); } }
+                }
+
+                HorizontalLayout {
+                    spacing: 0px;
+                    Btn {
+                        y: (parent.height - self.height) / 2;
+                        width: 26px;
+                        kind: "ghost";
+                        icon: "chevron-left";
+                        enabled: root.page > 0;
+                        clicked => { root.step_page(-1); }
+                    }
+                    Text {
+                        min-width: 48px;
+                        text: (root.page + 1) + " / " + max(1, root.pages);
+                        color: Theme.text-2;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    Btn {
+                        y: (parent.height - self.height) / 2;
+                        width: 26px;
+                        kind: "ghost";
+                        icon: "chevron-right";
+                        enabled: root.page < root.pages - 1;
+                        clicked => { root.step_page(1); }
+                    }
+                }
+
+                Btn {
+                    y: (parent.height - self.height) / 2;
+                    icon: "sliders";
+                    label: root.width > 900px ? "Wall Settings" : "";
+                    tip: "Page rotation, devices on the wall and appearance";
+                    on: root.show_settings;
                     clicked => { root.show_settings = !root.show_settings; }
                 }
-            }
-        }
-
-        // ---- Tiles and the settings panel
-        HorizontalLayout {
-            vertical-stretch: 1;
-            padding: root.fullscreen ? 0px : 6px;
-            spacing: 6px;
-
-            area := Rectangle {
-                horizontal-stretch: 1;
-
-                for t[i] in root.tiles: MonitorTileView {
-                    property <length> w: (area.width - (root.cols - 1) * root.gap) / root.cols;
-                    property <length> h: (area.height - (root.cols - 1) * root.gap) / root.cols;
-                    x: Math.mod(i, root.cols) * (self.w + root.gap);
-                    y: Math.floor(i / root.cols) * (self.h + root.gap);
-                    width: self.w;
-                    height: self.h;
-                    tile: t;
-                    connect(id) => {
-                        root.fullscreen = false;
-                        root.connect(id);
-                    }
-                }
-
-                if root.tiles.length == 0: Text {
-                    width: parent.width;
-                    text: !root.relay_ok ? "This relay does not support the monitor wall. Update the relay to use it."
-                        : root.all ? "No device is online." : "No device selected. Open Settings to pick some.";
-                    color: Theme.text-3;
-                    font-size: 12px;
-                    horizontal-alignment: center;
-                    wrap: word-wrap;
-                }
-            }
-
-            if root.show_settings && !root.fullscreen: Rectangle {
-                width: 260px;
-                background: Theme.surface;
-                border-width: 1px;
-                border-color: Theme.border;
-
-                VerticalLayout {
-                    padding: 0px;
-                    spacing: 0px;
-                    Rectangle {
-                        height: 2px;
-                        background: Theme.accent;
-                    }
-                    VerticalLayout {
-                        padding: 10px;
-                        spacing: 8px;
-
-                        HorizontalLayout {
-                            Text {
-                                horizontal-stretch: 1;
-                                text: "Wall settings";
-                                color: Theme.text;
-                                font-size: 12px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                            }
-                            Rectangle {
-                                width: 22px;
-                                height: 22px;
-                                background: close-ta.has-hover ? Theme.hover : transparent;
-                                close-ta := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { root.show_settings = false; }
-                                }
-                                Icon {
-                                    size: 10px;
-                                    commands: Icons.close;
-                                    tint: Theme.text-2;
-                                }
-                            }
-                        }
-
-                        MenuCaption { text: "LAYOUT"; }
-                        HorizontalLayout {
-                            spacing: 0px;
-                            Segment { label: "2×2"; selected: root.cols == 2; clicked => { root.set_grid(2); } }
-                            Segment { label: "3×3"; selected: root.cols == 3; clicked => { root.set_grid(3); } }
-                            Segment { label: "4×4"; selected: root.cols == 4; clicked => { root.set_grid(4); } }
-                        }
-
-                        MenuCaption { text: "NEXT PAGE AUTOMATICALLY"; }
-                        HorizontalLayout {
-                            spacing: 0px;
-                            Segment { label: "Off"; selected: !root.rotate; clicked => { root.set_rotation(false, root.rotate_secs); } }
-                            for secs in [5, 10, 30, 60]: Segment {
-                                label: secs + "s";
-                                selected: root.rotate && root.rotate_secs == secs;
-                                clicked => { root.set_rotation(true, secs); }
-                            }
-                        }
-
-                        Rectangle { height: 2px; }
-                        MonitorPicker {
-                            vertical-stretch: 1;
-                            border-width: 0px;
-                            background: transparent;
-                            picks: root.picks;
-                            all: root.all;
-                            set_all(a) => { root.set_all(a); }
-                            toggle_host(id) => { root.toggle_host(id); }
-                        }
-                    }
+                Btn {
+                    y: (parent.height - self.height) / 2;
+                    icon: "fullscreen";
+                    label: root.width > 900px ? "Full Screen" : "";
+                    tip: "Show only the screens (Esc to leave)";
+                    clicked => { root.fullscreen = true; }
                 }
             }
         }
 
         if !root.relay_ok && root.tiles.length > 0 && !root.fullscreen: Rectangle {
-            height: 24px;
+            height: 32px;
             background: Theme.accent-soft;
-            Text {
-                text: "This relay does not support the monitor wall. Update the relay to use it.";
-                color: #fca5a5;
-                font-size: 11px;
+            HorizontalLayout {
+                alignment: center;
+                spacing: 8px;
+                Glyph {
+                    y: (parent.height - self.height) / 2;
+                    name: "warn";
+                    size: 14px;
+                    tint: Theme.amber;
+                }
+                Text {
+                    text: "This relay does not support the monitor wall. Update the relay to use it.";
+                    color: Theme.text;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // ---- Tiles, centred, 16:9 with the caption below
+        area := Rectangle {
+            vertical-stretch: 1;
+            property <length> pad: root.fullscreen ? 6px : 20px;
+            property <length> aw: self.width - 2 * self.pad;
+            property <length> ah: self.height - 2 * self.pad;
+            // Width of a tile's picture: as tall as the rows allow, narrower if the columns do not fit.
+            property <length> by-h: ((self.ah - (root.n - 1) * root.gap) / root.n - root.label) * 16 / 9;
+            property <length> by-w: (self.aw - (root.n - 1) * root.gap) / root.n;
+            property <length> pw: root.fullscreen ? self.by-w : min(self.by-h, self.by-w);
+            property <length> ph: root.fullscreen ? (self.ah - (root.n - 1) * root.gap) / root.n - root.label : self.pw * 9 / 16;
+            property <length> th: self.ph + root.label;
+            property <length> gw: root.n * self.pw + (root.n - 1) * root.gap;
+            property <length> gh: root.n * self.th + (root.n - 1) * root.gap;
+            property <length> ox: (self.width - self.gw) / 2;
+            property <length> oy: (self.height - self.gh) / 2;
+
+            // Empty slots of the last page
+            if !root.fullscreen && root.tiles.length > 0: Rectangle {
+                for s[i] in root.n * root.n: Rectangle {
+                    visible: i >= root.tiles.length;
+                    x: area.ox + mod(i, root.n) * (area.pw + root.gap);
+                    y: area.oy + floor(i / root.n) * (area.th + root.gap);
+                    width: area.pw;
+                    height: area.ph;
+                    border-radius: 10px;
+                    background: Theme.emptyslot;
+                }
+            }
+
+            for t[i] in root.tiles: MonitorTileView {
+                x: area.ox + mod(i, root.n) * (area.pw + root.gap);
+                y: area.oy + floor(i / root.n) * (area.th + root.gap);
+                width: area.pw;
+                height: area.th;
+                bare: root.fullscreen;
+                tile: t;
+                connect(id) => {
+                    root.fullscreen = false;
+                    root.connect(id);
+                }
+            }
+
+            if root.tiles.length == 0: VerticalLayout {
+                alignment: center;
+                spacing: 6px;
+                Text {
+                    text: !root.relay_ok ? "Monitor wall unavailable" : root.all ? "No device is online" : "No device selected";
+                    color: Theme.text;
+                    font-size: 15px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: !root.relay_ok ? "This relay does not support the monitor wall. Update the relay to use it."
+                        : root.all ? "Devices appear here as soon as they come online." : "Open Wall Settings to pick the devices to show.";
+                    color: Theme.text-2;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+
+    // ---- Wall Settings popover
+    if root.show_settings && !root.fullscreen: Rectangle {
+        // A click outside closes it.
+        TouchArea {
+            clicked => { root.show_settings = false; }
+        }
+        Pop {
+            x: parent.width - self.width - 16px;
+            y: 58px;
+            width: 300px;
+            height: min(parent.height - 74px, 560px);
+            clip: true;
+            TouchArea { }
+            VerticalLayout {
+                spacing: 0px;
+                HorizontalLayout {
+                    height: 44px;
+                    padding-left: 16px;
+                    padding-right: 8px;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: "Wall Settings";
+                        color: Theme.text;
+                        font-size: 13px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    Btn {
+                        y: (parent.height - self.height) / 2;
+                        width: 26px;
+                        height: 26px;
+                        kind: "ghost";
+                        icon: "close";
+                        icon-size: 12px;
+                        clicked => { root.show_settings = false; }
+                    }
+                }
+                VerticalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-bottom: 14px;
+                    spacing: 14px;
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Next page automatically";
+                            color: Theme.text-2;
+                            font-size: 12px;
+                        }
+                        SegWrap {
+                            horizontal-stretch: 1;
+                            Seg { horizontal-stretch: 1; label: "Off"; selected: !root.rotate; clicked => { root.set_rotation(false, root.rotate_secs); } }
+                            for secs in [5, 10, 30, 60]: Seg {
+                                horizontal-stretch: 1;
+                                label: secs + "s";
+                                selected: root.rotate && root.rotate_secs == secs;
+                                clicked => { root.set_rotation(true, secs); }
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Devices on the wall";
+                            color: Theme.text-2;
+                            font-size: 12px;
+                        }
+                        SegWrap {
+                            horizontal-stretch: 1;
+                            Seg { horizontal-stretch: 1; label: "All Online"; selected: root.all; clicked => { root.set_all(true); } }
+                            Seg { horizontal-stretch: 1; label: "Selected"; selected: !root.all; clicked => { root.set_all(false); } }
+                        }
+                    }
+                }
+                Rectangle {
+                    height: 1px;
+                    background: Theme.line;
+                }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-top: 10px;
+                    padding-bottom: 4px;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: "Devices";
+                        color: Theme.text-2;
+                        font-size: 12px;
+                    }
+                    Text {
+                        text: root.all ? "Every online device" : "Ticked devices only";
+                        color: Theme.text-2;
+                        font-size: 12px;
+                    }
+                }
+                MonitorPicker {
+                    vertical-stretch: 1;
+                    picks: root.picks;
+                    all: root.all;
+                    set_all(a) => { root.set_all(a); }
+                    toggle_host(id) => { root.toggle_host(id); }
+                }
+                Rectangle {
+                    height: 1px;
+                    background: Theme.line;
+                }
+                HorizontalLayout {
+                    height: 46px;
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: "Appearance";
+                        color: Theme.text-2;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    AppearancePicker {
+                        y: (parent.height - self.height) / 2;
+                        chosen(a) => { root.save_appearance(a); }
+                    }
+                }
             }
         }
     }
 
     // ---- Full screen: a faint corner control that brightens on hover
     if root.fullscreen: Rectangle {
-        x: parent.width - self.width - 10px;
-        y: 10px;
-        width: exit-row.preferred-width + 20px;
-        height: 28px;
+        x: parent.width - self.width - 12px;
+        y: 12px;
+        width: exit-row.preferred-width + 24px;
+        height: 30px;
+        border-radius: 8px;
         background: exit-ta.has-hover ? #000000d0 : #00000060;
-        border-width: 1px;
-        border-color: exit-ta.has-hover ? Theme.border : transparent;
         opacity: exit-ta.has-hover ? 1.0 : 0.35;
         animate opacity { duration: 150ms; }
         exit-ta := TouchArea {
@@ -269,24 +424,25 @@ export component MonitorWallView inherits Rectangle {
             clicked => { root.fullscreen = false; }
         }
         exit-row := HorizontalLayout {
-            x: 10px;
+            x: 12px;
             spacing: 8px;
             if root.pages > 1: Text {
                 text: (root.page + 1) + "/" + root.pages;
-                color: Theme.text-2;
-                font-size: 11px;
+                color: #ffffffb3;
+                font-size: 11.5px;
                 vertical-alignment: center;
             }
-            Icon {
+            Glyph {
                 y: (parent.height - self.height) / 2;
-                commands: Icons.fullscreen-exit;
-                tint: #e4e4e7;
+                name: "fullscreen-exit";
+                size: 13px;
+                tint: #ffffff;
             }
             Text {
-                text: "Exit full screen";
-                color: #e4e4e7;
-                font-size: 11px;
-                font-weight: 600;
+                text: "Exit Full Screen";
+                color: #ffffff;
+                font-size: 12px;
+                font-weight: 500;
                 vertical-alignment: center;
             }
         }

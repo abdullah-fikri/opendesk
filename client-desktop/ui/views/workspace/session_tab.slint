@@ -1,8 +1,10 @@
-// One tab of the session strip.
+// One tab of the session strip: a rounded tab with the connection dot, the device name and a close button.
+// The selected tab is raised (surface colour and soft shadow), like the redesign's segments.
 
 import { SessionView } from "../../types.slint";
-import { Theme, Icons } from "../../theme.slint";
-import { Icon } from "../../components/icon.slint";
+import { Theme } from "../../theme.slint";
+import { Glyph } from "../../components/glyph.slint";
+import { TipBox } from "../../components/controls.slint";
 
 export component SessionTab inherits Rectangle {
     in property <SessionView> session;
@@ -10,11 +12,18 @@ export component SessionTab inherits Rectangle {
     callback select();
     callback close();
 
-    height: 34px;
-    min-width: 116px;
+    height: 30px;
+    min-width: 120px;
     max-width: 220px;
     horizontal-stretch: 1;
-    background: selected ? Theme.surface : ta.has-hover ? #141418 : transparent;
+    border-radius: 8px;
+    background: root.selected ? Theme.surf : ta.has-hover ? Theme.hover-soft : transparent;
+    drop-shadow-blur: root.selected ? 6px : 0px;
+    drop-shadow-offset-y: root.selected ? 1px : 0px;
+    drop-shadow-color: root.selected ? Theme.shadow : transparent;
+    border-width: root.selected && Theme.dark ? 0.5px : 0px;
+    border-color: Theme.card-edge;
+    animate background { duration: 120ms; }
 
     ta := TouchArea {
         mouse-cursor: pointer;
@@ -27,20 +36,8 @@ export component SessionTab inherits Rectangle {
         clicked => { root.select(); }
     }
 
-    // Accent line on the selected tab, separator on the right edge.
-    if selected: Rectangle {
-        y: 0;
-        height: 2px;
-        background: Theme.accent;
-    }
-    Rectangle {
-        x: parent.width - 1px;
-        width: 1px;
-        background: Theme.divider;
-    }
-
     HorizontalLayout {
-        padding-left: 10px;
+        padding-left: 12px;
         padding-right: 5px;
         spacing: 8px;
 
@@ -48,40 +45,41 @@ export component SessionTab inherits Rectangle {
             width: 7px;
             height: 7px;
             y: (parent.height - self.height) / 2;
+            border-radius: 3.5px;
             background: Theme.session-dot(root.session.connecting, root.session.path);
         }
         Text {
             horizontal-stretch: 1;
             text: root.session.title;
             color: root.selected ? Theme.text : Theme.text-2;
-            font-size: 12px;
-            font-weight: root.selected ? 600 : 400;
+            font-size: 12.5px;
+            font-weight: root.selected ? 600 : 500;
             vertical-alignment: center;
             overflow: elide;
         }
         Rectangle {
-            width: 22px;
-            height: 22px;
+            width: 20px;
+            height: 20px;
             y: (parent.height - self.height) / 2;
-            background: close-ta.has-hover ? Theme.border : transparent;
+            border-radius: 6px;
+            background: close-ta.has-hover ? Theme.hover2 : transparent;
+            // Shown on the selected or hovered tab only, like the design's quiet controls.
+            opacity: root.selected || ta.has-hover || close-ta.has-hover ? 1.0 : 0.0;
             close-ta := TouchArea {
                 mouse-cursor: pointer;
                 clicked => { root.close(); }
             }
-            Icon {
-                size: 10px;
-                commands: Icons.close;
-                tint: close-ta.has-hover ? Theme.text : Theme.text-3;
-            }
-            Tooltip {
-                text: @markdown("Close session (or middle-click the tab)");
+            Glyph {
+                name: "close";
+                size: 9px;
+                tint: close-ta.has-hover ? Theme.text : Theme.text-2;
             }
         }
     }
 
     Tooltip {
-        text: @markdown("\{root.session.subtitle != "" ? root.session.title + " — " + root.session.subtitle : root.session.title}");
+        TipBox {
+            text: root.session.subtitle != "" ? root.session.title + " — " + root.session.subtitle : root.session.title;
+        }
     }
 }
-
-// ---------------------------------------------------------------- Monitor picker

@@ -23,6 +23,7 @@ pub mod process_usage;
 pub mod send_gate;
 pub mod storage;
 pub mod system_service;
+pub mod system_theme;
 pub mod tcp_path;
 pub mod thread;
 pub mod transfer_badge;

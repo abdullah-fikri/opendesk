@@ -1,7 +1,9 @@
 // Stroke icon drawn from a 12x12 path.
 
+import { Theme } from "../theme.slint";
+
 export component Icon inherits Path {
-    in property <color> tint: #a1a1aa;
+    in property <color> tint: Theme.text-2;
     in property <length> size: 12px;
     width: size;
     height: size;

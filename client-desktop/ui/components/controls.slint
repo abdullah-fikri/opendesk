@@ -1,0 +1,269 @@
+// Basic controls of the redesign: buttons, segmented controls, switch, cards and section labels.
+
+import { Theme } from "../theme.slint";
+import { Glyph } from "glyph.slint";
+
+// Tooltip body in the redesign's style: `Tooltip { TipBox { text: "…"; } }`.
+export component TipBox inherits Rectangle {
+    in property <string> text;
+    width: tip-txt.preferred-width + 18px;
+    height: 24px;
+    border-radius: 7px;
+    background: Theme.elev;
+    border-width: 1px;
+    border-color: Theme.pop-edge;
+    drop-shadow-blur: 8px;
+    drop-shadow-offset-y: 2px;
+    drop-shadow-color: Theme.shadow;
+    tip-txt := Text {
+        text: root.text;
+        color: Theme.text;
+        font-size: 11.5px;
+        font-weight: 500;
+    }
+}
+
+// Button. kind: "default" (grey fill), "acc" (red, primary), "tint" (soft red, red on hover), "ghost"
+// (transparent), "link" (blue text). `on` keeps it pressed (a menu it opened is showing).
+export component Btn inherits Rectangle {
+    in property <string> label;
+    // Glyph name, "" = none.
+    in property <string> icon;
+    in property <string> kind: "default";
+    in property <bool> enabled: true;
+    in property <bool> on: false;
+    in property <bool> large: false;
+    // Square icon-only button when there is no label.
+    in property <length> icon-size: 14px;
+    in property <string> tip;
+    // Extra text after the label in the tertiary colour (a count).
+    in property <string> note;
+    callback clicked();
+
+    property <bool> hot: ta.has-hover && root.enabled;
+    property <color> fg: root.kind == "acc" ? #ffffff
+        : root.kind == "tint" ? (root.hot ? #ffffff : Theme.accent-tx)
+        : root.kind == "ghost" ? (root.hot ? Theme.text : Theme.text-2)
+        : root.kind == "link" ? Theme.blue
+        : Theme.text;
+
+    height: root.large ? 34px : 28px;
+    min-width: root.label == "" ? root.height : row.preferred-width;
+    horizontal-stretch: 0;
+    border-radius: root.large ? 9px : 7px;
+    opacity: root.enabled ? 1.0 : 0.4;
+    background: root.kind == "acc" ? (root.hot ? Theme.accent-hover : Theme.accent)
+        : root.kind == "tint" ? (root.hot ? Theme.accent : Theme.accent-soft)
+        : root.kind == "ghost" ? (root.on ? Theme.hover2 : root.hot ? Theme.hover-soft : transparent)
+        : root.kind == "link" ? (root.hot ? Theme.blue-soft : transparent)
+        : (root.on || root.hot) ? Theme.hover2 : Theme.field;
+    animate background { duration: 120ms; }
+
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+    row := HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        padding-left: root.label == "" ? 0px : (root.large ? 18px : 12px);
+        padding-right: self.padding-left;
+        if root.icon != "": Glyph {
+            y: (parent.height - self.height) / 2;
+            name: root.icon;
+            size: root.icon-size;
+            tint: root.fg;
+        }
+        if root.label != "": Text {
+            text: root.label;
+            color: root.fg;
+            font-size: root.large ? 13px : 12.5px;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+        if root.note != "": Text {
+            text: root.note;
+            color: Theme.text-3;
+            font-size: 12.5px;
+            vertical-alignment: center;
+        }
+    }
+    if root.tip != "": Tooltip {
+        TipBox { text: root.tip; }
+    }
+}
+
+// Grey track holding segments (layout, view mode, appearance).
+export component SegWrap inherits Rectangle {
+    background: Theme.field;
+    border-radius: 8px;
+    height: 26px;
+    horizontal-stretch: 0;
+    HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+        @children
+    }
+}
+
+// One segment inside a SegWrap: text or a glyph.
+export component Seg inherits Rectangle {
+    in property <string> label;
+    in property <string> icon;
+    in property <bool> selected: false;
+    in property <bool> enabled: true;
+    in property <string> tip;
+    callback clicked();
+
+    min-width: root.label == "" ? 30px : txt.preferred-width + 20px;
+    border-radius: 6px;
+    background: root.selected ? Theme.segon : transparent;
+    drop-shadow-blur: root.selected ? 2px : 0px;
+    drop-shadow-offset-y: root.selected ? 1px : 0px;
+    drop-shadow-color: root.selected ? #00000024 : transparent;
+    opacity: root.enabled ? 1.0 : 0.4;
+
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+    if root.icon != "": Glyph {
+        name: root.icon;
+        size: 13px;
+        tint: root.selected || ta.has-hover ? Theme.text : Theme.text-2;
+    }
+    txt := Text {
+        visible: root.label != "";
+        text: root.label;
+        color: root.selected || ta.has-hover ? Theme.text : Theme.text-2;
+        font-size: 12px;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if root.tip != "": Tooltip {
+        TipBox { text: root.tip; }
+    }
+}
+
+// On/off switch (42x24).
+export component Switch inherits Rectangle {
+    in property <bool> on: false;
+    in property <bool> enabled: true;
+    callback toggled();
+
+    width: 42px;
+    height: 24px;
+    border-radius: 12px;
+    background: root.on ? Theme.accent : Theme.tog-off;
+    opacity: root.enabled ? 1.0 : 0.45;
+    animate background { duration: 180ms; }
+
+    Rectangle {
+        x: root.on ? 20px : 2px;
+        y: 2px;
+        width: 20px;
+        height: 20px;
+        border-radius: 10px;
+        background: #ffffff;
+        drop-shadow-blur: 3px;
+        drop-shadow-offset-y: 1px;
+        drop-shadow-color: #0000004d;
+        animate x { duration: 180ms; easing: ease-out; }
+    }
+    TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.toggled();
+            }
+        }
+    }
+}
+
+// White (dark: grey) rounded group with the soft card shadow.
+export component Card inherits Rectangle {
+    background: Theme.surf;
+    border-radius: Theme.radius-lg;
+    drop-shadow-blur: Theme.shadow-blur;
+    drop-shadow-offset-y: 3px;
+    drop-shadow-color: Theme.shadow;
+    border-width: Theme.dark ? 0.5px : 0px;
+    border-color: Theme.card-edge;
+}
+
+// Small grey heading above a group of sidebar entries.
+export component GroupLabel inherits Text {
+    color: Theme.text-3;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+// Hairline between rows of a group, indented like the design.
+export component RowLine inherits Rectangle {
+    in property <length> indent: 16px;
+    height: 1px;
+    Rectangle {
+        x: root.indent;
+        width: parent.width - root.indent;
+        height: 1px;
+        background: Theme.line;
+    }
+}
+
+// Popover surface (menus, sheets, toasts).
+export component Pop inherits Rectangle {
+    background: Theme.elev;
+    border-radius: 14px;
+    drop-shadow-blur: 40px;
+    drop-shadow-offset-y: 14px;
+    drop-shadow-color: Theme.pop-shadow;
+    border-width: 1px;
+    border-color: Theme.pop-edge;
+}
+
+// Appearance control: System / Light / Dark (`compact`: one segment that steps through them). Sets
+// `Theme.appearance` and reports the choice so Rust can store it.
+export component AppearancePicker inherits SegWrap {
+    in property <bool> compact: false;
+    callback chosen(int);
+
+    function pick(a: int) {
+        Theme.appearance = a;
+        root.chosen(a);
+    }
+
+    // Light, Match the system, Dark: the system choice sits between the two it can resolve to.
+    if !root.compact: Seg {
+        icon: "sun";
+        tip: "Light";
+        selected: Theme.appearance == 1;
+        clicked => { root.pick(1); }
+    }
+    if !root.compact: Seg {
+        icon: "desktop";
+        tip: "Match the system";
+        selected: Theme.appearance == 0;
+        clicked => { root.pick(0); }
+    }
+    if !root.compact: Seg {
+        icon: "moon";
+        tip: "Dark";
+        selected: Theme.appearance == 2;
+        clicked => { root.pick(2); }
+    }
+    if root.compact: Seg {
+        icon: Theme.appearance == 0 ? "desktop" : Theme.appearance == 1 ? "sun" : "moon";
+        tip: Theme.appearance == 0 ? "Appearance: system" : Theme.appearance == 1 ? "Appearance: light" : "Appearance: dark";
+        // Same order as the full control: light, system, dark.
+        clicked => { root.pick(Theme.appearance == 1 ? 0 : Theme.appearance == 0 ? 2 : 1); }
+    }
+}

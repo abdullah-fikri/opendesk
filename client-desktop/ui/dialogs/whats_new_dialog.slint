@@ -1,10 +1,13 @@
 // "What's new" after an update: the plain-English highlights of the installed version (and of skipped ones).
 // Close (or Esc) hides it until the next update; Don't show again turns it off for good.
 
+import { Theme } from "../theme.slint";
 import { ScrollArea } from "../components/scroll_area.slint";
+import { Btn, Pop } from "../components/controls.slint";
+import { Glyph } from "../components/glyph.slint";
 
 export component WhatsNewModal inherits Rectangle {
-    background: #000000ad;
+    background: Theme.scrim;
     width: 100%;
     height: 100%;
 
@@ -26,91 +29,55 @@ export component WhatsNewModal inherits Rectangle {
     // Swallows clicks outside the dialog.
     TouchArea { }
 
-    Rectangle {
-        width: 420px;
-        border-radius: 12px;
+    Pop {
+        width: 440px;
         // Long lists (several skipped versions) scroll; at most about 60 % of the window.
-        height: min(root.height * 0.6, text.preferred-height + 124px);
-        background: #17171c;
-        border-width: 1px;
-        border-color: #27272a;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        height: min(root.height * 0.6, text.preferred-height + 140px);
         clip: true;
 
         VerticalLayout {
-            padding: 0px;
-            spacing: 0px;
+            padding: 24px;
+            padding-bottom: 20px;
+            spacing: 12px;
 
-            Rectangle {
-                height: 2px;
-                background: #2563eb;
-            }
-
-            VerticalLayout {
-                padding: 20px;
-                spacing: 12px;
-
+            HorizontalLayout {
+                spacing: 10px;
+                Glyph {
+                    y: (parent.height - self.height) / 2;
+                    name: "info-circle";
+                    size: 18px;
+                    tint: Theme.blue;
+                }
                 Text {
+                    horizontal-stretch: 1;
                     text: root.title;
-                    color: #f4f4f5;
-                    font-size: 13px;
-                    font-weight: 700;
+                    color: Theme.text;
+                    font-size: 14px;
+                    font-weight: 600;
+                    vertical-alignment: center;
                 }
-
-                ScrollArea {
-                    vertical-stretch: 1;
-                    text := Text {
-                        text: root.body;
-                        color: #a1a1aa;
-                        font-size: 12px;
-                        wrap: word-wrap;
-                    }
+            }
+            ScrollArea {
+                vertical-stretch: 1;
+                text := Text {
+                    text: root.body;
+                    color: Theme.text-2;
+                    font-size: 12.5px;
+                    wrap: word-wrap;
                 }
-
-                HorizontalLayout {
-                    spacing: 8px;
-
-                    Rectangle {
-                        width: 128px;
-                        height: 32px;
-                        border-radius: 6px;
-                        background: #202027;
-                        border-width: 1px;
-                        border-color: #27272a;
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.closed(true); }
-                        }
-                        Text {
-                            text: "Don't show again";
-                            color: #d4d4d8;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                            horizontal-alignment: center;
-                        }
-                    }
-
-                    Rectangle { horizontal-stretch: 1; }
-
-                    Rectangle {
-                        width: 88px;
-                        height: 32px;
-                        border-radius: 6px;
-                        background: #2563eb;
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.closed(false); }
-                        }
-                        Text {
-                            text: "Close";
-                            color: #ffffff;
-                            font-size: 12px;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                            horizontal-alignment: center;
-                        }
-                    }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Btn {
+                    kind: "ghost";
+                    label: "Don't show again";
+                    clicked => { root.closed(true); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Btn {
+                    kind: "acc";
+                    label: "Close";
+                    clicked => { root.closed(false); }
                 }
             }
         }

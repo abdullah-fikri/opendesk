@@ -40,17 +40,18 @@ export component ScrollArea inherits Rectangle {
         property <length> track: fl.height;
         property <length> thumb: max(28px, self.track * fl.height / fl.content-height);
         property <length> range: fl.content-height - fl.height;
-        x: parent.width - 6px;
-        width: 4px;
+        x: parent.width - 9px;
+        width: 6px;
         height: self.track;
-        background: #ffffff08;
+        background: transparent;
 
         Rectangle {
             y: self.range-pos;
             property <length> range-pos: bar.range > 0 ? (-fl.content-y) * (bar.track - bar.thumb) / bar.range : 0;
             width: bar.width;
             height: bar.thumb;
-            background: thumb-ta.pressed || thumb-ta.has-hover ? #71717a : #3f3f46;
+            border-radius: 3px;
+            background: thumb-ta.pressed || thumb-ta.has-hover ? #80808099 : #80808059;
 
             thumb-ta := TouchArea {
                 property <length> start-y;

@@ -67,6 +67,11 @@ pub fn set_hosts(items: Vec<HostItem>) {
     });
 }
 
+/// Shows the rows again with the current search (the sidebar's host filter changed).
+pub fn refresh() {
+    with_state(|s| show(s));
+}
+
 /// The search box changed: filters once typing pauses. Clearing it shows every row at once.
 pub fn search_edited(text: SharedString) {
     with_state(|s| {
@@ -124,23 +129,42 @@ fn shown_ids(w: &MainWindow) -> Vec<SharedString> {
     }
 }
 
+/// Sidebar filter of the relay hosts (`host_filter` in `app_window.slint`).
+const SHOW_ONLINE_ONLY: i32 = 1;
+const SHOW_OFFLINE_ONLY: i32 = 2;
+
+fn model<T: Clone + 'static>(rows: Vec<T>) -> ModelRc<T> {
+    ModelRc::from(Rc::new(VecModel::from(rows)))
+}
+
 /// Writes the matching rows and the totals to the window, and drops a selection whose row is no longer shown.
+/// Relay hosts are split into online and offline sections (the sidebar filter may hide one); `server_hosts`
+/// holds both in display order, which the arrow keys follow.
 fn show(s: &State) {
     let Some(w) = s.window.upgrade() else { return };
     let query = Query::parse(&s.query);
     let history: Vec<HistoryItem> =
         s.history.iter().filter(|h| query.matches(&h.desk_id, &[&h.alias])).cloned().collect();
-    let hosts: Vec<HostItem> = s
+    let filter = w.get_host_filter();
+    let (online, offline): (Vec<HostItem>, Vec<HostItem>) = s
         .hosts
         .iter()
         .filter(|h| query.matches(&h.desk_id, &[&h.alias, &h.device_name, &h.platform]))
         .cloned()
-        .collect();
+        .partition(|h| h.online);
+    let online = if filter == SHOW_OFFLINE_ONLY { Vec::new() } else { online };
+    let offline = if filter == SHOW_ONLINE_ONLY { Vec::new() } else { offline };
+    let shown: Vec<HostItem> = online.iter().chain(offline.iter()).cloned().collect();
+    let online_total = s.hosts.iter().filter(|h| h.online).count();
     w.set_history_total(s.history.len() as i32);
     w.set_host_total(s.hosts.len() as i32);
+    w.set_host_online_total(online_total as i32);
+    w.set_host_offline_total((s.hosts.len() - online_total) as i32);
     w.set_list_query(if query.is_empty() { SharedString::new() } else { s.query.trim().into() });
-    w.set_history_items(ModelRc::from(Rc::new(VecModel::from(history))));
-    w.set_server_hosts(ModelRc::from(Rc::new(VecModel::from(hosts))));
+    w.set_history_items(model(history));
+    w.set_hosts_online(model(online));
+    w.set_hosts_offline(model(offline));
+    w.set_server_hosts(model(shown));
     let selected = w.get_list_selected();
     if !selected.is_empty() && !shown_ids(&w).contains(&selected) {
         w.set_list_selected(SharedString::new());

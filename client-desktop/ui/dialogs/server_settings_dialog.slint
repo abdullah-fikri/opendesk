@@ -1,11 +1,11 @@
 // Relay address and viewer performance dialog.
 
-import { Icons } from "../theme.slint";
-import { Icon } from "../components/icon.slint";
-import { Segment } from "../components/segment.slint";
+import { Theme } from "../theme.slint";
+import { Btn, Seg, SegWrap, Pop } from "../components/controls.slint";
+import { AppTile } from "../components/app_tile.slint";
 
 export component ServerSettingsModal inherits Rectangle {
-    background: #000000ad;
+    background: Theme.scrim;
     width: 100%;
     height: 100%;
 
@@ -18,157 +18,111 @@ export component ServerSettingsModal inherits Rectangle {
     callback save_gateway_url(string);
     callback save_performance(int);
 
-    Rectangle {
+    function save() {
+        root.save_performance(root.picked_preset);
+        root.save_gateway_url(input-gw.text);
+        root.show_settings = false;
+    }
+
+    // Swallows clicks outside the dialog.
+    TouchArea { }
+
+    Pop {
         width: 420px;
-        border-radius: 12px;
-        height: 264px;
-        background: #17171c;
-        border-width: 1px;
-        border-color: #27272a;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        clip: true;
+        height: body.preferred-height;
+        body := VerticalLayout {
+            padding: 24px;
+            padding-bottom: 20px;
+            spacing: 14px;
 
-        VerticalLayout {
-            padding: 0px;
-            spacing: 0px;
-
-            Rectangle {
-                height: 2px;
-                background: #dc2626;
+            HorizontalLayout {
+                spacing: 12px;
+                AppTile {
+                    y: (parent.height - self.height) / 2;
+                    kind: "server";
+                    tile: 32px;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: "Relay Server";
+                        color: Theme.text;
+                        font-size: 14px;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: "Used to find devices and relay sessions when P2P is unavailable.";
+                        color: Theme.text-2;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
             }
 
             VerticalLayout {
-                padding: 20px;
-                spacing: 14px;
-                alignment: space-between;
-
-                HorizontalLayout {
-                    alignment: space-between;
-                    Text {
-                        text: "Relay Server";
-                        color: #f4f4f5;
-                        font-size: 13px;
-                        font-weight: 700;
-                        vertical-alignment: center;
-                    }
-                    Rectangle {
-                        width: 24px;
-                        height: 24px;
-                        border-radius: 6px;
-                        background: #202027;
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { show_settings = false; }
-                        }
-                        Icon {
-                            size: 10px;
-                            commands: Icons.close;
-                            tint: #a1a1aa;
-                        }
-                    }
+                spacing: 6px;
+                Text {
+                    text: "Gateway address";
+                    color: Theme.text-2;
+                    font-size: 12px;
                 }
-
                 Rectangle {
-                    height: 38px;
-                    border-radius: 6px;
-                    background: #0b0b0e;
-                    border-width: 1px;
-                    border-color: input-gw.has-focus ? #dc2626 : #27272a;
-
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        input-gw := TextInput {
-                            text <=> gateway_url;
-                            color: #f4f4f5;
-                            font-size: 13px;
-                            vertical-alignment: center;
-                            single-line: true;
-                        }
+                    height: 32px;
+                    border-radius: 7px;
+                    background: Theme.inp;
+                    border-width: input-gw.has-focus ? 2px : 0px;
+                    border-color: Theme.ring;
+                    input-gw := TextInput {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        height: parent.height;
+                        text <=> root.gateway_url;
+                        color: Theme.text;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        single-line: true;
+                        accepted => { root.save(); }
                     }
                 }
+            }
 
-                VerticalLayout {
-                    spacing: 6px;
-                    Text {
-                        text: "Performance when viewing";
-                        color: #a1a1aa;
-                        font-size: 11px;
-                    }
-                    HorizontalLayout {
-                        spacing: 4px;
-                        Segment {
-                            label: "Low";
-                            selected: picked_preset == 0;
-                            clicked => { picked_preset = 0; }
-                        }
-                        Segment {
-                            label: "Medium";
-                            selected: picked_preset == 1;
-                            clicked => { picked_preset = 1; }
-                        }
-                        Segment {
-                            label: "High";
-                            selected: picked_preset == 2;
-                            clicked => { picked_preset = 2; }
-                        }
-                    }
-                    Text {
-                        text: picked_preset == 0 ? "Saves CPU, battery and data (30 FPS)."
-                            : picked_preset == 2 ? "Smoothest, follows your monitor's refresh rate."
-                            : "Balanced for everyday work (60 FPS).";
-                        color: #71717a;
-                        font-size: 11px;
-                    }
+            VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Performance when viewing";
+                    color: Theme.text-2;
+                    font-size: 12px;
                 }
+                SegWrap {
+                    horizontal-stretch: 1;
+                    Seg { horizontal-stretch: 1; label: "Low"; selected: root.picked_preset == 0; clicked => { root.picked_preset = 0; } }
+                    Seg { horizontal-stretch: 1; label: "Medium"; selected: root.picked_preset == 1; clicked => { root.picked_preset = 1; } }
+                    Seg { horizontal-stretch: 1; label: "High"; selected: root.picked_preset == 2; clicked => { root.picked_preset = 2; } }
+                }
+                Text {
+                    text: root.picked_preset == 0 ? "Saves CPU, battery and data (30 FPS)."
+                        : root.picked_preset == 2 ? "Smoothest, follows your monitor's refresh rate."
+                        : "Balanced for everyday work (60 FPS).";
+                    color: Theme.text-2;
+                    font-size: 12px;
+                }
+            }
 
-                HorizontalLayout {
-                    spacing: 8px;
-                    alignment: end;
-
-                    Rectangle {
-                        width: 72px;
-                        height: 32px;
-                        border-radius: 6px;
-                        background: #202027;
-                        border-width: 1px;
-                        border-color: #27272a;
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { show_settings = false; }
-                        }
-                        Text {
-                            text: "Cancel";
-                            color: #d4d4d8;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                            horizontal-alignment: center;
-                        }
-                    }
-
-                    Rectangle {
-                        width: 96px;
-                        height: 32px;
-                        border-radius: 6px;
-                        background: #dc2626;
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                save_performance(picked_preset);
-                                save_gateway_url(input-gw.text);
-                                show_settings = false;
-                            }
-                        }
-                        Text {
-                            text: "Save";
-                            color: #ffffff;
-                            font-size: 12px;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                            horizontal-alignment: center;
-                        }
-                    }
+            Rectangle { height: 4px; }
+            HorizontalLayout {
+                spacing: 8px;
+                Btn {
+                    horizontal-stretch: 1;
+                    height: 30px;
+                    label: "Cancel";
+                    clicked => { root.show_settings = false; }
+                }
+                Btn {
+                    horizontal-stretch: 1;
+                    height: 30px;
+                    kind: "acc";
+                    label: "Save";
+                    clicked => { root.save(); }
                 }
             }
         }
