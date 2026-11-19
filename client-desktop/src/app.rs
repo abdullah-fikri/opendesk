@@ -53,7 +53,12 @@ pub fn run() -> Result<(), slint::PlatformError> {
     // A second launch wakes the running instance and exits.
     autostart::ensure_single_instance(opts.background || edition == Edition::Headless);
     logger::info("app", &format!("OpenDesk {} starting (edition: {}).", env!("CARGO_PKG_VERSION"), edition.name()));
-    autostart::init_background_guardian();
+    // Autostart, watchdog and the command shim belong to the installed copy, not a development instance.
+    if storage::dev_instance() {
+        logger::info("app", "Development instance (OPENDESK_DEV): own config folder, no autostart or service.");
+    } else {
+        autostart::init_background_guardian();
+    }
     // The SYSTEM agent puts partner files on the user's clipboard through a helper running as that user.
     #[cfg(windows)]
     if autostart::supervised_by_service() {
@@ -121,5 +126,7 @@ fn start_services(ctx: &Ctx, outbox: mpsc::Receiver<Outgoing>) {
     settings::spawn_watcher(Arc::clone(ctx));
     // Tells the service (when it runs this agent) about sessions and the relay, for auto-update.
     #[cfg(windows)]
-    crate::service::update::agent::spawn(Arc::clone(ctx));
+    if !storage::dev_instance() {
+        crate::service::update::agent::spawn(Arc::clone(ctx));
+    }
 }

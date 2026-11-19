@@ -18,12 +18,25 @@ use crate::infra::{device, logger};
 const SETTINGS_FILE: &str = "config.json";
 const HISTORY_FILE: &str = "history.json";
 
-/// `%APPDATA%\OpenDesk`, created on first use (falls back to the working directory).
+/// Development instance (`OPENDESK_DEV=1`, e.g. `cargo run`): runs beside an installed OpenDesk with its own
+/// config folder (so its own desk ID, settings and history), its own single-instance lock, and without the
+/// service hand-off, autostart, watchdog or `opendesk` command shim, which belong to the installed copy.
+pub fn dev_instance() -> bool {
+    env::var("OPENDESK_DEV").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// Name of the config folder: `OpenDesk`, or `OpenDesk-dev` for a [`dev_instance`].
+pub fn app_dir_name() -> &'static str {
+    if dev_instance() { "OpenDesk-dev" } else { "OpenDesk" }
+}
+
+/// `%APPDATA%\OpenDesk` (`OpenDesk-dev` for a [`dev_instance`]), created on first use (falls back to the
+/// working directory).
 #[cfg(windows)]
 pub fn app_dir() -> PathBuf {
     match env::var("APPDATA") {
         Ok(appdata) => {
-            let dir = PathBuf::from(appdata).join("OpenDesk");
+            let dir = PathBuf::from(appdata).join(app_dir_name());
             let _ = fs::create_dir_all(&dir);
             dir
         }
@@ -41,7 +54,7 @@ pub fn app_dir() -> PathBuf {
         .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
     match base {
         Some(base) => {
-            let dir = base.join("opendesk");
+            let dir = base.join(if dev_instance() { "opendesk-dev" } else { "opendesk" });
             let _ = fs::create_dir_all(&dir);
             dir
         }

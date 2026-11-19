@@ -48,6 +48,10 @@ pub struct Settings {
     /// means off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pointer_lock: Option<bool>,
+    /// Appearance of the window: dark, light, or unset to follow the system; read it with
+    /// [`Settings::appearance`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dark_mode: Option<bool>,
     /// The version whose "What's new" the user has seen (`domain::whats_new`). Empty: an install from before
     /// 1.3.0 or a new one; then nothing is shown and the running version is stored.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -103,6 +107,7 @@ impl Settings {
             update_url: String::new(),
             mic_on_at_start: None,
             pointer_lock: None,
+            dark_mode: None,
             last_seen_version: String::new(),
             show_whats_new: true,
         }
@@ -118,6 +123,15 @@ impl Settings {
     /// the mouse always sends absolute positions, as before the feature.
     pub fn pointer_lock(&self) -> bool {
         self.pointer_lock.unwrap_or(false)
+    }
+
+    /// Appearance (`Theme.appearance` in the UI): 0 = follow the system (default), 1 = light, 2 = dark.
+    pub fn appearance(&self) -> i32 {
+        match self.dark_mode {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        }
     }
 
     /// The viewer performance preset; a config from before presets maps its `max_fps` choice.

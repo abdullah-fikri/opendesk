@@ -94,6 +94,27 @@ pub fn set_pointer_lock(on: bool) {
     logger::info("settings", &format!("Pointer lock for games: {}", if on { "on" } else { "off" }));
 }
 
+/// Stores the window's appearance: 0 = follow the system, 1 = light, 2 = dark.
+pub fn set_appearance(appearance: i32) {
+    let dark = match appearance {
+        1 => Some(false),
+        2 => Some(true),
+        _ => None,
+    };
+    let mut settings = storage::load_settings();
+    if settings.dark_mode == dark {
+        return;
+    }
+    settings.dark_mode = dark;
+    storage::save_settings(&settings);
+    let name = match dark {
+        None => "system",
+        Some(false) => "light",
+        Some(true) => "dark",
+    };
+    logger::info("settings", &format!("Appearance: {name}"));
+}
+
 /// "What's new" to show now as (title, body), once per update. Never in the Host edition, which has no window.
 /// When there is nothing to show (new install, rollback, no highlights, turned off), the running version is
 /// stored as seen right away.

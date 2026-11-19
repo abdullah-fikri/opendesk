@@ -48,7 +48,9 @@ class DomainTest {
     @Test
     fun registersAsViewerOnlyWithDeltaVideoAndE2e() {
         // Never `video-h264` (no decoder) and never `multi-session` (one session at a time).
-        assertEquals(listOf("viewer-only", "video-delta", "e2e"), Capabilities.advertised)
+        // Only the admin edition shows the monitor wall.
+        val wall = if (Edition.isAdmin) listOf("monitor-view") else emptyList()
+        assertEquals(listOf("viewer-only", "video-delta", "e2e") + wall, Capabilities.advertised)
         // The relay accepts lowercase letters, digits, '-' and '.', at most 32 characters.
         Capabilities.advertised.forEach { assertTrue(it.matches(Regex("[a-z0-9.-]{1,32}"))) }
     }
@@ -128,5 +130,16 @@ class DomainTest {
         assertEquals(3 to "", WindowsKeys.diff("abc", ""))
         // An emoji is one Backspace on the host, not two.
         assertEquals(1 to "", WindowsKeys.diff("a😀", "a"))
+    }
+
+    @Test
+    fun deviceSearchMatchesNamesAndIdDigits() {
+        val item = DeviceItem("123456789", "Office PC", "Windows", null)
+        assertTrue(item.matches(""))
+        assertTrue(item.matches("office"))
+        assertTrue(item.matches("456 78"))
+        assertFalse(item.matches("999"))
+        assertFalse(item.matches("pc 9"))
+        assertEquals("123 456 789", item.formattedId)
     }
 }

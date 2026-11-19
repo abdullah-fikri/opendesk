@@ -227,8 +227,14 @@ pub fn remove_autostart() {
 /// - When launched interactively (not `--background` and not headless), wakes up and brings the existing window to the front.
 /// - Terminates this duplicate process immediately so Task Manager never has 2 OpenDesk processes.
 pub fn ensure_single_instance(start_in_background: bool) {
+    let dev = crate::infra::storage::dev_instance();
     unsafe {
-        let mutex_name = to_wide("Local\\OpenDesk_SingleInstance_Mutex_v2");
+        // A development instance has its own lock, so it runs beside the installed copy.
+        let mutex_name = to_wide(if dev {
+            "Local\\OpenDesk_SingleInstance_Mutex_v2_dev"
+        } else {
+            "Local\\OpenDesk_SingleInstance_Mutex_v2"
+        });
         let handle = CreateMutexW(ptr::null(), 1, mutex_name.as_ptr());
         let err = GetLastError();
         // A mutex owned by an elevated instance cannot be opened from a non-elevated one
@@ -236,6 +242,10 @@ pub fn ensure_single_instance(start_in_background: bool) {
         let already_running =
             (!handle.is_null() && err == ERROR_ALREADY_EXISTS) || (handle.is_null() && err == ERROR_ACCESS_DENIED);
         if already_running {
+            if dev {
+                eprintln!("An OpenDesk development instance (OPENDESK_DEV) is already running.");
+                std::process::exit(0);
+            }
             if !start_in_background && !cfg!(feature = "headless") {
                 let hwnd = find_tray_window();
                 if !hwnd.is_null() {
@@ -248,6 +258,10 @@ pub fn ensure_single_instance(start_in_background: bool) {
             std::process::exit(0);
         }
 
+        if dev {
+            // Never hand over to the service or the elevated task: they start the installed exe.
+            return;
+        }
         let system = system_service::is_local_system();
         if is_elevated() || system {
             // UIPI drops messages from non-elevated senders; let a second launch (shortcut click)

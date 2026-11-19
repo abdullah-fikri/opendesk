@@ -16,7 +16,7 @@ export component TransferPanel inherits Rectangle {
     border-width: 1px;
     border-color: Theme.border;
     drop-shadow-blur: 12px;
-    drop-shadow-color: #00000080;
+    drop-shadow-color: Theme.pop-shadow;
     drop-shadow-offset-y: 4px;
 
     col := VerticalLayout {
@@ -83,7 +83,7 @@ export component TransferPanel inherits Rectangle {
 
             Text {
                 text: t.detail;
-                color: t.state == 2 ? #fca5a5 : Theme.text-3;
+                color: t.state == 2 ? Theme.accent-tx : Theme.text-3;
                 font-size: 10px;
                 overflow: elide;
             }

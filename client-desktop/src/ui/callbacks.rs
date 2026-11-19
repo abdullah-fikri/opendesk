@@ -67,6 +67,7 @@ fn bind_device_settings(win: &MainWindow, ctx: &Ctx) {
     });
     let weak = win.as_weak();
     win.on_whats_new_closed(settings::whats_new_seen);
+    win.on_save_appearance(settings::set_appearance);
     win.on_save_mic_on_at_start(move |on| {
         settings::set_mic_on_at_start(on);
         if let Some(w) = weak.upgrade() {
@@ -133,6 +134,7 @@ fn bind_dashboard(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {
     });
     on!(win, ctx, on_refresh_hosts, |_w, c| c.send(ClientMessage::GetHosts));
     win.on_list_search_edited(dashboard_model::search_edited);
+    win.on_host_filter_changed(dashboard_model::refresh);
     on!(win, ctx, on_list_move_selection, |w, _c, delta| dashboard_model::move_selection(&w, delta));
     on!(win, ctx, on_list_connect_selected, |w, _c| dashboard_model::connect_selected(&w));
     on!(win, ctx, on_save_gateway_url, |_w, c, url| settings::set_gateway(c, &url));

@@ -2,6 +2,13 @@
 // properties are written by Rust and read by the UI unless noted; callbacks are invoked by the UI and
 // implemented in src/ui/callbacks.rs.
 
+// The design's faces: Inter for text, JetBrains Mono for device IDs (Latin subsets, SIL OFL 1.1, see fonts/README.md).
+import "fonts/Inter-Regular.ttf";
+import "fonts/Inter-Medium.ttf";
+import "fonts/Inter-SemiBold.ttf";
+import "fonts/Inter-Bold.ttf";
+import "fonts/JetBrainsMono-Regular.ttf";
+import "fonts/JetBrainsMono-Medium.ttf";
 import { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem, TransferItem } from "types.slint";
 import { HeaderBar } from "views/header_bar.slint";
 import { DashboardView } from "views/dashboard.slint";
@@ -14,20 +21,32 @@ import { ServerSettingsModal } from "dialogs/server_settings_dialog.slint";
 import { RenameDeviceModal } from "dialogs/rename_device_dialog.slint";
 import { DeleteConfirmModal } from "dialogs/delete_confirm_dialog.slint";
 import { WhatsNewModal } from "dialogs/whats_new_dialog.slint";
-import { Theme } from "theme.slint";
+import { Theme, Brand } from "theme.slint";
+import { WindowFrame, WindowControls, ResizeEdges } from "components/window_frame.slint";
 
 export { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem, TransferItem }
+// Rust sets the appearance at start and implements the window buttons, move and resize.
+export { Theme, Brand, WindowFrame }
 
 export component MainWindow inherits Window {
+    // The system title bar is gone (the app draws its own window buttons); the title still names the window
+    // in the taskbar, and Rust finds the native window by it.
     title: "OpenDesk - " + local_desk_id;
     icon: @image-url("icon.png");
+    no-frame: true;
     // Dashboard, settings and the monitor wall adapt down to a small window; a viewer session needs the full
     // toolbar, so it keeps the earlier minimum.
     min-width: sessions.length > 0 ? 880px : 640px;
     min-height: sessions.length > 0 ? 560px : 480px;
-    preferred-width: 920px;
-    preferred-height: 600px;
+    preferred-width: 1200px;
+    preferred-height: 780px;
     background: Theme.bg;
+    default-font-size: 13px;
+    default-font-family: "Inter";
+
+    // Maximized or restored by the system (Win+Up, snapping): Rust re-reads the state on every resize.
+    changed width => { WindowFrame.state-changed(); }
+    changed height => { WindowFrame.state-changed(); }
 
     // ---- Device and relay ----
     in property <string> local_desk_id;
@@ -42,9 +61,23 @@ export component MainWindow inherits Window {
     in-out property <string> target_desk_id: "";
     // Rows matching the dashboard search; history_total and host_total count every row.
     in property <[HistoryItem]> history_items: [];
+    // Relay hosts shown on the dashboard, online ones first (keyboard selection order), and the same rows split.
     in property <[HostItem]> server_hosts: [];
+    in property <[HostItem]> hosts_online: [];
+    in property <[HostItem]> hosts_offline: [];
     in property <int> history_total: 0;
     in property <int> host_total: 0;
+    // Every online / offline host on the relay, whatever the search (sidebar counts).
+    in property <int> host_online_total: 0;
+    in property <int> host_offline_total: 0;
+    // Relay hosts shown: 0 = all, 1 = online, 2 = offline. The UI sets it and calls host_filter_changed.
+    in-out property <int> host_filter: 0;
+    callback host_filter_changed();
+    // Devices as cards (0) or a list (1).
+    in-out property <int> dashboard_view_mode: 0;
+    // Appearance (0 = system, 1 = light, 2 = dark): the UI has already set Theme.appearance; Rust stores it
+    // (config.json `dark_mode`, unset = system).
+    callback save_appearance(int);
     // Dashboard search box text (UI-owned) and the query the lists are filtered by ("" = none).
     in-out property <string> list_search: "";
     in property <string> list_query: "";
@@ -196,19 +229,23 @@ export component MainWindow inherits Window {
 
     // The monitor wall in full screen shows nothing but the screens.
     property <bool> wall_fullscreen: is_admin && monitor_open && !settings_open && sessions.length == 0 && root.full-screen;
-    // The monitor wall has its own toolbar with Back, so no top bar there either.
-    property <bool> wall_page_shown: is_admin && monitor_open && !settings_open && sessions.length == 0;
-    // Settings has its own sidebar with Back; the top bar returns in full screen so it can always be left.
-    property <bool> settings_page_shown: is_admin && settings_open && sessions.length == 0 && !root.full-screen;
+
+    function open_admin_settings() {
+        root.monitor_open = false;
+        root.close_monitor();
+        root.settings_page = 0;
+        root.settings_open = true;
+        root.security_refresh();
+    }
 
     VerticalLayout {
         padding: 0px;
         spacing: 0px;
 
-        // Wrapped in a fixed-height Rectangle: the bar adapts to its own width, which must not feed back into the
-        // window's layout (a binding loop).
-        if sessions.length == 0 && !wall_fullscreen && !settings_page_shown && !wall_page_shown: Rectangle {
-            height: 46px;
+        // Hosting: a top bar with the hosting controls above the hosting panel. Wrapped in a fixed-height
+        // Rectangle: the bar adapts to its own width, which must not feed back into the window's layout.
+        if sessions.length == 0 && hosting && !(is_admin && (monitor_open || settings_open)): Rectangle {
+            height: 52px;
             min-width: 0px;
             max-width: 100000px;
             preferred-width: 0px;
@@ -218,31 +255,11 @@ export component MainWindow inherits Window {
                 fullscreen <=> root.full-screen;
                 is_relay_online: root.is_relay_online;
                 status_text: root.status_text;
-                is_admin: root.is_admin;
-                hosting: root.hosting;
                 is_mic_muted: root.hosting_mic_muted;
-                show_settings <=> root.show_settings;
-                settings_open: root.settings_open;
-                show_refresh: root.is_admin && root.active_dashboard_tab == 1 && !root.settings_open && !root.monitor_open;
-                refresh => { root.refresh_hosts(); }
-                open_admin_settings => {
-                    root.monitor_open = false;
-                    root.close_monitor();
-                    root.settings_page = 0;
-                    root.settings_open = !root.settings_open;
-                    if (root.settings_open) {
-                        root.security_refresh();
-                    }
-                }
                 open_file_picker => { root.hosting_send_files(); }
                 toggle_mic => { root.hosting_toggle_mic(); }
                 disconnect_session => { root.end_hosting(); }
             }
-        }
-
-        if sessions.length == 0 && !wall_fullscreen && !settings_page_shown && !wall_page_shown: Rectangle {
-            height: 1px;
-            background: Theme.divider;
         }
 
         if sessions.length > 0: SessionWorkspace {
@@ -252,7 +269,6 @@ export component MainWindow inherits Window {
             view_layout <=> root.view_layout;
             show_new_session <=> root.show_new_session;
             fullscreen <=> root.full-screen;
-            show_settings <=> root.show_settings;
             is_relay_online: root.is_relay_online;
             status_text: root.status_text;
             host_active: root.hosting;
@@ -294,9 +310,24 @@ export component MainWindow inherits Window {
                 active_tab <=> root.active_dashboard_tab;
                 target_desk_id <=> root.target_desk_id;
                 history_items: root.history_items;
-                server_hosts: root.server_hosts;
+                hosts_online: root.hosts_online;
+                hosts_offline: root.hosts_offline;
                 history_total: root.history_total;
-                host_total: root.host_total;
+                host_online_total: root.host_online_total;
+                host_offline_total: root.host_offline_total;
+                host_filter <=> root.host_filter;
+                host_filter_changed => { root.host_filter_changed(); }
+                view_mode <=> root.dashboard_view_mode;
+                status_text: root.status_text;
+                save_appearance(a) => { root.save_appearance(a); }
+                settings_shown: root.show_settings;
+                open_settings => {
+                    if (root.is_admin) {
+                        root.open_admin_settings();
+                    } else {
+                        root.show_settings = !root.show_settings;
+                    }
+                }
                 search_text <=> root.list_search;
                 filter_query: root.list_query;
                 selected_id <=> root.list_selected;
@@ -342,6 +373,7 @@ export component MainWindow inherits Window {
                 security_managed_by_env: root.security_managed_by_env;
                 security_items: root.security_items;
                 close => { root.settings_open = false; }
+                save_appearance(a) => { root.save_appearance(a); }
                 refresh => { root.security_refresh(); }
                 set_enabled(on) => { root.security_set_enabled(on); }
                 add_device(id, admin) => { root.security_add(id, admin); }
@@ -366,6 +398,7 @@ export component MainWindow inherits Window {
                 all: root.monitor_all;
                 relay_ok: root.monitor_relay_ok;
                 fullscreen <=> root.full-screen;
+                save_appearance(a) => { root.save_appearance(a); }
                 close => {
                     root.monitor_open = false;
                     root.close_monitor();
@@ -390,9 +423,24 @@ export component MainWindow inherits Window {
                 active_tab <=> root.active_dashboard_tab;
                 target_desk_id <=> root.target_desk_id;
                 history_items: root.history_items;
-                server_hosts: root.server_hosts;
+                hosts_online: root.hosts_online;
+                hosts_offline: root.hosts_offline;
                 history_total: root.history_total;
-                host_total: root.host_total;
+                host_online_total: root.host_online_total;
+                host_offline_total: root.host_offline_total;
+                host_filter <=> root.host_filter;
+                host_filter_changed => { root.host_filter_changed(); }
+                view_mode <=> root.dashboard_view_mode;
+                status_text: root.status_text;
+                save_appearance(a) => { root.save_appearance(a); }
+                settings_shown: root.show_settings;
+                open_settings => {
+                    if (root.is_admin) {
+                        root.open_admin_settings();
+                    } else {
+                        root.show_settings = !root.show_settings;
+                    }
+                }
                 search_text <=> root.list_search;
                 filter_query: root.list_query;
                 selected_id <=> root.list_selected;
@@ -475,6 +523,16 @@ export component MainWindow inherits Window {
             root.show_whats_new = false;
             root.whats_new_closed(dont_show_again);
         }
+    }
+
+    // Frameless window: resize edges and the window buttons sit above everything but the splash.
+    if !root.full-screen && !WindowFrame.maximized: ResizeEdges {
+        width: root.width;
+        height: root.height;
+    }
+    if !root.full-screen: WindowControls {
+        x: root.width - self.width;
+        y: 0px;
     }
 
     // Last child: the splash covers everything, including dialogs.

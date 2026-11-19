@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A computer in the Devices list: tile with presence dot, name, ID, and a Connect button. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/row_bg"
+    android:gravity="center_vertical"
+    android:minHeight="58dp"
+    android:orientation="horizontal"
+    android:paddingHorizontal="14dp"
+    android:paddingVertical="9dp">
+
+    <FrameLayout
+        android:layout_width="41dp"
+        android:layout_height="41dp">
+
+        <FrameLayout
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:background="@drawable/icon_tile_neutral">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:layout_gravity="center"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_desktop"
+                app:tint="@color/text2" />
+        </FrameLayout>
+
+        <View
+            android:id="@+id/row_dot"
+            android:layout_width="13dp"
+            android:layout_height="13dp"
+            android:layout_gravity="bottom|end"
+            android:background="@drawable/status_badge" />
+    </FrameLayout>
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/row_title"
+            style="@style/Od.RowTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:id="@+id/row_sub"
+            style="@style/Od.Mono"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:maxLines="1" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/row_action"
+        style="@style/Od.Button.Small.Tint"
+        android:layout_width="wrap_content"
+        android:layout_marginStart="10dp"
+        android:text="@string/connect_to_pc" />
+</LinearLayout>

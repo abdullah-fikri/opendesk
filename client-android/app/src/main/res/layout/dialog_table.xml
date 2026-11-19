@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A titled table of label / meaning rows with one button (the touch-gesture guide). -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/card_elev"
+    android:orientation="vertical"
+    android:paddingHorizontal="18dp"
+    android:paddingTop="18dp"
+    android:paddingBottom="16dp">
+
+    <TextView
+        android:id="@+id/table_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="10dp"
+        android:fontFamily="@font/inter_bold"
+        android:textColor="@color/text"
+        android:textSize="18sp" />
+
+    <LinearLayout
+        android:id="@+id/table_rows"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical" />
+
+    <TextView
+        android:id="@+id/table_button"
+        style="@style/Od.Button"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:layout_marginTop="14dp" />
+</LinearLayout>

@@ -11,6 +11,7 @@ mod session_model;
 mod splash;
 mod transfer_model;
 mod view_model;
+mod window_frame;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,6 +38,28 @@ pub use splash::start as start_splash;
 
 slint::include_modules!();
 
+thread_local! {
+    /// Re-reads the system's light/dark setting while the app runs.
+    static SYSTEM_THEME_TIMER: slint::Timer = slint::Timer::default();
+}
+
+/// Keeps `Theme.system-dark` in step with the system's app setting where the platform has a direct reading
+/// (Windows registry); elsewhere Slint's own report stays bound. A registry read every 2 s costs nothing.
+fn follow_system_theme(win: &MainWindow) {
+    let Some(dark) = crate::infra::system_theme::apps_dark() else { return };
+    win.global::<Theme>().set_system_dark(dark);
+    let weak = win.as_weak();
+    SYSTEM_THEME_TIMER.with(|t| {
+        t.start(slint::TimerMode::Repeated, Duration::from_secs(2), move || {
+            let (Some(w), Some(dark)) = (weak.upgrade(), crate::infra::system_theme::apps_dark()) else { return };
+            let theme = w.global::<Theme>();
+            if theme.get_system_dark() != dark {
+                theme.set_system_dark(dark);
+            }
+        });
+    });
+}
+
 /// Fills the window with its initial state and binds every callback.
 pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, settings: &Settings) {
     win.set_local_desk_id(desk_id::format(&ctx.local_id).into());
@@ -44,6 +67,8 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, settings: &Sett
     win.set_performance(settings.performance().index());
     win.set_mic_on_at_start(settings.mic_on_at_start());
     win.set_pointer_lock(settings.pointer_lock());
+    win.global::<Theme>().set_appearance(settings.appearance());
+    follow_system_theme(win);
     crate::infra::pointer_lock::set_allowed(settings.pointer_lock());
     win.set_is_admin(ctx.edition == Edition::Admin);
     win.set_active_dashboard_tab(if ctx.edition == Edition::Admin { 1 } else { 0 });
@@ -60,6 +85,7 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>, settings: &Sett
         win.set_show_whats_new(true);
     }
     callbacks::bind(win, ctx, history);
+    window_frame::bind(win);
 
     // Closing the window keeps OpenDesk running in the tray, so this device stays reachable.
     let title = ctx.window_title.clone();

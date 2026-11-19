@@ -20,6 +20,7 @@
         android:required="false" />
 
     <application
+        android:name=".OpenDeskApp"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="false"
@@ -47,6 +48,13 @@
             android:exported="false"
             android:theme="@style/Theme.OpenDesk.Fullscreen"
             android:windowSoftInputMode="adjustResize|stateHidden" />
+
+        <!-- Monitor wall (admin edition; the Devices page opens it only there). Keeps its watch across rotation. -->
+        <activity
+            android:name=".ui.monitor.MonitorWallActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:exported="false"
+            android:theme="@style/Theme.OpenDesk.Fullscreen" />
 
     </application>
 

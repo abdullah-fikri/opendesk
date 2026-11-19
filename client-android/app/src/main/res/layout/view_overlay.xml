@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Controls over the remote screen: the session pill (computer, FPS, E2E, end), the "Controls" handle, the controls
+  panel (view_controls: sheet in portrait, side panel in landscape) and the key bar shown with the soft keyboard.
+  The frame itself takes no touches, so the screen below still gets them.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:id="@+id/top_pill"
+        android:layout_width="wrap_content"
+        android:layout_height="38dp"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/pill_bar"
+        android:elevation="6dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="14dp"
+        android:paddingEnd="4dp">
+
+        <View
+            android:layout_width="7dp"
+            android:layout_height="7dp"
+            android:background="@drawable/dot"
+            android:backgroundTint="@color/green" />
+
+        <TextView
+            android:id="@+id/tv_partner"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:ellipsize="end"
+            android:fontFamily="@font/inter_semibold"
+            android:maxWidth="150dp"
+            android:maxLines="1"
+            android:textColor="@color/text"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/tv_remote_fps"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:fontFamily="@font/jetbrains_mono"
+            android:maxLines="1"
+            android:textColor="@color/text3"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/tv_e2e"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/chip_e2e"
+            android:fontFamily="@font/jetbrains_mono"
+            android:paddingHorizontal="5dp"
+            android:paddingVertical="1dp"
+            android:text="@string/e2e_chip"
+            android:textColor="@color/green"
+            android:textSize="10sp"
+            android:visibility="gone" />
+
+        <ImageView
+            android:id="@+id/btn_exit_remote"
+            android:layout_width="30dp"
+            android:layout_height="30dp"
+            android:layout_marginStart="10dp"
+            android:background="@drawable/btn_power"
+            android:contentDescription="@string/disconnect"
+            android:padding="7dp"
+            android:src="@drawable/ic_power"
+            app:tint="@android:color/white" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/btn_controls"
+        android:layout_width="wrap_content"
+        android:layout_height="34dp"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="12dp"
+        android:background="@drawable/pill_bar"
+        android:elevation="6dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="16dp">
+
+        <View
+            android:layout_width="20dp"
+            android:layout_height="3dp"
+            android:background="@drawable/handle"
+            android:backgroundTint="@color/text2" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:fontFamily="@font/inter_semibold"
+            android:text="@string/controls"
+            android:textColor="@color/text"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <include
+        android:id="@+id/controls_panel"
+        layout="@layout/view_controls"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/key_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="@color/nav_bg"
+        android:orientation="horizontal"
+        android:padding="6dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/kb_esc"
+            style="@style/Od.Tool.Key"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_margin="3dp"
+            android:layout_weight="1"
+            android:background="@drawable/key_tile"
+            android:text="@string/key_esc" />
+
+        <TextView
+            android:id="@+id/kb_tab"
+            style="@style/Od.Tool.Key"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_margin="3dp"
+            android:layout_weight="1"
+            android:background="@drawable/key_tile"
+            android:text="@string/key_tab" />
+
+        <TextView
+            android:id="@+id/kb_win"
+            style="@style/Od.Tool"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_margin="3dp"
+            android:layout_weight="1"
+            android:background="@drawable/key_tile"
+            android:drawableTop="@drawable/ic_win"
+            android:paddingTop="6dp"
+            android:text="@string/key_win" />
+
+        <TextView
+            android:id="@+id/kb_hide"
+            style="@style/Od.Tool"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_margin="3dp"
+            android:layout_weight="1"
+            android:background="@drawable/tool_tile_accent"
+            android:drawableTop="@drawable/ic_kbd"
+            android:paddingTop="6dp"
+            android:text="@string/hide"
+            android:textColor="@color/accent_tx"
+            app:drawableTint="@color/accent_tx" />
+    </LinearLayout>
+</FrameLayout>

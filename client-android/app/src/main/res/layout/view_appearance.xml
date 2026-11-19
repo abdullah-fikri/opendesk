@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Appearance: follow the phone, light or dark (segmented, like the desktop's control). -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/card"
+    android:elevation="1dp"
+    android:orientation="vertical"
+    android:padding="8dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/seg_track"
+        android:orientation="horizontal"
+        android:padding="3dp">
+
+        <TextView
+            android:id="@+id/appearance_system"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_weight="1"
+            android:drawableStart="@drawable/ic_phone"
+            android:drawablePadding="6dp"
+            android:gravity="center"
+            android:paddingHorizontal="8dp"
+            android:text="@string/appearance_system"
+            android:textSize="14sp"
+            app:drawableTint="@color/text" />
+
+        <TextView
+            android:id="@+id/appearance_light"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_weight="1"
+            android:drawableStart="@drawable/ic_sun"
+            android:drawablePadding="6dp"
+            android:gravity="center"
+            android:paddingHorizontal="8dp"
+            android:text="@string/appearance_light"
+            android:textSize="14sp"
+            app:drawableTint="@color/text" />
+
+        <TextView
+            android:id="@+id/appearance_dark"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_weight="1"
+            android:drawableStart="@drawable/ic_moon"
+            android:drawablePadding="6dp"
+            android:gravity="center"
+            android:paddingHorizontal="8dp"
+            android:text="@string/appearance_dark"
+            android:textSize="14sp"
+            app:drawableTint="@color/text" />
+    </LinearLayout>
+
+    <TextView
+        style="@style/Od.Caption"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:paddingHorizontal="6dp"
+        android:paddingBottom="2dp"
+        android:text="@string/appearance_note" />
+</LinearLayout>

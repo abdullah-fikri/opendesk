@@ -19,6 +19,12 @@ object Capabilities {
     /** Relay capability: forwards `p2p-signal`, which carries the end-to-end handshake. */
     const val RELAY_P2P_SIGNAL = "p2p-signal"
 
+    /** Admin edition: shows the monitor wall (`monitor-state` and `0x11` thumbnails). */
+    const val MONITOR_VIEW = "monitor-view"
+
+    /** Relay capability: runs the monitor wall. */
+    const val RELAY_MONITOR = "monitor"
+
     /** Everything `register.caps` carries. */
-    val advertised: List<String> = listOf(VIEWER_ONLY, VIDEO_DELTA, E2E)
+    val advertised: List<String> = listOf(VIEWER_ONLY, VIDEO_DELTA, E2E) + if (Edition.isAdmin) listOf(MONITOR_VIEW) else emptyList()
 }

@@ -1,0 +1,103 @@
+// The window has no system title bar (MainWindow `no-frame`): the app draws minimize / maximize / close in the
+// top-right corner, lets empty bar space move the window, and resizes it from thin edges. Rust implements the
+// WindowFrame callbacks (src/ui/window_frame.rs) with the windowing system's own move and resize.
+
+import { Theme } from "../theme.slint";
+import { Glyph } from "glyph.slint";
+
+export global WindowFrame {
+    // Set by Rust whenever the window is maximized or restored.
+    in-out property <bool> maximized: false;
+    callback minimize();
+    callback toggle-maximize();
+    callback close();
+    // Starts moving the window with the pressed mouse button.
+    callback drag();
+    // Starts resizing from an edge: 0 E, 1 N, 2 NE, 3 NW, 4 S, 5 SE, 6 SW, 7 W.
+    callback resize(int);
+    // The window changed size: Rust refreshes `maximized`.
+    callback state-changed();
+}
+
+component WinButton inherits Rectangle {
+    in property <string> icon;
+    in property <bool> danger: false;
+    callback clicked();
+
+    width: 46px;
+    height: 32px;
+    background: ta.pressed ? (root.danger ? #A82416 : Theme.hover2)
+        : ta.has-hover ? (root.danger ? Theme.close-hover : Theme.hover2) : transparent;
+    animate background { duration: 100ms; }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    Glyph {
+        name: root.icon;
+        size: 10px;
+        tint: ta.has-hover && root.danger ? #ffffff : ta.has-hover ? Theme.text : Theme.text-2;
+    }
+}
+
+// Minimize, maximize / restore and close, flush in the window's top-right corner (46x32 each, like the design).
+// They sit in a 32 px strip above the bars' own buttons, so the bars keep ~150 px clear on the right.
+export component WindowControls inherits HorizontalLayout {
+    spacing: 0px;
+    width: 3 * 46px;
+    height: 32px;
+    WinButton {
+        icon: "minimize";
+        clicked => { WindowFrame.minimize(); }
+    }
+    WinButton {
+        icon: WindowFrame.maximized ? "restore" : "maximize";
+        clicked => { WindowFrame.toggle-maximize(); }
+    }
+    WinButton {
+        icon: "close";
+        danger: true;
+        clicked => { WindowFrame.close(); }
+    }
+}
+
+// Empty bar space: dragging it moves the window, a double click maximizes or restores it. The move starts once
+// the pointer travels a few pixels, so clicks and double clicks still arrive.
+export component DragArea inherits TouchArea {
+    property <bool> dragging: false;
+    pointer-event(e) => {
+        if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
+            self.dragging = false;
+        }
+    }
+    moved => {
+        if (self.pressed && !self.dragging
+            && (abs(self.mouse-x - self.pressed-x) > 3px || abs(self.mouse-y - self.pressed-y) > 3px)) {
+            self.dragging = true;
+            WindowFrame.drag();
+        }
+    }
+    double-clicked => { WindowFrame.toggle-maximize(); }
+}
+
+component Edge inherits TouchArea {
+    in property <int> dir;
+    pointer-event(e) => {
+        if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+            WindowFrame.resize(root.dir);
+        }
+    }
+}
+
+// Resize handles along the window's edges and corners; place last so they sit above the content.
+export component ResizeEdges inherits Rectangle {
+    property <length> t: 5px;
+    property <length> c: 10px;
+    Edge { dir: 1; x: root.c; y: 0; width: root.width - 2 * root.c; height: root.t; mouse-cursor: ns-resize; }
+    Edge { dir: 4; x: root.c; y: root.height - root.t; width: root.width - 2 * root.c; height: root.t; mouse-cursor: ns-resize; }
+    Edge { dir: 7; x: 0; y: root.c; width: root.t; height: root.height - 2 * root.c; mouse-cursor: ew-resize; }
+    Edge { dir: 0; x: root.width - root.t; y: root.c; width: root.t; height: root.height - 2 * root.c; mouse-cursor: ew-resize; }
+    Edge { dir: 3; x: 0; y: 0; width: root.c; height: root.c; mouse-cursor: nwse-resize; }
+    Edge { dir: 5; x: root.width - root.c; y: root.height - root.c; width: root.c; height: root.c; mouse-cursor: nwse-resize; }
+    Edge { dir: 2; x: root.width - root.c; y: 0; width: root.c; height: root.c; mouse-cursor: nesw-resize; }
+    Edge { dir: 6; x: 0; y: root.height - root.c; width: root.c; height: root.c; mouse-cursor: nesw-resize; }
+}

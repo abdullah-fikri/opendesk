@@ -1,55 +1,13 @@
-// Top bar outside viewer sessions: relay status, settings and hosting controls.
+// Top bar while a remote viewer controls this machine: brand, relay status and the hosting controls. It also
+// moves the window (no system title bar); the right end stays clear for the window buttons.
 
-import { Theme } from "../theme.slint";
-import { SolidIcon } from "../components/solid_icon.slint";
-
-// Rounded header button: optional icon and label; `active` highlights it in the accent colour, `primary` fills it.
-component HeaderButton inherits Rectangle {
-    in property <string> label;
-    // SolidIcon kind, -1 = none.
-    in property <int> icon_kind: -1;
-    in property <bool> active: false;
-    in property <bool> primary: false;
-    callback clicked();
-
-    height: 32px;
-    min-width: 32px;
-    horizontal-stretch: 0;
-    border-radius: Theme.radius-sm;
-    background: root.primary ? (ta.has-hover ? Theme.accent-hover : Theme.accent)
-        : root.active ? Theme.accent-soft
-        : ta.has-hover ? Theme.hover : #ffffff0a;
-    border-width: root.primary ? 0px : 1px;
-    border-color: root.active ? Theme.accent : Theme.divider;
-
-    ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        spacing: 7px;
-        alignment: center;
-        if root.icon_kind >= 0: SolidIcon {
-            y: (parent.height - self.height) / 2;
-            size: 15px;
-            kind: root.icon_kind;
-            tint: root.primary ? #ffffff : root.active ? #f87171 : Theme.text-2;
-        }
-        if root.label != "": Text {
-            text: root.label;
-            color: root.primary ? #ffffff : root.active ? #f87171 : Theme.text;
-            font-size: 12px;
-            font-weight: 600;
-            vertical-alignment: center;
-        }
-    }
-}
+import { Theme, Brand } from "../theme.slint";
+import { Btn } from "../components/controls.slint";
+import { DragArea } from "../components/window_frame.slint";
 
 export component HeaderBar inherits Rectangle {
-    height: 46px;
-    background: Theme.bar;
+    height: 52px;
+    background: Theme.side;
     // Explicit limits: the bar adapts to its width, so its width must not come from its content (binding loop).
     min-width: 0px;
     max-width: 100000px;
@@ -57,135 +15,82 @@ export component HeaderBar inherits Rectangle {
 
     in property <bool> is_relay_online: false;
     in property <string> status_text: "Online";
-    in property <bool> is_admin: false;
-    // A remote viewer controls this machine: show its file, microphone and disconnect controls.
-    in property <bool> hosting: false;
     in property <bool> is_mic_muted: false;
-    in-out property <bool> show_settings: false;
     // Window full-screen state, so full-screen can always be left from the header.
     in-out property <bool> fullscreen: false;
-    // Admin edition: the settings page is open.
-    in property <bool> settings_open: false;
 
-    // Relay Hosts list is showing: offer the refresh button.
-    in property <bool> show_refresh: false;
-    callback refresh();
-    callback open_admin_settings();
     callback open_file_picker();
     callback toggle_mic();
     callback disconnect_session();
 
-    // Below this width the status text goes and, while hosting, buttons drop their labels.
+    // Below this width the status text is hidden (it never changes the layout: no binding loop).
     property <bool> narrow: root.width < 760px;
 
-    HorizontalLayout {
-        padding-left: 20px;
-        padding-right: 20px;
-        spacing: 12px;
+    DragArea { }
 
-        // Left: brand and status
-        HorizontalLayout {
-            spacing: 10px;
+    HorizontalLayout {
+        padding-left: 22px;
+        padding-right: root.fullscreen ? 16px : 150px;
+        spacing: 10px;
+
+        Image {
+            y: (parent.height - self.height) / 2;
+            width: 28px;
+            height: 28px;
+            source: Brand.logo;
+            image-fit: contain;
+        }
+        Text {
+            text: "OpenDesk";
+            color: Theme.text;
+            font-size: 14px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            y: (parent.height - self.height) / 2;
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            background: root.is_relay_online ? Theme.green : Theme.accent-mark;
+        }
+        Text {
             horizontal-stretch: 1;
             min-width: 0px;
-
-            Rectangle {
-                width: 8px;
-                height: 8px;
-                border-radius: 4px;
-                background: is_relay_online ? Theme.ok : Theme.accent;
-                y: (parent.height - self.height) / 2;
-            }
-
-            Text {
-                text: is_admin ? "OpenDesk Admin" : "OpenDesk";
-                color: Theme.text;
-                font-size: 13.5px;
-                font-weight: 700;
-                vertical-alignment: center;
-            }
-
-            // Divider and status text: positioned freely in a clipped, stretching area so a narrow window only hides
-            // them (the layout itself never depends on the width: no binding loop).
-            Rectangle {
-                horizontal-stretch: 1;
-                min-width: 0px;
-                clip: true;
-                visible: !root.narrow;
-                Rectangle {
-                    x: 0px;
-                    width: 1px;
-                    height: 13px;
-                    y: (parent.height - self.height) / 2;
-                    background: Theme.border;
-                }
-                Text {
-                    x: 11px;
-                    width: parent.width - 11px;
-                    height: parent.height;
-                    text: status_text;
-                    color: Theme.text-3;
-                    font-size: 12.5px;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-            }
+            visible: !root.narrow;
+            text: root.status_text;
+            color: Theme.text-2;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
         }
 
-        // Right: controls
-        HorizontalLayout {
-            spacing: 8px;
-            horizontal-stretch: 0;
-            alignment: end;
-
-            if fullscreen: HeaderButton {
-                y: (parent.height - self.height) / 2;
-                label: "Exit full screen";
-                clicked => { fullscreen = false; }
-            }
-
-            if show_refresh: HeaderButton {
-                y: (parent.height - self.height) / 2;
-                icon_kind: 8;
-                clicked => { refresh(); }
-            }
-
-            if is_admin: HeaderButton {
-                y: (parent.height - self.height) / 2;
-                icon_kind: 7;
-                label: "Settings";
-                active: settings_open;
-                clicked => { open_admin_settings(); }
-            }
-
-            // The relay address and performance live in Settings for the admin edition.
-            if !is_admin: HeaderButton {
-                y: (parent.height - self.height) / 2;
-                icon_kind: 1;
-                label: "Server";
-                active: show_settings;
-                clicked => { show_settings = !show_settings; }
-            }
-
-            if hosting: HeaderButton {
-                y: (parent.height - self.height) / 2;
-                label: "Send Files";
-                clicked => { open_file_picker(); }
-            }
-
-            if hosting: HeaderButton {
-                y: (parent.height - self.height) / 2;
-                label: is_mic_muted ? "Mic: Off" : "Mic: On";
-                active: !is_mic_muted;
-                clicked => { toggle_mic(); }
-            }
-
-            if hosting: HeaderButton {
-                y: (parent.height - self.height) / 2;
-                label: "Disconnect";
-                primary: true;
-                clicked => { disconnect_session(); }
-            }
+        if root.fullscreen: Btn {
+            y: (parent.height - self.height) / 2;
+            icon: "fullscreen-exit";
+            label: "Exit Full Screen";
+            clicked => { root.fullscreen = false; }
+        }
+        Btn {
+            y: (parent.height - self.height) / 2;
+            icon: "send";
+            label: "Send Files";
+            tip: "Send files to the remote device";
+            clicked => { root.open_file_picker(); }
+        }
+        Btn {
+            y: (parent.height - self.height) / 2;
+            icon: "mic";
+            kind: root.is_mic_muted ? "default" : "tint";
+            label: root.is_mic_muted ? "Mic Off" : "Mic On";
+            tip: root.is_mic_muted ? "Turn the microphone on" : "Turn the microphone off";
+            clicked => { root.toggle_mic(); }
+        }
+        Btn {
+            y: (parent.height - self.height) / 2;
+            kind: "acc";
+            label: "Disconnect";
+            clicked => { root.disconnect_session(); }
         }
     }
 }

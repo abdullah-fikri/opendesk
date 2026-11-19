@@ -2,7 +2,8 @@
 
 import { Theme } from "../theme.slint";
 
-// Segment of a segmented control (resolution, audio, layout, monitors).
+// Segment of a segmented control (resolution, audio quality, monitors): grey when off, white (dark: lighter
+// grey) with a soft shadow when selected, like the redesign's segments.
 export component Segment inherits Rectangle {
     in property <string> label;
     in property <bool> selected: false;
@@ -13,12 +14,16 @@ export component Segment inherits Rectangle {
     min-width: 26px;
     border-radius: Theme.radius-sm;
     horizontal-stretch: 1;
-    background: selected ? Theme.accent : (ta.has-hover && enabled) ? Theme.hover : Theme.surface-2;
-    border-width: 1px;
-    border-color: selected ? Theme.accent : Theme.border;
+    opacity: root.enabled ? 1.0 : 0.4;
+    background: root.selected ? Theme.segon : (ta.has-hover && root.enabled) ? Theme.hover2 : Theme.field;
+    drop-shadow-blur: root.selected ? 2px : 0px;
+    drop-shadow-offset-y: root.selected ? 1px : 0px;
+    drop-shadow-color: root.selected ? #00000024 : transparent;
+    border-width: root.selected && Theme.dark ? 0.5px : 0px;
+    border-color: Theme.card-edge;
 
     ta := TouchArea {
-        mouse-cursor: enabled ? pointer : default;
+        mouse-cursor: root.enabled ? pointer : default;
         clicked => {
             if (root.enabled) {
                 root.clicked();
@@ -28,9 +33,9 @@ export component Segment inherits Rectangle {
 
     Text {
         text: root.label;
-        color: root.selected ? #ffffff : root.enabled ? #d4d4d8 : Theme.text-3;
-        font-size: 11px;
-        font-weight: 600;
+        color: root.selected || ta.has-hover ? Theme.text : Theme.text-2;
+        font-size: 12px;
+        font-weight: 500;
         vertical-alignment: center;
         horizontal-alignment: center;
     }

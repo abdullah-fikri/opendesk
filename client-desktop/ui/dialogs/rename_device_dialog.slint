@@ -1,7 +1,10 @@
 // Rename a history entry (local) or a device in the relay's host list (shared with every administrator).
 
+import { Theme } from "../theme.slint";
+import { Btn, Pop } from "../components/controls.slint";
+
 export component RenameDeviceModal inherits Rectangle {
-    background: #000000ad;
+    background: Theme.scrim;
     width: 100%;
     height: 100%;
 
@@ -10,115 +13,97 @@ export component RenameDeviceModal inherits Rectangle {
     in-out property <bool> show_rename_modal: false;
     // The name is stored on the relay and seen by every administrator; empty restores the device's own name.
     in property <bool> shared: false;
+
     callback save_rename(string, string);
 
-    Rectangle {
-        width: 360px;
-        border-radius: 12px;
-        height: shared ? 196px : 176px;
-        background: #17171c;
-        border-width: 1px;
-        border-color: #27272a;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        clip: true;
+    function save() {
+        root.save_rename(root.rename_target_id, input-alias.text);
+        root.show_rename_modal = false;
+    }
 
-        VerticalLayout {
-            padding: 0px;
-            spacing: 0px;
-
-            Rectangle {
-                height: 2px;
-                background: #dc2626;
+    // Swallows clicks outside the dialog; Esc cancels.
+    TouchArea { }
+    FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                root.show_rename_modal = false;
+                return accept;
             }
+            reject
+        }
+    }
 
-            VerticalLayout {
-                padding: 20px;
-                spacing: 12px;
-                alignment: space-between;
+    Pop {
+        width: 360px;
+        height: body.preferred-height;
+        body := VerticalLayout {
+            padding: 24px;
+            padding-bottom: 20px;
+            spacing: 6px;
 
-                Text {
-                    text: "Device Name (" + rename_target_id + ")";
-                    color: #f4f4f5;
+            Text {
+                text: "Rename Device";
+                color: Theme.text;
+                font-size: 14px;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: root.shared
+                    ? "Shown to every administrator. Leave empty to use the device's own name."
+                    : "Name for " + root.rename_target_id + " in your session history.";
+                color: Theme.text-2;
+                font-size: 12px;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 10px; }
+            Rectangle {
+                height: 32px;
+                border-radius: 7px;
+                background: Theme.inp;
+                border-width: input-alias.has-focus ? 2px : 0px;
+                border-color: Theme.ring;
+                if input-alias.text == "": Text {
+                    x: 10px;
+                    width: parent.width - 20px;
+                    height: parent.height;
+                    text: root.rename_target_id;
+                    color: Theme.text-3;
                     font-size: 13px;
-                    font-weight: 700;
+                    vertical-alignment: center;
                 }
-
-                if shared: Text {
-                    text: "Shown to every administrator. Leave empty to use the device's own name.";
-                    color: #71717a;
-                    font-size: 11px;
+                input-alias := TextInput {
+                    x: 10px;
+                    width: parent.width - 20px;
+                    height: parent.height;
+                    text <=> root.rename_input_val;
+                    color: Theme.text;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    single-line: true;
+                    init => {
+                        self.focus();
+                        self.select-all();
+                    }
+                    accepted => { root.save(); }
                 }
-
-                Rectangle {
-                    height: 38px;
-                    border-radius: 6px;
-                    background: #0b0b0e;
-                    border-width: 1px;
-                    border-color: input-alias.has-focus ? #dc2626 : #27272a;
-
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        input-alias := TextInput {
-                            text <=> rename_input_val;
-                            color: #f4f4f5;
-                            font-size: 13px;
-                            vertical-alignment: center;
-                            single-line: true;
-                            accepted => {
-                                save_rename(rename_target_id, self.text);
-                                show_rename_modal = false;
-                            }
-                        }
-                    }
+            }
+            Rectangle { height: 14px; }
+            HorizontalLayout {
+                spacing: 8px;
+                Btn {
+                    horizontal-stretch: 1;
+                    height: 30px;
+                    label: "Cancel";
+                    clicked => { root.show_rename_modal = false; }
                 }
-
-                HorizontalLayout {
-                    spacing: 8px;
-                    alignment: end;
-
-                    Rectangle {
-                        width: 72px;
-                        height: 32px;
-                        border-radius: 6px;
-                        background: #202027;
-                        border-width: 1px;
-                        border-color: #27272a;
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { show_rename_modal = false; }
-                        }
-                        Text {
-                            text: "Cancel";
-                            color: #d4d4d8;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                            horizontal-alignment: center;
-                        }
-                    }
-
-                    Rectangle {
-                        width: 88px;
-                        height: 32px;
-                        border-radius: 6px;
-                        background: #dc2626;
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                save_rename(rename_target_id, input-alias.text);
-                                show_rename_modal = false;
-                            }
-                        }
-                        Text {
-                            text: "Save";
-                            color: #ffffff;
-                            font-size: 12px;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                            horizontal-alignment: center;
-                        }
-                    }
+                Btn {
+                    horizontal-stretch: 1;
+                    height: 30px;
+                    kind: "acc";
+                    label: "Save";
+                    clicked => { root.save(); }
                 }
             }
         }

@@ -167,7 +167,7 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `multi-session` | client + relay | Up to four viewer sessions per connection. |
 | `session-resume` | client + relay | A lost relay connection suspends the client's sessions for 30 s instead of ending them; a new connection with the resume token takes them over (see [Session resume](#session-resume)). Listed before `fps-N`. |
 | `monitor-host` | client | Streams monitor-wall thumbnails on `monitor-start` (every desktop edition). |
-| `monitor-view` | client | Shows the monitor wall: `monitor-state` and the `0x11` tag (admin edition). |
+| `monitor-view` | client | Shows the monitor wall: `monitor-state` and the `0x11` tag (admin editions, desktop and Android). |
 | `viewer-only` | client | This device never hosts; the relay refuses connect requests to it. |
 | `host-features` | client | The host lists its optional host controls below. Without it the host is a legacy Windows host that has all of them. |
 | `privacy-screen` | client, with `host-features` | `set-privacy` works on this host. |

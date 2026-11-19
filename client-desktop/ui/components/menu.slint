@@ -1,8 +1,9 @@
-// Popover menu frame, rows and captions.
+// Popover menu frame, rows and captions, in the redesign's popover style.
 
 import { Theme } from "../theme.slint";
+import { Glyph } from "glyph.slint";
 
-// One option inside a popover: a square radio mark + label (+ optional hint on the right).
+// One option inside a popover: a round radio mark (or none) + label (+ an optional hint on the right).
 export component MenuRow inherits Rectangle {
     in property <string> label;
     in property <string> hint;
@@ -11,8 +12,8 @@ export component MenuRow inherits Rectangle {
     callback clicked();
 
     height: 30px;
-    border-radius: 6px;
-    background: ta.has-hover ? Theme.hover : transparent;
+    border-radius: 7px;
+    background: ta.has-hover ? Theme.hover-soft : transparent;
 
     ta := TouchArea {
         mouse-cursor: pointer;
@@ -24,30 +25,34 @@ export component MenuRow inherits Rectangle {
         padding-right: 10px;
         spacing: 10px;
         if root.radio: Rectangle {
-            width: 10px;
-            height: 10px;
+            width: 14px;
+            height: 14px;
             y: (parent.height - self.height) / 2;
-            border-width: 1px;
-            border-color: root.selected ? Theme.accent : #52525b;
-            background: transparent;
-            Rectangle {
-                width: 4px;
-                height: 4px;
-                background: root.selected ? Theme.accent : transparent;
+            border-radius: 7px;
+            border-width: root.selected ? 0px : 1.5px;
+            border-color: Theme.text-3;
+            background: root.selected ? Theme.accent : transparent;
+            if root.selected: Rectangle {
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: #ffffff;
             }
         }
         Text {
             horizontal-stretch: 1;
             text: root.label;
-            color: root.selected ? Theme.text : #d4d4d8;
-            font-size: 12px;
+            color: Theme.text;
+            font-size: 13px;
+            font-weight: root.selected ? 500 : 400;
             vertical-alignment: center;
             overflow: elide;
         }
         if root.hint != "": Text {
             text: root.hint;
             color: Theme.text-3;
-            font-size: 11px;
+            font-size: 11.5px;
+            font-family: Theme.mono;
             vertical-alignment: center;
         }
     }
@@ -56,31 +61,24 @@ export component MenuRow inherits Rectangle {
 // Section caption inside a popover.
 export component MenuCaption inherits Text {
     color: Theme.text-3;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.6px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
 }
 
-// Popover frame: dark surface, 1px border, 2px accent line on top.
+// Popover frame: elevated surface with the soft popover shadow (same as `Pop`).
 export component PopoverFrame inherits Rectangle {
-    background: Theme.surface;
+    background: Theme.elev;
+    border-radius: 12px;
     border-width: 1px;
-    border-color: Theme.border;
-    drop-shadow-blur: 12px;
-    drop-shadow-color: #00000080;
-    drop-shadow-offset-y: 4px;
+    border-color: Theme.pop-edge;
+    drop-shadow-blur: 28px;
+    drop-shadow-color: Theme.pop-shadow;
+    drop-shadow-offset-y: 10px;
 
     VerticalLayout {
-        padding: 0px;
-        spacing: 0px;
-        Rectangle {
-            height: 2px;
-            background: Theme.accent;
-        }
-        VerticalLayout {
-            padding: 8px;
-            spacing: 6px;
-            @children
-        }
+        padding: 10px;
+        spacing: 6px;
+        @children
     }
 }

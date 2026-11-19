@@ -1,78 +1,106 @@
-// One host on the monitor wall: its latest thumbnail, name and state. View only: no input reaches the host;
-// a double click opens a normal (interactive) session instead.
+// One host on the monitor wall: its latest thumbnail (16:9) with its name below. View only: no input reaches the
+// host; a double click opens a normal (interactive) session instead.
 
 import { MonitorTile } from "../../types.slint";
 import { Theme } from "../../theme.slint";
+import { Glyph } from "../../components/glyph.slint";
 
 export component MonitorTileView inherits Rectangle {
     in property <MonitorTile> tile;
+    // Full screen: the picture only, no caption.
+    in property <bool> bare: false;
     callback connect(string);
 
     property <bool> live: tile.state == 1;
+    property <length> caption: root.bare ? 0px : 26px;
 
-    background: Theme.canvas;
-    border-width: 1px;
-    border-color: ta.has-hover && live ? Theme.text-3 : Theme.border;
-    clip: true;
+    preview := Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height - root.caption;
+        border-radius: root.bare ? 4px : 10px;
+        background: Theme.dark ? #111111 : #D6D4D0;
+        clip: true;
+        border-width: ta.has-hover && root.live && !root.bare ? 2px : 0px;
+        border-color: Theme.accent-line;
 
-    if tile.has_frame: Image {
-        x: 1px;
-        y: 1px;
-        width: parent.width - 2px;
-        height: parent.height - 26px;
-        source: tile.frame;
-        image-fit: contain;
-        // Thumbnails stay where they are when the host goes away, dimmed.
-        opacity: root.live ? 1.0 : 0.35;
-    }
+        if tile.has_frame: Image {
+            width: parent.width;
+            height: parent.height;
+            source: tile.frame;
+            image-fit: contain;
+            // Thumbnails stay where they are when the host goes away, dimmed.
+            opacity: root.live ? 1.0 : 0.35;
+        }
 
-    if !root.live || !tile.has_frame: Text {
-        y: (parent.height - 24px - self.height) / 2;
-        width: parent.width;
-        text: tile.state <= 1 ? "Waiting for the first picture…"
-            : tile.state == 2 ? "Offline"
-            : tile.state == 3 ? "This device cannot be monitored (Android or an older OpenDesk)"
-            : "This device is not an administrator on the relay";
-        color: tile.state == 2 || tile.state == 3 || tile.state == 4 ? Theme.text-3 : Theme.text-2;
-        font-size: 11px;
-        horizontal-alignment: center;
-        wrap: word-wrap;
-    }
+        if !root.live || !tile.has_frame: Text {
+            x: 16px;
+            width: parent.width - 32px;
+            height: parent.height;
+            text: tile.state <= 1 ? "Waiting for the first picture…"
+                : tile.state == 2 ? "Offline"
+                : tile.state == 3 ? "This device cannot be monitored (Android or an older OpenDesk)"
+                : "This device is not an administrator on the relay";
+            color: Theme.dark ? #ffffff99 : Theme.text-2;
+            font-size: 12px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
 
-    // Caption
-    Rectangle {
-        y: parent.height - 25px;
-        height: 24px;
-        border-radius: 6px;
-        x: 1px;
-        width: parent.width - 2px;
-        background: Theme.surface;
-        HorizontalLayout {
-            padding-left: 8px;
-            padding-right: 8px;
-            spacing: 8px;
-            Rectangle {
-                width: 6px;
-                height: 6px;
-                y: (parent.height - self.height) / 2;
-                background: tile.state == 1 ? Theme.ok : tile.state == 0 ? Theme.wait : tile.state == 2 ? #52525b : Theme.accent;
-            }
-            Text {
-                horizontal-stretch: 1;
-                text: tile.title;
-                color: Theme.text;
-                font-size: 11px;
-                font-weight: 600;
-                vertical-alignment: center;
-                overflow: elide;
-            }
-            Text {
-                text: tile.subtitle;
-                color: Theme.text-3;
-                font-size: 11px;
-                vertical-alignment: center;
+        // Opens a session (double click works too)
+        if root.live && ta.has-hover: Rectangle {
+            x: parent.width - 32px;
+            y: 8px;
+            width: 24px;
+            height: 24px;
+            border-radius: 7px;
+            background: #141416b3;
+            Glyph {
+                name: "expand";
+                size: 12px;
+                tint: #ffffff;
             }
         }
+    }
+
+    // Caption under the picture (its own box, so the picture never covers it).
+    if !root.bare: Rectangle {
+      x: 0;
+      y: root.height - root.caption;
+      width: root.width;
+      height: root.caption;
+      HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        spacing: 8px;
+        Rectangle {
+            y: (parent.height - self.height) / 2;
+            width: 7px;
+            height: 7px;
+            border-radius: 3.5px;
+            background: tile.state == 1 ? Theme.green : tile.state == 0 ? Theme.amber : tile.state == 2 ? transparent : Theme.accent-mark;
+            border-width: tile.state == 2 ? 1.5px : 0px;
+            border-color: Theme.text-3;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: tile.title;
+            color: Theme.text;
+            font-size: 12.5px;
+            font-weight: 500;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            text: tile.subtitle;
+            color: Theme.text-3;
+            font-size: 11.5px;
+            font-family: Theme.mono;
+            vertical-alignment: center;
+        }
+      }
     }
 
     ta := TouchArea {

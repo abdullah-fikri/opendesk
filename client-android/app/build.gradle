@@ -25,6 +25,26 @@ android {
         versionName appVersion
     }
 
+    buildFeatures {
+        buildConfig true
+    }
+
+    // Editions, chosen at build time like the desktop's `--features admin` (see domain/Edition.kt). The admin
+    // edition has its own application ID so both can be installed side by side.
+    flavorDimensions 'edition'
+    productFlavors {
+        standard {
+            dimension 'edition'
+            buildConfigField 'boolean', 'ADMIN', 'false'
+        }
+        admin {
+            dimension 'edition'
+            applicationIdSuffix '.admin'
+            versionNameSuffix '-admin'
+            buildConfigField 'boolean', 'ADMIN', 'true'
+        }
+    }
+
     signingConfigs {
         if (keystoreFile) {
             release {

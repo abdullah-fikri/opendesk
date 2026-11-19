@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Relay: address and optional device token, checked as they are typed, then Save & Connect. -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingHorizontal="@dimen/page_pad"
+        android:paddingBottom="24dp">
+
+        <include layout="@layout/view_back" />
+
+        <TextView
+            style="@style/Od.LargeTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:paddingStart="4dp"
+            android:text="@string/relay_button" />
+
+        <LinearLayout
+            android:id="@+id/relay_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:visibility="gone">
+
+            <View
+                android:id="@+id/relay_status_dot"
+                android:layout_width="6dp"
+                android:layout_height="6dp"
+                android:background="@drawable/dot"
+                android:backgroundTint="@color/green" />
+
+            <TextView
+                android:id="@+id/relay_status_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:fontFamily="@font/inter_semibold"
+                android:textColor="@color/green"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/relay_banner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/banner_error"
+            android:orientation="horizontal"
+            android:padding="12dp"
+            android:visibility="gone">
+
+            <ImageView
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:layout_marginTop="1dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_warn"
+                app:tint="@color/accent_fill" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="@font/inter_bold"
+                    android:text="@string/relay_unreachable_title"
+                    android:textColor="@color/text"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/relay_banner_body"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textColor="@color/text2"
+                    android:textSize="13sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/card"
+            android:elevation="1dp"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/inter_semibold"
+                android:text="@string/relay_address"
+                android:textColor="@color/text3"
+                android:textSize="12sp" />
+
+            <EditText
+                android:id="@+id/et_relay"
+                style="@style/Od.Field"
+                android:layout_width="match_parent"
+                android:layout_marginTop="8dp"
+                android:hint="@string/relay_url_hint"
+                android:imeOptions="actionNext"
+                android:inputType="textUri" />
+
+            <TextView
+                android:id="@+id/relay_error"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textColor="@color/accent_tx"
+                android:textSize="12sp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/relay_saved_as"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:textColor="@color/text3"
+                android:textSize="12sp"
+                android:visibility="gone" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:fontFamily="@font/inter_semibold"
+                android:text="@string/device_token_optional"
+                android:textColor="@color/text3"
+                android:textSize="12sp" />
+
+            <EditText
+                android:id="@+id/et_token"
+                style="@style/Od.Field"
+                android:layout_width="match_parent"
+                android:layout_marginTop="8dp"
+                android:fontFamily="@font/jetbrains_mono"
+                android:hint="@string/not_set"
+                android:imeOptions="actionDone"
+                android:inputType="textPassword" />
+
+            <TextView
+                android:id="@+id/token_error"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="@string/token_too_short"
+                android:textColor="@color/accent_tx"
+                android:textSize="12sp"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/btn_save_relay"
+            style="@style/Od.Button.Large"
+            android:layout_width="match_parent"
+            android:layout_marginTop="16dp"
+            android:text="@string/save_and_connect" />
+    </LinearLayout>
+</ScrollView>

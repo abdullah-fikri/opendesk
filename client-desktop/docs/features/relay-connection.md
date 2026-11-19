@@ -1,6 +1,6 @@
 # Relay connection
 
-Code: `src/service/relay/connection.rs` (transport loop), `src/service/relay/dispatcher.rs` (message handling).
+Code: `src/service/relay/connection/` (transport loop in `mod.rs`; `outbound.rs`, `inbound.rs`, `p2p_files.rs`, `sessions.rs` suspend/resume, `socket.rs`), `src/service/relay/dispatcher.rs` (message handling).
 
 ## Lifecycle
 

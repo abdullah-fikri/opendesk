@@ -1,16 +1,52 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  The redesign's palette, light theme. values-night/colors.xml holds the dark one; Android picks it when the
+  phone is in dark mode, so the app follows the device setting (Theme.OpenDesk is DayNight).
+-->
 <resources>
-    <color name="bg_main">#09090B</color>
-    <color name="bg_surface">#111114</color>
-    <color name="bg_card">#111114</color>
-    <color name="bg_input">#0A0A0C</color>
-    <color name="accent_red">#DC2626</color>
-    <color name="accent_red_dark">#B91C1C</color>
-    <color name="text_main">#F4F4F5</color>
-    <color name="text_muted">#71717A</color>
-    <color name="border">#222227</color>
-    <!-- Referenced from code. -->
-    <color name="accent">#DC2626</color>
-    <color name="status_online">#22C55E</color>
-    <color name="status_offline">#64748B</color>
+    <color name="bg">#F6F5F2</color>
+    <color name="side">#ECEAE6</color>
+    <color name="surf">#FFFFFF</color>
+    <color name="surf2">#F0EFEB</color>
+    <color name="elev">#FFFFFF</color>
+    <color name="text">#1D1D1F</color>
+    <color name="text2">#5F5F66</color>
+    <color name="text3">#74747B</color>
+    <color name="line">#14000000</color>
+    <color name="field">#0E000000</color>
+    <color name="hover2">#17000000</color>
+    <color name="segon">#FFFFFF</color>
+    <color name="nav_bg">#ECEAE6</color>
+    <color name="nav_pill">#17000000</color>
+    <color name="accent">#F04452</color>
+    <color name="accent_fill">#DB3141</color>
+    <color name="accent_fill_disabled">#EBA0A6</color>
+    <color name="accent_soft">#1AF04452</color>
+    <color name="accent_soft_strong">#24F04452</color>
+    <color name="accent_tx">#C92A3A</color>
+    <color name="accent_line">#99F04452</color>
+    <color name="green">#1F9D64</color>
+    <color name="green_soft">#1A1F9D64</color>
+    <color name="amber">#A8691A</color>
+    <color name="blue">#2F6FD6</color>
+    <color name="purple">#7C5CE0</color>
+    <color name="cyan">#1E9DB3</color>
+    <color name="offline">#9A9AA0</color>
+    <color name="tog_off">#33000000</color>
+    <color name="bar_shadow">#40000000</color>
+    <!-- Long-press menu: dimmed screen, menu surface, the gap before Delete. -->
+    <color name="menu_scrim">#2E000000</color>
+    <color name="menu_bg">#F7FFFFFF</color>
+    <color name="menu_gap">#0D000000</color>
+    <color name="on_accent">#FFFFFF</color>
+    <!-- Behind the remote screen (letterbox), in both themes. -->
+    <color name="viewer_bg">#111113</color>
+    <!-- Monitor wall: always dark, like the viewer. -->
+    <color name="wall_text">#F2F2F4</color>
+    <color name="wall_text2">#A0A0A8</color>
+    <color name="wall_tile">#1E1E22</color>
+    <color name="wall_label">#B3000000</color>
+    <color name="wall_banner">#2A2A30</color>
+    <!-- Launcher icon background (mipmap-anydpi-v26). -->
+    <color name="launcher_bg">#FFFFFF</color>
 </resources>

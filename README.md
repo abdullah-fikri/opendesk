@@ -75,8 +75,8 @@ Feature differences between platforms are listed in [docs/platforms.md](docs/pla
 - Unattended hosts: start at logon (Windows: elevated, so admin windows can be controlled, with a watchdog in
   portable installs; Linux: XDG autostart), stay in the tray.
 - `opendesk` CLI on Windows and Linux to set the relay, show the device ID, stop or prepare uninstall.
-- Admin edition with a live list of every device on the relay and a read-only monitor wall (up to 16 live
-  thumbnails per page, paged and optionally auto-rotating).
+- Admin edition (desktop and Android) with a live list of every device on the relay and a read-only monitor wall
+  (up to 16 live thumbnails per page, paged and optionally auto-rotating).
 - Relay with per-device credentials, metrics, health endpoint, versioned database migrations and a published
   container image.
 
@@ -88,6 +88,7 @@ Feature differences between platforms are listed in [docs/platforms.md](docs/pla
 | Admin | `OpenDesk-Admin-Setup-<version>.exe`; `opendesk-admin_<version>-1_amd64.deb` | Administrators: Standard plus the relay's device list |
 | Headless host | `OpenDesk-Host-Setup-<version>.exe`; `opendesk-host_<version>-1_amd64.deb` | Servers, VMs and kiosks: no window or tray, incoming sessions only |
 | Android | `OpenDesk-<version>.apk` (`.aab` for Google Play) | Phones: view and control a computer (viewer only) |
+| Android admin | `OpenDesk-Admin-<version>.apk` (`.aab` for Google Play) | Administrators' phones: every device on the relay and the monitor wall |
 | Relay | `ghcr.io/abdullah-fikri/opendesk-relay` | Your server |
 
 Download them from [GitHub Releases](https://github.com/abdullah-fikri/opendesk/releases).
@@ -162,7 +163,7 @@ opendesk/
 make help        # all targets
 make test        # every unit test
 make relay       # builds/relay/opendesk-relay(.exe)
-make android     # builds/android/OpenDesk.apk
+make android     # builds/android/OpenDesk.apk and OpenDesk-Admin.apk
 
 # Windows
 make windows     # builds\windows\OpenDesk.exe

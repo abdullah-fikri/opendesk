@@ -1,9 +1,13 @@
 // Remote screen with pointer and keyboard capture; coordinates are normalized to 0..10000.
 
+import { Theme } from "../theme.slint";
+import { Glyph } from "glyph.slint";
+
 export component RemoteViewerCanvas inherits Rectangle {
     width: 100%;
     height: 100%;
-    background: #050507;
+    // Letterbox around the remote screen, in the app's appearance.
+    background: Theme.canvas;
     clip: true;
 
     in property <bool> has_remote_frame: false;
@@ -201,33 +205,41 @@ export component RemoteViewerCanvas inherits Rectangle {
 
     if !has_remote_frame: Rectangle {
         width: Math.min(320px, parent.width - 24px);
-        height: 100px;
-        background: #111114;
-        border-width: 1px;
-        border-color: #27272a;
+        height: 76px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
+        background: Theme.surf;
+        border-radius: 12px;
+        drop-shadow-blur: Theme.shadow-blur;
+        drop-shadow-offset-y: 3px;
+        drop-shadow-color: Theme.shadow;
+        border-width: Theme.dark ? 0.5px : 0px;
+        border-color: Theme.card-edge;
 
-        VerticalLayout {
-            padding: 0px;
-            Rectangle {
-                height: 2px;
-                background: #dc2626;
+        HorizontalLayout {
+            padding-left: 18px;
+            padding-right: 18px;
+            spacing: 14px;
+            Glyph {
+                y: (parent.height - self.height) / 2;
+                name: "spinner";
+                size: 20px;
+                tint: Theme.accent-mark;
             }
             VerticalLayout {
-                padding: 20px;
-                spacing: 6px;
                 alignment: center;
+                spacing: 3px;
                 Text {
-                    text: "Connecting to the screen...";
-                    color: #f4f4f5;
+                    text: "Connecting to the screen…";
+                    color: Theme.text;
                     font-size: 13px;
                     font-weight: 600;
                 }
                 Text {
                     text: active_partner_id;
-                    color: #71717a;
+                    color: Theme.text-2;
                     font-size: 12px;
+                    font-family: Theme.mono;
                     overflow: elide;
                 }
             }
@@ -242,16 +254,15 @@ export component RemoteViewerCanvas inherits Rectangle {
         Rectangle {
             background: focus-ta.has-hover ? #00000040 : transparent;
             if focus-ta.has-hover: Rectangle {
-                width: hint.preferred-width + 20px;
-                height: 26px;
-                background: #111114e6;
-                border-width: 1px;
-                border-color: #27272a;
+                width: hint.preferred-width + 24px;
+                height: 28px;
+                border-radius: 8px;
+                background: #141416e6;
                 hint := Text {
                     text: "Click to focus";
-                    color: #f4f4f5;
-                    font-size: 11px;
-                    font-weight: 600;
+                    color: #ffffff;
+                    font-size: 12px;
+                    font-weight: 500;
                 }
             }
         }

@@ -1,6 +1,6 @@
 # Monitor wall
 
-The admin edition can watch many machines at once, like a CCTV wall: a grid of 2x2, 3x3 or 4x4 live
+The admin edition (desktop or Android) can watch many machines at once, like a CCTV wall: a grid of 2x2, 3x3 or 4x4 live
 thumbnails, paged when there are more devices, with optional automatic page rotation. It is **view only**: no
 input, clipboard, files, voice, privacy screen or monitor switching, for anyone, enforced by the relay.
 
@@ -16,7 +16,9 @@ Implemented in:
 - Host side, every desktop edition: `client-desktop/src/service/host/monitor_stream.rs`.
 - Wall, admin edition only (`--features admin`): `client-desktop/src/domain/monitor_wall.rs` (paging, rotation,
   selection), `src/service/monitor_wall.rs`, `src/ui/monitor_wall_model.rs`, `ui/views/monitor/`.
-- Android advertises nothing and shows as "cannot be monitored".
+- Android admin edition (Gradle flavor `admin`): a watcher only, `client-android/ui/monitor/`, see
+  [client-android/docs/features/monitor-wall.md](../../client-android/docs/features/monitor-wall.md). No Android
+  edition advertises `monitor-host`, so phones show as "cannot be monitored".
 
 ## Negotiation
 
@@ -24,7 +26,7 @@ Implemented in:
 | --- | --- | --- |
 | `monitor` | relay | The relay runs the wall (`registered-ack.caps`). |
 | `monitor-host` | client | Streams thumbnails on `monitor-start`. Every desktop edition, including headless. |
-| `monitor-view` | client | Understands `monitor-state` and the `0x11` tag. Admin edition only. |
+| `monitor-view` | client | Understands `monitor-state` and the `0x11` tag. Admin editions only (desktop and Android). |
 
 Without `monitor` the wall says the relay must be updated. A host without `monitor-host` (Android, older desktop
 clients) shows as `unsupported` and is never sent anything.

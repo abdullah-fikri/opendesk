@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Security: encryption, this phone's key, the computers whose key is pinned, and the relay's device token. -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingHorizontal="@dimen/page_pad"
+        android:paddingBottom="24dp">
+
+        <include layout="@layout/view_back" />
+
+        <TextView
+            style="@style/Od.LargeTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:paddingStart="4dp"
+            android:text="@string/security" />
+
+        <TextView
+            style="@style/Od.Section"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="@string/section_encryption" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/card"
+            android:elevation="1dp"
+            android:orientation="vertical">
+
+            <include
+                android:id="@+id/sec_e2e"
+                layout="@layout/row_setting" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginStart="56dp"
+                android:background="@color/line" />
+
+            <include
+                android:id="@+id/sec_key"
+                layout="@layout/row_setting" />
+        </LinearLayout>
+
+        <TextView
+            style="@style/Od.Section"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/section_trusted" />
+
+        <LinearLayout
+            android:id="@+id/trusted_list"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/card"
+            android:elevation="1dp"
+            android:orientation="vertical" />
+
+        <TextView
+            style="@style/Od.Caption"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:lineSpacingExtra="2dp"
+            android:paddingHorizontal="6dp"
+            android:text="@string/trusted_explainer" />
+
+        <TextView
+            style="@style/Od.Section"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/section_relay_access" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/card"
+            android:elevation="1dp"
+            android:orientation="vertical">
+
+            <include
+                android:id="@+id/sec_token"
+                layout="@layout/row_setting" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

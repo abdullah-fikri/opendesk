@@ -6,6 +6,7 @@ import { SessionView } from "../../types.slint";
 import { Theme } from "../../theme.slint";
 import { ToolButton } from "../../components/tool_button.slint";
 import { MenuRow, MenuCaption, PopoverFrame } from "../../components/menu.slint";
+import { Switch } from "../../components/controls.slint";
 import { Segment } from "../../components/segment.slint";
 import { VDivider } from "../../components/divider.slint";
 import { MonitorPicker } from "monitor_picker.slint";
@@ -29,13 +30,13 @@ export component SessionToolbar inherits Rectangle {
     in property <bool> stats_on: false;
     callback toggle_stats();
 
-    height: 38px;
-    background: Theme.surface;
+    height: 44px;
+    background: Theme.bg;
 
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 8px;
-        spacing: 4px;
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 6px;
 
         if root.s.monitors.length > 1: MonitorPicker {
             monitors: root.s.monitors;
@@ -49,16 +50,16 @@ export component SessionToolbar inherits Rectangle {
 
         ToolButton {
             y: (parent.height - self.height) / 2;
+            glyph: "send";
             label: "Send files";
             tip: "Send files to this device (or drag and drop them onto the window)";
             clicked => { root.send_files(root.s.id); }
         }
 
         // While host sound plays both microphones are closed, so their buttons are hidden.
-        ToolButton {
-            visible: !(root.s.host_sound_available && root.s.host_sound);
-            max-width: self.visible ? 1000px : 0px;
+        if !(root.s.host_sound_available && root.s.host_sound): ToolButton {
             y: (parent.height - self.height) / 2;
+            glyph: "mic";
             label: root.s.mic_muted ? "Microphone off" : "Microphone on";
             active: !root.s.mic_muted;
             tip: root.s.mic_muted ? "Unmute the microphone for this session" : "Mute microphone";
@@ -66,9 +67,7 @@ export component SessionToolbar inherits Rectangle {
         }
 
         // The host's own microphone; hosts up to 1.2.x do not report it, so the button is hidden for them.
-        ToolButton {
-            visible: root.s.host_mic != 0 && !(root.s.host_sound_available && root.s.host_sound);
-            max-width: self.visible ? 1000px : 0px;
+        if root.s.host_mic != 0 && !(root.s.host_sound_available && root.s.host_sound): ToolButton {
             y: (parent.height - self.height) / 2;
             label: root.s.host_mic == 2 ? "Host mic off" : "Host mic on";
             active: root.s.host_mic == 1;
@@ -77,9 +76,7 @@ export component SessionToolbar inherits Rectangle {
         }
 
         // Host sound and the voice call alternate: while host sound plays, both microphones stay closed.
-        ToolButton {
-            visible: root.s.host_sound_available;
-            max-width: self.visible ? 1000px : 0px;
+        if root.s.host_sound_available: ToolButton {
             y: (parent.height - self.height) / 2;
             label: root.s.host_sound ? "Host sound on" : "Host sound off";
             active: root.s.host_sound;
@@ -87,9 +84,7 @@ export component SessionToolbar inherits Rectangle {
             clicked => { root.toggle_host_sound(root.s.id); }
         }
 
-        kb-btn := ToolButton {
-            visible: root.system_keys_menu;
-            max-width: self.visible ? 1000px : 0px;
+        if root.system_keys_menu: kb-btn := ToolButton {
             y: (parent.height - self.height) / 2;
             label: "Keyboard";
             caret: true;
@@ -102,7 +97,7 @@ export component SessionToolbar inherits Rectangle {
                 width: 220px;
                 close-policy: close-on-click;
                 PopoverFrame {
-                    MenuCaption { text: "KEYBOARD SHORTCUTS"; }
+                    MenuCaption { text: "Keyboard shortcuts"; }
                     VerticalLayout {
                         spacing: 0px;
                         MenuRow { radio: false; label: "Windows key"; hint: "Start"; clicked => { root.shortcut(root.s.id, "win"); } }
@@ -125,10 +120,10 @@ export component SessionToolbar inherits Rectangle {
             view-pop := PopupWindow {
                 x: 0;
                 y: parent.height + 4px;
-                width: 300px;
+                width: 320px;
                 close-policy: close-on-click-outside;
                 PopoverFrame {
-                    MenuCaption { text: "STREAM RESOLUTION"; }
+                    MenuCaption { text: "Stream resolution"; }
                     HorizontalLayout {
                         spacing: 4px;
                         Segment { label: "Auto"; horizontal-stretch: 1.6; selected: root.s.resolution_mode == 1; clicked => { root.set_resolution(root.s.id, 1); } }
@@ -141,11 +136,12 @@ export component SessionToolbar inherits Rectangle {
                         text: root.s.resolution_mode == 1 ? "Follows the size of this window or tile."
                             : root.s.resolution_mode == 0 ? "The host's native resolution, sharpest."
                             : "Smaller means lower latency.";
-                        color: Theme.text-3;
-                        font-size: 11px;
+                        color: Theme.text-2;
+                        font-size: 12px;
+                        wrap: word-wrap;
                     }
                     Rectangle { height: 4px; }
-                    MenuCaption { text: "MICROPHONE QUALITY"; }
+                    MenuCaption { text: "Microphone quality"; }
                     HorizontalLayout {
                         spacing: 4px;
                         Segment { label: "16 kHz Economy"; selected: root.s.audio_quality == 0; clicked => { root.set_audio_quality(root.s.id, 0); } }
@@ -157,9 +153,7 @@ export component SessionToolbar inherits Rectangle {
         }
 
         // Hosts that cannot hide their screen or lock their input (Linux) do not offer these controls.
-        priv-btn := ToolButton {
-            visible: !root.s.privacy_unavailable || !root.s.block_input_unavailable;
-            max-width: self.visible ? 1000px : 0px;
+        if !root.s.privacy_unavailable || !root.s.block_input_unavailable: priv-btn := ToolButton {
             y: (parent.height - self.height) / 2;
             label: "Privacy";
             caret: true;
@@ -170,10 +164,10 @@ export component SessionToolbar inherits Rectangle {
             priv-pop := PopupWindow {
                 x: 0;
                 y: parent.height + 4px;
-                width: 260px;
+                width: 280px;
                 close-policy: close-on-click-outside;
                 PopoverFrame {
-                    if !root.s.privacy_unavailable: MenuCaption { text: "DEVICE SCREEN"; }
+                    if !root.s.privacy_unavailable: MenuCaption { text: "Device screen"; }
                     if !root.s.privacy_unavailable: VerticalLayout {
                         spacing: 0px;
                         MenuRow { label: "Normal"; selected: root.s.privacy_mode == 0; clicked => { root.set_privacy(root.s.id, 0); } }
@@ -181,30 +175,30 @@ export component SessionToolbar inherits Rectangle {
                         MenuRow { label: "Maintenance screen"; selected: root.s.privacy_mode == 2; clicked => { root.set_privacy(root.s.id, 2); } }
                         MenuRow { label: "Black screen"; selected: root.s.privacy_mode == 3; clicked => { root.set_privacy(root.s.id, 3); } }
                     }
-                    if !root.s.privacy_unavailable && !root.s.block_input_unavailable: Rectangle { height: 1px; background: Theme.divider; }
+                    if !root.s.privacy_unavailable && !root.s.block_input_unavailable: Rectangle { height: 1px; background: Theme.line; }
                     if !root.s.block_input_unavailable: Rectangle {
-                        height: 32px;
-                        background: block-ta.has-hover ? Theme.hover : transparent;
+                        height: 36px;
+                        border-radius: 7px;
+                        background: block-ta.has-hover ? Theme.hover-soft : transparent;
                         block-ta := TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.toggle_block_input(root.s.id); }
                         }
                         HorizontalLayout {
                             padding-left: 10px;
-                            padding-right: 10px;
+                            padding-right: 6px;
+                            spacing: 10px;
                             Text {
                                 horizontal-stretch: 1;
                                 text: "Lock physical mouse & keyboard";
                                 color: Theme.text;
-                                font-size: 12px;
+                                font-size: 13px;
                                 vertical-alignment: center;
                             }
-                            Text {
-                                text: root.s.block_input ? "ON" : "OFF";
-                                color: root.s.block_input ? #f87171 : Theme.text-3;
-                                font-size: 11px;
-                                font-weight: 700;
-                                vertical-alignment: center;
+                            Switch {
+                                y: (parent.height - self.height) / 2;
+                                on: root.s.block_input;
+                                toggled => { root.toggle_block_input(root.s.id); }
                             }
                         }
                     }
@@ -226,7 +220,7 @@ export component SessionToolbar inherits Rectangle {
             min-width: 0px;
             text: root.s.status;
             color: Theme.text-3;
-            font-size: 11px;
+            font-size: 12px;
             vertical-alignment: center;
             horizontal-alignment: right;
             overflow: elide;
@@ -241,13 +235,15 @@ export component SessionToolbar inherits Rectangle {
                 width: 7px;
                 height: 7px;
                 y: (parent.height - self.height) / 2;
+                border-radius: 3.5px;
                 background: Theme.session-dot(root.s.connecting, root.s.path);
             }
             Text {
                 text: root.s.connecting ? "Connecting…"
                     : root.s.path + "  ·  " + root.s.fps + " fps" + (root.s.stream_width > 0 ? "  ·  " + root.s.stream_width + "×" + root.s.stream_height : "");
                 color: Theme.text-2;
-                font-size: 11px;
+                font-size: 12px;
+                font-family: Theme.mono;
                 vertical-alignment: center;
             }
         }
@@ -261,7 +257,7 @@ export component SessionToolbar inherits Rectangle {
             y: (parent.height - self.height) / 2;
             label: "Disconnect";
             danger: true;
-            pad: 12px;
+            pad: 14px;
             tip: "Disconnect session " + root.s.title;
             clicked => { root.disconnect(root.s.id); }
         }
@@ -270,7 +266,7 @@ export component SessionToolbar inherits Rectangle {
     Rectangle {
         y: parent.height - 1px;
         height: 1px;
-        background: Theme.divider;
+        background: Theme.line;
     }
 }
 

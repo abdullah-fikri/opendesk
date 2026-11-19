@@ -73,7 +73,12 @@ services:
       resources:
         limits:
           memory: 500M  # unchanged; remove only `cpus`
+        reservations:
+          memory: 256M  # memory only: a `cpus` reservation conflicts the same way
 ```
+
+Remove `cpus` from `deploy.resources.reservations` too: Docker rejects a CPU reservation next to `cpu_period` /
+`cpu_quota` just like a limit, and the container does not start.
 
 If the platform does not allow `cpu_period`, set `GOMAXPROCS: "1"` in the relay's environment instead (keeping
 `cpus`). Go otherwise runs at least two threads even under half a CPU; with one, a short burst can no longer use

@@ -9,10 +9,23 @@ OkHttp for the WebSocket and Gson for JSON.
 Requirements: JDK 17 or newer (Android Studio's bundled JBR works), Android SDK platform 36.
 
 ```bash
-./gradlew assembleDebug                 # app/build/outputs/apk/debug/app-debug.apk
-./gradlew testDebugUnitTest lintDebug   # unit tests and lint (lint errors fail the build)
-./gradlew assembleRelease               # R8-minified release APK, signed when a keystore is configured
+./gradlew assembleDebug                 # both editions: app/build/outputs/apk/{standard,admin}/debug/
+./gradlew testStandardDebugUnitTest testAdminDebugUnitTest lintStandardDebug lintAdminDebug
+./gradlew assembleRelease               # R8-minified release APKs, signed when a keystore is configured
 ```
+
+### Editions
+
+Like the desktop (`--features admin`), the edition is chosen when building, never in the app:
+
+| Gradle flavor | Application ID | Name | What it adds |
+| --- | --- | --- | --- |
+| `standard` | `com.opendesk.app` | OpenDesk | Devices lists the computers this phone connected to. |
+| `admin` | `com.opendesk.app.admin` | OpenDesk Admin | Registers with `isAdmin`: Devices lists every device on the relay with its presence, and the [monitor wall](docs/features/monitor-wall.md). |
+
+`BuildConfig.ADMIN` is read only through `domain/Edition.kt`. Both editions can be installed side by side; the
+admin edition derives its own desk ID so the two never register the same one. The relay still decides: with device
+credentials only its stored `admin` flag counts, so the admin APK alone grants nothing.
 
 On Windows use `gradlew.bat`; if `JAVA_HOME` is unset, point it at `C:\Program Files\Android\Android Studio\jbr`.
 From the repository root: `make android` (copies the APK to `builds/android/OpenDesk.apk`). The version comes
@@ -96,6 +109,10 @@ keytool -genkeypair -v -keystore opendesk-release.jks -alias opendesk \
   -keyalg RSA -keysize 4096 -validity 10000
 ```
 
+Official releases are signed with the certificate whose SHA-256 is
+`65:F5:86:32:9A:15:F2:CD:36:09:FD:EA:1A:C2:50:D7:D3:F7:99:25:55:E9:78:79:09:D6:CE:A0:30:36:DA:C6`; check a download
+with `apksigner verify --print-certs OpenDesk-<version>.apk`.
+
 Signing values are read from environment variables, or from Gradle properties of the same name (for example
 in `~/.gradle/gradle.properties`, outside the repository):
 
@@ -121,12 +138,18 @@ secrets ([docs/ci-cd.md](../docs/ci-cd.md)); `ANDROID_KEYSTORE_BASE64` holds the
 
 | Package | Layer | Contents |
 | --- | --- | --- |
-| `ui.main`, `ui.viewer` | Presentation | `MainActivity`, `RemoteViewerActivity`, `RemoteKeyboardView` |
-| `session` | Use cases | `RelayConnection` (message routing, reconnection), `FileReceiver` |
+| `ui.main` | Presentation: shell | `MainActivity` (wiring and relay events), `NavBar`/`Page` (navigation), `EdgeToEdge` (insets), `ConnectFlow` (one connection attempt: target, state, timeout), `MainHost` (the contract its pages use) |
+| `ui.devices`, `ui.sessions`, `ui.settings` | Presentation: pages | One package per tab: the Devices list, connect sheet, long-press menu (`DeviceMenu` look, `DeviceActions` Connect/Rename/Delete) and `DeviceDirectory` (which list to show); Sessions; Settings with Relay and Security |
+| `ui.viewer` | Presentation: remote screen | `RemoteViewerActivity` (lifecycle and wiring), `FrameDecoder` + `FrameCompositor` (video thread), `ScreenRenderer` (frame, zoom, cursor), `TouchController` (gestures), `ControlsOverlay` (controls), `RemoteInput` (input to the computer), `RemoteKeyboardView` |
+| `ui.common` | Shared UI | `Ui` (view helpers), `Alerts` (dialogs) |
+| `session` | Use cases | `RelayConnection` (message routing, reconnection), `E2eChannel`, `FileReceiver` |
 | `data.dto` | Wire DTOs | Relay messages |
-| `data.network`, `data.settings` | Adapters | `GatewayClient` (WebSocket), `SettingsRepository` (preferences) |
-| `platform` | Android services | Voice |
-| `domain` | Domain | Desk IDs, relay URL rules, capabilities, viewport math, key mapping |
+| `data.network`, `data.settings`, `data.history`, `data.devices`, `data.security` | Repositories | `GatewayClient` (WebSocket), `SettingsRepository` (preferences), `SessionHistory` (sessions this phone opened), `LocalDeviceStore` (names and deletions kept on this phone), `DeviceKeys` |
+| `crypto`, `platform` | Infrastructure | Noise handshake; voice |
+| `domain` | Models and rules (plain Kotlin, unit-tested) | `DeviceItem` and search, desk IDs, relay URL rules, capabilities, viewport math, key mapping |
+
+Dependencies point down the table: pages talk to the activity only through `MainHost`, and nothing below `ui`
+imports Android views.
 
 ## Documentation
 

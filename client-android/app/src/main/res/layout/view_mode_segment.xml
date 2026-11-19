@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Trackpad / Touch segmented control. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:background="@drawable/seg_track"
+    android:orientation="horizontal"
+    android:padding="3dp">
+
+    <TextView
+        android:id="@+id/seg_trackpad"
+        android:layout_width="wrap_content"
+        android:layout_height="32dp"
+        android:layout_weight="1"
+        android:drawableStart="@drawable/ic_cursor"
+        android:drawablePadding="6dp"
+        android:gravity="center"
+        android:paddingHorizontal="12dp"
+        android:text="@string/mode_trackpad"
+        android:textColor="@color/text"
+        android:textSize="14sp"
+        app:drawableTint="@color/text" />
+
+    <TextView
+        android:id="@+id/seg_touch"
+        android:layout_width="wrap_content"
+        android:layout_height="32dp"
+        android:layout_weight="1"
+        android:drawableStart="@drawable/ic_touch"
+        android:drawablePadding="6dp"
+        android:gravity="center"
+        android:paddingHorizontal="12dp"
+        android:text="@string/mode_touch"
+        android:textColor="@color/text"
+        android:textSize="14sp"
+        app:drawableTint="@color/text" />
+</LinearLayout>

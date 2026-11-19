@@ -5,13 +5,18 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import com.google.gson.Gson
 import com.google.gson.JsonParser
 import com.opendesk.app.R
 import com.opendesk.app.data.dto.ApprovalResponse
 import com.opendesk.app.data.dto.ConnectRequest
+import com.opendesk.app.data.dto.GetHosts
+import com.opendesk.app.data.dto.HostInfo
+import com.opendesk.app.data.dto.HostRename
 import com.opendesk.app.data.dto.InputEvent
 import com.opendesk.app.data.dto.MessageType
+import com.opendesk.app.data.dto.MonitorSet
 import com.opendesk.app.data.dto.P2pSignal
 import com.opendesk.app.data.dto.RegisterRequest
 import com.opendesk.app.data.dto.RelayInput
@@ -23,7 +28,10 @@ import com.opendesk.app.data.security.DeviceKeys
 import com.opendesk.app.data.settings.SettingsRepository
 import com.opendesk.app.domain.Capabilities
 import com.opendesk.app.domain.DeskId
+import com.opendesk.app.domain.Edition
 import com.opendesk.app.domain.KeyFingerprint
+import com.opendesk.app.domain.MonitorWall
+import com.opendesk.app.domain.Thumbnail
 import com.opendesk.app.platform.audio.VoiceCallManager
 
 /**
@@ -63,6 +71,9 @@ object RelayConnection : GatewayClient.Listener {
          * encryption. The user may accept that ([trustHost]) and connect again.
          */
         fun onSecurityAlert(hostClean: String, message: String)
+
+        /** Admin edition: the relay sent its device registry ([hosts]). */
+        fun onHosts() {}
     }
 
     /** What the viewer screen needs. Main thread. */
@@ -77,11 +88,30 @@ object RelayConnection : GatewayClient.Listener {
         fun onMicMuted()
     }
 
+    /** What the monitor wall needs (admin edition). Main thread. */
+    interface MonitorListener {
+        /** The relay registered this phone (`true`; send the watch list again) or the connection dropped. */
+        fun onMonitorRelay(online: Boolean)
+
+        /** What the tile of `hostClean` shows now (`domain/MonitorState`). */
+        fun onMonitorState(hostClean: String, state: String)
+
+        /** The relay sent its device registry ([hosts]). */
+        fun onMonitorHosts()
+    }
+
     /** Status listener; normally the main activity. */
     var listener: Listener? = null
 
     /** The open viewer screen, if any. */
     var viewerListener: ViewerListener? = null
+
+    /** The open monitor wall, if any. */
+    var monitorListener: MonitorListener? = null
+
+    /** Receives every monitor-wall thumbnail while the wall is open (socket thread). */
+    @Volatile
+    var thumbnailSink: ((Thumbnail) -> Unit)? = null
 
     /** Receives every video frame while the viewer screen is open (socket thread). */
     @Volatile
@@ -100,6 +130,21 @@ object RelayConnection : GatewayClient.Listener {
     var online: Boolean = false
         private set
 
+    /**
+     * Admin edition: every device the relay knows, from its latest `host-list`; null until one arrived on this
+     * connection (or in the standard edition, or when the relay does not treat this phone as an administrator).
+     */
+    var hosts: List<HostInfo>? = null
+        private set
+
+    /** Whether the relay runs the monitor wall (`monitor` in `registered-ack.caps`). */
+    val relayHasMonitor: Boolean
+        get() = Capabilities.RELAY_MONITOR in relayCaps
+
+    /** When the next automatic reconnect runs (`SystemClock.uptimeMillis`), or 0 when none is scheduled. */
+    var nextRetryAtMs: Long = 0L
+        private set
+
     /** Whether the current session is end-to-end encrypted in both directions. */
     val isEndToEnd: Boolean
         get() = e2e?.isOn == true
@@ -116,6 +161,9 @@ object RelayConnection : GatewayClient.Listener {
     private var fileReceiver: FileReceiver? = null
     private var keys: DeviceKeys? = null
     private var relayCaps: List<String> = emptyList()
+
+    /** Hosts the monitor wall watches; sent again after every reconnect, since a watch belongs to the connection. */
+    private var monitorTargets: List<String> = emptyList()
 
     /** The session's end-to-end channel; set on the main thread, read on every thread. */
     @Volatile
@@ -151,6 +199,7 @@ object RelayConnection : GatewayClient.Listener {
         client = null
         online = false
         connecting = false
+        monitorTargets = emptyList()
         settings = null
         appContext = null
     }
@@ -205,6 +254,31 @@ object RelayConnection : GatewayClient.Listener {
         keys?.forget(DeskId.clean(hostClean))
     }
 
+    /**
+     * Admin edition: renames `hostClean` in the relay's registry (at most 64 characters; empty clears it). The
+     * relay sends every administrator the new `host-list`. Returns false while the relay is unreachable.
+     */
+    fun renameHost(hostClean: String, alias: String): Boolean {
+        val c = client
+        if (!online || c == null) return false
+        c.send(HostRename(DeskId.clean(hostClean), alias.trim().take(MAX_ALIAS)))
+        return true
+    }
+
+    /**
+     * Admin edition: the monitor wall shows `targets` (clean IDs, at most 16) now; empty stops watching. The relay
+     * starts and stops the hosts' thumbnail streams. Kept and sent again after a reconnect.
+     */
+    fun watchMonitors(targets: List<String>) {
+        val next = targets.map(DeskId::clean).filter { it.isNotEmpty() }.distinct().take(MonitorWall.MAX_TILES)
+        if (next == monitorTargets) return
+        monitorTargets = next
+        if (online && relayHasMonitor) client?.send(MonitorSet(next))
+    }
+
+    /** Clean desk IDs of the hosts whose key this phone pinned. */
+    fun pinnedHosts(): List<String> = keys?.pinnedHosts().orEmpty()
+
     /** Ends the viewer session. */
     fun endViewing() {
         if (viewerPartner.isNotEmpty()) client?.send(SessionDisconnect(viewerPartner))
@@ -225,11 +299,17 @@ object RelayConnection : GatewayClient.Listener {
             endSession(appContext?.getString(R.string.connection_lost), notify = true, fromRelay = false)
             fileReceiver?.close()
             scheduleRetry()
+            monitorListener?.onMonitorRelay(false)
         }
         listener?.onRelayStatus(online)
     }
 
     override fun onBinary(raw: ByteArray) {
+        // Monitor-wall thumbnails are not session traffic and never sealed (sealed packets start with FF or 02).
+        if (Thumbnail.isTagged(raw)) {
+            Thumbnail.parse(raw)?.let { thumbnailSink?.invoke(it) }
+            return
+        }
         // In an end-to-end session: forged, replayed, or plain on a stream that is sealed now is dropped.
         val channel = e2e
         val bytes = if (channel == null) raw else channel.open(raw) ?: return
@@ -252,7 +332,22 @@ object RelayConnection : GatewayClient.Listener {
                 onControl(gson.fromJson(event, RemoteEvent::class.java))
             }
             MessageType.P2P_SIGNAL -> onSignal(message)
-            MessageType.REGISTERED_ACK -> relayCaps = message.caps.orEmpty()
+            MessageType.REGISTERED_ACK -> {
+                relayCaps = message.caps.orEmpty()
+                if (Edition.isAdmin) client?.send(GetHosts())
+                if (monitorTargets.isNotEmpty() && relayHasMonitor) client?.send(MonitorSet(monitorTargets))
+                monitorListener?.onMonitorRelay(true)
+            }
+            MessageType.HOST_LIST -> {
+                hosts = message.hosts.orEmpty().filter { !it.cleanId.isNullOrEmpty() }
+                listener?.onHosts()
+                monitorListener?.onMonitorHosts()
+            }
+            MessageType.MONITOR_STATE -> {
+                val host = DeskId.clean(message.targetClean.orEmpty())
+                val state = message.state.orEmpty()
+                if (host.isNotEmpty() && state.isNotEmpty()) monitorListener?.onMonitorState(host, state)
+            }
             MessageType.SESSION_CLOSED -> endSession(message.message, notify = true, fromRelay = true)
             MessageType.ERROR -> listener?.onError(message.message)
             // The relay enrolled this phone: zero configuration besides the relay address.
@@ -383,6 +478,8 @@ object RelayConnection : GatewayClient.Listener {
         online = false
         connecting = false
         val url = settings.gatewayUrl
+        hosts = null
+        nextRetryAtMs = 0L
         if (url.isEmpty()) return false
         connecting = true
         val registration = RegisterRequest(
@@ -390,6 +487,7 @@ object RelayConnection : GatewayClient.Listener {
             deviceToken = settings.tokenForGateway,
             deviceName = "Android (${settings.deskId})",
             caps = Capabilities.advertised,
+            isAdmin = Edition.isAdmin,
         )
         client = GatewayClient(registration, this).also { it.connect(url) }
         return true
@@ -399,6 +497,7 @@ object RelayConnection : GatewayClient.Listener {
         if (settings == null) return
         mainHandler.removeCallbacks(retry)
         mainHandler.postDelayed(retry, retryDelayMs)
+        nextRetryAtMs = SystemClock.uptimeMillis() + retryDelayMs
         retryDelayMs = (retryDelayMs * 2).coerceAtMost(RETRY_MAX_MS)
     }
 
@@ -423,6 +522,7 @@ object RelayConnection : GatewayClient.Listener {
     private const val VOICE_MARKER: Byte = 0x02
     private const val VIDEO_KEYFRAME = "video-keyframe"
     private const val E2E_TIMEOUT_MS = 10_000L
+    private const val MAX_ALIAS = 64
     private const val RETRY_MIN_MS = 1_000L
     private const val RETRY_MAX_MS = 30_000L
 }

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Admin edition (Gradle flavor `admin`): its own launcher name, so it is told apart from the standard app. -->
+<resources>
+    <string name="app_name" translatable="false">OpenDesk Admin</string>
+</resources>

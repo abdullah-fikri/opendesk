@@ -1,5 +1,9 @@
 // Shown while a remote viewer controls this machine.
 
+import { Theme } from "../theme.slint";
+import { Glyph } from "../components/glyph.slint";
+import { Btn, Card } from "../components/controls.slint";
+
 export component HostActiveView inherits VerticalLayout {
     width: 100%;
     height: 100%;
@@ -15,121 +19,80 @@ export component HostActiveView inherits VerticalLayout {
     HorizontalLayout {
         alignment: center;
 
-        Rectangle {
-            width: 460px;
-            border-radius: 12px;
-            background: #17171c;
-            border-width: 1px;
-            border-color: #27272a;
-            clip: true;
-
+        Card {
+            width: 440px;
             VerticalLayout {
-                padding: 0px;
-                spacing: 0px;
+                padding: 24px;
+                spacing: 16px;
 
-                Rectangle {
-                    height: 2px;
-                    background: #dc2626;
+                HorizontalLayout {
+                    spacing: 10px;
+                    Glyph {
+                        y: (parent.height - self.height) / 2;
+                        name: "info-circle";
+                        size: 18px;
+                        tint: Theme.blue;
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: "This computer is being controlled remotely.";
+                        color: Theme.text;
+                        font-size: 14px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
                 }
 
-                VerticalLayout {
-                    padding: 28px;
-                    spacing: 20px;
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-
-                        Rectangle {
-                            width: 8px;
-                            height: 8px;
-                            background: #dc2626;
-                            y: (parent.height - self.height) / 2;
-                        }
-
+                Rectangle {
+                    height: 64px;
+                    border-radius: 10px;
+                    background: Theme.surf2;
+                    VerticalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        alignment: center;
+                        spacing: 2px;
                         Text {
-                            text: "Remote Session Active";
-                            color: #e4e4e7;
-                            font-size: 13px;
+                            text: "Connected to";
+                            color: Theme.text-2;
+                            font-size: 11px;
                             font-weight: 600;
-                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.active_partner_id != "" ? root.active_partner_id : "-";
+                            color: Theme.text;
+                            font-size: 20px;
+                            font-weight: 600;
+                            font-family: Theme.mono;
+                            letter-spacing: 1px;
                         }
                     }
+                }
 
-                    Rectangle {
-                        height: 68px;
-                        background: #0b0b0e;
-                        border-width: 1px;
-                        border-color: #1f1f24;
+                Text {
+                    text: "Drag and drop files onto this window to send them to the remote device.";
+                    color: Theme.text-2;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
 
-                        VerticalLayout {
-                            padding-left: 16px;
-                            padding-right: 16px;
-                            alignment: center;
-                            spacing: 2px;
-
-                            Text {
-                                text: "Connected to";
-                                color: #71717a;
-                                font-size: 11px;
-                            }
-
-                            Text {
-                                text: active_partner_id != "" ? active_partner_id : "-";
-                                color: #fafafa;
-                                font-size: 24px;
-                                font-weight: 800;
-                                letter-spacing: 1.5px;
-                            }
-                        }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Btn {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        icon: "mic";
+                        kind: root.is_mic_muted ? "default" : "tint";
+                        label: root.is_mic_muted ? "Microphone Off" : "Microphone On";
+                        clicked => { root.toggle_mic(); }
                     }
-
-                    Text {
-                        text: "Drag and drop files onto this window to send them to the remote device.";
-                        color: #71717a;
-                        font-size: 12px;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 10px;
-
-                        Rectangle {
-                            height: 36px;
-                            border-radius: 6px;
-                            background: !is_mic_muted ? #dc262628 : (ta-host-mic.has-hover ? #26262e : #1c1c22);
-                            border-width: 1px;
-                            border-color: !is_mic_muted ? #dc2626 : #27272a;
-                            ta-host-mic := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { toggle_mic(); }
-                            }
-                            Text {
-                                text: is_mic_muted ? "Mic: Off" : "Mic: On";
-                                color: !is_mic_muted ? #f87171 : #e4e4e7;
-                                font-size: 12px;
-                                font-weight: 600;
-                                vertical-alignment: center;
-                                horizontal-alignment: center;
-                            }
-                        }
-
-                        Rectangle {
-                            height: 36px;
-                            border-radius: 6px;
-                            background: ta-stop.has-hover ? #b91c1c : #dc2626;
-                            ta-stop := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { disconnect_session(); }
-                            }
-                            Text {
-                                text: "End Session";
-                                color: #ffffff;
-                                font-size: 12px;
-                                font-weight: 600;
-                                vertical-alignment: center;
-                                horizontal-alignment: center;
-                            }
-                        }
+                    Btn {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        kind: "acc";
+                        label: "End Session";
+                        clicked => { root.disconnect_session(); }
                     }
                 }
             }
