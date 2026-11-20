@@ -183,7 +183,8 @@ Per platform (see [platforms.md](platforms.md)):
   `session-resume` (unless `OPENDESK_SESSION_RESUME=0`), `file-group`, `file-pull-bin`, `tile-lossless`, `mouse-relative`, `clipboard-image`, `file-p2p`, `file-deflate`, `file-resume`, `file-drop`, `video-nack`. No `host-features`: Windows hosts have every host control.
 - Linux: the same without `file-offer` and `audio-system`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
-- Android: `viewer-only`, `video-delta` and `e2e`, so it receives framed JPEG video (no H.264) and single-session
+- Android: `viewer-only`, `video-delta`, `e2e`, and `video-h264` when the phone has a hardware H.264 decoder (dropped
+  after the decoder failed once), so it receives framed JPEG video, H.264 during motion, and single-session
   message shapes. No `session-resume`: its sessions end with its connection.
 
 `register.platform` is `windows-pc`, `windows-admin`, `windows-host`, `linux-pc`, `linux-admin`, `linux-host` or

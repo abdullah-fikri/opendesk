@@ -9,6 +9,10 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
 - Android viewer: a radial session menu. Hold the right edge (or slide in from it), slide to an action and lift:
   keyboard, trackpad/touch, display (fit, fill, next monitor), keys (Esc, Tab, Win, Alt+Tab, Task Manager),
   scroll mode and the full controls. A tap on the grip keeps it open for tapping.
+- Android viewer: hardware H.264 decoding. Phones with a hardware decoder ask hosts for H.264 during motion
+  (scrolling, video, moving windows), decoded by MediaCodec straight to the screen; still screens stay sharp JPEG.
+  If the decoder fails, the phone shows a notice and asks for JPEG only from the next connection. Hosts and
+  desktop viewers are unchanged.
 - Android viewer: "Fill screen" covers the whole phone screen, notch included, with no black bands; the cut-off
   edges are reached by panning, and the cursor pulls the view along. Fit or fill is remembered per orientation
   (landscape fills by default).

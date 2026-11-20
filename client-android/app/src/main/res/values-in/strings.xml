@@ -213,4 +213,5 @@
     <string name="wall_all">Semua komputer online</string>
     <string name="wall_all_sub">Mati: hanya komputer yang Anda pilih, termasuk yang offline</string>
     <string name="wall_pick">Komputer di wall</string>
+    <string name="h264_failed">Decode video hardware gagal di HP ini. Mulai koneksi berikutnya OpenDesk memakai gambar standar.</string>
 </resources>

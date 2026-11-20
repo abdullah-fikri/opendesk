@@ -486,7 +486,7 @@ object RelayConnection : GatewayClient.Listener {
             deskId = settings.deskId,
             deviceToken = settings.tokenForGateway,
             deviceName = "Android (${settings.deskId})",
-            caps = Capabilities.advertised,
+            caps = Capabilities.advertised(h264 = !settings.h264Failed && com.opendesk.app.ui.viewer.H264Decoder.Support.decoderName != null),
             isAdmin = Edition.isAdmin,
         )
         client = GatewayClient(registration, this).also { it.connect(url) }

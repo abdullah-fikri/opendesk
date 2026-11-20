@@ -72,6 +72,14 @@ class SettingsRepository(context: Context) {
     fun setViewerFill(landscape: Boolean, fill: Boolean) =
         prefs.edit().putBoolean(if (landscape) KEY_FILL_LANDSCAPE else KEY_FILL_PORTRAIT, fill).apply()
 
+    /**
+     * The hardware H.264 decoder failed on this phone; from the next connection on the app asks hosts for JPEG
+     * video only.
+     */
+    var h264Failed: Boolean
+        get() = prefs.getBoolean(KEY_H264_FAILED, false)
+        set(value) = prefs.edit().putBoolean(KEY_H264_FAILED, value).apply()
+
     /** The touch-gesture guide was shown once in a remote session. */
     var gesturesSeen: Boolean
         get() = prefs.getBoolean(KEY_GESTURES_SEEN, false)
@@ -106,6 +114,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_DEVICE_TOKEN_RELAY = "device_token_relay"
         private const val KEY_LEGACY_ADMIN_MODE = "admin_mode"
         private const val KEY_GESTURES_SEEN = "gestures_seen"
+        private const val KEY_H264_FAILED = "h264_failed"
         private const val KEY_FILL_LANDSCAPE = "viewer_fill_landscape"
         private const val KEY_FILL_PORTRAIT = "viewer_fill_portrait"
         private const val KEY_APPEARANCE = "appearance"

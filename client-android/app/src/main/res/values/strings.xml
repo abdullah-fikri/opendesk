@@ -236,4 +236,5 @@
     <string name="wall_all">All online computers</string>
     <string name="wall_all_sub">Off: only the computers you pick, offline ones included</string>
     <string name="wall_pick">Computers on the wall</string>
+    <string name="h264_failed">Hardware video decoding failed on this phone. From the next connection, OpenDesk uses its standard picture instead.</string>
 </resources>

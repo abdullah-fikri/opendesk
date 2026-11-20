@@ -4,8 +4,11 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.SurfaceTexture
 import android.os.Build
 import android.os.Bundle
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
@@ -60,7 +63,9 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
 
     private val state = ViewerState()
     private val input = RemoteInput()
-    private val decoder = FrameDecoder(::showFrame, input::requestKeyFrame)
+    private val h264 = H264Decoder(::onH264Failed)
+    private val decoder = FrameDecoder(::showFrame, input::requestKeyFrame, h264, ::showVideo)
+    private var videoSurface: Surface? = null
     private var partnerClean = ""
 
     private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -85,7 +90,9 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
         connectingOverlay = findViewById(R.id.layout_connecting_overlay)
         keyboard = findViewById(R.id.view_remote_keyboard)
         settings = SettingsRepository(this)
-        renderer = ScreenRenderer(findViewById(R.id.iv_remote_screen), findViewById(R.id.view_virtual_cursor), input)
+        val video = findViewById<TextureView>(R.id.tv_remote_video)
+        renderer = ScreenRenderer(findViewById(R.id.iv_remote_screen), video, findViewById(R.id.view_virtual_cursor), input)
+        video.surfaceTextureListener = VideoSurface()
         overlayHost = findViewById(R.id.overlay_host)
         overlay = ControlsOverlay(overlayHost, state, this)
 
@@ -139,6 +146,7 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
         // capture anyway). The session itself stays up until the user ends it.
         RelayConnection.videoSink = null
         decoder.stop()
+        h264.release()
         if (state.leftHeld) setLeftHeld(false)
         if (!VoiceCallManager.isMuted) {
             VoiceCallManager.setMicMuted(true)
@@ -165,6 +173,7 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
         if (partnerClean.isNotEmpty()) SessionHistory(this).finish(partnerClean, System.currentTimeMillis())
         partnerClean = ""
         RelayConnection.endViewing()
+        h264.close()
         retainedFrame = null
         isOpen = false
     }
@@ -304,6 +313,43 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
         state.leftHeld = held
         overlay.refresh()
         input.mouse(if (held) "mousedown" else "mouseup", BUTTON_LEFT)
+    }
+
+    /** Main thread: the hardware decoder is drawing `width` x `height` pictures onto the video layer. */
+    private fun showVideo(width: Int, height: Int, fps: Int) {
+        if (isDestroyed) return
+        renderer.showVideo(width, height)
+        if (connectingOverlay.visibility != View.GONE) connectingOverlay.visibility = View.GONE
+        if (fps > 0) overlay.fps = fps
+        overlay.refreshStatus()
+    }
+
+    /** Any thread: H.264 does not work on this phone; from the next connection on, hosts send JPEG only. */
+    private fun onH264Failed() = runOnUiThread {
+        if (settings.h264Failed) return@runOnUiThread
+        settings.h264Failed = true
+        Toast.makeText(this, R.string.h264_failed, Toast.LENGTH_LONG).show()
+    }
+
+    /** The video layer's surface: given to the H.264 decoder while it exists. */
+    private inner class VideoSurface : TextureView.SurfaceTextureListener {
+        override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
+            videoSurface = Surface(texture).also { h264.surface = it }
+            renderer.apply()
+            // The host may be mid-motion: ask for an IDR to start from.
+            input.requestKeyFrame()
+        }
+
+        override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) = renderer.apply()
+
+        override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
+            h264.surface = null
+            videoSurface?.release()
+            videoSurface = null
+            return true
+        }
+
+        override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = renderer.onVideoPicture()
     }
 
     /** Main thread: shows a decoded frame. */
