@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 # Deflate for lossless text/UI tiles (`codec::lossless`); pure Rust, already in the client's dependency tree.
-miniz_oxide = "0.8.9"
+miniz_oxide = "0.9.1"
 
 [target.'cfg(windows)'.dependencies]
 # DXGI Desktop Duplication / D3D11 (capture) and Media Foundation (H.264): COM vtables by hand would be unreasonable.
