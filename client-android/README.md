@@ -43,12 +43,14 @@ In the viewer:
 | --- | --- |
 | Tap / double tap | Left click / double click |
 | Long press, or two-finger tap | Right click |
-| Two-finger vertical drag | Scroll wheel |
-| Pinch (move the fingers to pan) | Zoom up to 5x; in trackpad mode a zoomed view follows the cursor; **Fit** resets |
+| Two-finger vertical drag | Scroll: the page follows the finger line by line; a flick coasts |
+| Pinch (move the fingers to pan) | Zoom up to 5x; in trackpad mode a zoomed or filled view follows the cursor; **Fit** resets |
 | One-finger drag | Trackpad mode: moves the cursor. Touch mode: the cursor jumps to the finger |
 | **Keyboard** | Soft keyboard; text is typed on the computer, Backspace, Enter and arrows are sent as keys |
 | **Esc**, **Tab**, **Win** | Those keys; Win opens the Start menu |
 | **Hold** | Keeps the left button down for dragging until you tap again |
+| Hold the right edge, slide, lift | Session menu: keyboard, trackpad/touch, display (fit, fill, next monitor), keys, scroll mode, more controls. A tap on the grip keeps it open |
+| Swipe down from the top | Session pill: computer, FPS, E2E, Disconnect; hides again by itself |
 
 Rotation keeps the session, zoom and picture. Leaving the app pauses the picture and mutes the microphone; the
 session stays open until you press Back or Disconnect. A dropped relay connection is retried automatically
@@ -140,7 +142,7 @@ secrets ([docs/ci-cd.md](../docs/ci-cd.md)); `ANDROID_KEYSTORE_BASE64` holds the
 | --- | --- | --- |
 | `ui.main` | Presentation: shell | `MainActivity` (wiring and relay events), `NavBar`/`Page` (navigation), `EdgeToEdge` (insets), `ConnectFlow` (one connection attempt: target, state, timeout), `MainHost` (the contract its pages use) |
 | `ui.devices`, `ui.sessions`, `ui.settings` | Presentation: pages | One package per tab: the Devices list, connect sheet, long-press menu (`DeviceMenu` look, `DeviceActions` Connect/Rename/Delete) and `DeviceDirectory` (which list to show); Sessions; Settings with Relay and Security |
-| `ui.viewer` | Presentation: remote screen | `RemoteViewerActivity` (lifecycle and wiring), `FrameDecoder` + `FrameCompositor` (video thread), `ScreenRenderer` (frame, zoom, cursor), `TouchController` (gestures), `ControlsOverlay` (controls), `RemoteInput` (input to the computer), `RemoteKeyboardView` |
+| `ui.viewer` | Presentation: remote screen | `RemoteViewerActivity` (lifecycle and wiring), `FrameDecoder` + `FrameCompositor` (video thread), `ScreenRenderer` (frame, zoom, cursor), `TouchController` (gestures), `ControlsOverlay` (pill, radial menu, controls panel), `RadialMenuView` + `EdgeHandle` (radial menu), `RemoteInput` (input to the computer), `RemoteKeyboardView` |
 | `ui.common` | Shared UI | `Ui` (view helpers), `Alerts` (dialogs) |
 | `session` | Use cases | `RelayConnection` (message routing, reconnection), `E2eChannel`, `FileReceiver` |
 | `data.dto` | Wire DTOs | Relay messages |

@@ -5,9 +5,7 @@
     <string name="tab_sessions">Sesi</string>
     <string name="tab_settings">Pengaturan</string>
 
-    <string name="status_connecting">Menghubungkan…</string>
     <string name="status_connected">Terhubung</string>
-    <string name="relay_chip_connected">Relay terhubung</string>
     <string name="relay_chip_offline">Relay terputus</string>
     <string name="relay_chip_none">Belum ada relay</string>
     <string name="relay_offline">Relay belum terhubung. Periksa alamat dan jaringan.</string>
@@ -149,6 +147,23 @@
     <string name="gesture_pinch_does">Perbesar, lalu geser</string>
     <string name="gesture_one_drag">Geser satu jari</string>
     <string name="gesture_one_drag_does">Gerakkan kursor (Trackpad) · lompat ke jari (Sentuh)</string>
+    <string name="radial_handle">Menu sesi</string>
+    <string name="menu_trackpad">Mode trackpad</string>
+    <string name="menu_touch">Mode sentuh</string>
+    <string name="menu_display">Tampilan</string>
+    <string name="menu_fit">Pas layar</string>
+    <string name="menu_fill">Penuhi layar</string>
+    <string name="menu_next_monitor">Monitor berikutnya</string>
+    <string name="menu_info">Info sesi</string>
+    <string name="menu_keys">Tombol</string>
+    <string name="menu_alt_tab">Ganti jendela (Alt+Tab)</string>
+    <string name="menu_task_manager">Task Manager</string>
+    <string name="menu_scroll">Mode scroll</string>
+    <string name="menu_more">Kontrol lainnya</string>
+    <string name="gesture_edge">Tahan tepi kanan</string>
+    <string name="gesture_edge_does">Menu sesi: geser ke aksi, lepas untuk menjalankan</string>
+    <string name="gesture_top">Usap ke bawah dari atas</string>
+    <string name="gesture_top_does">Info sesi dan putuskan</string>
     <string name="got_it">Mengerti</string>
 
     <string name="menu_connect">Hubungkan</string>

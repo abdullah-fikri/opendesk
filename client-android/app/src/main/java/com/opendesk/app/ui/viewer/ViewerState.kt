@@ -11,6 +11,9 @@ class ViewerState {
     /** The left button is held down (the Hold control) until tapped again. */
     var leftHeld = false
 
+    /** The frame covers the whole screen (edges reached by panning) instead of fitting inside it. */
+    var fill = false
+
     var controlsOpen = false
     var keyboardVisible = false
 }

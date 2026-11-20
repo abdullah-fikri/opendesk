@@ -77,6 +77,24 @@ class DomainTest {
     }
 
     @Test
+    fun viewportFillCoversTheViewAndPansToTheEdges() {
+        val v = Viewport()
+        // A 1920x1080 frame on a 2400x1080 landscape phone: fill scales to the width and crops top and bottom.
+        v.resize(2400, 1080, 1920, 1080)
+        assertEquals(1920f, v.drawnWidth, 0.5f) // fit: 240 px black bands at each side
+        v.fill = true
+        assertEquals(2400f, v.drawnWidth, 0.5f)
+        assertEquals(1350f, v.drawnHeight, 0.5f)
+        assertEquals(true, v.overflows)
+        assertEquals(-135f, v.top, 0.5f)
+        // The cut-off bottom row is reachable: pan up as far as it goes, and the frame's bottom meets the view's.
+        v.panBy(0f, -10_000f)
+        assertEquals(1080f, v.top + v.drawnHeight, 0.5f)
+        v.fill = false
+        assertEquals(false, v.overflows)
+    }
+
+    @Test
     fun viewportZoomKeepsTheFocusPointFixed() {
         val v = Viewport()
         v.resize(1000, 1000, 1000, 1000)

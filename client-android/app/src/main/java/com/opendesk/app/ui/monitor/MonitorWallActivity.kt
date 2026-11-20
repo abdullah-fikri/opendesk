@@ -160,6 +160,7 @@ class MonitorWallActivity : AppCompatActivity(), RelayConnection.MonitorListener
         page = page.coerceIn(0, pages - 1)
         shown = MonitorWall.pageOf(hosts, per, page)
         grid.slots = per
+        grid.columns = MonitorWall.grid(wall)
         val ids = shown.map { it.id }.toSet()
         states.keys.retainAll(ids)
         pictures.keys.retainAll(ids)

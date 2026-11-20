@@ -198,7 +198,7 @@ Per platform (see [platforms.md](platforms.md)):
 | --- | --- | --- |
 | `mousemove` | `normX`, `normY` | viewer to host |
 | `mousedown`, `mouseup`, `click`, `dblclick` | `normX`, `normY`, `button` (0 left, 2 right) | viewer to host |
-| `wheel` | `normX`, `normY`, `deltaY`, optional `deltaX` (horizontal, 120 = one notch right; older hosts ignore it) | viewer to host |
+| `wheel` | `normX`, `normY`, `deltaY`, optional `deltaX` (horizontal, 120 = one notch right; older hosts ignore it). Values under 40 are whole notches; from 40 they are wheel units and may be partial notches (Android sends lines of 40): Windows hosts pass them through, Linux hosts add them up into notches | viewer to host |
 | `keydown`, `keyup` | `keyCode` (Win32 virtual-key) | viewer to host |
 | `keycombo` | `keyCode`, `ctrl`, `alt`, `shift` | viewer to host |
 | `text` | `text` | viewer to host (typed characters) |

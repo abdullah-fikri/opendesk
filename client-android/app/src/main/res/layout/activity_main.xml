@@ -24,8 +24,7 @@
         android:layout_height="wrap_content"
         android:background="@color/nav_bg"
         android:orientation="horizontal"
-        android:paddingHorizontal="12dp"
-        android:paddingTop="4dp">
+        android:paddingHorizontal="12dp">
 
         <include
             android:id="@+id/nav_devices"

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Devices (phone): brand bar with the relay state, the title and counts, search, the list (or a loading /
+  Devices (phone): brand bar (with a relay pill only when the relay is missing or offline), the title and counts, search, the list (or a loading /
   empty state), and the "Enter a device ID" bar above the bottom navigation.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"

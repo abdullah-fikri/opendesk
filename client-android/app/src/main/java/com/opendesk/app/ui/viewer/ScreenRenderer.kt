@@ -23,6 +23,12 @@ class ScreenRenderer(private val screen: ImageView, private val cursor: View, pr
         if (sizeChanged) layout()
     }
 
+    /** Fill (cover the view) or fit; keeps the zoom. */
+    fun setFill(fill: Boolean) {
+        viewport.fill = fill
+        apply()
+    }
+
     /** Back to the whole screen. */
     fun fit() {
         viewport.reset()

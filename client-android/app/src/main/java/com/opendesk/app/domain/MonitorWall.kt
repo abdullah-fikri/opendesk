@@ -69,6 +69,22 @@ object MonitorWall {
     /** `page` moved by `delta`, wrapping around both ends. */
     fun stepPage(page: Int, delta: Int, pages: Int): Int = Math.floorMod(page + delta, pages.coerceAtLeast(1))
 
+    /** Width:height of a tile; desktop screens are mostly 16:10 or 16:9 and thumbnails are letterboxed inside. */
+    const val TILE_ASPECT = 1.6f
+
+    /**
+     * Width of each tile when `n` tiles sit in `columns` columns (as many rows as needed) inside `w` x `h`, `gap`
+     * apart: as wide as the columns allow, smaller when the rows would not fit the height. The column count is the
+     * user's grid setting, never picked here, so a 3x3 wall shows three columns on a tall phone too.
+     */
+    fun tileWidth(w: Int, h: Int, columns: Int, n: Int, gap: Int): Float {
+        val cols = columns.coerceIn(1, n.coerceAtLeast(1))
+        val rows = (n.coerceAtLeast(1) + cols - 1) / cols
+        val byWidth = (w - gap * (cols - 1)) / cols.toFloat()
+        val byHeight = (h - gap * (rows - 1)) / rows.toFloat() * TILE_ASPECT
+        return minOf(byWidth, byHeight).coerceAtLeast(0f)
+    }
+
     /** `selected` with `id` added, or removed when it was there. */
     fun toggle(selected: Set<String>, id: String): Set<String> = if (id in selected) selected - id else selected + id
 }

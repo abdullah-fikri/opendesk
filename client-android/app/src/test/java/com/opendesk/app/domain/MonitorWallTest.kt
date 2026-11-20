@@ -44,6 +44,16 @@ class MonitorWallTest {
     }
 
     @Test
+    fun tilesKeepTheChosenColumnCount() {
+        // 3x3 on a tall phone: three columns, width-limited.
+        assertEquals((1080 - 2 * 6) / 3f, MonitorWall.tileWidth(1080, 2000, 3, 9, 6), 0.01f)
+        // 3x3 on a landscape phone: height-limited, still three columns.
+        assertEquals((1000 - 2 * 6) / 3f * MonitorWall.TILE_ASPECT, MonitorWall.tileWidth(2200, 1000, 3, 9, 6), 0.01f)
+        // More columns than tiles: as many as there are tiles.
+        assertEquals((1000 - 6) / 2f, MonitorWall.tileWidth(1000, 4000, 4, 2, 6), 0.01f)
+    }
+
+    @Test
     fun pageStepsWrap() {
         assertEquals(1, MonitorWall.stepPage(0, 1, 3))
         assertEquals(0, MonitorWall.stepPage(2, 1, 3))

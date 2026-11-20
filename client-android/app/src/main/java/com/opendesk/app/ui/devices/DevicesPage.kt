@@ -212,21 +212,27 @@ class DevicesPage(private val host: MainHost, parent: ViewGroup) {
         empty.findViewById<TextView>(R.id.empty_body).text = content.third
     }
 
+    /**
+     * The relay chip shows only when something needs the user: no relay set, or the relay unreachable. While
+     * connected (or still connecting) the header stays clean.
+     */
     private fun updateChip() {
         val chip = chip ?: return
-        val text = chip.findViewById<TextView>(R.id.relay_chip_text)
-        val dot = chip.findViewById<View>(R.id.relay_chip_dot)
-        val (label, good) = when {
-            RelayConnection.online -> R.string.relay_chip_connected to true
-            host.settings.gatewayUrl.isEmpty() -> R.string.relay_chip_none to false
-            RelayConnection.nextRetryAtMs > 0 -> R.string.relay_chip_offline to false
-            else -> R.string.status_connecting to false
+        val label = when {
+            RelayConnection.online -> null
+            host.settings.gatewayUrl.isEmpty() -> R.string.relay_chip_none
+            RelayConnection.nextRetryAtMs > 0 -> R.string.relay_chip_offline
+            else -> null
         }
-        text.setText(label)
-        val tone = if (good) R.color.green else R.color.text2
-        text.setTextColor(Ui.color(context, tone))
-        dot.backgroundTintList = android.content.res.ColorStateList.valueOf(Ui.color(context, if (good) R.color.green else R.color.offline))
-        chip.setBackgroundResource(if (good) R.drawable.chip_green else R.drawable.chip_neutral)
+        chip.visibility = if (label == null) View.GONE else View.VISIBLE
+        label ?: return
+        chip.findViewById<TextView>(R.id.relay_chip_text).apply {
+            setText(label)
+            setTextColor(Ui.color(context, R.color.text2))
+        }
+        chip.findViewById<View>(R.id.relay_chip_dot).backgroundTintList =
+            android.content.res.ColorStateList.valueOf(Ui.color(context, R.color.offline))
+        chip.setBackgroundResource(R.drawable.chip_neutral)
         chip.setOnClickListener { host.showRelay() }
     }
 

@@ -40,7 +40,10 @@ class RemoteInput {
         }
     }
 
-    fun winKey() = send(InputEvent(action = "shortcut", name = "win"))
+    fun winKey() = shortcut("win")
+
+    /** A host shortcut: `win`, `alt-tab`, `taskmgr`, `explorer` or `desktop`. */
+    fun shortcut(name: String) = send(InputEvent(action = "shortcut", name = name))
 
     fun switchMonitor() = send(InputEvent(action = "switch-monitor"))
 

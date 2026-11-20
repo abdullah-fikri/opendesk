@@ -4,8 +4,10 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.os.Build
 import android.os.Bundle
 import android.view.View
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -54,6 +56,7 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
     private lateinit var settings: SettingsRepository
     private lateinit var renderer: ScreenRenderer
     private lateinit var overlay: ControlsOverlay
+    private lateinit var overlayHost: android.view.ViewGroup
 
     private val state = ViewerState()
     private val input = RemoteInput()
@@ -83,7 +86,8 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
         keyboard = findViewById(R.id.view_remote_keyboard)
         settings = SettingsRepository(this)
         renderer = ScreenRenderer(findViewById(R.id.iv_remote_screen), findViewById(R.id.view_virtual_cursor), input)
-        overlay = ControlsOverlay(findViewById(R.id.overlay_host), state, this)
+        overlayHost = findViewById(R.id.overlay_host)
+        overlay = ControlsOverlay(overlayHost, state, this)
 
         val partner = RelayConnection.viewerPartner
         partnerClean = partner
@@ -91,14 +95,19 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
             .ifEmpty { DeskId.format(partner) }
 
         setupWindow()
+        applyFill()
         retainedFrame?.let { showFrame(it, 0) }
         overlay.build()
         keyboard.onKey = input::key
         keyboard.onText = input::text
-        TouchController(findViewById(R.id.iv_remote_screen), state, input, renderer, ::setLeftHeld).attach()
+        TouchController(findViewById(R.id.iv_remote_screen), state, input, renderer, ::setLeftHeld, overlay::showPill).attach()
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (state.controlsOpen) overlay.setOpen(false) else finish()
+                when {
+                    overlay.closeRadial() -> Unit
+                    state.controlsOpen -> overlay.setOpen(false)
+                    else -> finish()
+                }
             }
         })
         if (!settings.gesturesSeen) {
@@ -110,6 +119,7 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         // Portrait uses the bottom sheet, landscape the side panel (layout-land/view_controls.xml).
+        applyFill()
         overlay.build()
     }
 
@@ -184,6 +194,8 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
                 getString(R.string.gesture_two_drag) to getString(R.string.gesture_two_drag_does),
                 getString(R.string.gesture_pinch) to getString(R.string.gesture_pinch_does),
                 getString(R.string.gesture_one_drag) to getString(R.string.gesture_one_drag_does),
+                getString(R.string.gesture_edge) to getString(R.string.gesture_edge_does),
+                getString(R.string.gesture_top) to getString(R.string.gesture_top_does),
             ),
             getString(R.string.got_it),
         )
@@ -198,9 +210,18 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
             Tool.ESC -> input.key(WindowsKeys.VK_ESCAPE)
             Tool.TAB -> input.key(WindowsKeys.VK_TAB)
             Tool.WIN -> input.winKey()
+            Tool.ALT_TAB -> input.shortcut("alt-tab")
+            Tool.TASK_MANAGER -> input.shortcut("taskmgr")
+            Tool.MOUSE_MODE -> {
+                state.trackpadMode = !state.trackpadMode
+                overlay.refresh()
+                Toast.makeText(this, if (state.trackpadMode) R.string.menu_trackpad else R.string.menu_touch, Toast.LENGTH_SHORT).show()
+            }
+            Tool.FIT_MODE -> setFill(false)
+            Tool.FILL_MODE -> setFill(true)
             Tool.KEYBOARD -> {
                 overlay.setOpen(false)
-                keyboard.setKeyboardVisible(true)
+                keyboard.setKeyboardVisible(!state.keyboardVisible)
             }
             Tool.HIDE_KEYBOARD -> keyboard.setKeyboardVisible(false)
             Tool.SCROLL -> {
@@ -219,19 +240,43 @@ class RemoteViewerActivity : AppCompatActivity(), RelayConnection.ViewerListener
 
     // ---- Window ----
 
+    private val landscape: Boolean get() = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    /** The fit/fill choice remembered for the current orientation. */
+    private fun applyFill() {
+        state.fill = settings.viewerFill(landscape)
+        renderer.setFill(state.fill)
+    }
+
+    private fun setFill(fill: Boolean) {
+        state.fill = fill
+        settings.setViewerFill(landscape, fill)
+        renderer.setFill(fill)
+    }
+
     private fun setupWindow() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        // Draw into the notch area too: in fill mode the frame reaches every edge.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         WindowInsetsControllerCompat(window, root).apply {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
-        // Keep the controls clear of the notch, of bars the user swiped in, and of the soft keyboard; the frame
-        // shrinks above the keyboard so the typed text stays visible.
+        // The frame uses the whole screen, notch included, and only shrinks above the soft keyboard so the typed
+        // text stays visible. The controls keep clear of the notch, of bars the user swiped in, and of the keyboard.
+        // Bars swiped in from the top also bring the session pill.
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime(),
             )
-            view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            view.setPadding(0, 0, 0, ime.bottom)
+            overlayHost.setPadding(bars.left, bars.top, bars.right, (bars.bottom - ime.bottom).coerceAtLeast(0))
+            if (insets.isVisible(WindowInsetsCompat.Type.statusBars())) overlay.showPill()
             val typing = insets.isVisible(WindowInsetsCompat.Type.ime())
             if (typing != state.keyboardVisible) {
                 state.keyboardVisible = typing

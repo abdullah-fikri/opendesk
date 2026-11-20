@@ -5,6 +5,26 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
 
 ## [Unreleased]
 
+### Added
+- Android viewer: a radial session menu. Hold the right edge (or slide in from it), slide to an action and lift:
+  keyboard, trackpad/touch, display (fit, fill, next monitor), keys (Esc, Tab, Win, Alt+Tab, Task Manager),
+  scroll mode and the full controls. A tap on the grip keeps it open for tapping.
+- Android viewer: "Fill screen" covers the whole phone screen, notch included, with no black bands; the cut-off
+  edges are reached by panning, and the cursor pulls the view along. Fit or fill is remembered per orientation
+  (landscape fills by default).
+
+### Changed
+- Android viewer: nothing stays over the remote screen but a faint grip. The session pill (name, FPS, E2E,
+  disconnect) slides in on a swipe down from the top and hides itself; the "Controls" button is gone.
+- Android viewer: scrolling follows the finger line by line and a flick coasts, instead of a whole wheel notch
+  every few pixels. Linux hosts add partial notches up (Windows hosts already pass them through).
+- Android: the relay pill on Devices shows only when there is no relay or it is offline; the bottom bar icons are
+  centred and sized consistently; the Monitor wall button has its own grid icon.
+
+### Fixed
+- Android monitor wall: a 3x3 (or 4x4) grid showed fewer columns on a tall phone; the wall now keeps the chosen
+  number of columns.
+
 ## [1.5.0] - 2026-11-19
 
 Minor release: no protocol change. The Android monitor wall works with any relay that runs the desktop wall.

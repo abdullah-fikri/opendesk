@@ -65,6 +65,13 @@ class SettingsRepository(context: Context) {
             .apply()
     }
 
+    /** Whether the remote screen fills the phone's screen (no bands) in this orientation; landscape fills by default. */
+    fun viewerFill(landscape: Boolean): Boolean =
+        prefs.getBoolean(if (landscape) KEY_FILL_LANDSCAPE else KEY_FILL_PORTRAIT, landscape)
+
+    fun setViewerFill(landscape: Boolean, fill: Boolean) =
+        prefs.edit().putBoolean(if (landscape) KEY_FILL_LANDSCAPE else KEY_FILL_PORTRAIT, fill).apply()
+
     /** The touch-gesture guide was shown once in a remote session. */
     var gesturesSeen: Boolean
         get() = prefs.getBoolean(KEY_GESTURES_SEEN, false)
@@ -99,6 +106,8 @@ class SettingsRepository(context: Context) {
         private const val KEY_DEVICE_TOKEN_RELAY = "device_token_relay"
         private const val KEY_LEGACY_ADMIN_MODE = "admin_mode"
         private const val KEY_GESTURES_SEEN = "gestures_seen"
+        private const val KEY_FILL_LANDSCAPE = "viewer_fill_landscape"
+        private const val KEY_FILL_PORTRAIT = "viewer_fill_portrait"
         private const val KEY_APPEARANCE = "appearance"
         private const val KEY_MONITOR_GRID = "monitor_grid"
         private const val KEY_MONITOR_ROTATE = "monitor_rotate"

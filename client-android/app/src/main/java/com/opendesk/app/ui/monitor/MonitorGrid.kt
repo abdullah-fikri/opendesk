@@ -15,15 +15,14 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.res.ResourcesCompat
 import com.opendesk.app.R
+import com.opendesk.app.domain.MonitorWall
 import com.opendesk.app.ui.common.Ui
 import kotlin.math.abs
 import kotlin.math.ceil
-import kotlin.math.min
 
 /**
- * The wall's tiles. Places [slots] tiles in the column count that gives the biggest 16:10 pictures in the space it
- * has, so a 2x2 page uses a phone's tall screen as 1 column of 4 and its landscape screen as 2x2 or 4x1. Handles the
- * gestures itself: a horizontal swipe turns the page, a double tap on a tile opens that computer.
+ * The wall's tiles: [slots] tiles in [columns] columns (the user's grid setting), as large as the space allows at
+ * 16:10. Handles the gestures itself: a horizontal swipe turns the page, a double tap on a tile opens that computer.
  */
 class MonitorGrid(context: Context) : ViewGroup(context) {
     /** Swipe: -1 (previous page) or +1 (next page). */
@@ -36,7 +35,14 @@ class MonitorGrid(context: Context) : ViewGroup(context) {
     var onTap: (() -> Unit)? = null
 
     private val gap = Ui.dp(context, 6f)
-    private var columns = 1
+
+    /** Tiles per row (the wall's grid setting). */
+    var columns: Int = 1
+        set(value) {
+            if (field == value) return
+            field = value
+            requestLayout()
+        }
     private var tileW = 0
     private var tileH = 0
 
@@ -90,20 +96,9 @@ class MonitorGrid(context: Context) : ViewGroup(context) {
         val w = MeasureSpec.getSize(widthMeasureSpec)
         val h = MeasureSpec.getSize(heightMeasureSpec)
         val n = slots.coerceAtLeast(1)
-        // Pick the column count that gives the largest 16:10 tile.
-        var best = 0f
-        for (cols in 1..n) {
-            val rows = ceil(n / cols.toFloat()).toInt()
-            val cellW = (w - gap * (cols - 1)) / cols.toFloat()
-            val cellH = (h - gap * (rows - 1)) / rows.toFloat()
-            val tw = min(cellW, cellH * ASPECT)
-            if (tw > best) {
-                best = tw
-                columns = cols
-            }
-        }
+        val best = MonitorWall.tileWidth(w, h, columns, n, gap)
         tileW = best.toInt().coerceAtLeast(0)
-        tileH = (best / ASPECT).toInt().coerceAtLeast(0)
+        tileH = (best / MonitorWall.TILE_ASPECT).toInt().coerceAtLeast(0)
         val spec = { size: Int -> MeasureSpec.makeMeasureSpec(size, MeasureSpec.EXACTLY) }
         for (i in 0 until childCount) getChildAt(i).measure(spec(tileW), spec(tileH))
         setMeasuredDimension(w, h)
@@ -111,21 +106,17 @@ class MonitorGrid(context: Context) : ViewGroup(context) {
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         val n = slots.coerceAtLeast(1)
-        val rows = ceil(n / columns.toFloat()).toInt()
-        val blockW = columns * tileW + (columns - 1) * gap
+        val cols = columns.coerceIn(1, n)
+        val rows = ceil(n / cols.toFloat()).toInt()
+        val blockW = cols * tileW + (cols - 1) * gap
         val blockH = rows * tileH + (rows - 1) * gap
         val x0 = ((r - l) - blockW) / 2
         val y0 = ((b - t) - blockH) / 2
         for (i in 0 until childCount) {
-            val x = x0 + (i % columns) * (tileW + gap)
-            val y = y0 + (i / columns) * (tileH + gap)
+            val x = x0 + (i % cols) * (tileW + gap)
+            val y = y0 + (i / cols) * (tileH + gap)
             getChildAt(i).layout(x, y, x + tileW, y + tileH)
         }
-    }
-
-    private companion object {
-        /** Desktop screens are mostly 16:10 or 16:9; thumbnails are letterboxed inside the tile. */
-        const val ASPECT = 1.6f
     }
 }
 
