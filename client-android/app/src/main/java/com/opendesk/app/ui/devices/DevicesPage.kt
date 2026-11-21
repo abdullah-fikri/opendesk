@@ -50,10 +50,6 @@ class DevicesPage(private val host: MainHost, parent: ViewGroup) {
         search.addTextChangedListener(watcher { refresh() })
         idField.addTextChangedListener(watcher { idConnect.isEnabled = DeskId.clean(it).isNotEmpty() })
         idConnect.isEnabled = false
-        view.findViewById<View>(R.id.btn_monitor_wall).apply {
-            visibility = if (Edition.isAdmin) View.VISIBLE else View.GONE
-            setOnClickListener { host.showMonitorWall() }
-        }
         idConnect.setOnClickListener { connectTyped() }
         idField.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_GO) {

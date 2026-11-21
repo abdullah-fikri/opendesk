@@ -2,6 +2,8 @@ package com.opendesk.app.ui.viewer
 
 import android.os.SystemClock
 import com.opendesk.app.data.dto.InputEvent
+import com.opendesk.app.domain.Capabilities
+import com.opendesk.app.domain.StreamRequest
 import com.opendesk.app.domain.WindowsKeys
 import com.opendesk.app.session.RelayConnection
 
@@ -32,6 +34,21 @@ class RemoteInput {
         send(InputEvent(action = "keyup", keyCode = vk))
     }
 
+    fun keyDown(vk: Int) = send(InputEvent(action = "keydown", keyCode = vk))
+
+    fun keyUp(vk: Int) = send(InputEvent(action = "keyup", keyCode = vk))
+
+    /** `vk` pressed and released with these modifiers (a plain key press when none is held); Win is held around it. */
+    fun combo(vk: Int, ctrl: Boolean, alt: Boolean, shift: Boolean, win: Boolean) {
+        if (win) keyDown(WindowsKeys.VK_LWIN)
+        if (ctrl || alt || shift) {
+            send(InputEvent(action = "keycombo", keyCode = vk, ctrl = ctrl, alt = alt, shift = shift))
+        } else {
+            key(vk)
+        }
+        if (win) keyUp(WindowsKeys.VK_LWIN)
+    }
+
     /** Typed text; a soft keyboard may commit a newline as text, and the computer gets a real Enter key for it. */
     fun text(text: String) {
         text.split('\n').forEachIndexed { i, part ->
@@ -48,6 +65,21 @@ class RemoteInput {
     fun switchMonitor() = send(InputEvent(action = "switch-monitor"))
 
     fun requestKeyFrame() = send(InputEvent(action = "video-keyframe"))
+
+    /**
+     * Asks the host to stream no larger than this phone's display of `width` x `height` physical pixels
+     * (automatic `set-resolution`, see [StreamRequest]); `mode` 1080 keeps older hosts on their default.
+     */
+    fun requestStreamSize(width: Int, height: Int) {
+        val (w, h) = StreamRequest.box(width, height) ?: return
+        send(InputEvent(action = "set-resolution", mode = StreamRequest.MAX_SHORT_SIDE, auto = true, width = w, height = h))
+    }
+
+    /** Tells the host the stream preset ([Capabilities.performanceFor]); nothing when the default suits. */
+    fun requestPerformance(h264: Boolean, dataSaver: Boolean) {
+        val preset = Capabilities.performanceFor(h264, RelayConnection.hostCaps, dataSaver) ?: return
+        send(InputEvent(action = "set-performance", preset = preset, maxFps = 60))
+    }
 
     private fun send(event: InputEvent) = RelayConnection.sendInput(event)
 

@@ -45,7 +45,9 @@
     <color name="wall_text">#F2F2F4</color>
     <color name="wall_text2">#A0A0A8</color>
     <color name="wall_tile">#1E1E22</color>
-    <color name="wall_label">#B3000000</color>
+    <color name="wall_label">#99141416</color>
+    <color name="wall_label_edge">#26FFFFFF</color>
+    <color name="wall_edge">#14FFFFFF</color>
     <color name="wall_banner">#2A2A30</color>
     <!-- Launcher icon background (mipmap-anydpi-v26). -->
     <color name="launcher_bg">#FFFFFF</color>

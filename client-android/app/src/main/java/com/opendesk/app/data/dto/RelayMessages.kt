@@ -75,7 +75,7 @@ data class P2pSignal(val targetClean: String, val candidate: String, val type: S
 /**
  * Input or control event. Coordinates are normalized to 0..1 of the remote screen.
  * Actions sent by Android: mousemove, mousedown, mouseup, click, dblclick, wheel, keydown, keyup, text,
- * shortcut, switch-monitor, set-mic.
+ * shortcut, switch-monitor, set-mic, set-resolution.
  */
 data class InputEvent(
     val action: String,
@@ -90,6 +90,18 @@ data class InputEvent(
     val text: String? = null,
     /** Shortcut name for `shortcut` (win, alt-tab, taskmgr, explorer, desktop). */
     val name: String? = null,
+    /** `set-resolution`: preset (1080, what hosts without automatic mode keep), `auto` and the phone's box. */
+    val mode: Int? = null,
+    val auto: Boolean? = null,
+    val width: Int? = null,
+    val height: Int? = null,
+    /** `set-performance`: "low" / "medium" / "high", and the frame-rate cap. */
+    val preset: String? = null,
+    val maxFps: Int? = null,
+    /** `keycombo`: modifiers held around [keyCode]. */
+    val ctrl: Boolean? = null,
+    val alt: Boolean? = null,
+    val shift: Boolean? = null,
 )
 
 /** Any message from the relay. Every field is optional; `type` selects which ones are set. */
@@ -128,10 +140,17 @@ data class HostInfo(
     val online: Boolean = false,
 )
 
-/** Received control event (`input-command.event`). A viewer only acts on `set-mic`. */
+/** Received control event (`input-command.event`). A viewer acts on `set-mic` and `text-focus`. */
 data class RemoteEvent(
     val action: String? = null,
     val muted: Boolean? = null,
+    /** `text-focus`: focus is in a host text field, at this rect of the streamed monitor (0..1). */
+    val editable: Boolean? = null,
+    val normX: Float? = null,
+    val normY: Float? = null,
+    val normW: Float? = null,
+    val normH: Float? = null,
+    val password: Boolean? = null,
 )
 
 /** File-transfer payload as Android receives it (`start`, `chunk`, `end`). */

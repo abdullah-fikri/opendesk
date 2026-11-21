@@ -40,6 +40,11 @@ class H264Decoder(private val failed: () -> Unit) {
     private var thread: HandlerThread? = null
     private val inputs = LinkedBlockingQueue<Int>()
 
+    /** Smoothed time from queueing an access unit to its picture going to the screen, in milliseconds. */
+    @Volatile
+    var latencyMs = 0f
+        private set
+
     /** Queues one access unit; false when the host must send an IDR first (or the codec is unusable). */
     fun decode(msg: ByteArray, f: FramedVideo.Frame): Boolean {
         val target = surface ?: return false
@@ -49,7 +54,8 @@ class H264Decoder(private val failed: () -> Unit) {
             if (!idr && (!ready || !FramedVideo.follows(lastSeq, f.seq))) return false
             if (idr && !ready && !configure(msg, f, target)) return false
         }
-        val index = inputs.poll(INPUT_WAIT_MS, TimeUnit.MILLISECONDS) ?: return false.also { lastSeq = null }
+        val index = inputs.poll(INPUT_WAIT_MS, TimeUnit.MILLISECONDS)
+            ?: return false.also { synchronized(lock) { lastSeq = null } }
         synchronized(lock) {
             val c = codec ?: return false
             return try {
@@ -101,7 +107,7 @@ class H264Decoder(private val failed: () -> Unit) {
                 setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, (f.width * f.height).coerceAtLeast(MIN_INPUT_BYTES))
                 // Decode each picture as soon as it arrives: this is a live screen, not a movie.
                 setInteger(MediaFormat.KEY_PRIORITY, 0)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                lowLatency(this, name)
             }
             val worker = thread ?: HandlerThread("OpenDesk-H264").also {
                 it.start()
@@ -146,6 +152,11 @@ class H264Decoder(private val failed: () -> Unit) {
         }
 
         override fun onOutputBufferAvailable(c: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
+            // Queued with the time it went in: what is left is how long the decoder held it.
+            if (info.size > 0 && info.presentationTimeUs > 0) {
+                val held = (System.nanoTime() / 1000 - info.presentationTimeUs) / 1000f
+                if (held in 0f..MAX_SANE_LATENCY_MS) latencyMs = latencyMs * 0.8f + held * 0.2f
+            }
             try {
                 c.releaseOutputBuffer(index, info.size > 0)
             } catch (_: IllegalStateException) {
@@ -160,6 +171,29 @@ class H264Decoder(private val failed: () -> Unit) {
         }
 
         override fun onOutputFormatChanged(c: MediaCodec, format: MediaFormat) = Unit
+    }
+
+    /**
+     * Asks the decoder not to hold pictures back: Android 11's low-latency key (ignored by codecs without the
+     * feature), and the switch many chips ship of their own (unknown keys are ignored by the others). Without one
+     * of them, decoders often keep several frames for reordering the host's stream never uses.
+     */
+    private fun lowLatency(format: MediaFormat, name: String) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+        val n = name.lowercase()
+        when {
+            n.startsWith("omx.qcom") || n.startsWith("c2.qti") -> {
+                format.setInteger("vendor.qti-ext-dec-picture-order.enable", 1)
+                format.setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
+            }
+            n.startsWith("omx.exynos") || n.startsWith("c2.exynos") ->
+                format.setInteger("vendor.rtc-ext-dec-low-latency.enable", 1)
+            n.startsWith("omx.hisi") || n.startsWith("c2.hisi") -> {
+                format.setInteger("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1)
+                format.setInteger("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-rdy", -1)
+            }
+            n.startsWith("omx.amlogic") || n.startsWith("c2.amlogic") -> format.setInteger("vendor.low-latency.enable", 1)
+        }
     }
 
     /** Whether this phone has a hardware H.264 decoder (software decoding would be slower than the JPEG path). */
@@ -185,5 +219,6 @@ class H264Decoder(private val failed: () -> Unit) {
         const val MIME = MediaFormat.MIMETYPE_VIDEO_AVC
         const val INPUT_WAIT_MS = 200L
         const val MIN_INPUT_BYTES = 1 shl 20
+        const val MAX_SANE_LATENCY_MS = 2000f
     }
 }

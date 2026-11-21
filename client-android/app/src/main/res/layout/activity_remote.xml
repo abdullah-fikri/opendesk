@@ -81,6 +81,12 @@
             android:textSize="14sp" />
     </LinearLayout>
 
+    <!-- Mini glass keyboard: spans the screen but draws and takes touches only on its floating panel. -->
+    <com.opendesk.app.ui.viewer.keyboard.GlassKeyboardView
+        android:id="@+id/view_glass_keyboard"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
     <FrameLayout
         android:id="@+id/overlay_host"
         android:layout_width="match_parent"

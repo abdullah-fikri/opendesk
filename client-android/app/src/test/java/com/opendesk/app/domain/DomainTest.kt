@@ -50,10 +50,21 @@ class DomainTest {
         // `video-h264` only with a working hardware decoder; never `multi-session` (one session at a time).
         // Only the admin edition shows the monitor wall.
         val wall = if (Edition.isAdmin) listOf("monitor-view") else emptyList()
-        assertEquals(listOf("viewer-only", "video-delta", "e2e") + wall, Capabilities.advertised(h264 = false))
-        assertEquals(listOf("viewer-only", "video-delta", "e2e", "video-h264") + wall, Capabilities.advertised(h264 = true))
+        // `fps-60` last; `h264-eager` (H.264 at once during motion) only with a hardware decoder.
+        // `text-focus`: the host says when a text field takes focus, so the mini keyboard comes up by itself.
+        assertEquals(listOf("viewer-only", "video-delta", "e2e", "text-focus") + wall + "fps-60", Capabilities.advertised(h264 = false))
+        assertEquals(
+            listOf("viewer-only", "video-delta", "e2e", "text-focus", "video-h264", "h264-eager") + wall + listOf("fps-60"),
+            Capabilities.advertised(h264 = true),
+        )
         // The relay accepts lowercase letters, digits, '-' and '.', at most 32 characters.
         Capabilities.advertised(h264 = true).forEach { assertTrue(it.matches(Regex("[a-z0-9.-]{1,32}"))) }
+        // Data saver asks for Low; an older host gets High (its only way to start H.264 at once); a host listing
+        // `h264-eager` keeps the normal preset.
+        assertEquals("low", Capabilities.performanceFor(true, listOf("h264-eager"), dataSaver = true))
+        assertEquals("high", Capabilities.performanceFor(true, listOf("video-h264"), dataSaver = false))
+        assertEquals(null, Capabilities.performanceFor(true, listOf("video-h264", "h264-eager"), dataSaver = false))
+        assertEquals(null, Capabilities.performanceFor(false, listOf("video-h264"), dataSaver = false))
     }
 
     @Test

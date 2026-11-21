@@ -135,30 +135,46 @@ class MonitorTileView(context: Context) : FrameLayout(context) {
     private val dot = View(context)
     private val name = TextView(context).apply {
         setTextColor(Ui.color(context, R.color.wall_text))
-        textSize = 12f
+        textSize = 12.5f
         maxLines = 1
         ellipsize = TextUtils.TruncateAt.END
+        includeFontPadding = false
+        letterSpacing = -0.01f
         typeface = ResourcesCompat.getFont(context, R.font.inter_semibold)
     }
 
     init {
         background = GradientDrawable().apply {
             setColor(Ui.color(context, R.color.wall_tile))
-            cornerRadius = Ui.dp(context, 8f).toFloat()
+            cornerRadius = Ui.dp(context, 12f).toFloat()
+            setStroke(Ui.dp(context, 1f), Ui.color(context, R.color.wall_edge))
         }
         clipToOutline = true
         addView(image, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         addView(status, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        // The name floats over the picture as a small glass capsule (bottom left), never a full-width band.
         val label = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(Ui.dp(context, 8f), Ui.dp(context, 4f), Ui.dp(context, 8f), Ui.dp(context, 4f))
-            setBackgroundColor(Ui.color(context, R.color.wall_label))
+            val padH = Ui.dp(context, 10f)
+            val padV = Ui.dp(context, 5f)
+            setPadding(padH, padV, padH + Ui.dp(context, 2f), padV)
+            background = GradientDrawable().apply {
+                setColor(Ui.color(context, R.color.wall_label))
+                cornerRadius = Ui.dp(context, 100f).toFloat()
+                setStroke(Ui.dp(context, 1f), Ui.color(context, R.color.wall_label_edge))
+            }
             val size = Ui.dp(context, 7f)
-            addView(dot, LinearLayout.LayoutParams(size, size).apply { marginEnd = Ui.dp(context, 6f) })
-            addView(name, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
+            addView(dot, LinearLayout.LayoutParams(size, size).apply { marginEnd = Ui.dp(context, 7f) })
+            addView(name, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
         }
-        addView(label, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+        val margin = Ui.dp(context, 8f)
+        addView(
+            label,
+            LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
+                setMargins(margin, margin, margin, margin)
+            },
+        )
     }
 
     /** Fills the tile: `picture` when there is one, else `statusText`; `live` colours the dot. */

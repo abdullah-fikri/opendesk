@@ -40,6 +40,15 @@
             android:layout_weight="0" />
 
         <include
+            android:id="@+id/nav_wall"
+            layout="@layout/item_nav"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="6dp"
+            android:layout_weight="0"
+            android:visibility="gone" />
+
+        <include
             android:id="@+id/nav_settings"
             layout="@layout/item_nav"
             android:layout_width="match_parent"

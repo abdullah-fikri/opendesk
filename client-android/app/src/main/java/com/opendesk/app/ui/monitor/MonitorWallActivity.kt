@@ -64,7 +64,6 @@ class MonitorWallActivity : AppCompatActivity(), RelayConnection.MonitorListener
     private val states = HashMap<String, String>()
     private val pictures = HashMap<String, Bitmap>()
 
-    private val isTablet: Boolean get() = resources.getBoolean(R.bool.is_tablet)
     private val pages: Int get() = MonitorWall.pageCount(hosts.size, MonitorWall.perPage(wall))
 
     private val tick = object : Runnable {
@@ -80,7 +79,7 @@ class MonitorWallActivity : AppCompatActivity(), RelayConnection.MonitorListener
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         settings = SettingsRepository(this)
         directory = DeviceDirectory(this, settings, SessionHistory(this))
-        wall = settings.monitor(if (isTablet) 3 else 2)
+        wall = settings.monitor(MonitorWall.MAX_GRID)
         page = savedInstanceState?.getInt(STATE_PAGE) ?: 0
 
         bar = findViewById(R.id.wall_bar)
@@ -243,7 +242,7 @@ class MonitorWallActivity : AppCompatActivity(), RelayConnection.MonitorListener
 
     private fun showSettings() {
         val all = if (directory.fromRelay) directory.all().map { WallHost(it.cleanId, it.name, it.online == true) } else emptyList()
-        val choices = if (isTablet) listOf(2, 3, 4) else listOf(1, 2, 3)
+        val choices = (1..MonitorWall.MAX_GRID).toList()
         sheet?.dismiss()
         sheet = WallSettingsSheet(this, wall, choices, all) { next ->
             wall = next

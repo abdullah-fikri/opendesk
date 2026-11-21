@@ -34,8 +34,11 @@ object MonitorWall {
     const val ROTATE_MAX_SECS = 600
     const val ROTATE_DEFAULT_SECS = 10
 
-    /** Tiles per row and column, 1..4. */
-    fun grid(settings: MonitorSettings): Int = settings.grid.coerceIn(1, 4)
+    /** Largest grid on a phone or tablet: 2x2 keeps every screen readable on the landscape wall. */
+    const val MAX_GRID = 2
+
+    /** Tiles per row and column, 1..[MAX_GRID] (a wall saved with a bigger grid shows 2x2). */
+    fun grid(settings: MonitorSettings): Int = settings.grid.coerceIn(1, MAX_GRID)
 
     /** Tiles on one page (1, 4, 9 or 16). */
     fun perPage(settings: MonitorSettings): Int = grid(settings).let { it * it }

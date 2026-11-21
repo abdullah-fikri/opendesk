@@ -80,6 +80,53 @@ class SettingsRepository(context: Context) {
         get() = prefs.getBoolean(KEY_H264_FAILED, false)
         set(value) = prefs.edit().putBoolean(KEY_H264_FAILED, value).apply()
 
+    /**
+     * Data saver: the host is asked for the Low preset (smaller bitrate) and never for High. Off by default; meant
+     * for mobile data.
+     */
+    var dataSaver: Boolean
+        get() = prefs.getBoolean(KEY_DATA_SAVER, false)
+        set(value) = prefs.edit().putBoolean(KEY_DATA_SAVER, value).apply()
+
+    /** The mini keyboard comes up by itself when a text field on the host is tapped (`text-focus`). */
+    var autoKeyboard: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_KEYBOARD, true)
+        set(value) = prefs.edit().putBoolean(KEY_AUTO_KEYBOARD, value).apply()
+
+    /** The Keyboard control opens the mini glass keyboard (`true`, the default) or the phone's own keyboard. */
+    var miniKeyboard: Boolean
+        get() = prefs.getBoolean(KEY_MINI_KEYBOARD, true)
+        set(value) = prefs.edit().putBoolean(KEY_MINI_KEYBOARD, value).apply()
+
+    /** The mini keyboard in landscape is split in two halves at the sides; never chosen: `default`. */
+    fun keyboardSplit(default: Boolean): Boolean = prefs.getBoolean(KEY_KEYBOARD_SPLIT, default)
+
+    fun setKeyboardSplit(split: Boolean) = prefs.edit().putBoolean(KEY_KEYBOARD_SPLIT, split).apply()
+
+    /**
+     * Where the user left the mini keyboard in this orientation: `[scale, centerX, bottomGap, opacity]` (see
+     * `GlassKeyboardView.Placement`; a negative bottom gap is the default place).
+     */
+    fun keyboardPlacement(landscape: Boolean): FloatArray {
+        val o = if (landscape) "land" else "port"
+        return floatArrayOf(
+            prefs.getFloat("${KEY_KEYBOARD_PREFIX}scale_$o", 1f),
+            prefs.getFloat("${KEY_KEYBOARD_PREFIX}cx_$o", 0.5f),
+            prefs.getFloat("${KEY_KEYBOARD_PREFIX}gap_$o", -1f),
+            prefs.getFloat("${KEY_KEYBOARD_PREFIX}opacity", 1f),
+        )
+    }
+
+    fun setKeyboardPlacement(landscape: Boolean, scale: Float, centerX: Float, bottomGap: Float, opacity: Float) {
+        val o = if (landscape) "land" else "port"
+        prefs.edit()
+            .putFloat("${KEY_KEYBOARD_PREFIX}scale_$o", scale)
+            .putFloat("${KEY_KEYBOARD_PREFIX}cx_$o", centerX)
+            .putFloat("${KEY_KEYBOARD_PREFIX}gap_$o", bottomGap)
+            .putFloat("${KEY_KEYBOARD_PREFIX}opacity", opacity)
+            .apply()
+    }
+
     /** The touch-gesture guide was shown once in a remote session. */
     var gesturesSeen: Boolean
         get() = prefs.getBoolean(KEY_GESTURES_SEEN, false)
@@ -114,6 +161,11 @@ class SettingsRepository(context: Context) {
         private const val KEY_DEVICE_TOKEN_RELAY = "device_token_relay"
         private const val KEY_LEGACY_ADMIN_MODE = "admin_mode"
         private const val KEY_GESTURES_SEEN = "gestures_seen"
+        private const val KEY_AUTO_KEYBOARD = "auto_keyboard"
+        private const val KEY_DATA_SAVER = "data_saver"
+        private const val KEY_MINI_KEYBOARD = "mini_keyboard"
+        private const val KEY_KEYBOARD_SPLIT = "glass_keyboard_split"
+        private const val KEY_KEYBOARD_PREFIX = "glass_keyboard_"
         private const val KEY_H264_FAILED = "h264_failed"
         private const val KEY_FILL_LANDSCAPE = "viewer_fill_landscape"
         private const val KEY_FILL_PORTRAIT = "viewer_fill_portrait"

@@ -29,7 +29,7 @@ class MonitorWallTest {
 
     @Test
     fun pagesSplitByGridAndClamp() {
-        for ((g, n) in listOf(1 to 1, 2 to 4, 3 to 9, 4 to 16, 0 to 1, 9 to 16)) {
+        for ((g, n) in listOf(1 to 1, 2 to 4, 3 to 4, 4 to 4, 0 to 1, 9 to 4)) {
             assertEquals("grid $g", n, MonitorWall.perPage(MonitorSettings(g)))
         }
         val list = (0 until 20).toList()

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Phone shell: the current tab above a bottom bar (Devices, Sessions, Settings). -->
+<!-- Phone shell: the current tab above a bottom bar (Devices, Sessions, Wall in the admin edition, Settings). -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/root_main"
     android:layout_width="match_parent"
@@ -24,7 +24,7 @@
         android:layout_height="wrap_content"
         android:background="@color/nav_bg"
         android:orientation="horizontal"
-        android:paddingHorizontal="12dp">
+        android:paddingHorizontal="8dp">
 
         <include
             android:id="@+id/nav_devices"
@@ -33,6 +33,12 @@
         <include
             android:id="@+id/nav_sessions"
             layout="@layout/item_nav" />
+
+        <!-- Admin edition only (NavBar shows it). -->
+        <include
+            android:id="@+id/nav_wall"
+            layout="@layout/item_nav"
+            android:visibility="gone" />
 
         <include
             android:id="@+id/nav_settings"

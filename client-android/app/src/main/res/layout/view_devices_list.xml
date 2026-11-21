@@ -22,18 +22,6 @@
             android:layout_weight="1"
             android:paddingStart="20dp"
             android:text="@string/tab_devices" />
-
-        <!-- Admin edition only (DevicesPage). -->
-        <TextView
-            android:id="@+id/btn_monitor_wall"
-            style="@style/Od.Button.Small.Tint"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:drawableStart="@drawable/ic_wall"
-            android:drawablePadding="6dp"
-            android:text="@string/monitor_wall"
-            android:visibility="gone"
-            app:drawableTint="@color/accent_tx" />
     </LinearLayout>
 
     <TextView

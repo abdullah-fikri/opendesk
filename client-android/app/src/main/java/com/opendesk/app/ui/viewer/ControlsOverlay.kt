@@ -53,6 +53,9 @@ class ControlsOverlay(private val host: ViewGroup, private val state: ViewerStat
     var partnerName = ""
     var fps = 0
 
+    /** What the screen decodes and its time per frame (`JPEG · 6 ms`), after the frame rate; empty for none. */
+    var detail = ""
+
     fun build() {
         host.removeAllViews()
         val view = LayoutInflater.from(context).inflate(R.layout.view_overlay, host, false)
@@ -157,7 +160,7 @@ class ControlsOverlay(private val host: ViewGroup, private val state: ViewerStat
         fun s(id: Int) = context.getString(id)
         val trackpad = state.trackpadMode
         return listOf(
-            RadialMenuView.Item(Tool.KEYBOARD, s(R.string.keyboard), R.drawable.ic_kbd, active = state.keyboardVisible),
+            RadialMenuView.Item(Tool.KEYBOARD, s(R.string.keyboard), R.drawable.ic_kbd, active = state.keyboardVisible || state.glassKeyboardVisible),
             RadialMenuView.Item(
                 Tool.MOUSE_MODE,
                 s(if (trackpad) R.string.menu_touch else R.string.menu_trackpad),
@@ -226,7 +229,8 @@ class ControlsOverlay(private val host: ViewGroup, private val state: ViewerStat
     fun refreshStatus() {
         val view = overlay ?: return
         view.findViewById<TextView>(R.id.tv_partner).text = partnerName
-        view.findViewById<TextView>(R.id.tv_remote_fps).text = context.getString(R.string.fps_label, fps)
+        val label = context.getString(R.string.fps_label, fps)
+        view.findViewById<TextView>(R.id.tv_remote_fps).text = if (detail.isEmpty()) label else "$label · $detail"
         view.findViewById<View>(R.id.tv_e2e).visibility = if (RelayConnection.isEndToEnd) View.VISIBLE else View.GONE
     }
 

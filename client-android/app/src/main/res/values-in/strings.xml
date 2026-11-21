@@ -3,6 +3,7 @@
 <resources>
     <string name="tab_devices">Perangkat</string>
     <string name="tab_sessions">Sesi</string>
+    <string name="tab_wall">Wall</string>
     <string name="tab_settings">Pengaturan</string>
 
     <string name="status_connected">Terhubung</string>
@@ -214,4 +215,15 @@
     <string name="wall_all_sub">Mati: hanya komputer yang Anda pilih, termasuk yang offline</string>
     <string name="wall_pick">Komputer di wall</string>
     <string name="h264_failed">Decode video hardware gagal di HP ini. Mulai koneksi berikutnya OpenDesk memakai gambar standar.</string>
+    <string name="section_remote">Kontrol jarak jauh</string>
+    <string name="auto_keyboard">Keyboard otomatis</string>
+    <string name="auto_keyboard_sub">Muncul saat Anda mengetuk kolom teks di komputer</string>
+    <string name="keyboard_glass">Mini kaca</string>
+    <string name="keyboard_system">Sistem</string>
+    <string name="keyboard_type_note">Mini kaca menjaga layar tetap terlihat; Sistem punya bahasa lain dan ketik suara.</string>
+    <string name="data_saver">Hemat data</string>
+    <string name="data_saver_sub">Bitrate video lebih rendah di data seluler; tanpa permintaan stream performa tinggi</string>
+    <string name="paste_sent">Ditempel dari HP Anda</string>
+    <string name="paste_empty">Clipboard HP Anda kosong</string>
+    <string name="paste_truncated">Ditempel %1$d karakter pertama</string>
 </resources>
