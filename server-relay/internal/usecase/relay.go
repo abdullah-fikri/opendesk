@@ -289,7 +289,27 @@ func (r *Relay) HostList(ctx context.Context) ([]model.Host, error) {
 	started := time.Now()
 	hosts, err := r.hosts.List(ctx)
 	r.metrics.ObserveHostList(time.Since(started))
-	return hosts, err
+	if err != nil {
+		return hosts, err
+	}
+	// Online comes from the live connections, not the stored flag: the offline write of a dropped connection
+	// and the online write of its replacement run outside the lock, and the later-finishing one would otherwise
+	// show a connected device offline until it next reconnects.
+	r.mu.RLock()
+	for i := range hosts {
+		_, hosts[i].Online = r.peers[hosts[i].CleanID]
+	}
+	r.mu.RUnlock()
+	slices.SortStableFunc(hosts, func(a, b model.Host) int {
+		switch {
+		case a.Online == b.Online:
+			return 0
+		case a.Online:
+			return -1
+		}
+		return 1
+	})
+	return hosts, nil
 }
 
 // RunJanitor drops expired file grants every interval until ctx ends.
