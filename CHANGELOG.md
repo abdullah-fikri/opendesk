@@ -6,6 +6,19 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
 ## [Unreleased]
 
 ### Added
+- Desktop: direct file channel. File transfers between two desktops now get a TCP connection of their own,
+  end-to-end encrypted with the device keys, instead of crawling behind the video on the P2P path or the relay
+  (where they were cut whenever the P2P path dropped and then held at 64 KB/s). Copy-paste, drag and drop and
+  "Send files" use it automatically when both sides have this version; the P2P path and the relay remain the
+  fallbacks. `OPENDESK_FILE_CHANNEL=0` turns it off.
+- Desktop: file browser, opened with **Files** on a device card or row, no remote screen needed. It connects a
+  files-only session (no tab, no screen stream, no sound; the host idles its capture) and shows this computer on
+  the left and the device on the right: browse folders, select, send and get both ways, create folders. Copies
+  run as normal transfers over the direct file channel when it gets through, else the relay, unpaced since no
+  video shares the line. Listings reach the device over the relay (sealed end to end) when there is no direct
+  path. On the host every file operation runs as the signed-in user, and only the session's viewer can browse.
+- Android (admin): the monitor wall is a tab in the bottom bar, runs in landscape and shows at most 2×2 screens;
+  device names sit in small glass capsules.
 - Android viewer: a radial session menu. Hold the right edge (or slide in from it), slide to an action and lift:
   keyboard, trackpad/touch, display (fit, fill, next monitor), keys (Esc, Tab, Win, Alt+Tab, Task Manager),
   scroll mode and the full controls. A tap on the grip keeps it open for tapping.
@@ -18,6 +31,11 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
   (landscape fills by default).
 
 ### Changed
+- Android viewer: motion switches to H.264 at once at the normal bitrate on hosts with this version (`h264-eager`);
+  older hosts are asked for the High preset instead. Settings → Remote control → Data saver asks for the Low preset.
+- Android glass keyboard: the view glides so the focused field stays above the keyboard (small fields zoom in),
+  split layout in landscape, paste from the phone's clipboard, and Auto keyboard / Keyboard choice in Settings.
+- Android: iOS-style tab bar: outlined icons that fill and take the accent colour when selected, no pill.
 - Android viewer: nothing stays over the remote screen but a faint grip. The session pill (name, FPS, E2E,
   disconnect) slides in on a swipe down from the top and hides itself; the "Controls" button is gone.
 - Android viewer: scrolling follows the finger line by line and a flick coasts, instead of a whole wheel notch
@@ -28,6 +46,13 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
 ### Fixed
 - Android monitor wall: a 3x3 (or 4x4) grid showed fewer columns on a tall phone; the wall now keeps the chosen
   number of columns.
+- Desktop: a device could stay offline for good after its internet went up and down, although OpenDesk was
+  still running (only a restart helped). Connecting to the relay had no timeout, so a TLS or WebSocket handshake
+  cut off mid-way waited forever. Each attempt now gives up after 20 s and starts over with a fresh DNS lookup
+  and socket; a connection the relay does not register within 30 s is redone; and a watchdog restarts the
+  service's agent if the connection loop ever stops making progress for 3 minutes.
+- Relay: the admin device list takes "online" from the live connections, so a late offline write of a
+  dropped connection no longer shows a connected device offline.
 
 ## [1.5.0] - 2026-11-19
 
