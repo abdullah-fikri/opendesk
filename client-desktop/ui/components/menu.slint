@@ -82,3 +82,66 @@ export component PopoverFrame inherits Rectangle {
         @children
     }
 }
+
+// iOS-style glass popover (context menus): translucent rounded panel, plain text rows, hairline separators.
+export component GlassMenu inherits Rectangle {
+    background: Theme.dark ? #2c2c2ef0 : #f7f7f8f2;
+    border-radius: 14px;
+    border-width: 0.5px;
+    border-color: Theme.dark ? #ffffff26 : #0000001a;
+    drop-shadow-blur: 30px;
+    drop-shadow-color: #00000059;
+    drop-shadow-offset-y: 10px;
+    clip: true;
+
+    VerticalLayout {
+        padding-top: 6px;
+        padding-bottom: 6px;
+        @children
+    }
+}
+
+// One action of a glass popover; `danger` paints it red.
+export component GlassItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 34px;
+    opacity: root.enabled ? 1.0 : 0.4;
+    Rectangle {
+        x: 6px;
+        width: parent.width - 12px;
+        border-radius: 8px;
+        background: ta.has-hover && root.enabled ? (Theme.dark ? #ffffff1a : #0000000f) : transparent;
+    }
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+    Text {
+        x: 20px;
+        width: parent.width - 40px;
+        text: root.label;
+        color: root.danger ? Theme.accent-tx : Theme.text;
+        font-size: 13.5px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+// Hairline between groups of a glass popover.
+export component GlassSep inherits Rectangle {
+    height: 9px;
+    Rectangle {
+        x: 20px;
+        width: parent.width - 40px;
+        height: 0.5px;
+        background: Theme.dark ? #ffffff26 : #00000026;
+    }
+}

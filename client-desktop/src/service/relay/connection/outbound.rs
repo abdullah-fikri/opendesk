@@ -38,17 +38,22 @@ impl Connection {
                 Outgoing::VideoFrame(frame) => video = Some(frame),
                 Outgoing::MonitorFrame(frame) => self.monitor_pending = Some(frame),
                 Outgoing::Audio(packet) => self.send_audio(socket, partner, packet),
+                Outgoing::Browse { target, payload } => self.send_browse(&target, &payload),
                 Outgoing::File { message: ClientMessage::RelayFile { target_clean, payload }, status, mark }
-                    if self.route_file(&target_clean, &payload) =>
+                    if self.file_route_ready(&target_clean, &payload) =>
                 {
+                    let path = std::mem::take(&mut self.routed_now);
                     let json = serde_json::to_vec(&payload).unwrap_or_default();
-                    self.send_file_p2p(&target_clean, bulk::MSG_JSON, &json, chunk_units(0), status, mark);
+                    self.send_file_p2p(&target_clean, path, bulk::MSG_JSON, &json, chunk_units(0), status, mark);
                 }
                 Outgoing::FileChunk { target, frame, status, mark }
-                    if binary::parse_file_chunk(&frame).is_some_and(|c| self.routed_p2p(&target, c.id)) =>
+                    if binary::parse_file_chunk(&frame)
+                        .is_some_and(|c| self.routed_path(&target, c.id) != Path::Relay) =>
                 {
+                    let path =
+                        binary::parse_file_chunk(&frame).map_or(Path::Relay, |c| self.routed_path(&target, c.id));
                     let units = chunk_units(frame.len());
-                    self.send_file_p2p(&target, bulk::MSG_BINARY, &frame, units, status, mark);
+                    self.send_file_p2p(&target, path, bulk::MSG_BINARY, &frame, units, status, mark);
                 }
                 Outgoing::File { message, status, mark } => {
                     let text = message.to_json();
@@ -162,6 +167,16 @@ impl Connection {
         }
     }
 
+    /// No screen is streamed either way: not hosting (or the viewer paused the stream) and every viewed session
+    /// is files-only.
+    pub(super) fn no_video(&self, partner: &str) -> bool {
+        let hosting_video =
+            !partner.is_empty() && !self.ctx.host.video_paused.load(std::sync::atomic::Ordering::Relaxed);
+        let viewing_video =
+            self.ctx.viewers.all().iter().any(|s| !s.files_only.load(std::sync::atomic::Ordering::Relaxed));
+        !hosting_video && !viewing_video
+    }
+
     /// Sends a burst of queued file messages, within the per-tick budget and the paced file rate, and returns
     /// the newest status line among them.
     pub(super) fn pump_files(&mut self, socket: &mut Socket, idle: bool) -> Option<String> {
@@ -169,7 +184,8 @@ impl Connection {
         let mut latest = None;
         let now = Instant::now();
         while budget > 0 {
-            if !self.files.front().is_some_and(|f| self.pacer.allow(f.bytes, now)) {
+            // Without a screen stream there is nothing to keep the uplink free for: files go unpaced.
+            if !self.files.front().is_some_and(|f| idle || self.pacer.allow(f.bytes, now)) {
                 break;
             }
             let Some(file) = self.files.pop_front() else { break };

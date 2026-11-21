@@ -243,7 +243,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     let mut encoder = StreamEncoder::new(capturer.width(), capturer.height(), base_quality, caps.video_delta);
     // The viewer's performance preset; `set-performance` may change it during the session.
     let mut preset = caps.performance;
-    encoder.set_preset(preset.bitrate_factor(), preset.prefers_h264());
+    encoder.set_preset(preset.bitrate_factor(), preset.prefers_h264() || caps.h264_eager);
     encoder.set_gpu_source(zero_copy_source(&mut capturer, local_cursor, h264));
     encoder.set_h264(h264);
     encoder.set_lossless(caps.tile_lossless);
@@ -286,6 +286,11 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
     stats_usage.sample(last_monitor_poll);
 
     while host.is_current(generation) {
+        // A files-only session: nothing captured or sent until the viewer asks for the screen again.
+        if host.video_paused.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            continue;
+        }
         let frame_start = Instant::now();
         if let Some(secs) = perf_window.due(frame_start) {
             let h264 = if h264 == H264Mode::Off { None } else { Some(encoder.h264_name.as_deref().unwrap_or("idle")) };
@@ -403,7 +408,7 @@ fn run(ctx: &Ctx, partner: &str, generation: u64) {
         };
         if viewer_preset != preset {
             preset = viewer_preset;
-            encoder.set_preset(preset.bitrate_factor(), preset.prefers_h264());
+            encoder.set_preset(preset.bitrate_factor(), preset.prefers_h264() || caps.h264_eager);
             logger::info("host.capture", &format!("Viewer performance preset: {}", preset.cap()));
         }
         let direct = host.p2p_active.load(Ordering::Relaxed);

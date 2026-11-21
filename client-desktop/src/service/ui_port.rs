@@ -172,6 +172,27 @@ pub struct TransferUpdate {
     pub state: TransferState,
 }
 
+/// What the file browser learned about the remote side (`service::file_browser`).
+#[derive(Clone, Debug)]
+pub enum BrowseUpdate {
+    /// The entries of a folder of `partner`; `parent` is None at its top level.
+    Remote {
+        partner: String,
+        path: String,
+        parent: Option<String>,
+        entries: Vec<crate::domain::file_browser::Entry>,
+        more: bool,
+    },
+    /// A request was carried out (a new folder, a download that started).
+    Done { partner: String },
+    /// A request failed; `message` is meant for the user.
+    Failed { partner: String, message: String },
+    /// The files-only session with `partner` is connected: the browser can ask for listings.
+    Connected { partner: String },
+    /// The session with `partner` ended; `message` says why.
+    Ended { partner: String, message: String },
+}
+
 /// Everything services report to the user interface.
 pub trait UiPort: Send + Sync {
     /// Replaces the status line.
@@ -224,6 +245,8 @@ pub trait UiPort: Send + Sync {
     /// What the relay supports for administrators, known after each registration (admin edition).
     #[cfg(feature = "admin")]
     fn relay_admin_caps(&self, _device_security: bool, _host_alias: bool) {}
+    /// The file browser's remote side changed.
+    fn browse(&self, _update: BrowseUpdate) {}
 }
 
 /// Headless mode: nothing to show.

@@ -7,6 +7,7 @@ import { Theme, Brand } from "../theme.slint";
 import { ScrollArea } from "../components/scroll_area.slint";
 import { Glyph } from "../components/glyph.slint";
 import { AppTile } from "../components/app_tile.slint";
+import { GlassMenu, GlassItem, GlassSep } from "../components/menu.slint";
 import { Btn, Seg, SegWrap, Card, GroupLabel, RowLine, TipBox, AppearancePicker } from "../components/controls.slint";
 import { DragArea } from "../components/window_frame.slint";
 
@@ -133,8 +134,8 @@ component DeviceCard inherits Rectangle {
     in property <bool> can_rename: false;
     callback select();
     callback connect();
-    callback rename();
-    callback remove();
+    // Right click: the device's context menu at this window position.
+    callback menu(length, length);
 
     property <bool> dim: !root.online && !root.history;
     property <bool> hot: ta.has-hover || root.selected;
@@ -150,6 +151,12 @@ component DeviceCard inherits Rectangle {
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.select(); }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                root.select();
+                root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
         double-clicked => {
             if (!root.dim) {
                 root.connect();
@@ -202,22 +209,6 @@ component DeviceCard inherits Rectangle {
                 vertical-alignment: center;
                 overflow: elide;
             }
-            if root.history && root.hot: Btn {
-                height: 26px;
-                kind: "ghost";
-                icon: "trash";
-                icon-size: 13px;
-                tip: "Remove from history";
-                clicked => { root.remove(); }
-            }
-            if root.can_rename && root.hot: Btn {
-                height: 26px;
-                kind: "ghost";
-                icon: "pencil";
-                icon-size: 13px;
-                tip: "Rename";
-                clicked => { root.rename(); }
-            }
             Btn {
                 height: 26px;
                 label: "Connect";
@@ -244,8 +235,8 @@ component DeviceRow inherits Rectangle {
     in property <bool> first: false;
     callback select();
     callback connect();
-    callback rename();
-    callback remove();
+    // Right click: the device's context menu at this window position.
+    callback menu(length, length);
 
     property <bool> dim: !root.online && !root.history;
     property <bool> hot: ta.has-hover || root.selected;
@@ -256,6 +247,12 @@ component DeviceRow inherits Rectangle {
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.select(); }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                root.select();
+                root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
         double-clicked => {
             if (!root.dim) {
                 root.connect();
@@ -320,27 +317,9 @@ component DeviceRow inherits Rectangle {
         }
         // Actions: a fixed slot, filled on hover or selection
         HorizontalLayout {
-            width: 180px;
+            width: 270px;
             spacing: 4px;
             alignment: end;
-            if root.history && root.hot: Btn {
-                y: (parent.height - self.height) / 2;
-                height: 28px;
-                kind: "ghost";
-                icon: "trash";
-                icon-size: 13px;
-                tip: "Remove from history";
-                clicked => { root.remove(); }
-            }
-            if root.can_rename && root.hot: Btn {
-                y: (parent.height - self.height) / 2;
-                height: 28px;
-                kind: "ghost";
-                icon: "pencil";
-                icon-size: 13px;
-                label: "Rename";
-                clicked => { root.rename(); }
-            }
             Btn {
                 y: (parent.height - self.height) / 2;
                 height: 28px;
@@ -391,6 +370,63 @@ export component DashboardView inherits FocusScope {
 
     callback copy_local_id();
     callback request_connect(string);
+    // File browser for a device (id, name): no remote screen, no session tab.
+    callback browse_device(string, string);
+
+    // Device context menu (right click on a card or row): which device and where.
+    property <bool> dm-history: false;
+    property <string> dm-id;
+    property <string> dm-name;
+    property <string> dm-alias;
+    property <bool> dm-can-rename: false;
+    property <length> dm-x;
+    property <length> dm-y;
+
+    function show-device-menu(history: bool, id: string, name: string, alias: string, can-rename: bool, x: length, y: length) {
+        root.dm-history = history;
+        root.dm-id = id;
+        root.dm-name = name;
+        root.dm-alias = alias;
+        root.dm-can-rename = can-rename;
+        root.dm-x = min(x - root.absolute-position.x, root.width - 224px);
+        root.dm-y = min(y - root.absolute-position.y, root.height - 190px);
+        device-menu.show();
+    }
+
+    device-menu := PopupWindow {
+        x: root.dm-x;
+        y: root.dm-y;
+        width: 214px;
+        GlassMenu {
+            width: 214px;
+            GlassItem {
+                label: "Connect";
+                clicked => { root.request_connect(root.dm-id); }
+            }
+            GlassItem {
+                label: "Browse Files";
+                clicked => { root.browse_device(root.dm-id, root.dm-name); }
+            }
+            if root.dm-can-rename || root.dm-history: GlassSep { }
+            if root.dm-can-rename: GlassItem {
+                label: "Rename";
+                clicked => {
+                    if (root.dm-history) {
+                        root.open_rename(root.dm-id, root.dm-alias);
+                    } else {
+                        root.open_host_rename(root.dm-id, root.dm-alias);
+                    }
+                }
+            }
+            if root.dm-history: GlassItem {
+                label: "Remove from History";
+                danger: true;
+                clicked => {
+                    root.prompt_delete_history(root.dm-id, root.dm-alias != "" ? root.dm-alias + " (" + root.dm-id + ")" : root.dm-id);
+                }
+            }
+        }
+    }
     callback open_rename(string, string);
     // Admin edition: names a device in the relay's host list for every administrator.
     callback open_host_rename(string, string);
@@ -1121,7 +1157,7 @@ export component DashboardView inherits FocusScope {
                                     can_rename: root.host_alias_supported;
                                     select => { root.select_row(h.desk_id); }
                                     connect => { root.request_connect(h.desk_id); }
-                                    rename => { root.open_host_rename(h.desk_id, h.alias); }
+                                    menu(x, y) => { root.show-device-menu(false, h.desk_id, h.alias != "" ? h.alias : h.device_name, h.alias, root.host_alias_supported, x, y); }
                                 }
                             }
                             if root.view_mode == 1: on-list := Card {
@@ -1146,7 +1182,7 @@ export component DashboardView inherits FocusScope {
                                     can_rename: root.host_alias_supported;
                                     select => { root.select_row(h.desk_id); }
                                     connect => { root.request_connect(h.desk_id); }
-                                    rename => { root.open_host_rename(h.desk_id, h.alias); }
+                                    menu(x, y) => { root.show-device-menu(false, h.desk_id, h.alias != "" ? h.alias : h.device_name, h.alias, root.host_alias_supported, x, y); }
                                 }
                             }
                         }
@@ -1183,7 +1219,7 @@ export component DashboardView inherits FocusScope {
                                     can_rename: root.host_alias_supported;
                                     select => { root.select_row(h.desk_id); }
                                     connect => { root.request_connect(h.desk_id); }
-                                    rename => { root.open_host_rename(h.desk_id, h.alias); }
+                                    menu(x, y) => { root.show-device-menu(false, h.desk_id, h.alias != "" ? h.alias : h.device_name, h.alias, root.host_alias_supported, x, y); }
                                 }
                             }
                             if root.view_mode == 1: off-list := Card {
@@ -1208,7 +1244,7 @@ export component DashboardView inherits FocusScope {
                                     can_rename: root.host_alias_supported;
                                     select => { root.select_row(h.desk_id); }
                                     connect => { root.request_connect(h.desk_id); }
-                                    rename => { root.open_host_rename(h.desk_id, h.alias); }
+                                    menu(x, y) => { root.show-device-menu(false, h.desk_id, h.alias != "" ? h.alias : h.device_name, h.alias, root.host_alias_supported, x, y); }
                                 }
                             }
                         }
@@ -1244,11 +1280,7 @@ export component DashboardView inherits FocusScope {
                                     can_rename: true;
                                     select => { root.select_row(item.desk_id); }
                                     connect => { root.request_connect(item.desk_id); }
-                                    rename => { root.open_rename(item.desk_id, item.alias); }
-                                    remove => {
-                                        root.prompt_delete_history(item.desk_id,
-                                            item.alias != "" ? item.alias + " (" + item.desk_id + ")" : item.desk_id);
-                                    }
+                                    menu(x, y) => { root.show-device-menu(true, item.desk_id, item.alias != "" ? item.alias : item.desk_id, item.alias, true, x, y); }
                                 }
                             }
                             if root.view_mode == 1: hist-list := Card {
@@ -1273,11 +1305,7 @@ export component DashboardView inherits FocusScope {
                                     can_rename: true;
                                     select => { root.select_row(item.desk_id); }
                                     connect => { root.request_connect(item.desk_id); }
-                                    rename => { root.open_rename(item.desk_id, item.alias); }
-                                    remove => {
-                                        root.prompt_delete_history(item.desk_id,
-                                            item.alias != "" ? item.alias + " (" + item.desk_id + ")" : item.desk_id);
-                                    }
+                                    menu(x, y) => { root.show-device-menu(true, item.desk_id, item.alias != "" ? item.alias : item.desk_id, item.alias, true, x, y); }
                                 }
                             }
                         }

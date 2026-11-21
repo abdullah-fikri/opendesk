@@ -11,6 +11,13 @@ fn relay_silence_past_the_relays_own_timeout_counts_as_a_dead_socket() {
 }
 
 #[test]
+fn a_connection_the_relay_never_registers_is_retried() {
+    assert!(!registration_overdue(false, Duration::from_secs(5)), "the ack is on its way");
+    assert!(registration_overdue(false, REGISTER_TIMEOUT));
+    assert!(!registration_overdue(true, Duration::from_secs(3600)), "registered connections stay");
+}
+
+#[test]
 fn send_buffer_shrinks_only_while_hosted_video_uses_the_socket() {
     // Viewers and idle machines keep the OS default until they host over the relay.
     assert_eq!(wanted_send_buffer(false, None, None), None);
@@ -80,6 +87,11 @@ fn test_conn(ctx: Ctx, links: Vec<Arc<P2p>>, bulk: (Sender<BulkIn>, Receiver<Bul
         p2p_input: input_rx,
         bulk_in_tx: bulk.0,
         bulk_in: bulk.1,
+        channel_in_tx: mpsc::channel().0,
+        channel_in: mpsc::channel().1,
+        channels: Vec::new(),
+        channel_pending: Vec::new(),
+        routed_now: Path::Relay,
         file_routes: FileRoutes::default(),
         p2p_incoming: Vec::new(),
         p2p_acks: VecDeque::new(),

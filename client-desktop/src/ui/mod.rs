@@ -3,6 +3,7 @@
 
 mod callbacks;
 mod dashboard_model;
+mod file_browser_model;
 mod gl_frames;
 #[cfg(feature = "admin")]
 mod monitor_wall_model;
@@ -164,8 +165,15 @@ pub fn enable_file_drop(win: &MainWindow, ctx: &Ctx, hide_after: bool) {
             thread::sleep(Duration::from_millis(250));
             let registered = Arc::new(AtomicBool::new(false));
             let (flag, drop_ctx, title) = (Arc::clone(&registered), Arc::clone(&ctx), ctx.window_title.clone());
+            let browser_weak = weak.clone();
             let _ = weak.upgrade_in_event_loop(move |_| {
                 let on_drop = move |paths: Vec<std::path::PathBuf>, at: Option<(i32, i32)>| {
+                    // The file browser takes the drop while it is open (the window procedure runs on the UI thread).
+                    if let Some(w) = browser_weak.upgrade()
+                        && file_browser_model::on_external_drop(&w, paths.clone())
+                    {
+                        return;
+                    }
                     let target = drop_ctx.partner();
                     if target.is_empty() {
                         return;

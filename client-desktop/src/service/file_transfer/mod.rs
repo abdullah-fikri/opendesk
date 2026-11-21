@@ -28,6 +28,7 @@ use crate::infra::{autostart, logger};
 use crate::protocol::{FileMark, FilePayload, OfferEntry};
 
 pub use receiver::FileReceiver;
+pub use sender::send_browsed;
 
 /// Chunk size of JSON (base64) chunks; also the most a receiver accepts per JSON chunk.
 pub const CHUNK_SIZE: usize = 32 * 1024;
@@ -65,13 +66,16 @@ static PARTNER_CAPS: Mutex<PeerCaps> = Mutex::new(PeerCaps {
     file_pull_bin: false,
     cursor_shape: false,
     mouse_relative: false,
+    text_focus: false,
     clipboard_image: false,
     file_p2p: false,
     file_deflate: false,
     file_resume: false,
     file_drop: false,
+    file_channel: false,
     video_delta: false,
     video_h264: false,
+    h264_eager: false,
     tile_lossless: false,
     video_nack: false,
     frame_stamp: false,

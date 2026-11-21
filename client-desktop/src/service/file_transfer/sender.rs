@@ -27,7 +27,7 @@ use super::{
 use crate::domain::file_squeeze::{OFFSET_DEFLATED, Squeeze};
 use crate::domain::transfer::{MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, percent, safe_rel_path};
 use crate::infra::logger;
-use crate::protocol::{ClientMessage, FileMark, FilePayload, Outgoing, binary};
+use crate::protocol::{ClientMessage, FileAction, FileMark, FilePayload, Outgoing, binary};
 use crate::service::context::AppContext;
 use crate::service::ui_port::{TransferState, TransferUpdate, UiPort};
 
@@ -83,6 +83,9 @@ struct Link {
     target: String,
     /// The relay forwards binary file chunks (sampled once: a new relay connection aborts the send anyway).
     relay_binary: bool,
+    /// File browser transfers: the request they answer, or the folder they go to (put on every `start`).
+    browse: Option<u64>,
+    dest: Option<String>,
 }
 
 impl Link {
@@ -91,7 +94,11 @@ impl Link {
     }
 
     /// Queues `payload`; `mark` comes back through [`super::set_delivered`] once the relay has read it.
-    fn queue_marked(&self, payload: FilePayload, status: Option<String>, mark: Option<FileMark>) {
+    fn queue_marked(&self, mut payload: FilePayload, status: Option<String>, mark: Option<FileMark>) {
+        if payload.action == FileAction::Start {
+            payload.browse = self.browse;
+            payload.dest.clone_from(&self.dest);
+        }
         IN_FLIGHT_CHUNKS.fetch_add(1, Ordering::SeqCst);
         let message = ClientMessage::file(&self.target, payload);
         let _ = self.outbox.send(Outgoing::File { message, status, mark });
@@ -157,7 +164,42 @@ pub(super) fn send_pulled(ctx: &AppContext, path: PathBuf, tid: String, target: 
 
 fn link_for(ctx: &AppContext, target: String) -> Link {
     let relay_binary = ctx.relay.caps.lock().file_binary;
-    Link { outbox: ctx.outbox.clone(), ui: Arc::clone(&ctx.ui), target, relay_binary }
+    Link { outbox: ctx.outbox.clone(), ui: Arc::clone(&ctx.ui), target, relay_binary, browse: None, dest: None }
+}
+
+/// Sends `paths` for the file browser, reading them as the signed-in user (`infra::user_scope`): `browse`
+/// answers the partner's request of that number, `dest` names the partner's folder they go to. Nothing is pasted.
+pub fn send_browsed(ctx: &AppContext, paths: Vec<PathBuf>, target: String, browse: Option<u64>, dest: Option<String>) {
+    if paths.is_empty() || target.is_empty() {
+        return;
+    }
+    let mut link = link_for(ctx, target);
+    link.browse = browse;
+    link.dest = dest;
+    crate::infra::thread::spawn_named("files-browse-send", move || {
+        let result = crate::infra::user_scope::as_user(|| {
+            let (items, skipped_folders) = match expand(paths, &link.target) {
+                Ok(expanded) => expanded,
+                Err(status) => return link.status(status),
+            };
+            let mut started = epoch();
+            for item in items {
+                if epoch() != started {
+                    return link.status("Could not send files: connection lost".into());
+                }
+                match &item.tag {
+                    Some(tag) if tag.dir => send_folder_entry(&link, tag, false),
+                    _ => send_file(&link, item, &mut started, false),
+                }
+            }
+            if skipped_folders {
+                link.status(SKIPPED_FOLDERS.into());
+            }
+        });
+        if let Err(why) = result {
+            link.status(format!("Could not send files: {why}"));
+        }
+    });
 }
 
 /// Most pulled files sent at the same time. Explorer reads a multi-file paste one stream after another, so a

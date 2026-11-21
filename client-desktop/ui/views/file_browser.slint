@@ -1,0 +1,586 @@
+// File browser: this computer on the left, the remote device on the right. Opened from a device's context menu
+// without a remote screen (a files-only session, see service::viewer::controller::request_files). Rust fills both
+// panes (src/ui/file_browser_model.rs); copies run as ordinary transfers in the transfer panel, over the direct TCP
+// file channel whenever it is up.
+//
+// Click selects (Ctrl+click adds), double-click opens a folder, dragging rows onto the other pane copies them, and
+// a right click opens the glass context menu. Files dropped from Explorer go to the open remote folder (Rust).
+
+import { Theme } from "../theme.slint";
+import { Btn, Card } from "../components/controls.slint";
+import { ScrollArea } from "../components/scroll_area.slint";
+import { Glyph } from "../components/glyph.slint";
+import { GlassMenu, GlassItem, GlassSep } from "../components/menu.slint";
+import { FileRow } from "../types.slint";
+
+// One file or folder: icon, name, size and date. Reports clicks, double clicks, drags and right clicks; the drag
+// and menu positions are window coordinates.
+component Row inherits Rectangle {
+    in property <FileRow> item;
+    in property <bool> last;
+    callback select(bool);
+    callback open();
+    callback drag-start();
+    callback drag-move(length, length);
+    callback drag-end(length, length);
+    callback menu(length, length);
+
+    property <bool> dragging: false;
+    property <length> press-x;
+    property <length> press-y;
+
+    height: 40px;
+    border-radius: 8px;
+    background: root.item.selected ? (Theme.dark ? #ffffff1f : #0000001a) : ta.has-hover ? Theme.hover-soft : transparent;
+
+    ta := TouchArea {
+        mouse-cursor: root.dragging ? MouseCursor.copy : MouseCursor.default;
+        double-clicked => { root.open(); }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                root.press-x = self.mouse-x;
+                root.press-y = self.mouse-y;
+                root.dragging = false;
+                if (!root.item.selected || e.modifiers.control) {
+                    root.select(e.modifiers.control);
+                }
+            } else if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
+                if (root.dragging) {
+                    root.dragging = false;
+                    root.drag-end(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                } else if (!e.modifiers.control) {
+                    // A plain click on a row of a multiple selection keeps only that row.
+                    root.select(false);
+                }
+            } else if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                if (!root.item.selected) {
+                    root.select(false);
+                }
+                root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
+        moved => {
+            if (self.pressed && !root.dragging
+                && (abs(self.mouse-x - root.press-x) > 6px || abs(self.mouse-y - root.press-y) > 6px)) {
+                root.dragging = true;
+                root.drag-start();
+            }
+            if (root.dragging) {
+                root.drag-move(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 12px;
+        spacing: 12px;
+        Glyph {
+            y: (parent.height - self.height) / 2;
+            name: root.item.is-dir ? "folder" : "file";
+            size: root.item.is-dir ? 20px : 18px;
+            tint: root.item.is-dir ? Theme.blue : Theme.text-3;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.item.name;
+            color: Theme.text;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            width: 74px;
+            text: root.item.size-text;
+            color: Theme.text-3;
+            font-size: 11.5px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        Text {
+            width: 104px;
+            text: root.item.date-text;
+            color: Theme.text-3;
+            font-size: 11.5px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+    if !root.last && !root.item.selected: Rectangle {
+        x: 42px;
+        y: root.height - 0.5px;
+        width: root.width - 50px;
+        height: 0.5px;
+        background: Theme.line;
+    }
+}
+
+component Pane inherits Card {
+    in property <string> title;
+    in property <string> icon;
+    in property <string> path;
+    in property <[FileRow]> rows;
+    // "Loading…", an error, or "".
+    in property <string> note;
+    in property <bool> can-up;
+    in property <bool> enabled: true;
+    // A drag from the other pane hovers here.
+    in property <bool> drop-hot;
+    in-out property <bool> naming;
+    callback up();
+    callback go(string);
+    callback select(int, bool);
+    callback open(int);
+    callback mkdir(string);
+    callback drag-start(int);
+    callback drag-move(length, length);
+    callback drag-end(length, length);
+    callback menu(int, length, length);
+
+    clip: true;
+    border-width: root.drop-hot ? 2px : (Theme.dark ? 0.5px : 0px);
+    border-color: root.drop-hot ? Theme.blue : Theme.card-edge;
+
+    VerticalLayout {
+        padding: 12px;
+        padding-bottom: 8px;
+        spacing: 10px;
+
+        // Where: back, the side's name, and the folder as a typed path
+        HorizontalLayout {
+            spacing: 8px;
+            height: 32px;
+            Btn {
+                y: (parent.height - self.height) / 2;
+                kind: "ghost";
+                icon: "chevron-left";
+                icon-size: 14px;
+                enabled: root.can-up && root.enabled;
+                clicked => { root.up(); }
+            }
+            Glyph {
+                y: (parent.height - self.height) / 2;
+                name: root.icon;
+                size: 15px;
+                tint: Theme.text-2;
+            }
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: 13px;
+                font-weight: 600;
+                vertical-alignment: center;
+                max-width: 220px;
+                overflow: elide;
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+                border-radius: 9px;
+                background: Theme.field;
+                border-width: path-input.has-focus ? 2px : 0px;
+                border-color: Theme.ring;
+                if path-input.text == "": Text {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    height: parent.height;
+                    text: "Drives";
+                    color: Theme.text-3;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+                path-input := TextInput {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    height: parent.height;
+                    text: root.path;
+                    enabled: root.enabled;
+                    color: Theme.text-2;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    single-line: true;
+                    accepted => { root.go(self.text); }
+                }
+            }
+        }
+
+        // New folder, from the context menu
+        if root.naming: HorizontalLayout {
+            spacing: 6px;
+            height: 32px;
+            Rectangle {
+                horizontal-stretch: 1;
+                border-radius: 9px;
+                background: Theme.field;
+                border-width: 2px;
+                border-color: Theme.ring;
+                if name-input.text == "": Text {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    height: parent.height;
+                    text: "Folder name";
+                    color: Theme.text-3;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+                name-input := TextInput {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    height: parent.height;
+                    color: Theme.text;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    single-line: true;
+                    init => { self.focus(); }
+                    accepted => {
+                        if (self.text != "") {
+                            root.mkdir(self.text);
+                        }
+                        root.naming = false;
+                    }
+                }
+            }
+            Btn {
+                label: "Create";
+                kind: "acc";
+                enabled: name-input.text != "";
+                clicked => {
+                    root.mkdir(name-input.text);
+                    root.naming = false;
+                }
+            }
+            Btn {
+                label: "Cancel";
+                kind: "ghost";
+                clicked => { root.naming = false; }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            // Right click on empty space: the menu without a row.
+            TouchArea {
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                        root.menu(-1, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    }
+                }
+            }
+            ScrollArea {
+                spacing: 0px;
+                for row[i] in root.rows: Row {
+                    item: row;
+                    last: i == root.rows.length - 1;
+                    select(add) => { root.select(i, add); }
+                    open => { root.open(i); }
+                    drag-start => { root.drag-start(i); }
+                    drag-move(x, y) => { root.drag-move(x, y); }
+                    drag-end(x, y) => { root.drag-end(x, y); }
+                    menu(x, y) => { root.menu(i, x, y); }
+                }
+            }
+            if root.note != "": Text {
+                x: 24px;
+                width: parent.width - 48px;
+                height: parent.height;
+                text: root.note;
+                color: Theme.text-3;
+                font-size: 12.5px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// Round copy button between the panes.
+component Move inherits Rectangle {
+    in property <string> icon;
+    in property <bool> enabled;
+    callback clicked();
+    width: 40px;
+    height: 40px;
+    border-radius: 20px;
+    background: !root.enabled ? Theme.field : ta.has-hover ? Theme.accent-hover : Theme.accent;
+    opacity: root.enabled ? 1.0 : 0.5;
+    animate background { duration: 120ms; }
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+    Glyph {
+        name: root.icon;
+        size: 18px;
+        tint: root.enabled ? #ffffff : Theme.text-3;
+    }
+}
+
+export component FileBrowser inherits Rectangle {
+    background: Theme.bg;
+    width: 100%;
+    height: 100%;
+
+    in property <string> remote-title;
+    // The session for the remote pane is up.
+    in property <bool> connected;
+    in property <string> local-path;
+    in property <string> remote-path;
+    in property <[FileRow]> local-rows;
+    in property <[FileRow]> remote-rows;
+    in property <string> local-note;
+    in property <string> remote-note;
+    in property <bool> local-can-up;
+    in property <bool> remote-can-up;
+    in property <int> local-selected;
+    in property <int> remote-selected;
+    // What the browser last did or why it could not ("" = nothing to say).
+    in property <string> status;
+
+    callback close();
+    callback local-up();
+    callback remote-up();
+    callback local-go(string);
+    callback remote-go(string);
+    callback local-select(int, bool);
+    callback remote-select(int, bool);
+    callback local-open(int);
+    callback remote-open(int);
+    callback local-mkdir(string);
+    callback remote-mkdir(string);
+    callback upload();
+    callback download();
+    callback refresh();
+
+    // Drag between the panes
+    property <bool> dragging: false;
+    property <bool> drag-from-remote: false;
+    property <length> drag-x;
+    property <length> drag-y;
+    property <bool> over-local: root.dragging && root.drag-from-remote && self.in-local(root.drag-x, root.drag-y);
+    property <bool> over-remote: root.dragging && !root.drag-from-remote && self.in-remote(root.drag-x, root.drag-y);
+    // Context menu: which pane, which row (-1 = none) and where
+    property <bool> menu-remote: false;
+    property <int> menu-row: -1;
+    property <length> menu-x;
+    property <length> menu-y;
+
+    function in-local(x: length, y: length) -> bool {
+        return x >= lp.absolute-position.x && x <= lp.absolute-position.x + lp.width
+            && y >= lp.absolute-position.y && y <= lp.absolute-position.y + lp.height;
+    }
+
+    function in-remote(x: length, y: length) -> bool {
+        return x >= rp.absolute-position.x && x <= rp.absolute-position.x + rp.width
+            && y >= rp.absolute-position.y && y <= rp.absolute-position.y + rp.height;
+    }
+
+    function drop(x: length, y: length) {
+        if (root.drag-from-remote && self.in-local(x, y)) {
+            root.download();
+        } else if (!root.drag-from-remote && self.in-remote(x, y)) {
+            root.upload();
+        }
+        root.dragging = false;
+    }
+
+    function open-menu(remote: bool, row: int, x: length, y: length) {
+        root.menu-remote = remote;
+        root.menu-row = row;
+        root.menu-x = min(x - root.absolute-position.x, root.width - 230px);
+        root.menu-y = min(y - root.absolute-position.y, root.height - 200px);
+        menu.show();
+    }
+
+    // Swallows clicks below the page; Esc closes it.
+    TouchArea { }
+    FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                root.close();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    VerticalLayout {
+        padding: 18px;
+        padding-top: 10px;
+        spacing: 12px;
+
+        // Navigation bar: back on the left, the device's name in the middle
+        Rectangle {
+            height: 40px;
+            Btn {
+                x: 0;
+                y: (parent.height - self.height) / 2;
+                width: self.min-width;
+                kind: "link";
+                icon: "chevron-left";
+                label: "Devices";
+                clicked => { root.close(); }
+            }
+            Text {
+                x: 140px;
+                width: parent.width - 280px;
+                height: parent.height;
+                text: root.remote-title;
+                color: Theme.text;
+                font-size: 15px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 14px;
+            vertical-stretch: 1;
+
+            lp := Pane {
+                horizontal-stretch: 1;
+                title: "This computer";
+                icon: "desktop";
+                path: root.local-path;
+                rows: root.local-rows;
+                note: root.local-note;
+                can-up: root.local-can-up;
+                drop-hot: root.over-local;
+                up => { root.local-up(); }
+                go(p) => { root.local-go(p); }
+                select(i, add) => { root.local-select(i, add); }
+                open(i) => { root.local-open(i); }
+                mkdir(n) => { root.local-mkdir(n); }
+                drag-start(i) => {
+                    root.drag-from-remote = false;
+                    root.dragging = true;
+                }
+                drag-move(x, y) => {
+                    root.drag-x = x;
+                    root.drag-y = y;
+                }
+                drag-end(x, y) => { root.drop(x, y); }
+                menu(i, x, y) => { root.open-menu(false, i, x, y); }
+            }
+
+            VerticalLayout {
+                width: 44px;
+                spacing: 12px;
+                alignment: center;
+                Move {
+                    icon: "arrow-right";
+                    enabled: root.local-selected > 0 && root.remote-path != "" && root.connected;
+                    clicked => { root.upload(); }
+                }
+                Move {
+                    icon: "arrow-left";
+                    enabled: root.remote-selected > 0 && root.local-path != "" && root.connected;
+                    clicked => { root.download(); }
+                }
+            }
+
+            rp := Pane {
+                horizontal-stretch: 1;
+                title: root.remote-title;
+                icon: "windows";
+                enabled: root.connected;
+                path: root.remote-path;
+                rows: root.remote-rows;
+                note: root.remote-note;
+                can-up: root.remote-can-up;
+                drop-hot: root.over-remote;
+                up => { root.remote-up(); }
+                go(p) => { root.remote-go(p); }
+                select(i, add) => { root.remote-select(i, add); }
+                open(i) => { root.remote-open(i); }
+                mkdir(n) => { root.remote-mkdir(n); }
+                drag-start(i) => {
+                    root.drag-from-remote = true;
+                    root.dragging = true;
+                }
+                drag-move(x, y) => {
+                    root.drag-x = x;
+                    root.drag-y = y;
+                }
+                drag-end(x, y) => { root.drop(x, y); }
+                menu(i, x, y) => { root.open-menu(true, i, x, y); }
+            }
+        }
+
+        if root.status != "": Text {
+            text: root.status;
+            color: Theme.text-3;
+            font-size: 11.5px;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    // What is being dragged, under the pointer
+    if root.dragging && (root.over-local || root.over-remote): Rectangle {
+        x: root.drag-x - root.absolute-position.x + 14px;
+        y: root.drag-y - root.absolute-position.y + 10px;
+        width: ghost.preferred-width + 24px;
+        height: 28px;
+        border-radius: 14px;
+        background: Theme.blue;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: #00000059;
+        ghost := Text {
+            text: (root.drag-from-remote ? root.remote-selected : root.local-selected) + " item(s) · copy here";
+            color: #ffffff;
+            font-size: 12px;
+            font-weight: 600;
+        }
+    }
+
+    menu := PopupWindow {
+        x: root.menu-x;
+        y: root.menu-y;
+        width: 220px;
+        GlassMenu {
+            width: 220px;
+            if root.menu-row >= 0: GlassItem {
+                label: "Open";
+                clicked => {
+                    if (root.menu-remote) {
+                        root.remote-open(root.menu-row);
+                    } else {
+                        root.local-open(root.menu-row);
+                    }
+                }
+            }
+            if root.menu-row >= 0: GlassItem {
+                label: root.menu-remote ? "Copy to this computer" : "Copy to " + root.remote-title;
+                enabled: root.connected && (root.menu-remote ? root.local-path != "" : root.remote-path != "");
+                clicked => {
+                    if (root.menu-remote) {
+                        root.download();
+                    } else {
+                        root.upload();
+                    }
+                }
+            }
+            if root.menu-row >= 0: GlassSep { }
+            GlassItem {
+                label: "New Folder";
+                enabled: root.menu-remote ? (root.remote-path != "" && root.connected) : root.local-path != "";
+                clicked => {
+                    if (root.menu-remote) {
+                        rp.naming = true;
+                    } else {
+                        lp.naming = true;
+                    }
+                }
+            }
+            GlassItem {
+                label: "Refresh";
+                clicked => { root.refresh(); }
+            }
+        }
+    }
+}

@@ -50,6 +50,8 @@ pub fn helper_request(msg: ToAgent) {
         ToAgent::Close { tid } => {
             with_sinks(|sinks| sinks.remove(&tid));
         }
+        // Not clipboard work: the helper's pipe also carries focus readings.
+        ToAgent::TextFocus(reading) => crate::infra::text_focus::from_helper(reading),
     }
 }
 
@@ -86,6 +88,8 @@ pub fn helper_command(msg: ToHelper) {
                 let _ = tx.send(SinkMsg::End(ok));
             }
         }
+        // Not clipboard work: the helper also watches keyboard focus.
+        ToHelper::TextFocus { on } => crate::infra::text_focus::helper_watch(on),
     }
 }
 

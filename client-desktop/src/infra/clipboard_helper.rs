@@ -4,6 +4,9 @@
 //! objects (`IDataObject`, `IStream`); the agent keeps the network, the offer bookkeeping, the size and SHA-256
 //! checks, and passes each paste stream its bytes over two one-way named pipes.
 //!
+//! It is the agent's one process in the user's session, so other work that must run as that user rides the same
+//! pipes: watching keyboard focus for a touch viewer's keyboard (`ToHelper::TextFocus`, see `infra::text_focus`).
+//!
 //! Security: the pipes are created before the helper starts, as the first and only instance, local clients only,
 //! with a DACL of SYSTEM + the session user. The agent accepts only the PID it started; the helper accepts only
 //! the agent PID it was given. Messages are size-limited and the agent validates every request against its own
@@ -114,6 +117,9 @@ pub enum ToHelper {
     Clear { partner: String },
     /// Paste stream `tid` is complete (`ok`) or failed.
     End { tid: String, ok: bool },
+    /// Watch keyboard focus for a viewer listing `text-focus` (`on`, repeated as a keepalive) or stop
+    /// (`infra::text_focus`). Answered by `ToAgent::TextFocus` on every change.
+    TextFocus { on: bool },
 }
 
 /// Helper to agent.
@@ -124,6 +130,8 @@ pub enum ToAgent {
     Pull { from: String, offer_id: String, index: usize, tid: String },
     /// The application closed paste stream `tid` (finished or cancelled).
     Close { tid: String },
+    /// Keyboard focus changed while the agent asked to watch it.
+    TextFocus(crate::domain::text_focus::FocusReading),
 }
 
 /// One end of a one-way pipe; closed on drop. Writers take `write` so frames from several threads never interleave.
@@ -529,6 +537,19 @@ mod tests {
         let end = ToHelper::End { tid: "fp_1_2".into(), ok: true };
         assert_eq!(serde_json::from_str::<ToHelper>(&serde_json::to_string(&end).unwrap()).unwrap(), end);
         assert!(serde_json::from_str::<ToAgent>(r#"{"t":"format-disk"}"#).is_err());
+        let focus = ToAgent::TextFocus(crate::domain::text_focus::FocusReading {
+            editable: true,
+            password: false,
+            left: 1,
+            top: 2,
+            right: 3,
+            bottom: 4,
+        });
+        let json = serde_json::to_string(&focus).unwrap();
+        assert!(json.starts_with(r#"{"t":"text-focus","editable":true"#), "{json}");
+        assert_eq!(serde_json::from_str::<ToAgent>(&json).unwrap(), focus);
+        let watch = ToHelper::TextFocus { on: true };
+        assert_eq!(serde_json::from_str::<ToHelper>(r#"{"t":"text-focus","on":true}"#).unwrap(), watch);
     }
 
     #[test]

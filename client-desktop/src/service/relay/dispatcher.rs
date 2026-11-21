@@ -297,9 +297,12 @@ impl Connection {
         self.e2e.iter().find(|e| e.partner == partner)
     }
 
-    /// A `p2p-signal`: the end-to-end handshake, or the partner's P2P path.
+    /// A `p2p-signal`: the end-to-end handshake, the partner's file channel, or the partner's P2P path.
     fn on_signal(&mut self, from: &str, candidate: &str) {
         let parsed = serde_json::from_str::<serde_json::Value>(candidate).ok();
+        if let Some(v) = parsed.as_ref().filter(|v| crate::domain::file_channel::is_signal(v)) {
+            return self.on_channel_signal(from, v);
+        }
         let Some(v) = parsed.filter(e2e::is_signal) else {
             if let Some(p) = self.links.iter().find(|p| p.partner == from) {
                 p.on_signal(candidate);
@@ -362,6 +365,9 @@ impl Connection {
             None => event,
         };
         let Some(event) = InputEvent::parse(event) else { return };
+        if let InputEvent::Browse { msg } = event {
+            return crate::service::file_browser::on_event(ctx, &sender, msg);
+        }
         let viewed = match from {
             Some(id) => ctx.viewers.get(id),
             None if !ctx.is_hosting() => ctx.viewers.single(),

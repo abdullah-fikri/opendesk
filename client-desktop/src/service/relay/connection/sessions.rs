@@ -136,6 +136,10 @@ impl Connection {
             keep
         });
         self.e2e.retain(|e| resume.is_waiting(&e.partner));
+        let resume = &self.resume;
+        let waiting: Vec<String> =
+            self.e2e.iter().map(|e| e.partner.clone()).filter(|p| resume.is_waiting(p)).collect();
+        self.prune_channels(|p| waiting.iter().any(|w| w == p));
         self.signals.clear();
         let waiting = self.resume.any_waiting();
         let ctx = &self.ctx;

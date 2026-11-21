@@ -64,6 +64,9 @@ pub struct Session {
     /// The stats overlay is shown: the decoder thread refreshes [`Session::stats`] and pings the host.
     pub stats_on: AtomicBool,
     pub stats: Mutex<SessionStats>,
+    /// Opened for the file browser only: no tab, no screen stream (`set-video` off), no sound or microphone.
+    /// Connecting to the same device for control turns it into an ordinary session.
+    pub files_only: AtomicBool,
     /// Latency stages of displayed frames: the decoder thread, the presenter and `stats-pong` feed it.
     pub latency: Arc<Mutex<LatencyMeter>>,
     /// Video fragments received and lost on the UDP path; the P2P link feeds it.
@@ -79,6 +82,7 @@ impl Session {
         Session {
             id: id.to_string(),
             connected: AtomicBool::new(false),
+            files_only: AtomicBool::new(false),
             inbox: Arc::new(VideoInbox::default()),
             alive: AtomicBool::new(true),
             decoder_started: AtomicBool::new(false),

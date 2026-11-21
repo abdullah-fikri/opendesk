@@ -4,6 +4,7 @@
 
 pub mod clipboard_sync;
 pub mod context;
+pub mod file_browser;
 pub mod file_transfer;
 pub mod history;
 pub mod host;
