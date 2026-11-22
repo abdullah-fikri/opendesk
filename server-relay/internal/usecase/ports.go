@@ -31,9 +31,9 @@ type HostRepository interface {
 	List(ctx context.Context) ([]model.Host, error)
 	// SetAlias stores the administrator-given name of a device; an empty alias clears it.
 	SetAlias(ctx context.Context, cleanID, alias string) error
-	// DeleteOffline removes the rows of those cleanIDs whose device is offline (with their group memberships)
-	// and returns how many it removed. A device that registers again simply gets a new row.
-	DeleteOffline(ctx context.Context, cleanIDs []string) (int, error)
+	// Delete removes the rows of cleanIDs (with their group memberships) and returns how many it removed. A
+	// device that registers again simply gets a new row.
+	Delete(ctx context.Context, cleanIDs []string) (int, error)
 }
 
 // CommunityRepository persists communities, their groups and group memberships, shared by every administrator.

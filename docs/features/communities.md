@@ -31,12 +31,12 @@ state). Hiding a button in a client is not security.
 
 ### What deleting a device removes
 
-`DELETE FROM hosts_registry WHERE clean_id = ANY($1) AND online = FALSE`
+`DELETE FROM hosts_registry WHERE clean_id = ANY($1)`
 
 - **Refused while online.** The relay refuses devices that are connected or reconnecting (a suspended
-  session-resume connection is still registered). The check runs in memory and the `online = FALSE` condition
-  repeats it in the same SQL statement, so a device that registers at that moment is never lost: either its
-  upsert came first (row kept) or it re-inserts the row.
+  session-resume connection is still registered). The live connections decide, not the stored `online` flag,
+  which can lag behind them (the same rule `host-list` follows). A device that registers between that check
+  and the delete is written back right after it, so a connected device never disappears from the list.
 - **Removed with the row:** the administrator's alias (a column of the row) and every group membership
   (foreign-key cascade). Groups themselves stay.
 - **Kept:** session history (`remote_sessions`, an audit trail that must not change when the list is tidied)

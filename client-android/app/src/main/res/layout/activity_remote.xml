@@ -9,7 +9,14 @@
     android:layout_height="match_parent"
     android:background="@color/viewer_bg">
 
-    <!-- Scaled by RemoteViewerActivity through its image matrix (fit, pinch zoom and pan). -->
+    <!-- H.264 pictures from the hardware decoder, under the JPEG layer; ScreenRenderer transforms both alike. -->
+    <TextureView
+        android:id="@+id/tv_remote_video"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- JPEG frames, scaled by ScreenRenderer through the image matrix (fit, fill, pinch zoom and pan); it also takes
+         the touches, and turns transparent while H.264 pictures show below. -->
     <ImageView
         android:id="@+id/iv_remote_screen"
         android:layout_width="match_parent"
@@ -73,6 +80,12 @@
             android:textColor="@color/text"
             android:textSize="14sp" />
     </LinearLayout>
+
+    <!-- Mini glass keyboard: spans the screen but draws and takes touches only on its floating panel. -->
+    <com.opendesk.app.ui.viewer.keyboard.GlassKeyboardView
+        android:id="@+id/view_glass_keyboard"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
 
     <FrameLayout
         android:id="@+id/overlay_host"

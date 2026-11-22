@@ -172,6 +172,33 @@ pub struct TransferUpdate {
     pub state: TransferState,
 }
 
+/// What the file browser learned about the remote side (`service::file_browser`).
+#[derive(Clone, Debug)]
+pub enum BrowseUpdate {
+    /// The entries of a folder of `partner`; `parent` is None at its top level.
+    Remote {
+        partner: String,
+        path: String,
+        parent: Option<String>,
+        entries: Vec<crate::domain::file_browser::Entry>,
+        more: bool,
+        /// The explorer operations the host serves (`domain::file_browser::HOST_OPS`); empty on older hosts.
+        ops: Vec<String>,
+    },
+    /// A request was carried out (a new folder, a download that started, a rename...); `note` may say how.
+    Done { partner: String, note: String },
+    /// A listing failed (or the request could not be sent); `message` is meant for the user.
+    Failed { partner: String, message: String },
+    /// An operation (rename, delete, extract...) failed; `message` is meant for the user.
+    OpFailed { partner: String, message: String },
+    /// How far a long remote operation got (`done` of `total`).
+    Progress { partner: String, done: u64, total: u64 },
+    /// The files-only session with `partner` is connected: the browser can ask for listings.
+    Connected { partner: String },
+    /// The session with `partner` ended; `message` says why.
+    Ended { partner: String, message: String },
+}
+
 /// Everything services report to the user interface.
 pub trait UiPort: Send + Sync {
     /// Replaces the status line.
@@ -231,6 +258,8 @@ pub trait UiPort: Send + Sync {
     /// The relay's communities changed or were fetched (admin edition).
     #[cfg(feature = "admin")]
     fn communities_changed(&self, _communities: Vec<crate::protocol::CommunityEntry>) {}
+    /// The file browser's remote side changed.
+    fn browse(&self, _update: BrowseUpdate) {}
 }
 
 /// Headless mode: nothing to show.

@@ -47,6 +47,7 @@ impl SlintUi {
     pub fn new(window: &MainWindow) -> Self {
         session_model::install(window);
         transfer_model::install(window);
+        super::file_browser_model::install(window);
         dashboard_model::install(window);
         #[cfg(feature = "admin")]
         super::monitor_wall_model::install(window);
@@ -131,6 +132,10 @@ impl UiPort for SlintUi {
 
     fn transfer(&self, update: TransferUpdate) {
         self.apply(move |_| transfer_model::apply(update));
+    }
+
+    fn browse(&self, update: crate::service::ui_port::BrowseUpdate) {
+        self.apply(move |w| super::file_browser_model::apply(w, update));
     }
 
     fn gateway_changed(&self, url: String) {

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Monitor wall: a 2x2 grid of screens, in the solid single-colour icon family; 16 dp for small buttons. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="16dp"
+    android:height="16dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M5.5,3h3.8a2.5,2.5 0 0 1 2.5,2.5v3.8a2.5,2.5 0 0 1 -2.5,2.5h-3.8a2.5,2.5 0 0 1 -2.5,-2.5v-3.8a2.5,2.5 0 0 1 2.5,-2.5zM14.7,3h3.8a2.5,2.5 0 0 1 2.5,2.5v3.8a2.5,2.5 0 0 1 -2.5,2.5h-3.8a2.5,2.5 0 0 1 -2.5,-2.5v-3.8a2.5,2.5 0 0 1 2.5,-2.5zM5.5,12.2h3.8a2.5,2.5 0 0 1 2.5,2.5v3.8a2.5,2.5 0 0 1 -2.5,2.5h-3.8a2.5,2.5 0 0 1 -2.5,-2.5v-3.8a2.5,2.5 0 0 1 2.5,-2.5zM14.7,12.2h3.8a2.5,2.5 0 0 1 2.5,2.5v3.8a2.5,2.5 0 0 1 -2.5,2.5h-3.8a2.5,2.5 0 0 1 -2.5,-2.5v-3.8a2.5,2.5 0 0 1 2.5,-2.5z" />
+</vector>

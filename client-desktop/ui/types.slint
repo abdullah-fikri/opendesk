@@ -57,6 +57,16 @@ export struct SessionView {
 
 // ---- File transfers (see client-desktop/docs/features/file-transfer.md). Rust fills these. ----
 
+// One row of the file browser (views/file_browser.slint).
+export struct FileRow {
+    name: string,
+    size-text: string,      // "" for folders
+    date-text: string,      // last modified, local time
+    is-dir: bool,
+    selected: bool,
+    archive-stem: string,   // "photos" for photos.zip / .tar / .tar.gz / .tgz; "" when not an archive
+}
+
 export struct TransferItem {
     id: string,             // unique per transfer and direction; argument of dismiss_transfer
     name: string,           // file name, or the path inside a sent folder

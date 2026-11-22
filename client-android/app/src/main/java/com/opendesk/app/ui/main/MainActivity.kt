@@ -92,7 +92,7 @@ class MainActivity : AppCompatActivity(), RelayConnection.Listener, MainHost {
         )
         sheet = ConnectSheet(this, this)
         content = findViewById(R.id.content)
-        nav = NavBar(this, ::showPage)
+        nav = NavBar(this, ::showPage, ::showMonitorWall)
         EdgeToEdge.apply(this, isTablet)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {

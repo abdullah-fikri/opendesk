@@ -30,4 +30,6 @@ pub enum Outgoing {
     MonitorFrame(Vec<u8>),
     /// Voice packet for the current partner.
     Audio(Vec<u8>),
+    /// A file browser message (`domain::file_browser`) for `target`; only over a direct path, never the relay.
+    Browse { target: String, payload: Vec<u8> },
 }

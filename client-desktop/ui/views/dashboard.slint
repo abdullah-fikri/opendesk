@@ -7,10 +7,11 @@ import { Theme, Brand } from "../theme.slint";
 import { ScrollArea } from "../components/scroll_area.slint";
 import { Glyph } from "../components/glyph.slint";
 import { AppTile } from "../components/app_tile.slint";
+import { GlassMenu, GlassItem, GlassSep } from "../components/menu.slint";
 import { Btn, Seg, SegWrap, Card, GroupLabel, RowLine, TipBox, AppearancePicker } from "../components/controls.slint";
 import { DragArea } from "../components/window_frame.slint";
 import { CommunityItem, GroupItem } from "../types.slint";
-import { CommunityChip, ActionRow, MenuSeparator, GlassMenu } from "../components/community.slint";
+import { CommunityChip, ActionRow, MenuSeparator, GlassPanel } from "../components/community.slint";
 
 // Sidebar entry: coloured tile, label and an optional count.
 export component NavItem inherits Rectangle {
@@ -122,55 +123,6 @@ component SectionHead inherits HorizontalLayout {
     }
 }
 
-// Context menu of a relay host (admin edition): right-click on a card or row, or its "…" button.
-component DeviceActions inherits GlassMenu {
-    in property <bool> online;
-    in property <bool> can_rename;
-    in property <bool> can_group;
-    in property <bool> in_group;
-    in property <string> group_name;
-    in property <bool> can_delete;
-    callback connect();
-    callback rename();
-    callback add_to_group();
-    callback remove_from_group();
-    callback delete();
-
-    width: 220px;
-    ActionRow {
-        label: "Connect";
-        icon: "desktop";
-        enabled: root.online;
-        clicked => { root.connect(); }
-    }
-    if root.can_rename: ActionRow {
-        label: "Rename…";
-        icon: "pencil";
-        clicked => { root.rename(); }
-    }
-    if root.can_group: MenuSeparator { }
-    if root.can_group: ActionRow {
-        label: "Add to Group…";
-        icon: "group";
-        clicked => { root.add_to_group(); }
-    }
-    if root.in_group: ActionRow {
-        label: "Remove from “" + root.group_name + "”";
-        icon: "minus";
-        clicked => { root.remove_from_group(); }
-    }
-    if root.can_delete: MenuSeparator { }
-    if root.can_delete: ActionRow {
-        label: "Delete Device…";
-        icon: "trash";
-        danger: true;
-        // Only offline devices can be deleted; the relay refuses online ones too.
-        enabled: !root.online;
-        hint: root.online ? "Online" : "";
-        clicked => { root.delete(); }
-    }
-}
-
 // One device as a card: platform tile, name and ID; the host details and the Rename / Remove actions appear in
 // the bottom row on hover or selection, beside Connect.
 component DeviceCard inherits Rectangle {
@@ -182,32 +134,13 @@ component DeviceCard inherits Rectangle {
     in property <bool> history: false;
     in property <bool> selected: false;
     in property <bool> can_rename: false;
-    // Admin host list: the context menu (right-click or "…") with the group and delete actions.
-    in property <bool> admin_menu: false;
-    in property <bool> can_group: false;
-    in property <bool> in_group: false;
-    in property <string> group_name;
-    in property <bool> can_delete: false;
     callback select();
     callback connect();
-    callback rename();
-    callback remove();
-    callback add_to_group();
-    callback remove_from_group();
-    callback delete();
+    // Right click: the device's context menu at this window position.
+    callback menu(length, length);
 
     property <bool> dim: !root.online && !root.history;
     property <bool> hot: ta.has-hover || root.selected;
-    property <length> menu_x;
-    property <length> menu_y;
-
-    function open_menu(x: length, y: length) {
-        root.menu_x = x;
-        root.menu_y = y;
-        root.select();
-        menu.show();
-    }
-
     border-radius: 12px;
     background: root.hot ? Theme.card-hover : Theme.surf;
     drop-shadow-blur: Theme.shadow-blur;
@@ -219,35 +152,19 @@ component DeviceCard inherits Rectangle {
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.select(); }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                root.select();
+                root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
         double-clicked => {
             if (!root.dim) {
                 root.connect();
             }
         }
-        pointer-event(e) => {
-            if (root.admin_menu && e.button == PointerEventButton.right && e.kind == PointerEventKind.up) {
-                root.open_menu(self.mouse-x, self.mouse-y);
-            }
-        }
     }
 
-    menu := PopupWindow {
-        x: root.menu_x;
-        y: root.menu_y;
-        DeviceActions {
-            online: root.online;
-            can_rename: root.can_rename;
-            can_group: root.can_group;
-            in_group: root.in_group;
-            group_name: root.group_name;
-            can_delete: root.can_delete;
-            connect => { root.connect(); }
-            rename => { root.rename(); }
-            add_to_group => { root.add_to_group(); }
-            remove_from_group => { root.remove_from_group(); }
-            delete => { root.delete(); }
-        }
-    }
 
     VerticalLayout {
         padding: 16px;
@@ -294,31 +211,6 @@ component DeviceCard inherits Rectangle {
                 vertical-alignment: center;
                 overflow: elide;
             }
-            if root.history && root.hot: Btn {
-                height: 26px;
-                kind: "ghost";
-                icon: "trash";
-                icon-size: 13px;
-                tip: "Remove from history";
-                clicked => { root.remove(); }
-            }
-            if root.can_rename && root.hot: Btn {
-                height: 26px;
-                kind: "ghost";
-                icon: "pencil";
-                icon-size: 13px;
-                tip: "Rename";
-                clicked => { root.rename(); }
-            }
-            if root.admin_menu && root.hot: more := Btn {
-                height: 26px;
-                kind: "ghost";
-                icon: "more";
-                icon-size: 14px;
-                tip: "More";
-                // Below the button: card padding 16 px, then the 40 px header and 12 px spacing above this row.
-                clicked => { root.open_menu(16px + self.x, 16px + 40px + 12px + self.height + 4px); }
-            }
             Btn {
                 height: 26px;
                 label: "Connect";
@@ -343,66 +235,32 @@ component DeviceRow inherits Rectangle {
     in property <bool> can_rename: false;
     in property <bool> narrow: false;
     in property <bool> first: false;
-    in property <bool> admin_menu: false;
-    in property <bool> can_group: false;
-    in property <bool> in_group: false;
-    in property <string> group_name;
-    in property <bool> can_delete: false;
     callback select();
     callback connect();
-    callback rename();
-    callback remove();
-    callback add_to_group();
-    callback remove_from_group();
-    callback delete();
+    // Right click: the device's context menu at this window position.
+    callback menu(length, length);
 
     property <bool> dim: !root.online && !root.history;
     property <bool> hot: ta.has-hover || root.selected;
-    property <length> menu_x;
-    property <length> menu_y;
-
-    function open_menu(x: length, y: length) {
-        root.menu_x = x;
-        root.menu_y = y;
-        root.select();
-        menu.show();
-    }
-
     height: 56px;
     background: root.selected ? Theme.accent-soft : ta.has-hover ? Theme.hover-soft : transparent;
 
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.select(); }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                root.select();
+                root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
         double-clicked => {
             if (!root.dim) {
                 root.connect();
             }
         }
-        pointer-event(e) => {
-            if (root.admin_menu && e.button == PointerEventButton.right && e.kind == PointerEventKind.up) {
-                root.open_menu(self.mouse-x, self.mouse-y);
-            }
-        }
     }
 
-    menu := PopupWindow {
-        x: root.menu_x;
-        y: root.menu_y;
-        DeviceActions {
-            online: root.online;
-            can_rename: root.can_rename;
-            can_group: root.can_group;
-            in_group: root.in_group;
-            group_name: root.group_name;
-            can_delete: root.can_delete;
-            connect => { root.connect(); }
-            rename => { root.rename(); }
-            add_to_group => { root.add_to_group(); }
-            remove_from_group => { root.remove_from_group(); }
-            delete => { root.delete(); }
-        }
-    }
     if !root.first: Rectangle {
         x: 64px;
         y: 0;
@@ -461,36 +319,9 @@ component DeviceRow inherits Rectangle {
         }
         // Actions: a fixed slot, filled on hover or selection
         HorizontalLayout {
-            width: root.admin_menu ? 216px : 180px;
+            width: 270px;
             spacing: 4px;
             alignment: end;
-            if root.history && root.hot: Btn {
-                y: (parent.height - self.height) / 2;
-                height: 28px;
-                kind: "ghost";
-                icon: "trash";
-                icon-size: 13px;
-                tip: "Remove from history";
-                clicked => { root.remove(); }
-            }
-            if root.can_rename && root.hot: Btn {
-                y: (parent.height - self.height) / 2;
-                height: 28px;
-                kind: "ghost";
-                icon: "pencil";
-                icon-size: 13px;
-                label: "Rename";
-                clicked => { root.rename(); }
-            }
-            if root.admin_menu && root.hot: Btn {
-                y: (parent.height - self.height) / 2;
-                height: 28px;
-                kind: "ghost";
-                icon: "more";
-                tip: "More";
-                // Below the button, right-aligned with it (the actions slot ends 12 px from the row's edge).
-                clicked => { root.open_menu(root.width - 12px - 220px, root.height - 8px); }
-            }
             Btn {
                 y: (parent.height - self.height) / 2;
                 height: 28px;
@@ -608,7 +439,7 @@ component CommunityMenuRow inherits Rectangle {
 }
 
 // The cascading community picker (several communities): a glass panel beside the sidebar entry.
-component CommunityPicker inherits GlassMenu {
+component CommunityPicker inherits GlassPanel {
     in property <[CommunityItem]> communities;
     in property <string> current;
     callback pick(string);
@@ -674,7 +505,7 @@ component GroupRow inherits Rectangle {
     menu := PopupWindow {
         x: root.menu_x;
         y: root.menu_y;
-        GlassMenu {
+        GlassPanel {
             width: 200px;
             ActionRow {
                 label: "Rename Group…";
@@ -784,7 +615,7 @@ component GroupColumn inherits Rectangle {
             cmenu := PopupWindow {
                 x: parent.width - 210px;
                 y: 42px;
-                GlassMenu {
+                GlassPanel {
                     width: 210px;
                     ActionRow {
                         label: "Edit Community…";
@@ -945,6 +776,82 @@ export component DashboardView inherits FocusScope {
 
     callback copy_local_id();
     callback request_connect(string);
+    // File browser for a device (id, name): no remote screen, no session tab.
+    callback browse_device(string, string);
+
+    // Device context menu (right click on a card or row): which device and where.
+    property <bool> dm-history: false;
+    property <string> dm-id;
+    property <string> dm-name;
+    property <string> dm-alias;
+    property <bool> dm-can-rename: false;
+    // Relay hosts: set by the host lists right before show-device-menu (offline devices can be deleted).
+    property <bool> dm-online: false;
+    property <length> dm-x;
+    property <length> dm-y;
+
+    function show-device-menu(history: bool, id: string, name: string, alias: string, can-rename: bool, x: length, y: length) {
+        root.dm-history = history;
+        root.dm-id = id;
+        root.dm-name = name;
+        root.dm-alias = alias;
+        root.dm-can-rename = can-rename;
+        root.dm-x = min(x - root.absolute-position.x, root.width - 224px);
+        root.dm-y = min(y - root.absolute-position.y, root.height - 300px);
+        device-menu.show();
+    }
+
+    device-menu := PopupWindow {
+        x: root.dm-x;
+        y: root.dm-y;
+        width: 214px;
+        GlassMenu {
+            width: 214px;
+            GlassItem {
+                label: "Connect";
+                clicked => { root.request_connect(root.dm-id); }
+            }
+            GlassItem {
+                label: "Browse Files";
+                clicked => { root.browse_device(root.dm-id, root.dm-name); }
+            }
+            if root.dm-can-rename || root.dm-history: GlassSep { }
+            if root.dm-can-rename: GlassItem {
+                label: "Rename";
+                clicked => {
+                    if (root.dm-history) {
+                        root.open_rename(root.dm-id, root.dm-alias);
+                    } else {
+                        root.open_host_rename(root.dm-id, root.dm-alias);
+                    }
+                }
+            }
+            if root.dm-history: GlassItem {
+                label: "Remove from History";
+                danger: true;
+                clicked => {
+                    root.prompt_delete_history(root.dm-id, root.dm-alias != "" ? root.dm-alias + " (" + root.dm-id + ")" : root.dm-id);
+                }
+            }
+            // Relay hosts (admin edition): groups and deleting offline devices (docs/features/communities.md).
+            if !root.dm-history && (root.can_group || root.host_delete_supported): GlassSep { }
+            if !root.dm-history && root.can_group: GlassItem {
+                label: "Add to Group…";
+                clicked => { root.open_group_picker(root.dm-id, root.dm-name); }
+            }
+            if !root.dm-history && root.in_group_page: GlassItem {
+                label: "Remove from “" + root.active_group_name + "”";
+                clicked => { root.set_group_member(root.active_group, root.dm-id, false); }
+            }
+            // Only offline devices can be deleted; the relay refuses online ones too.
+            if !root.dm-history && root.host_delete_supported: GlassItem {
+                label: root.dm-online ? "Delete Device (online)" : "Delete Device…";
+                danger: true;
+                enabled: !root.dm-online;
+                clicked => { root.delete_host(root.dm-id, root.dm-name); }
+            }
+        }
+    }
     callback open_rename(string, string);
     // Admin edition: names a device in the relay's host list for every administrator.
     callback open_host_rename(string, string);
@@ -1829,15 +1736,7 @@ export component DashboardView inherits FocusScope {
                                     can_rename: root.host_alias_supported;
                                     select => { root.select_row(h.desk_id); }
                                     connect => { root.request_connect(h.desk_id); }
-                                    rename => { root.open_host_rename(h.desk_id, h.alias); }
-                                    admin_menu: root.can_group || root.host_delete_supported;
-                                    can_group: root.can_group;
-                                    in_group: root.in_group_page;
-                                    group_name: root.active_group_name;
-                                    can_delete: root.host_delete_supported;
-                                    add_to_group => { root.open_group_picker(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
-                                    remove_from_group => { root.set_group_member(root.active_group, h.desk_id, false); }
-                                    delete => { root.delete_host(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
+                                    menu(x, y) => { root.dm-online = h.online; root.show-device-menu(false, h.desk_id, h.alias != "" ? h.alias : h.device_name, h.alias, root.host_alias_supported, x, y); }
                                 }
                             }
                             if root.view_mode == 1: on-list := Card {
@@ -1862,15 +1761,7 @@ export component DashboardView inherits FocusScope {
                                     can_rename: root.host_alias_supported;
                                     select => { root.select_row(h.desk_id); }
                                     connect => { root.request_connect(h.desk_id); }
-                                    rename => { root.open_host_rename(h.desk_id, h.alias); }
-                                    admin_menu: root.can_group || root.host_delete_supported;
-                                    can_group: root.can_group;
-                                    in_group: root.in_group_page;
-                                    group_name: root.active_group_name;
-                                    can_delete: root.host_delete_supported;
-                                    add_to_group => { root.open_group_picker(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
-                                    remove_from_group => { root.set_group_member(root.active_group, h.desk_id, false); }
-                                    delete => { root.delete_host(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
+                                    menu(x, y) => { root.dm-online = h.online; root.show-device-menu(false, h.desk_id, h.alias != "" ? h.alias : h.device_name, h.alias, root.host_alias_supported, x, y); }
                                 }
                             }
                         }
@@ -1920,15 +1811,7 @@ export component DashboardView inherits FocusScope {
                                     can_rename: root.host_alias_supported;
                                     select => { root.select_row(h.desk_id); }
                                     connect => { root.request_connect(h.desk_id); }
-                                    rename => { root.open_host_rename(h.desk_id, h.alias); }
-                                    admin_menu: root.can_group || root.host_delete_supported;
-                                    can_group: root.can_group;
-                                    in_group: root.in_group_page;
-                                    group_name: root.active_group_name;
-                                    can_delete: root.host_delete_supported;
-                                    add_to_group => { root.open_group_picker(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
-                                    remove_from_group => { root.set_group_member(root.active_group, h.desk_id, false); }
-                                    delete => { root.delete_host(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
+                                    menu(x, y) => { root.dm-online = h.online; root.show-device-menu(false, h.desk_id, h.alias != "" ? h.alias : h.device_name, h.alias, root.host_alias_supported, x, y); }
                                 }
                             }
                             if root.view_mode == 1: off-list := Card {
@@ -1953,15 +1836,7 @@ export component DashboardView inherits FocusScope {
                                     can_rename: root.host_alias_supported;
                                     select => { root.select_row(h.desk_id); }
                                     connect => { root.request_connect(h.desk_id); }
-                                    rename => { root.open_host_rename(h.desk_id, h.alias); }
-                                    admin_menu: root.can_group || root.host_delete_supported;
-                                    can_group: root.can_group;
-                                    in_group: root.in_group_page;
-                                    group_name: root.active_group_name;
-                                    can_delete: root.host_delete_supported;
-                                    add_to_group => { root.open_group_picker(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
-                                    remove_from_group => { root.set_group_member(root.active_group, h.desk_id, false); }
-                                    delete => { root.delete_host(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
+                                    menu(x, y) => { root.dm-online = h.online; root.show-device-menu(false, h.desk_id, h.alias != "" ? h.alias : h.device_name, h.alias, root.host_alias_supported, x, y); }
                                 }
                             }
                         }
@@ -1997,11 +1872,7 @@ export component DashboardView inherits FocusScope {
                                     can_rename: true;
                                     select => { root.select_row(item.desk_id); }
                                     connect => { root.request_connect(item.desk_id); }
-                                    rename => { root.open_rename(item.desk_id, item.alias); }
-                                    remove => {
-                                        root.prompt_delete_history(item.desk_id,
-                                            item.alias != "" ? item.alias + " (" + item.desk_id + ")" : item.desk_id);
-                                    }
+                                    menu(x, y) => { root.show-device-menu(true, item.desk_id, item.alias != "" ? item.alias : item.desk_id, item.alias, true, x, y); }
                                 }
                             }
                             if root.view_mode == 1: hist-list := Card {
@@ -2026,11 +1897,7 @@ export component DashboardView inherits FocusScope {
                                     can_rename: true;
                                     select => { root.select_row(item.desk_id); }
                                     connect => { root.request_connect(item.desk_id); }
-                                    rename => { root.open_rename(item.desk_id, item.alias); }
-                                    remove => {
-                                        root.prompt_delete_history(item.desk_id,
-                                            item.alias != "" ? item.alias + " (" + item.desk_id + ")" : item.desk_id);
-                                    }
+                                    menu(x, y) => { root.show-device-menu(true, item.desk_id, item.alias != "" ? item.alias : item.desk_id, item.alias, true, x, y); }
                                 }
                             }
                         }

@@ -3,10 +3,12 @@
 //! - [`capture`]: the screen capture and encode loop.
 //! - [`input`]: applies the viewer's input and control events.
 //! - [`monitor_stream`]: view-only thumbnails for administrators' monitor walls, independent of the session.
+//! - [`text_focus`]: tells a touch viewer when a text field on this machine takes keyboard focus.
 
 pub mod capture;
 pub mod input;
 pub mod monitor_stream;
+pub mod text_focus;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
@@ -46,6 +48,8 @@ pub struct HostState {
     pub keyframe_requested: AtomicBool,
     /// The viewer shows its stats overlay: the capture loop sends `host-stats` once a second.
     pub stats_requested: AtomicBool,
+    /// The viewer turned the screen stream off (`set-video`, a files-only session): the capture loop idles.
+    pub video_paused: AtomicBool,
     /// Keys injected as down and not yet released, so a session end never leaves one stuck.
     held_keys: Mutex<Vec<u8>>,
     /// Mouse buttons the viewer holds, one bit per wire button number.
@@ -75,6 +79,7 @@ impl Default for HostState {
             peer_caps: Mutex::default(),
             keyframe_requested: AtomicBool::new(false),
             stats_requested: AtomicBool::new(false),
+            video_paused: AtomicBool::new(false),
             held_keys: Mutex::new(Vec::new()),
             held_buttons: AtomicU8::new(0),
             pointer_locked: AtomicBool::new(false),
@@ -159,11 +164,13 @@ pub fn start(ctx: &Ctx, partner: &str, caps: PeerCaps, mic_muted: bool) {
     ctx.host.can_send_frame.open();
     ctx.host.p2p_active.store(false, Ordering::SeqCst);
     ctx.host.stats_requested.store(false, Ordering::SeqCst);
+    ctx.host.video_paused.store(false, Ordering::SeqCst);
     ctx.host.pointer_locked.store(false, Ordering::SeqCst);
     ctx.host.pointer_lock_declined.store(false, Ordering::SeqCst);
     ctx.host.active.store(true, Ordering::SeqCst);
     let generation = ctx.host.capture_generation.fetch_add(1, Ordering::SeqCst) + 1;
     capture::spawn(Arc::clone(ctx), partner.to_string(), generation);
+    text_focus::spawn(Arc::clone(ctx), partner.to_string(), generation);
     ctx.ui.hosting_started(desk_id::format(partner));
     set_mic(ctx, mic_muted);
     logger::info("host", &format!("Hosting session started for {partner}."));
@@ -178,7 +185,8 @@ pub fn restart_capture(ctx: &Ctx) {
     let partner = ctx.partner();
     ctx.host.can_send_frame.open();
     let generation = ctx.host.capture_generation.fetch_add(1, Ordering::SeqCst) + 1;
-    capture::spawn(Arc::clone(ctx), partner, generation);
+    capture::spawn(Arc::clone(ctx), partner.clone(), generation);
+    text_focus::spawn(Arc::clone(ctx), partner, generation);
     logger::info("host", "Hosted session resumed.");
 }
 

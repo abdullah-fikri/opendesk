@@ -97,13 +97,13 @@ func (s *Store) SetAlias(_ context.Context, cleanID, alias string) error {
 	return nil
 }
 
-// DeleteOffline removes the offline hosts among cleanIDs with their group memberships.
-func (s *Store) DeleteOffline(_ context.Context, cleanIDs []string) (int, error) {
+// Delete removes the hosts among cleanIDs with their group memberships.
+func (s *Store) Delete(_ context.Context, cleanIDs []string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
 	for _, id := range cleanIDs {
-		if h, ok := s.hosts[id]; ok && !h.Online {
+		if _, ok := s.hosts[id]; ok {
 			delete(s.hosts, id)
 			n++
 			s.eachGroup(func(g *model.Group) {

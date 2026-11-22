@@ -148,6 +148,18 @@ pub fn apply(ctx: &AppContext, event: InputEvent) {
         InputEvent::SetBlockInput { blocked } => privacy::set_host_block_input(blocked),
         InputEvent::VideoKeyframe => host.keyframe_requested.store(true, Ordering::SeqCst),
         InputEvent::Stats { on } => host.stats_requested.store(on, Ordering::Relaxed),
+        InputEvent::SetVideo { on } => {
+            if host.video_paused.swap(!on, Ordering::SeqCst) == on {
+                logger::info(
+                    "host.input",
+                    &format!("Viewer turned the screen stream {}.", if on { "on" } else { "off" }),
+                );
+            }
+            // Resuming starts from a key frame: the viewer has no picture to apply deltas to.
+            if on {
+                host.keyframe_requested.store(true, Ordering::SeqCst);
+            }
+        }
         InputEvent::StatsPing { t } => {
             let h = Some(latency::mono_us(std::time::Instant::now()) as u64);
             ctx.send_input(&ctx.partner(), InputEvent::StatsPong { t, h })

@@ -36,11 +36,16 @@ pub const FILE_RESUME: &str = "file-resume";
 /// An `offer` may carry the point of the host screen it was dropped on (`dropX`, `dropY`, 0..10000): the host
 /// drops the files there as a drag, without touching its clipboard. Both sides list it with `file-offer`.
 pub const FILE_DROP: &str = "file-drop";
+/// File transfers may run over a direct TCP file channel of their own (`infra::file_channel`); needs `e2e`.
+pub const FILE_CHANNEL: &str = "file-channel";
 /// The viewer draws its own cursor in the host's shape.
 pub const CURSOR_SHAPE: &str = "cursor-shape";
 /// The viewer locks its pointer and sends relative motion while a host application captured the mouse
 /// (`pointer-lock`, `mouse-delta`): games with mouse look. Hosts send `pointer-lock` only to viewers listing it.
 pub const MOUSE_RELATIVE: &str = "mouse-relative";
+/// From a viewer: it wants `text-focus` events (keyboard focus entering or leaving a text field on the host) to
+/// raise its on-screen keyboard. Hosts that can read focus (Windows) send them only to viewers listing it.
+pub const TEXT_FOCUS: &str = "text-focus";
 /// Copied images follow the clipboard like text (an `offer` carrying a PNG, see `domain::clip_image`). Both
 /// sides list it; an image goes only to a partner that does.
 pub const CLIPBOARD_IMAGE: &str = "clipboard-image";
@@ -48,6 +53,10 @@ pub const CLIPBOARD_IMAGE: &str = "clipboard-image";
 pub const VIDEO_DELTA: &str = "video-delta";
 /// H.264 motion frames inside the framed format.
 pub const VIDEO_H264: &str = "video-h264";
+/// Both ways: H.264 starts as soon as motion begins instead of after a few heavy JPEG frames, at the preset's
+/// normal bitrate. A viewer whose hardware decodes H.264 far cheaper than JPEG (phones) lists it; a host lists
+/// it so such a viewer knows it need not ask for the High preset (which doubles the bitrate) to get the same.
+pub const H264_EAGER: &str = "h264-eager";
 /// Framed video may end in a capture stamp (`core_engine::codec::frame::FrameStamp`) for the latency rows of
 /// the stats overlay. From a viewer: it parses the trailer; a host stamps only toward viewers that list it.
 pub const FRAME_STAMP: &str = "frame-stamp";
@@ -125,13 +134,20 @@ pub struct PeerCaps {
     pub file_resume: bool,
     /// Dropped files may go to the partner as a drag onto its screen ([`FILE_DROP`]).
     pub file_drop: bool,
+    /// Transfers may run over a direct file channel ([`FILE_CHANNEL`]); the channel authenticates with the
+    /// end-to-end keys, so the partner must list `e2e` too.
+    pub file_channel: bool,
     pub cursor_shape: bool,
     /// The viewer can lock its pointer for relative motion ([`MOUSE_RELATIVE`]).
     pub mouse_relative: bool,
+    /// The viewer wants `text-focus` events ([`TEXT_FOCUS`]).
+    pub text_focus: bool,
     /// The partner takes copied images ([`CLIPBOARD_IMAGE`]).
     pub clipboard_image: bool,
     pub video_delta: bool,
     pub video_h264: bool,
+    /// The viewer wants motion on H.264 at once ([`H264_EAGER`]).
+    pub h264_eager: bool,
     /// Deltas to this viewer may carry lossless tiles ([`TILE_LOSSLESS`]).
     pub tile_lossless: bool,
     /// The partner resends lost P2P video fragments on request ([`VIDEO_NACK`]).
@@ -172,11 +188,14 @@ impl PeerCaps {
             file_deflate: has(FILE_BINARY) && has(FILE_DEFLATE),
             file_resume: has(FILE_ACK) && has(FILE_RESUME),
             file_drop: has(FILE_OFFER) && has(FILE_DROP),
+            file_channel: has(FILE_CHANNEL) && has(E2E) && has(FILE_BINARY),
             cursor_shape: has(CURSOR_SHAPE),
             mouse_relative: has(MOUSE_RELATIVE),
+            text_focus: has(TEXT_FOCUS),
             clipboard_image: has(CLIPBOARD_IMAGE),
             video_delta: has(VIDEO_DELTA),
             video_h264: has(VIDEO_H264),
+            h264_eager: has(H264_EAGER),
             tile_lossless: has(VIDEO_DELTA) && has(TILE_LOSSLESS),
             video_nack: has(VIDEO_NACK),
             frame_stamp: has(FRAME_STAMP),
@@ -308,6 +327,15 @@ mod tests {
         let caps = |list: &[&str]| PeerCaps::from_list(&list.iter().map(|c| c.to_string()).collect::<Vec<_>>(), true);
         assert!(caps(&[FILE_BINARY, FILE_DEFLATE]).file_deflate);
         assert!(!caps(&[FILE_DEFLATE]).file_deflate && !caps(&[FILE_BINARY]).file_deflate);
+    }
+
+    #[test]
+    fn text_focus_only_toward_viewers_that_list_it() {
+        assert!(!PeerCaps::from_list(&[VIEWER_ONLY.to_string(), VIDEO_H264.to_string()], true).text_focus);
+        let phone = PeerCaps::from_list(&[VIDEO_H264.to_string(), H264_EAGER.to_string()], true);
+        assert!(phone.h264_eager && phone.video_h264 && phone.performance == Performance::Medium);
+        assert!(!PeerCaps::from_list(&[VIDEO_H264.to_string()], true).h264_eager);
+        assert!(PeerCaps::from_list(&[VIEWER_ONLY.to_string(), TEXT_FOCUS.to_string()], true).text_focus);
     }
 
     #[test]

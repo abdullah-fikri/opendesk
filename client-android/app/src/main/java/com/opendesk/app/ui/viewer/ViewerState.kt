@@ -11,6 +11,13 @@ class ViewerState {
     /** The left button is held down (the Hold control) until tapped again. */
     var leftHeld = false
 
+    /** The frame covers the whole screen (edges reached by panning) instead of fitting inside it. */
+    var fill = false
+
     var controlsOpen = false
+    /** The phone's own keyboard (IME) is up. */
     var keyboardVisible = false
+
+    /** The mini glass keyboard is up. */
+    var glassKeyboardVisible = false
 }

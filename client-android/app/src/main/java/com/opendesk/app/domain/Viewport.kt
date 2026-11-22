@@ -1,7 +1,8 @@
 package com.opendesk.app.domain
 
 /**
- * Where the remote frame is drawn inside the view: fit-center at zoom 1, magnified around a focus point above it.
+ * Where the remote frame is drawn inside the view: fit-center at zoom 1 (or, with [fill], covering the whole view
+ * with the overflow reachable by panning), magnified around a focus point above it.
  * All coordinates are view pixels; `pan` is the offset of the zoomed image from its fit-center position.
  * Pure math so the touch-to-remote mapping is unit-tested.
  */
@@ -16,8 +17,32 @@ class Viewport {
         private set
     var zoom = 1f
         private set
-    private var panX = 0f
-    private var panY = 0f
+    /** Offset of the frame from its fit-center position, in view pixels. */
+    var panX = 0f
+        private set
+    var panY = 0f
+        private set
+
+    /**
+     * View pixels at the bottom covered by a floating keyboard: the frame may then also pan up until its bottom edge
+     * reaches the keyboard's top, so everything stays reachable above it. 0 when nothing covers the view.
+     */
+    var bottomInset = 0f
+        set(value) {
+            field = value.coerceIn(0f, viewHeight)
+            clampPan()
+        }
+
+    /** Cover the view (no black bands; the edges that stick out are reached by panning) instead of fitting it. */
+    var fill = false
+        set(value) {
+            field = value
+            clampPan()
+        }
+
+    /** The drawn frame is larger than the view, so moving the cursor near an edge should pan. */
+    val overflows: Boolean
+        get() = drawnWidth > viewWidth + 0.5f || drawnHeight > viewHeight + 0.5f
 
     /** Size of the view or of the remote frame changed. Keeps zoom and clamps the pan. */
     fun resize(viewW: Int, viewH: Int, imageW: Int, imageH: Int) {
@@ -86,6 +111,25 @@ class Viewport {
         clampPan()
     }
 
+    /** Sets zoom (clamped to 1..[MAX_ZOOM]) and pan (clamped) at once, e.g. one step of an animation. */
+    fun set(zoom: Float, panX: Float, panY: Float) {
+        this.zoom = zoom.coerceIn(1f, MAX_ZOOM)
+        this.panX = panX
+        this.panY = panY
+        clampPan()
+    }
+
+    /** An independent copy (to work out a target without touching the shown viewport). */
+    fun copy(): Viewport = Viewport().also {
+        it.viewWidth = viewWidth
+        it.viewHeight = viewHeight
+        it.imageWidth = imageWidth
+        it.imageHeight = imageHeight
+        it.fill = fill
+        it.bottomInset = bottomInset
+        it.set(zoom, panX, panY)
+    }
+
     /** Back to fit-center. */
     fun reset() {
         zoom = 1f
@@ -95,15 +139,21 @@ class Viewport {
 
     private fun fitScale(): Float {
         if (imageWidth <= 0 || imageHeight <= 0) return 1f
-        return minOf(viewWidth / imageWidth, viewHeight / imageHeight)
+        val sx = viewWidth / imageWidth
+        val sy = viewHeight / imageHeight
+        return if (fill) maxOf(sx, sy) else minOf(sx, sy)
     }
 
-    /** A frame larger than the view may not leave a gap at an edge; a smaller one stays centered. */
+    /**
+     * A frame larger than the view may not leave a gap at an edge; a smaller one stays centered. With a
+     * [bottomInset] the frame may also move up until its bottom edge sits on the inset's top.
+     */
     private fun clampPan() {
         val maxX = ((drawnWidth - viewWidth) / 2f).coerceAtLeast(0f)
         val maxY = ((drawnHeight - viewHeight) / 2f).coerceAtLeast(0f)
+        val minY = minOf(-maxY, (viewHeight - drawnHeight) / 2f - bottomInset)
         panX = panX.coerceIn(-maxX, maxX)
-        panY = panY.coerceIn(-maxY, maxY)
+        panY = panY.coerceIn(minY, maxY)
     }
 
     companion object {

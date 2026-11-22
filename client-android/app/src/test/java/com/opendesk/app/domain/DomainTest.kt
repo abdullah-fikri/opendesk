@@ -47,12 +47,24 @@ class DomainTest {
 
     @Test
     fun registersAsViewerOnlyWithDeltaVideoAndE2e() {
-        // Never `video-h264` (no decoder) and never `multi-session` (one session at a time).
+        // `video-h264` only with a working hardware decoder; never `multi-session` (one session at a time).
         // Only the admin edition shows the monitor wall.
         val wall = if (Edition.isAdmin) listOf("monitor-view") else emptyList()
-        assertEquals(listOf("viewer-only", "video-delta", "e2e") + wall, Capabilities.advertised)
+        // `fps-60` last; `h264-eager` (H.264 at once during motion) only with a hardware decoder.
+        // `text-focus`: the host says when a text field takes focus, so the mini keyboard comes up by itself.
+        assertEquals(listOf("viewer-only", "video-delta", "e2e", "text-focus") + wall + "fps-60", Capabilities.advertised(h264 = false))
+        assertEquals(
+            listOf("viewer-only", "video-delta", "e2e", "text-focus", "video-h264", "h264-eager") + wall + listOf("fps-60"),
+            Capabilities.advertised(h264 = true),
+        )
         // The relay accepts lowercase letters, digits, '-' and '.', at most 32 characters.
-        Capabilities.advertised.forEach { assertTrue(it.matches(Regex("[a-z0-9.-]{1,32}"))) }
+        Capabilities.advertised(h264 = true).forEach { assertTrue(it.matches(Regex("[a-z0-9.-]{1,32}"))) }
+        // Data saver asks for Low; an older host gets High (its only way to start H.264 at once); a host listing
+        // `h264-eager` keeps the normal preset.
+        assertEquals("low", Capabilities.performanceFor(true, listOf("h264-eager"), dataSaver = true))
+        assertEquals("high", Capabilities.performanceFor(true, listOf("video-h264"), dataSaver = false))
+        assertEquals(null, Capabilities.performanceFor(true, listOf("video-h264", "h264-eager"), dataSaver = false))
+        assertEquals(null, Capabilities.performanceFor(false, listOf("video-h264"), dataSaver = false))
     }
 
     @Test
@@ -74,6 +86,24 @@ class DomainTest {
         // Touches on the black bars clamp to the frame's edge.
         assertEquals(0f, v.toNormY(10f), 0.001f)
         assertEquals(1f, v.toNormY(990f), 0.001f)
+    }
+
+    @Test
+    fun viewportFillCoversTheViewAndPansToTheEdges() {
+        val v = Viewport()
+        // A 1920x1080 frame on a 2400x1080 landscape phone: fill scales to the width and crops top and bottom.
+        v.resize(2400, 1080, 1920, 1080)
+        assertEquals(1920f, v.drawnWidth, 0.5f) // fit: 240 px black bands at each side
+        v.fill = true
+        assertEquals(2400f, v.drawnWidth, 0.5f)
+        assertEquals(1350f, v.drawnHeight, 0.5f)
+        assertEquals(true, v.overflows)
+        assertEquals(-135f, v.top, 0.5f)
+        // The cut-off bottom row is reachable: pan up as far as it goes, and the frame's bottom meets the view's.
+        v.panBy(0f, -10_000f)
+        assertEquals(1080f, v.top + v.drawnHeight, 0.5f)
+        v.fill = false
+        assertEquals(false, v.overflows)
     }
 
     @Test

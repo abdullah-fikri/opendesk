@@ -145,6 +145,23 @@ pub fn request_connect(ctx: &AppContext, clean: &str, title: String, subtitle: S
         }
     }
     match opened {
+        // A files-only session to the same device becomes an ordinary one: tab, screen and sound.
+        Open::Exists(s) if s.files_only.swap(false, Ordering::SeqCst) => {
+            ctx.ui.session_opened(
+                s.id.clone(),
+                title,
+                subtitle,
+                s.res_mode.load(Ordering::SeqCst) as i32,
+                s.audio_quality.load(Ordering::SeqCst) as i32,
+            );
+            if s.is_connected() {
+                ctx.ui.session_connected(s.id.clone(), desk_id::format(&s.id));
+                ctx.send_input(&s.id, InputEvent::SetVideo { on: true });
+                begin_mic(ctx, &s, settings::mic_muted_at_start());
+                send_state(ctx, &s);
+            }
+            focus(ctx, clean);
+        }
         Open::Exists(_) => focus(ctx, clean),
         Open::Full => ctx.ui.status(if ctx.viewers.multi() { MSG_FULL_MULTI } else { MSG_FULL_SINGLE }.into()),
         Open::Opened(s) => {
@@ -160,6 +177,37 @@ pub fn request_connect(ctx: &AppContext, clean: &str, title: String, subtitle: S
             ctx.ui.status(format!("Connecting to {}...", desk_id::format(clean)));
             logger::info("viewer", &format!("Connection requested to {clean}."));
         }
+    }
+}
+
+/// Opens a files-only session to `clean` for the file browser (no tab, no screen stream), or reuses any open
+/// session to it. Returns true when a session exists or was requested.
+pub fn request_files(ctx: &AppContext, clean: &str) -> bool {
+    if clean.is_empty() {
+        return false;
+    }
+    let res_mode = ctx.viewers.default_resolution();
+    let viewport = ctx.viewers.default_viewport();
+    let quality = ctx.voice.audio_quality.load(Ordering::SeqCst);
+    match ctx.viewers.open(clean, res_mode, viewport, quality) {
+        Open::Exists(_) => true,
+        Open::Full => {
+            ctx.ui.status(if ctx.viewers.multi() { MSG_FULL_MULTI } else { MSG_FULL_SINGLE }.into());
+            false
+        }
+        Open::Opened(s) => {
+            s.files_only.store(true, Ordering::SeqCst);
+            ctx.send(ClientMessage::ConnectRequest { target_id: clean.to_string() });
+            logger::info("viewer", &format!("Files-only connection requested to {clean}."));
+            true
+        }
+    }
+}
+
+/// The file browser closed: a files-only session to `id` ends with it.
+pub fn browser_closed(ctx: &AppContext, id: &str) {
+    if ctx.viewers.get(id).is_some_and(|s| s.files_only.load(Ordering::SeqCst)) {
+        close(ctx, id, None);
     }
 }
 
@@ -184,6 +232,18 @@ pub fn on_connected(ctx: &Ctx, id: &str, caps: PeerCaps, mic_muted: bool) -> Opt
         }
     };
     sess.connected.store(true, Ordering::SeqCst);
+    if sess.files_only.load(Ordering::SeqCst) {
+        // No screen, no sound: the host idles its capture loop (hosts that predate `set-video` keep streaming
+        // to a session nobody decodes).
+        ctx.send_input(id, InputEvent::SetVideo { on: false });
+        if caps.audio_system {
+            ctx.send_input(id, InputEvent::SetHostSound { on: false });
+        }
+        file_transfer::set_session_caps(id, caps);
+        ctx.ui.browse(crate::service::ui_port::BrowseUpdate::Connected { partner: id.to_string() });
+        logger::info("viewer", &format!("Files-only session with {id} connected."));
+        return Some(sess);
+    }
     begin_mic(ctx, &sess, mic_muted);
     sess.host_sound.store(true, Ordering::SeqCst);
     let host_sound = audio::HOST_SOUND && caps.audio_system;
@@ -276,6 +336,8 @@ pub fn close(ctx: &AppContext, id: &str, status: Option<String>) {
 }
 
 fn after_end(ctx: &AppContext, id: &str, prev: &str, status: Option<String>) {
+    let message = status.clone().unwrap_or_else(|| "The connection to this device ended.".into());
+    ctx.ui.browse(crate::service::ui_port::BrowseUpdate::Ended { partner: id.to_string(), message });
     ctx.ui.session_closed(id.to_string(), status);
     after_focus_change(ctx, prev);
     if ctx.viewers.is_empty() && !ctx.is_hosting() {

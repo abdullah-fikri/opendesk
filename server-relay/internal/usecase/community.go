@@ -54,11 +54,20 @@ func (r *Relay) DeleteHosts(admin *Peer, cleanIDs []string) (HostDeletion, error
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), storageTimeout)
 	defer cancel()
-	// The repository deletes only rows still marked offline, which closes the race with a registration that
-	// lands between the check above and this statement.
-	res.Deleted, err = r.hosts.DeleteOffline(ctx, offline)
+	// Live connections decide what is offline (the stored flag can lag behind them, see HostList).
+	res.Deleted, err = r.hosts.Delete(ctx, offline)
 	if err != nil {
 		return res, err
+	}
+	// A device that registered between the check above and the delete would have lost the row its upsert
+	// wrote: write it again, so a connected device never disappears from the list.
+	for _, id := range offline {
+		if p := r.Lookup(id); p != nil {
+			if err := r.hosts.Upsert(ctx, model.Host{CleanID: p.CleanID, DeskID: p.DeskID, DeviceName: p.DeviceName,
+				Platform: p.Platform, IsAdmin: p.IsAdmin, Online: true, LastSeen: time.Now()}); err != nil {
+				r.log.Error("re-register host after delete failed", "id", p.DeskID, "err", err)
+			}
+		}
 	}
 	r.log.Info("devices deleted from registry", "count", res.Deleted, "refused_online", len(res.Online), "by", admin.DeskID)
 	return res, nil

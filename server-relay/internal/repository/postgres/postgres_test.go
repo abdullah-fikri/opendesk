@@ -80,8 +80,7 @@ func TestRepositoriesAgainstPostgres(t *testing.T) {
 	testCommunities(t, ctx, hosts, NewCommunityRepository(db), now)
 }
 
-// testCommunities covers migration 0004: groups and memberships cascade, deleting an offline device drops its
-// memberships, an online one is kept.
+// testCommunities covers migration 0004: groups and memberships cascade, deleting a device drops its memberships.
 func testCommunities(t *testing.T, ctx context.Context, hosts *HostRepository, repo *CommunityRepository, now time.Time) {
 	for _, id := range []string{"222222222", "333333333"} {
 		if err := hosts.Upsert(ctx, model.Host{CleanID: id, DeskID: id, DeviceName: "PC", Platform: "windows-pc", Online: id == "222222222", LastSeen: now}); err != nil {
@@ -118,7 +117,7 @@ func testCommunities(t *testing.T, ctx context.Context, hosts *HostRepository, r
 		t.Fatalf("communities: %+v %v", all, err)
 	}
 
-	n, err := hosts.DeleteOffline(ctx, []string{"222222222", "333333333"})
+	n, err := hosts.Delete(ctx, []string{"333333333"})
 	if err != nil || n != 1 {
 		t.Fatalf("delete offline: %d %v", n, err)
 	}
