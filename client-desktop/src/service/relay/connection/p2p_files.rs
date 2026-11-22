@@ -33,6 +33,11 @@ impl Connection {
         }
     }
 
+    /// What senders to `target` need to know about its path (`file_transfer::set_route`).
+    pub(super) fn file_route_now(&self, target: &str) -> file_transfer::Route {
+        file_transfer::Route { path: self.file_path_to(target), channel_redialing: self.channel_redialing(target) }
+    }
+
     /// The path of file message `payload` to `target` (see `domain::file_route`).
     pub(super) fn route_file(&mut self, target: &str, payload: &FilePayload) -> Path {
         let step = match payload.action {
