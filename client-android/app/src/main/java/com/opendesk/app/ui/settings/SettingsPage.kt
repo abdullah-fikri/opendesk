@@ -8,6 +8,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
 import android.widget.Toast
+import androidx.annotation.DrawableRes
 import com.opendesk.app.OpenDeskApp
 import com.opendesk.app.R
 import com.opendesk.app.data.settings.SettingsRepository
@@ -51,6 +52,28 @@ class SettingsPage(private val host: MainHost, parent: ViewGroup) {
             context.getString(R.string.microphone), context.getString(R.string.microphone_sub),
         )
 
+        // Remote control.
+        switchRow(
+            view.findViewById(R.id.set_auto_keyboard), R.drawable.tile_blue, R.drawable.ic_kbd,
+            context.getString(R.string.auto_keyboard), context.getString(R.string.auto_keyboard_sub), settings.autoKeyboard,
+        ) { settings.autoKeyboard = it }
+        Ui.settingRow(
+            view.findViewById(R.id.set_keyboard_type), R.drawable.tile_purple, R.drawable.ic_kbd,
+            context.getString(R.string.keyboard), null,
+        )
+        val keyboards = listOf(true to R.id.keyboard_glass, false to R.id.keyboard_system)
+        keyboards.forEach { (mini, id) ->
+            Ui.segment(view.findViewById(id), settings.miniKeyboard == mini)
+            view.findViewById<View>(id).setOnClickListener {
+                settings.miniKeyboard = mini
+                keyboards.forEach { (m, i) -> Ui.segment(view.findViewById(i), m == mini) }
+            }
+        }
+        switchRow(
+            view.findViewById(R.id.set_data_saver), R.drawable.tile_green, R.drawable.ic_screen,
+            context.getString(R.string.data_saver), context.getString(R.string.data_saver_sub), settings.dataSaver,
+        ) { settings.dataSaver = it }
+
 
         val choices = listOf(
             SettingsRepository.APPEARANCE_SYSTEM to R.id.appearance_system,
@@ -82,6 +105,22 @@ class SettingsPage(private val host: MainHost, parent: ViewGroup) {
         val version = runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull()
         view.findViewById<TextView>(R.id.settings_version).text = version?.let { context.getString(R.string.version_label, it) }
         refresh()
+    }
+
+    /** A row with a switch; tapping anywhere on it flips the switch. */
+    private fun switchRow(
+        row: View,
+        @DrawableRes tile: Int,
+        @DrawableRes icon: Int,
+        title: String,
+        sub: String,
+        on: Boolean,
+        onToggle: (Boolean) -> Unit,
+    ) {
+        val switch = Ui.settingSwitch(row)
+        Ui.settingRow(row, tile, icon, title, sub) { switch.toggle() }
+        switch.isChecked = on
+        switch.setOnCheckedChangeListener { _, checked -> onToggle(checked) }
     }
 
     fun refresh() {

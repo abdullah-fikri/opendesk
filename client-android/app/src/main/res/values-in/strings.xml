@@ -3,11 +3,10 @@
 <resources>
     <string name="tab_devices">Perangkat</string>
     <string name="tab_sessions">Sesi</string>
+    <string name="tab_wall">Wall</string>
     <string name="tab_settings">Pengaturan</string>
 
-    <string name="status_connecting">Menghubungkan…</string>
     <string name="status_connected">Terhubung</string>
-    <string name="relay_chip_connected">Relay terhubung</string>
     <string name="relay_chip_offline">Relay terputus</string>
     <string name="relay_chip_none">Belum ada relay</string>
     <string name="relay_offline">Relay belum terhubung. Periksa alamat dan jaringan.</string>
@@ -149,6 +148,23 @@
     <string name="gesture_pinch_does">Perbesar, lalu geser</string>
     <string name="gesture_one_drag">Geser satu jari</string>
     <string name="gesture_one_drag_does">Gerakkan kursor (Trackpad) · lompat ke jari (Sentuh)</string>
+    <string name="radial_handle">Menu sesi</string>
+    <string name="menu_trackpad">Mode trackpad</string>
+    <string name="menu_touch">Mode sentuh</string>
+    <string name="menu_display">Tampilan</string>
+    <string name="menu_fit">Pas layar</string>
+    <string name="menu_fill">Penuhi layar</string>
+    <string name="menu_next_monitor">Monitor berikutnya</string>
+    <string name="menu_info">Info sesi</string>
+    <string name="menu_keys">Tombol</string>
+    <string name="menu_alt_tab">Ganti jendela (Alt+Tab)</string>
+    <string name="menu_task_manager">Task Manager</string>
+    <string name="menu_scroll">Mode scroll</string>
+    <string name="menu_more">Kontrol lainnya</string>
+    <string name="gesture_edge">Tahan tepi kanan</string>
+    <string name="gesture_edge_does">Menu sesi: geser ke aksi, lepas untuk menjalankan</string>
+    <string name="gesture_top">Usap ke bawah dari atas</string>
+    <string name="gesture_top_does">Info sesi dan putuskan</string>
     <string name="got_it">Mengerti</string>
 
     <string name="menu_connect">Hubungkan</string>
@@ -198,4 +214,16 @@
     <string name="wall_all">Semua komputer online</string>
     <string name="wall_all_sub">Mati: hanya komputer yang Anda pilih, termasuk yang offline</string>
     <string name="wall_pick">Komputer di wall</string>
+    <string name="h264_failed">Decode video hardware gagal di HP ini. Mulai koneksi berikutnya OpenDesk memakai gambar standar.</string>
+    <string name="section_remote">Kontrol jarak jauh</string>
+    <string name="auto_keyboard">Keyboard otomatis</string>
+    <string name="auto_keyboard_sub">Muncul saat Anda mengetuk kolom teks di komputer</string>
+    <string name="keyboard_glass">Mini kaca</string>
+    <string name="keyboard_system">Sistem</string>
+    <string name="keyboard_type_note">Mini kaca menjaga layar tetap terlihat; Sistem punya bahasa lain dan ketik suara.</string>
+    <string name="data_saver">Hemat data</string>
+    <string name="data_saver_sub">Bitrate video lebih rendah di data seluler; tanpa permintaan stream performa tinggi</string>
+    <string name="paste_sent">Ditempel dari HP Anda</string>
+    <string name="paste_empty">Clipboard HP Anda kosong</string>
+    <string name="paste_truncated">Ditempel %1$d karakter pertama</string>
 </resources>

@@ -67,6 +67,8 @@ struct Incoming {
     dest: Option<(PathBuf, String, String)>,
     /// Sender's times and attributes, applied once the file is complete.
     stamp: super::Stamp,
+    /// File browser transfer: the folder it goes to instead of the clipboard (`service::file_browser`).
+    place: Option<PathBuf>,
 }
 
 /// A folder transfer in progress (`group` on start messages).
@@ -78,11 +80,20 @@ struct FolderGroup {
     entries: usize,
     bytes: u64,
     last_activity: Instant,
+    /// File browser transfer: the folder its top-level items go to instead of the clipboard.
+    place: Option<PathBuf>,
 }
 
 impl FolderGroup {
     fn new() -> Self {
-        Self { tops: Vec::new(), roots: HashMap::new(), entries: 0, bytes: 0, last_activity: Instant::now() }
+        Self {
+            tops: Vec::new(),
+            roots: HashMap::new(),
+            entries: 0,
+            bytes: 0,
+            last_activity: Instant::now(),
+            place: None,
+        }
     }
 
     /// Maps validated components to a local folder under `base`: the folder itself for `dir`, else the file's
@@ -159,6 +170,9 @@ fn finish_group(
     payload: &FilePayload,
     allow_auto_paste: bool,
 ) -> Outcome {
+    if let Some(dir) = &group.place {
+        return place_all(ctx, &group.tops, dir);
+    }
     let paste = payload.auto_paste.unwrap_or(true) && allow_auto_paste;
     publish(ctx, from, &group.tops, paste);
     let label = match group.tops.as_slice() {
@@ -167,6 +181,30 @@ fn finish_group(
     };
     logger::info("file_transfer", &format!("Group transfer complete: {:?} (auto_paste={paste})", group.tops));
     (Some(done_status(&label)), Some(true))
+}
+
+/// File browser transfers: moves what arrived into the chosen folder (as the signed-in user); a failure leaves it
+/// in Downloads and says so.
+fn place_all(ctx: &AppContext, items: &[PathBuf], dir: &Path) -> Outcome {
+    let mut last = None;
+    for item in items {
+        match crate::service::file_browser::place(item, dir) {
+            Ok(saved) => {
+                logger::info("file_transfer", &format!("File browser: saved {}", saved.display()));
+                last = Some(saved);
+            }
+            Err(e) => {
+                logger::warn("file_transfer", &format!("File browser: {} stays in Downloads: {e}", item.display()));
+                return (Some(format!("Kept in Downloads\\OpenDesk: {e}")), Some(true));
+            }
+        }
+    }
+    let label = match (items, &last) {
+        ([_], Some(saved)) => saved.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+        _ => format!("{} items", items.len()),
+    };
+    badge_finished(ctx, &format!("Received {label} in {}", dir.display()));
+    (Some(format!("Saved {label} in {}", dir.display())), Some(true))
 }
 
 /// Folder that receives files (`Downloads\OpenDesk` in the user's home, else `<app dir>/Downloads`).
@@ -478,6 +516,11 @@ impl FileReceiver {
                         shown_percent: 0,
                         dest,
                         stamp: super::Stamp::from_payload(payload),
+                        place: if payload.group.is_some() {
+                            None
+                        } else {
+                            crate::service::file_browser::place_for(ctx, from, payload)
+                        },
                     },
                 );
                 self.show_badge(ctx);
@@ -571,6 +614,9 @@ impl FileReceiver {
         }
         let base = download_dir();
         let group = self.groups.entry(gkey.clone()).or_insert_with(FolderGroup::new);
+        if group.entries == 0 {
+            group.place = crate::service::file_browser::place_for(ctx, from, payload);
+        }
         group.entries += 1;
         group.bytes = group.bytes.saturating_add(size);
         group.last_activity = Instant::now();
@@ -698,7 +744,7 @@ impl FileReceiver {
         key: String,
         allow_auto_paste: bool,
     ) -> Outcome {
-        let Some(Incoming { row, mut file, path: staging, name, received, total, hash, dest, stamp, .. }) =
+        let Some(Incoming { row, mut file, path: staging, name, received, total, hash, dest, stamp, place, .. }) =
             self.active_files.remove(&key)
         else {
             // Unknown transfer (expired or rejected start): NACK so the sender does not wait for a timeout.
@@ -746,6 +792,9 @@ impl FileReceiver {
             }
             self.show_badge(ctx);
             return (Some(format!("Received: {name}")), Some(true));
+        }
+        if let Some(dir) = place {
+            return place_all(ctx, &[saved], &dir);
         }
         let paste = payload.auto_paste.unwrap_or(true) && allow_auto_paste;
         logger::info("file_transfer", &format!("File transfer complete: {} (auto_paste={paste})", saved.display()));

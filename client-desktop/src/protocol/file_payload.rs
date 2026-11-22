@@ -96,6 +96,15 @@ pub struct FilePayload {
     pub drop_x: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drop_y: Option<u32>,
+    /// `start` of a file the partner asked for in its file browser (`domain::file_browser`): the number of that
+    /// request. The receiver saves the file in the folder it chose for the request, and only for a request it
+    /// made; anything else goes to Downloads as usual.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browse: Option<u64>,
+    /// `start` of an upload from the viewer's file browser: the folder on the receiving host it goes to. A host
+    /// honours it only from the viewer of its session; the file is placed there as the signed-in user.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dest: Option<String>,
 }
 
 /// One entry of a clipboard file offer.

@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Controls over the remote screen: the session pill (computer, FPS, E2E, end), the "Controls" handle, the controls
-  panel (view_controls: sheet in portrait, side panel in landscape) and the key bar shown with the soft keyboard.
-  The frame itself takes no touches, so the screen below still gets them.
+  Controls over the remote screen: the session pill (computer, FPS, E2E, end; hidden until a swipe down from the
+  top), the controls panel (view_controls: sheet in portrait, side panel in landscape, opened from the radial menu)
+  and the key bar shown with the soft keyboard. ControlsOverlay adds the radial menu and its edge grip. The frame
+  itself takes no touches, so the screen below still gets them.
 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
@@ -74,34 +75,6 @@
             android:padding="7dp"
             android:src="@drawable/ic_power"
             app:tint="@android:color/white" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:id="@+id/btn_controls"
-        android:layout_width="wrap_content"
-        android:layout_height="34dp"
-        android:layout_gravity="bottom|center_horizontal"
-        android:layout_marginBottom="12dp"
-        android:background="@drawable/pill_bar"
-        android:elevation="6dp"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingHorizontal="16dp">
-
-        <View
-            android:layout_width="20dp"
-            android:layout_height="3dp"
-            android:background="@drawable/handle"
-            android:backgroundTint="@color/text2" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="10dp"
-            android:fontFamily="@font/inter_semibold"
-            android:text="@string/controls"
-            android:textColor="@color/text"
-            android:textSize="13sp" />
     </LinearLayout>
 
     <include

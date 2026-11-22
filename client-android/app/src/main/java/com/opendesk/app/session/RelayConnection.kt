@@ -29,6 +29,7 @@ import com.opendesk.app.data.settings.SettingsRepository
 import com.opendesk.app.domain.Capabilities
 import com.opendesk.app.domain.DeskId
 import com.opendesk.app.domain.Edition
+import com.opendesk.app.domain.FocusPan
 import com.opendesk.app.domain.KeyFingerprint
 import com.opendesk.app.domain.MonitorWall
 import com.opendesk.app.domain.Thumbnail
@@ -86,6 +87,12 @@ object RelayConnection : GatewayClient.Listener {
 
         /** The remote side muted this phone's microphone. */
         fun onMicMuted()
+
+        /**
+         * Keyboard focus on the host entered (`editable`) or left a text field (`text-focus`); `field`: where it is on
+         * the streamed screen, when the host said.
+         */
+        fun onTextFocus(editable: Boolean, password: Boolean, field: FocusPan.Field?) {}
     }
 
     /** What the monitor wall needs (admin edition). Main thread. */
@@ -236,6 +243,11 @@ object RelayConnection : GatewayClient.Listener {
      * `video-keyframe` (which says nothing about the user) goes out, so no touch or keystroke reaches the relay in
      * clear.
      */
+    /** Capabilities of the host this phone views (from `session-connected`). */
+    @Volatile
+    var hostCaps: List<String> = emptyList()
+        private set
+
     fun sendInput(event: InputEvent) {
         val partner = viewerPartner
         if (partner.isEmpty()) return
@@ -363,6 +375,7 @@ object RelayConnection : GatewayClient.Listener {
             return
         }
         viewerPartner = partner
+        hostCaps = message.peerCaps.orEmpty()
         if (!startE2e(partner, message.peerCaps.orEmpty())) return
         VoiceCallManager.startSession(partner, ::sendBinary)
         listener?.onViewerConnected(partner)
@@ -466,6 +479,10 @@ object RelayConnection : GatewayClient.Listener {
             VoiceCallManager.setMicMuted(true)
             viewerListener?.onMicMuted()
         }
+        if (event.action == "text-focus") {
+            val field = FocusPan.Field.of(event.normX, event.normY, event.normW, event.normH)
+            viewerListener?.onTextFocus(event.editable == true, event.password == true, field)
+        }
     }
 
     // ---- Reconnection ----
@@ -486,7 +503,7 @@ object RelayConnection : GatewayClient.Listener {
             deskId = settings.deskId,
             deviceToken = settings.tokenForGateway,
             deviceName = "Android (${settings.deskId})",
-            caps = Capabilities.advertised,
+            caps = Capabilities.advertised(h264 = !settings.h264Failed && com.opendesk.app.ui.viewer.H264Decoder.Support.decoderName != null),
             isAdmin = Edition.isAdmin,
         )
         client = GatewayClient(registration, this).also { it.connect(url) }

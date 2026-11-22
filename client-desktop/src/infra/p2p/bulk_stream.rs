@@ -3,6 +3,12 @@
 use super::*;
 
 impl P2p {
+    /// This side's candidates as gathered for the path (LAN, IPv6, STUN-mapped and port-mapped addresses); the
+    /// file channel offers their public addresses with its own port.
+    pub fn local_candidates(&self) -> Vec<SocketAddr> {
+        self.state.lock().local_cands.clone()
+    }
+
     /// Queues one file stream message (`file-p2p`); `done` runs once the partner acknowledged it, or with false
     /// if the path dropped first. False when the path is down (`done` then ran with false already).
     pub fn send_bulk(&self, kind: u8, payload: &[u8], done: Option<OnDelivered>) -> bool {

@@ -6,12 +6,11 @@
     <!-- Navigation -->
     <string name="tab_devices">Devices</string>
     <string name="tab_sessions">Sessions</string>
+    <string name="tab_wall">Wall</string>
     <string name="tab_settings">Settings</string>
 
     <!-- Relay state -->
-    <string name="status_connecting">Connecting…</string>
     <string name="status_connected">Connected</string>
-    <string name="relay_chip_connected">Relay connected</string>
     <string name="relay_chip_offline">Relay offline</string>
     <string name="relay_chip_none">No relay</string>
     <string name="relay_offline">The relay is not connected yet. Check the address and network.</string>
@@ -167,6 +166,25 @@
     <string name="gesture_pinch_does">Zoom, then pan</string>
     <string name="gesture_one_drag">One-finger drag</string>
     <string name="gesture_one_drag_does">Move cursor (Trackpad) · jump to finger (Touch)</string>
+    <string name="radial_handle">Session menu</string>
+    <string name="menu_trackpad">Trackpad mode</string>
+    <string name="menu_touch">Touch mode</string>
+    <string name="menu_display">Display</string>
+    <string name="menu_fit">Fit to screen</string>
+    <string name="menu_fill">Fill screen</string>
+    <string name="menu_next_monitor">Next monitor</string>
+    <string name="menu_info">Session info</string>
+    <string name="menu_keys">Keys</string>
+    <string name="menu_alt_tab">Switch window (Alt+Tab)</string>
+    <string name="menu_task_manager">Task Manager</string>
+    <string name="menu_scroll">Scroll mode</string>
+    <string name="menu_more">More controls</string>
+    <string name="glyph_alt_tab" translatable="false">Alt⇥</string>
+    <string name="glyph_task_manager" translatable="false">Task</string>
+    <string name="gesture_edge">Hold the right edge</string>
+    <string name="gesture_edge_does">Session menu: slide to an action, lift to run it</string>
+    <string name="gesture_top">Swipe down from the top</string>
+    <string name="gesture_top_does">Session info and disconnect</string>
     <string name="got_it">Got it</string>
 
     <!-- Long-press menu, rename and delete -->
@@ -219,4 +237,16 @@
     <string name="wall_all">All online computers</string>
     <string name="wall_all_sub">Off: only the computers you pick, offline ones included</string>
     <string name="wall_pick">Computers on the wall</string>
+    <string name="h264_failed">Hardware video decoding failed on this phone. From the next connection, OpenDesk uses its standard picture instead.</string>
+    <string name="section_remote">Remote control</string>
+    <string name="auto_keyboard">Auto keyboard</string>
+    <string name="auto_keyboard_sub">Opens when you tap a text field on the computer</string>
+    <string name="keyboard_glass">Glass mini</string>
+    <string name="keyboard_system">System</string>
+    <string name="keyboard_type_note">Glass mini keeps the screen in view; System has other languages and voice typing.</string>
+    <string name="data_saver">Data saver</string>
+    <string name="data_saver_sub">Lower video bitrate on mobile data; no high-performance stream request</string>
+    <string name="paste_sent">Pasted from your phone</string>
+    <string name="paste_empty">Your phone’s clipboard is empty</string>
+    <string name="paste_truncated">Pasted the first %1$d characters</string>
 </resources>

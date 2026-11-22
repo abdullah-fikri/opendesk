@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Settings (outlined). Tab bar icon (iOS style: outlined when idle, filled when selected); tinted in code. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="26dp"
+    android:height="26dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M18.96,10.15 L21.22,10.76 L21.22,13.24 L18.96,13.85 L18.23,15.62 L19.39,17.64 L17.64,19.39 L15.62,18.23 L13.85,18.96 L13.24,21.22 L10.76,21.22 L10.15,18.96 L8.38,18.23 L6.36,19.39 L4.61,17.64 L5.77,15.62 L5.04,13.85 L2.78,13.24 L2.78,10.76 L5.04,10.15 L5.77,8.38 L4.61,6.36 L6.36,4.61 L8.38,5.77 L10.15,5.04 L10.76,2.78 L13.24,2.78 L13.85,5.04 L15.62,5.77 L17.64,4.61 L19.39,6.36 L18.23,8.38z" />
+    <path
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M9.0,12a3.0,3.0 0 1 0 6.0,0a3.0,3.0 0 1 0 -6.0,0z" />
+</vector>

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use slint::{ComponentHandle, Timer, TimerMode};
 
-use super::{MainWindow, dashboard_model, transfer_model};
+use super::{MainWindow, dashboard_model, file_browser_model as browser, transfer_model};
 use crate::domain::desk_id;
 use crate::domain::keyboard::Mods;
 use crate::domain::performance::Performance;
@@ -209,6 +209,26 @@ fn bind_sessions(win: &MainWindow, ctx: &Ctx) {
             controller::pick_and_send_files(c, &id);
         }
     });
+    on!(win, ctx, on_browse_device, |w, c, id, name| {
+        let clean = crate::domain::desk_id::clean(&id);
+        if !clean.is_empty() {
+            browser::open(&w, c, &clean, &name);
+        }
+    });
+    on!(win, ctx, on_browser_close, |w, _c| browser::close(&w));
+    on!(win, ctx, on_browser_local_up, |w, _c| browser::up(&w, false));
+    on!(win, ctx, on_browser_remote_up, |w, _c| browser::up(&w, true));
+    on!(win, ctx, on_browser_local_go, |w, _c, p| browser::go_local(&w, p.to_string()));
+    on!(win, ctx, on_browser_remote_go, |w, _c, p| browser::go_remote(&w, p.to_string()));
+    on!(win, ctx, on_browser_local_select, |w, _c, i, add| browser::select(&w, false, i.max(0) as usize, add));
+    on!(win, ctx, on_browser_remote_select, |w, _c, i, add| browser::select(&w, true, i.max(0) as usize, add));
+    on!(win, ctx, on_browser_local_open, |w, _c, i| browser::open_entry(&w, false, i.max(0) as usize));
+    on!(win, ctx, on_browser_remote_open, |w, _c, i| browser::open_entry(&w, true, i.max(0) as usize));
+    on!(win, ctx, on_browser_local_mkdir, |w, _c, n| browser::mkdir(&w, false, n.to_string()));
+    on!(win, ctx, on_browser_remote_mkdir, |w, _c, n| browser::mkdir(&w, true, n.to_string()));
+    on!(win, ctx, on_browser_upload, |w, _c| browser::upload(&w));
+    on!(win, ctx, on_browser_download, |w, _c| browser::download(&w));
+    on!(win, ctx, on_browser_refresh, |w, _c| browser::refresh(&w));
     on!(win, ctx, on_set_stats_overlay, |_w, c, on| controller::set_stats_overlay(c, on));
     on!(win, ctx, on_session_toggle_mic, |_w, c, id| {
         if c.viewers.is_live(&id) {
