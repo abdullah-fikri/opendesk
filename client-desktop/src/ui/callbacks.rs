@@ -220,8 +220,11 @@ fn bind_sessions(win: &MainWindow, ctx: &Ctx) {
     on!(win, ctx, on_browser_remote_up, |w, _c| browser::up(&w, true));
     on!(win, ctx, on_browser_local_go, |w, _c, p| browser::go_local(&w, p.to_string()));
     on!(win, ctx, on_browser_remote_go, |w, _c, p| browser::go_remote(&w, p.to_string()));
-    on!(win, ctx, on_browser_local_select, |w, _c, i, add| browser::select(&w, false, i.max(0) as usize, add));
-    on!(win, ctx, on_browser_remote_select, |w, _c, i, add| browser::select(&w, true, i.max(0) as usize, add));
+    on!(win, ctx, on_browser_select, |w, _c, remote, i, mode| browser::select(&w, remote, i.max(0) as usize, mode));
+    on!(win, ctx, on_browser_action, |w, _c, remote, what| browser::action(&w, remote, &what));
+    on!(win, ctx, on_browser_rename, |w, _c, remote, name| browser::rename(&w, remote, name.to_string()));
+    on!(win, ctx, on_browser_delete, |w, _c, remote| browser::delete(&w, remote));
+    on!(win, ctx, on_browser_sort, |w, _c, remote, key| browser::sort(&w, remote, key));
     on!(win, ctx, on_browser_local_open, |w, _c, i| browser::open_entry(&w, false, i.max(0) as usize));
     on!(win, ctx, on_browser_remote_open, |w, _c, i| browser::open_entry(&w, true, i.max(0) as usize));
     on!(win, ctx, on_browser_local_mkdir, |w, _c, n| browser::mkdir(&w, false, n.to_string()));

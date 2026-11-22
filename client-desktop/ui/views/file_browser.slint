@@ -1,25 +1,29 @@
 // File browser: this computer on the left, the remote device on the right. Opened from a device's context menu
 // without a remote screen (a files-only session, see service::viewer::controller::request_files). Rust fills both
-// panes (src/ui/file_browser_model.rs); copies run as ordinary transfers in the transfer panel, over the direct TCP
-// file channel whenever it is up.
+// panes (src/ui/file_browser_model.rs) and owns the selection; copies run as ordinary transfers in the transfer
+// panel, over the direct TCP file channel whenever it is up.
 //
-// Click selects (Ctrl+click adds), double-click opens a folder, dragging rows onto the other pane copies them, and
-// a right click opens the glass context menu. Files dropped from Explorer go to the open remote folder (Rust).
+// Works like Finder / Explorer: click selects, Ctrl/Cmd+click toggles, Shift+click selects a range; arrows (+Shift),
+// Home/End, Ctrl+A, Esc, Enter opens, F2 renames, Delete deletes (after a confirmation), Backspace goes back,
+// Alt+Up goes to the parent, F5 refreshes. Double-click opens a folder or a file (a remote file is downloaded to a
+// temporary folder first). Dragging rows onto the other pane copies the whole selection; a right click opens the
+// glass context menu; column headers sort. Files dropped from Explorer go to the open remote folder (Rust).
 
 import { Theme } from "../theme.slint";
-import { Btn, Card } from "../components/controls.slint";
+import { Btn, Card, Pop } from "../components/controls.slint";
 import { ScrollArea } from "../components/scroll_area.slint";
 import { Glyph } from "../components/glyph.slint";
 import { GlassMenu, GlassItem, GlassSep } from "../components/menu.slint";
 import { FileRow } from "../types.slint";
 
-// One file or folder: icon, name, size and date. Reports clicks, double clicks, drags and right clicks; the drag
-// and menu positions are window coordinates.
+// One file or folder: icon, name, size and date. Reports clicks (0 plain, 1 Ctrl/Cmd, 2 Shift), double clicks,
+// drags and right clicks; the drag and menu positions are window coordinates.
 component Row inherits Rectangle {
     in property <FileRow> item;
     in property <bool> last;
-    callback select(bool);
+    callback select(int);
     callback open();
+    callback pressed();
     callback drag-start();
     callback drag-move(length, length);
     callback drag-end(length, length);
@@ -29,32 +33,38 @@ component Row inherits Rectangle {
     property <length> press-x;
     property <length> press-y;
 
-    height: 40px;
-    border-radius: 8px;
-    background: root.item.selected ? (Theme.dark ? #ffffff1f : #0000001a) : ta.has-hover ? Theme.hover-soft : transparent;
+    height: 36px;
+    border-radius: 7px;
+    background: root.item.selected ? (Theme.dark ? #5B9BF04d : #2F7BF02e) : ta.has-hover ? Theme.hover-soft : transparent;
 
     ta := TouchArea {
         mouse-cursor: root.dragging ? MouseCursor.copy : MouseCursor.default;
         double-clicked => { root.open(); }
         pointer-event(e) => {
             if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                root.pressed();
                 root.press-x = self.mouse-x;
                 root.press-y = self.mouse-y;
                 root.dragging = false;
-                if (!root.item.selected || e.modifiers.control) {
-                    root.select(e.modifiers.control);
+                if (e.modifiers.shift) {
+                    root.select(2);
+                } else if (e.modifiers.control || e.modifiers.meta) {
+                    root.select(1);
+                } else if (!root.item.selected) {
+                    root.select(0);
                 }
             } else if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
                 if (root.dragging) {
                     root.dragging = false;
                     root.drag-end(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
-                } else if (!e.modifiers.control) {
-                    // A plain click on a row of a multiple selection keeps only that row.
-                    root.select(false);
+                } else if (!e.modifiers.control && !e.modifiers.meta && !e.modifiers.shift) {
+                    // A plain click on a row of a multiple selection keeps only that row (a drag keeps them all).
+                    root.select(0);
                 }
             } else if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                root.pressed();
                 if (!root.item.selected) {
-                    root.select(false);
+                    root.select(0);
                 }
                 root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
             }
@@ -77,7 +87,7 @@ component Row inherits Rectangle {
         Glyph {
             y: (parent.height - self.height) / 2;
             name: root.item.is-dir ? "folder" : "file";
-            size: root.item.is-dir ? 20px : 18px;
+            size: root.item.is-dir ? 19px : 17px;
             tint: root.item.is-dir ? Theme.blue : Theme.text-3;
         }
         Text {
@@ -106,11 +116,42 @@ component Row inherits Rectangle {
         }
     }
     if !root.last && !root.item.selected: Rectangle {
-        x: 42px;
+        x: 41px;
         y: root.height - 0.5px;
-        width: root.width - 50px;
+        width: root.width - 49px;
         height: 0.5px;
         background: Theme.line;
+    }
+}
+
+// A sortable column title; the active one shows its direction.
+component Header inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    in property <bool> descending;
+    in property <bool> right;
+    callback clicked();
+    height: 22px;
+    HorizontalLayout {
+        alignment: root.right ? LayoutAlignment.end : LayoutAlignment.start;
+        spacing: 3px;
+        Text {
+            text: root.label;
+            color: root.active ? Theme.text-2 : Theme.text-3;
+            font-size: 11px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        if root.active: Glyph {
+            y: (parent.height - self.height) / 2;
+            name: root.descending ? "chevron-down" : "chevron-up";
+            size: 9px;
+            tint: Theme.text-2;
+        }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
     }
 }
 
@@ -121,172 +162,330 @@ component Pane inherits Card {
     in property <[FileRow]> rows;
     // "Loading…", an error, or "".
     in property <string> note;
+    // "24 items" / "3 of 24 selected · 4.2 MB".
+    in property <string> footer;
     in property <bool> can-up;
+    in property <bool> can-back;
     in property <bool> enabled: true;
+    in property <int> selected;
+    // The focused row (arrow keys), -1 = none; scrolled into view when it changes.
+    in property <int> cursor: -1;
+    // The name of the only selected item ("" unless exactly one is), for Rename.
+    in property <string> single-name;
+    in property <int> sort-key;
+    in property <bool> sort-desc;
     // A drag from the other pane hovers here.
     in property <bool> drop-hot;
-    in-out property <bool> naming;
+    // The inline name field: "" (hidden), "new" (New Folder) or "rename".
+    in-out property <string> naming;
     callback up();
+    callback back();
     callback go(string);
-    callback select(int, bool);
+    callback select(int, int);
     callback open(int);
     callback mkdir(string);
+    callback rename(string);
+    callback action(string);
+    callback sort(int);
+    callback escape();
+    callback delete-request();
     callback drag-start(int);
     callback drag-move(length, length);
     callback drag-end(length, length);
     callback menu(int, length, length);
 
+    public function focus-list() {
+        keys.focus();
+    }
+
+    public function start-rename() {
+        if (root.single-name != "") {
+            root.naming = "rename";
+        }
+    }
+
+    changed cursor => {
+        if (root.cursor >= 0) {
+            list.reveal(root.cursor * 36px, 36px);
+        }
+    }
+
     clip: true;
-    border-width: root.drop-hot ? 2px : (Theme.dark ? 0.5px : 0px);
-    border-color: root.drop-hot ? Theme.blue : Theme.card-edge;
+    border-width: root.drop-hot ? 2px : keys.has-focus ? 1px : (Theme.dark ? 0.5px : 0px);
+    border-color: root.drop-hot ? Theme.blue : keys.has-focus ? Theme.ring : Theme.card-edge;
 
-    VerticalLayout {
-        padding: 12px;
-        padding-bottom: 8px;
-        spacing: 10px;
+    keys := FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.UpArrow && (e.modifiers.alt || e.modifiers.control || e.modifiers.meta)) {
+                root.up();
+            } else if (e.text == Key.UpArrow) {
+                root.action(e.modifiers.shift ? "up-extend" : "up");
+            } else if (e.text == Key.DownArrow) {
+                root.action(e.modifiers.shift ? "down-extend" : "down");
+            } else if (e.text == Key.PageUp) {
+                root.action(e.modifiers.shift ? "page-up-extend" : "page-up");
+            } else if (e.text == Key.PageDown) {
+                root.action(e.modifiers.shift ? "page-down-extend" : "page-down");
+            } else if (e.text == Key.Home) {
+                root.action(e.modifiers.shift ? "home-extend" : "home");
+            } else if (e.text == Key.End) {
+                root.action(e.modifiers.shift ? "end-extend" : "end");
+            } else if (e.text == Key.Return) {
+                root.action("open");
+            } else if (e.text == Key.Escape) {
+                if (root.selected > 0) {
+                    root.action("clear");
+                } else {
+                    root.escape();
+                }
+            } else if ((e.modifiers.control || e.modifiers.meta) && (e.text == "a" || e.text == "A")) {
+                root.action("all");
+            } else if (e.text == Key.F2) {
+                root.start-rename();
+            } else if (e.text == Key.Delete) {
+                if (root.selected > 0) {
+                    root.delete-request();
+                }
+            } else if (e.text == Key.Backspace) {
+                root.back();
+            } else if (e.text == Key.F5) {
+                root.action("refresh");
+            } else {
+                return reject;
+            }
+            accept
+        }
 
-        // Where: back, the side's name, and the folder as a typed path
-        HorizontalLayout {
+        VerticalLayout {
+            padding: 12px;
+            padding-bottom: 8px;
             spacing: 8px;
-            height: 32px;
-            Btn {
-                y: (parent.height - self.height) / 2;
-                kind: "ghost";
-                icon: "chevron-left";
-                icon-size: 14px;
-                enabled: root.can-up && root.enabled;
-                clicked => { root.up(); }
-            }
-            Glyph {
-                y: (parent.height - self.height) / 2;
-                name: root.icon;
-                size: 15px;
-                tint: Theme.text-2;
-            }
-            Text {
-                text: root.title;
-                color: Theme.text;
-                font-size: 13px;
-                font-weight: 600;
-                vertical-alignment: center;
-                max-width: 220px;
-                overflow: elide;
-            }
-            Rectangle {
-                horizontal-stretch: 1;
-                border-radius: 9px;
-                background: Theme.field;
-                border-width: path-input.has-focus ? 2px : 0px;
-                border-color: Theme.ring;
-                if path-input.text == "": Text {
-                    x: 12px;
-                    width: parent.width - 24px;
-                    height: parent.height;
-                    text: "Drives";
-                    color: Theme.text-3;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                }
-                path-input := TextInput {
-                    x: 12px;
-                    width: parent.width - 24px;
-                    height: parent.height;
-                    text: root.path;
-                    enabled: root.enabled;
-                    color: Theme.text-2;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                    single-line: true;
-                    accepted => { root.go(self.text); }
-                }
-            }
-        }
 
-        // New folder, from the context menu
-        if root.naming: HorizontalLayout {
-            spacing: 6px;
-            height: 32px;
-            Rectangle {
-                horizontal-stretch: 1;
-                border-radius: 9px;
-                background: Theme.field;
-                border-width: 2px;
-                border-color: Theme.ring;
-                if name-input.text == "": Text {
-                    x: 12px;
-                    width: parent.width - 24px;
-                    height: parent.height;
-                    text: "Folder name";
-                    color: Theme.text-3;
-                    font-size: 12px;
-                    vertical-alignment: center;
+            // Where: back, up, the side's name, and the folder as a typed path
+            HorizontalLayout {
+                spacing: 4px;
+                height: 32px;
+                Btn {
+                    y: (parent.height - self.height) / 2;
+                    kind: "ghost";
+                    icon: "chevron-left";
+                    icon-size: 14px;
+                    tip: "Back";
+                    enabled: root.can-back && root.enabled;
+                    clicked => { root.back(); }
                 }
-                name-input := TextInput {
-                    x: 12px;
-                    width: parent.width - 24px;
-                    height: parent.height;
+                Btn {
+                    y: (parent.height - self.height) / 2;
+                    kind: "ghost";
+                    icon: "chevron-up";
+                    icon-size: 14px;
+                    tip: "Enclosing folder";
+                    enabled: root.can-up && root.enabled;
+                    clicked => { root.up(); }
+                }
+                Rectangle { width: 4px; }
+                Glyph {
+                    y: (parent.height - self.height) / 2;
+                    name: root.icon;
+                    size: 15px;
+                    tint: Theme.text-2;
+                }
+                Rectangle { width: 4px; }
+                Text {
+                    text: root.title;
                     color: Theme.text;
-                    font-size: 12px;
+                    font-size: 13px;
+                    font-weight: 600;
                     vertical-alignment: center;
-                    single-line: true;
-                    init => { self.focus(); }
-                    accepted => {
-                        if (self.text != "") {
-                            root.mkdir(self.text);
+                    max-width: 200px;
+                    overflow: elide;
+                }
+                Rectangle { width: 6px; }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    border-radius: 9px;
+                    background: Theme.field;
+                    border-width: path-input.has-focus ? 2px : 0px;
+                    border-color: Theme.ring;
+                    if path-input.text == "": Text {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        height: parent.height;
+                        text: "Drives";
+                        color: Theme.text-3;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    path-input := TextInput {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        height: parent.height;
+                        text: root.path;
+                        enabled: root.enabled;
+                        color: Theme.text-2;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        single-line: true;
+                        accepted => {
+                            root.go(self.text);
+                            keys.focus();
                         }
-                        root.naming = false;
                     }
                 }
             }
-            Btn {
-                label: "Create";
-                kind: "acc";
-                enabled: name-input.text != "";
-                clicked => {
-                    root.mkdir(name-input.text);
-                    root.naming = false;
-                }
-            }
-            Btn {
-                label: "Cancel";
-                kind: "ghost";
-                clicked => { root.naming = false; }
-            }
-        }
 
-        Rectangle {
-            vertical-stretch: 1;
-            // Right click on empty space: the menu without a row.
-            TouchArea {
-                pointer-event(e) => {
-                    if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
-                        root.menu(-1, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            // New folder or rename, from the context menu or F2
+            if root.naming != "": HorizontalLayout {
+                spacing: 6px;
+                height: 32px;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    border-radius: 9px;
+                    background: Theme.field;
+                    border-width: 2px;
+                    border-color: Theme.ring;
+                    if name-input.text == "": Text {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        height: parent.height;
+                        text: root.naming == "rename" ? "New name" : "Folder name";
+                        color: Theme.text-3;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    name-input := TextInput {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        height: parent.height;
+                        color: Theme.text;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        single-line: true;
+                        init => {
+                            if (root.naming == "rename") {
+                                self.text = root.single-name;
+                                self.select-all();
+                            }
+                            self.focus();
+                        }
+                        accepted => { commit.clicked(); }
+                        key-pressed(e) => {
+                            if (e.text == Key.Escape) {
+                                root.naming = "";
+                                keys.focus();
+                                return accept;
+                            }
+                            reject
+                        }
+                    }
+                }
+                commit := Btn {
+                    label: root.naming == "rename" ? "Rename" : "Create";
+                    kind: "acc";
+                    enabled: name-input.text != "";
+                    clicked => {
+                        if (name-input.text != "") {
+                            if (root.naming == "rename") {
+                                root.rename(name-input.text);
+                            } else {
+                                root.mkdir(name-input.text);
+                            }
+                        }
+                        root.naming = "";
+                        keys.focus();
+                    }
+                }
+                Btn {
+                    label: "Cancel";
+                    kind: "ghost";
+                    clicked => {
+                        root.naming = "";
+                        keys.focus();
                     }
                 }
             }
-            ScrollArea {
-                spacing: 0px;
-                for row[i] in root.rows: Row {
-                    item: row;
-                    last: i == root.rows.length - 1;
-                    select(add) => { root.select(i, add); }
-                    open => { root.open(i); }
-                    drag-start => { root.drag-start(i); }
-                    drag-move(x, y) => { root.drag-move(x, y); }
-                    drag-end(x, y) => { root.drag-end(x, y); }
-                    menu(x, y) => { root.menu(i, x, y); }
+
+            // Column headers (click to sort); aligned with the row columns
+            HorizontalLayout {
+                height: 22px;
+                padding-left: 41px;
+                padding-right: 22px;
+                spacing: 12px;
+                Header {
+                    horizontal-stretch: 1;
+                    label: "Name";
+                    active: root.sort-key == 0;
+                    descending: root.sort-desc;
+                    clicked => { root.sort(0); }
+                }
+                Header {
+                    width: 74px;
+                    right: true;
+                    label: "Size";
+                    active: root.sort-key == 1;
+                    descending: root.sort-desc;
+                    clicked => { root.sort(1); }
+                }
+                Header {
+                    width: 104px;
+                    right: true;
+                    label: "Modified";
+                    active: root.sort-key == 2;
+                    descending: root.sort-desc;
+                    clicked => { root.sort(2); }
                 }
             }
-            if root.note != "": Text {
-                x: 24px;
-                width: parent.width - 48px;
-                height: parent.height;
-                text: root.note;
+
+            Rectangle {
+                vertical-stretch: 1;
+                // Empty space: a left click clears the selection, a right click opens the menu without a row.
+                TouchArea {
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down) {
+                            keys.focus();
+                            if (e.button == PointerEventButton.right) {
+                                root.menu(-1, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                            } else if (e.button == PointerEventButton.left && !e.modifiers.control && !e.modifiers.meta) {
+                                root.action("clear");
+                            }
+                        }
+                    }
+                }
+                list := ScrollArea {
+                    spacing: 0px;
+                    for row[i] in root.rows: Row {
+                        item: row;
+                        last: i == root.rows.length - 1;
+                        pressed => { keys.focus(); }
+                        select(mode) => { root.select(i, mode); }
+                        open => { root.open(i); }
+                        drag-start => { root.drag-start(i); }
+                        drag-move(x, y) => { root.drag-move(x, y); }
+                        drag-end(x, y) => { root.drag-end(x, y); }
+                        menu(x, y) => { root.menu(i, x, y); }
+                    }
+                }
+                if root.note != "": Text {
+                    x: 24px;
+                    width: parent.width - 48px;
+                    height: parent.height;
+                    text: root.note;
+                    color: Theme.text-3;
+                    font-size: 12.5px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            // Subtle status line: item count, or what is selected
+            Text {
+                height: 16px;
+                text: root.footer;
                 color: Theme.text-3;
-                font-size: 12.5px;
-                horizontal-alignment: center;
+                font-size: 11px;
                 vertical-alignment: center;
-                wrap: word-wrap;
+                overflow: elide;
             }
         }
     }
@@ -326,16 +525,34 @@ export component FileBrowser inherits Rectangle {
     in property <string> remote-title;
     // The session for the remote pane is up.
     in property <bool> connected;
+    // The host serves rename, delete, extract and compress (newer OpenDesk).
+    in property <bool> remote-ops;
+    // Local deletes go to the Recycle Bin.
+    in property <bool> local-trash;
+    // "Show in Explorer" / "Show in Finder" / "Show in Folder".
+    in property <string> reveal-label: "Show in Explorer";
     in property <string> local-path;
     in property <string> remote-path;
     in property <[FileRow]> local-rows;
     in property <[FileRow]> remote-rows;
     in property <string> local-note;
     in property <string> remote-note;
+    in property <string> local-footer;
+    in property <string> remote-footer;
     in property <bool> local-can-up;
     in property <bool> remote-can-up;
+    in property <bool> local-can-back;
+    in property <bool> remote-can-back;
     in property <int> local-selected;
     in property <int> remote-selected;
+    in property <int> local-cursor: -1;
+    in property <int> remote-cursor: -1;
+    in property <string> local-single;
+    in property <string> remote-single;
+    in property <int> local-sort;
+    in property <int> remote-sort;
+    in property <bool> local-sort-desc;
+    in property <bool> remote-sort-desc;
     // What the browser last did or why it could not ("" = nothing to say).
     in property <string> status;
 
@@ -344,8 +561,6 @@ export component FileBrowser inherits Rectangle {
     callback remote-up();
     callback local-go(string);
     callback remote-go(string);
-    callback local-select(int, bool);
-    callback remote-select(int, bool);
     callback local-open(int);
     callback remote-open(int);
     callback local-mkdir(string);
@@ -353,6 +568,13 @@ export component FileBrowser inherits Rectangle {
     callback upload();
     callback download();
     callback refresh();
+    // (remote, row, 0 plain / 1 toggle / 2 range)
+    callback select(bool, int, int);
+    // (remote, what): keys and menu entries without arguments, see file_browser_model::action.
+    callback action(bool, string);
+    callback rename(bool, string);
+    callback delete(bool);
+    callback sort(bool, int);
 
     // Drag between the panes
     property <bool> dragging: false;
@@ -366,6 +588,16 @@ export component FileBrowser inherits Rectangle {
     property <int> menu-row: -1;
     property <length> menu-x;
     property <length> menu-y;
+    property <int> menu-count: root.menu-remote ? root.remote-selected : root.local-selected;
+    property <string> menu-stem: root.menu-row < 0 || root.menu-count != 1 ? ""
+        : root.menu-remote ? root.remote-rows[root.menu-row].archive-stem : root.local-rows[root.menu-row].archive-stem;
+    // Operations the pane of the menu can do (the remote one only on hosts that serve them)
+    property <bool> menu-ops: !root.menu-remote || (root.remote-ops && root.connected);
+    // Delete confirmation
+    property <bool> confirm-open: false;
+    property <bool> confirm-remote: false;
+    property <int> confirm-count: root.confirm-remote ? root.remote-selected : root.local-selected;
+    property <bool> confirm-trash: !root.confirm-remote && root.local-trash;
 
     function in-local(x: length, y: length) -> bool {
         return x >= lp.absolute-position.x && x <= lp.absolute-position.x + lp.width
@@ -389,9 +621,21 @@ export component FileBrowser inherits Rectangle {
     function open-menu(remote: bool, row: int, x: length, y: length) {
         root.menu-remote = remote;
         root.menu-row = row;
-        root.menu-x = min(x - root.absolute-position.x, root.width - 230px);
-        root.menu-y = min(y - root.absolute-position.y, root.height - 200px);
+        root.menu-x = max(8px, min(x - root.absolute-position.x, root.width - 250px));
+        root.menu-y = max(8px, min(y - root.absolute-position.y, root.height - (row >= 0 ? 430px : 150px)));
         menu.show();
+    }
+
+    function ask-delete(remote: bool) {
+        if (remote && !(root.remote-ops && root.connected)) {
+            return;
+        }
+        root.confirm-remote = remote;
+        root.confirm-open = true;
+    }
+
+    function items(n: int) -> string {
+        return n == 1 ? "1 item" : n + " items";
     }
 
     // Swallows clicks below the page; Esc closes it.
@@ -448,13 +692,26 @@ export component FileBrowser inherits Rectangle {
                 path: root.local-path;
                 rows: root.local-rows;
                 note: root.local-note;
+                footer: root.local-footer;
                 can-up: root.local-can-up;
+                can-back: root.local-can-back;
+                selected: root.local-selected;
+                cursor: root.local-cursor;
+                single-name: root.local-single;
+                sort-key: root.local-sort;
+                sort-desc: root.local-sort-desc;
                 drop-hot: root.over-local;
                 up => { root.local-up(); }
+                back => { root.action(false, "back"); }
                 go(p) => { root.local-go(p); }
-                select(i, add) => { root.local-select(i, add); }
+                select(i, mode) => { root.select(false, i, mode); }
                 open(i) => { root.local-open(i); }
                 mkdir(n) => { root.local-mkdir(n); }
+                rename(n) => { root.rename(false, n); }
+                action(a) => { root.action(false, a); }
+                sort(k) => { root.sort(false, k); }
+                escape => { root.close(); }
+                delete-request => { root.ask-delete(false); }
                 drag-start(i) => {
                     root.drag-from-remote = false;
                     root.dragging = true;
@@ -491,13 +748,26 @@ export component FileBrowser inherits Rectangle {
                 path: root.remote-path;
                 rows: root.remote-rows;
                 note: root.remote-note;
+                footer: root.remote-footer;
                 can-up: root.remote-can-up;
+                can-back: root.remote-can-back;
+                selected: root.remote-selected;
+                cursor: root.remote-cursor;
+                single-name: root.remote-ops ? root.remote-single : "";
+                sort-key: root.remote-sort;
+                sort-desc: root.remote-sort-desc;
                 drop-hot: root.over-remote;
                 up => { root.remote-up(); }
+                back => { root.action(true, "back"); }
                 go(p) => { root.remote-go(p); }
-                select(i, add) => { root.remote-select(i, add); }
+                select(i, mode) => { root.select(true, i, mode); }
                 open(i) => { root.remote-open(i); }
                 mkdir(n) => { root.remote-mkdir(n); }
+                rename(n) => { root.rename(true, n); }
+                action(a) => { root.action(true, a); }
+                sort(k) => { root.sort(true, k); }
+                escape => { root.close(); }
+                delete-request => { root.ask-delete(true); }
                 drag-start(i) => {
                     root.drag-from-remote = true;
                     root.dragging = true;
@@ -531,7 +801,7 @@ export component FileBrowser inherits Rectangle {
         drop-shadow-blur: 12px;
         drop-shadow-color: #00000059;
         ghost := Text {
-            text: (root.drag-from-remote ? root.remote-selected : root.local-selected) + " item(s) · copy here";
+            text: "Copy " + root.items(root.drag-from-remote ? root.remote-selected : root.local-selected) + " here";
             color: #ffffff;
             font-size: 12px;
             font-weight: 600;
@@ -541,9 +811,9 @@ export component FileBrowser inherits Rectangle {
     menu := PopupWindow {
         x: root.menu-x;
         y: root.menu-y;
-        width: 220px;
+        width: 240px;
         GlassMenu {
-            width: 220px;
+            width: 240px;
             if root.menu-row >= 0: GlassItem {
                 label: "Open";
                 clicked => {
@@ -555,7 +825,8 @@ export component FileBrowser inherits Rectangle {
                 }
             }
             if root.menu-row >= 0: GlassItem {
-                label: root.menu-remote ? "Copy to this computer" : "Copy to " + root.remote-title;
+                label: (root.menu-count > 1 ? "Copy " + root.items(root.menu-count) : "Copy")
+                    + (root.menu-remote ? " to This Computer" : " to " + root.remote-title);
                 enabled: root.connected && (root.menu-remote ? root.local-path != "" : root.remote-path != "");
                 clicked => {
                     if (root.menu-remote) {
@@ -565,21 +836,143 @@ export component FileBrowser inherits Rectangle {
                     }
                 }
             }
+            if root.menu-row >= 0 && !root.menu-remote: GlassItem {
+                label: root.reveal-label;
+                clicked => { root.action(false, "reveal"); }
+            }
+            if root.menu-row >= 0: GlassItem {
+                label: root.menu-count > 1 ? "Copy Paths" : "Copy Path";
+                clicked => { root.action(root.menu-remote, "copy-path"); }
+            }
             if root.menu-row >= 0: GlassSep { }
-            GlassItem {
+            if root.menu-stem != "": GlassItem {
+                label: "Extract Here";
+                enabled: root.menu-ops;
+                clicked => { root.action(root.menu-remote, "extract-here"); }
+            }
+            if root.menu-stem != "": GlassItem {
+                label: "Extract to “" + root.menu-stem + "/”";
+                enabled: root.menu-ops;
+                clicked => { root.action(root.menu-remote, "extract-folder"); }
+            }
+            if root.menu-row >= 0: GlassItem {
+                label: root.menu-count > 1 ? "Compress " + root.items(root.menu-count) + " to .zip" : "Compress to .zip";
+                enabled: root.menu-ops;
+                clicked => { root.action(root.menu-remote, "compress"); }
+            }
+            if root.menu-row >= 0: GlassSep { }
+            if root.menu-row >= 0 && root.menu-count == 1: GlassItem {
+                label: "Rename…";
+                enabled: root.menu-ops;
+                clicked => {
+                    if (root.menu-remote) {
+                        rp.start-rename();
+                    } else {
+                        lp.start-rename();
+                    }
+                }
+            }
+            if root.menu-row >= 0: GlassItem {
+                label: !root.menu-remote && root.local-trash ? "Move to Recycle Bin" : "Delete…";
+                danger: true;
+                enabled: root.menu-ops;
+                clicked => { root.ask-delete(root.menu-remote); }
+            }
+            if root.menu-row < 0: GlassItem {
                 label: "New Folder";
                 enabled: root.menu-remote ? (root.remote-path != "" && root.connected) : root.local-path != "";
                 clicked => {
                     if (root.menu-remote) {
-                        rp.naming = true;
+                        rp.naming = "new";
                     } else {
-                        lp.naming = true;
+                        lp.naming = "new";
                     }
                 }
             }
-            GlassItem {
+            if root.menu-row < 0: GlassItem {
+                label: "Select All";
+                clicked => { root.action(root.menu-remote, "all"); }
+            }
+            if root.menu-row < 0: GlassItem {
                 label: "Refresh";
                 clicked => { root.refresh(); }
+            }
+        }
+    }
+
+    // Delete confirmation: a glass sheet over a dimmed page
+    if root.confirm-open: Rectangle {
+        background: Theme.scrim;
+        TouchArea {
+            clicked => { root.confirm-open = false; }
+        }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(e) => {
+                if (e.text == Key.Escape) {
+                    root.confirm-open = false;
+                    return accept;
+                }
+                if (e.text == Key.Return) {
+                    root.confirm-open = false;
+                    root.delete(root.confirm-remote);
+                    return accept;
+                }
+                reject
+            }
+        }
+        Pop {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 340px;
+            height: sheet.preferred-height;
+            // Keeps clicks on the sheet from closing it.
+            TouchArea { }
+            sheet := VerticalLayout {
+                padding: 20px;
+                padding-top: 16px;
+                spacing: 8px;
+                Glyph {
+                    name: root.confirm-trash ? "trash" : "warn";
+                    size: 28px;
+                    tint: root.confirm-trash ? Theme.text-2 : Theme.accent-tx;
+                }
+                Text {
+                    text: root.confirm-trash
+                        ? "Move " + root.items(root.confirm-count) + " to the Recycle Bin?"
+                        : "Delete " + root.items(root.confirm-count) + " permanently?";
+                    color: Theme.text;
+                    font-size: 14px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.confirm-trash ? "You can restore them from the Recycle Bin."
+                        : root.confirm-remote ? "They are deleted on " + root.remote-title + " right away, folders with everything in them. This cannot be undone."
+                        : "Folders are deleted with everything in them. This cannot be undone.";
+                    color: Theme.text-2;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    padding-top: 8px;
+                    spacing: 8px;
+                    alignment: center;
+                    Btn {
+                        label: "Cancel";
+                        clicked => { root.confirm-open = false; }
+                    }
+                    Btn {
+                        label: root.confirm-trash ? "Move to Recycle Bin" : "Delete";
+                        kind: "acc";
+                        clicked => {
+                            root.confirm-open = false;
+                            root.delete(root.confirm-remote);
+                        }
+                    }
+                }
             }
         }
     }

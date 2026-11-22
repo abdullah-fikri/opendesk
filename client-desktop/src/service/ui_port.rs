@@ -182,11 +182,17 @@ pub enum BrowseUpdate {
         parent: Option<String>,
         entries: Vec<crate::domain::file_browser::Entry>,
         more: bool,
+        /// The explorer operations the host serves (`domain::file_browser::HOST_OPS`); empty on older hosts.
+        ops: Vec<String>,
     },
-    /// A request was carried out (a new folder, a download that started).
-    Done { partner: String },
-    /// A request failed; `message` is meant for the user.
+    /// A request was carried out (a new folder, a download that started, a rename...); `note` may say how.
+    Done { partner: String, note: String },
+    /// A listing failed (or the request could not be sent); `message` is meant for the user.
     Failed { partner: String, message: String },
+    /// An operation (rename, delete, extract...) failed; `message` is meant for the user.
+    OpFailed { partner: String, message: String },
+    /// How far a long remote operation got (`done` of `total`).
+    Progress { partner: String, done: u64, total: u64 },
     /// The files-only session with `partner` is connected: the browser can ask for listings.
     Connected { partner: String },
     /// The session with `partner` ended; `message` says why.

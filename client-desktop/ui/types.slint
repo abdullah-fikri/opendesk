@@ -64,6 +64,7 @@ export struct FileRow {
     date-text: string,      // last modified, local time
     is-dir: bool,
     selected: bool,
+    archive-stem: string,   // "photos" for photos.zip / .tar / .tar.gz / .tgz; "" when not an archive
 }
 
 export struct TransferItem {
