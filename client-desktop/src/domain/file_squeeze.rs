@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use miniz_oxide::deflate::compress_to_vec;
 use miniz_oxide::inflate::decompress_to_vec_with_limit;
 
-/// Offset bit of a deflated chunk; real offsets stay below 2 GB ([`super::transfer::MAX_FILE_BYTES`]).
+/// Offset bit of a deflated chunk; real offsets stay far below it ([`super::transfer::MAX_FILE_BYTES`] is 1 TiB).
 pub const OFFSET_DEFLATED: u64 = 1 << 63;
 /// Deflate level: the fastest, which still halves text, logs, source code and office XML.
 const LEVEL: u8 = 1;

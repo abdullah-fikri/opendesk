@@ -10,8 +10,8 @@ use std::sync::mpsc::Sender;
 use parking_lot::Mutex;
 
 use super::sender::{SKIPPED_FOLDERS, send_pulled};
-use super::{Stamp, caps_of, now_micros, tree};
-use crate::domain::transfer::{MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, is_safe_id};
+use super::{Stamp, caps_of, limits_to, now_micros, tree};
+use crate::domain::transfer::{MAX_TREE_ENTRIES, is_safe_id};
 use crate::infra::logger;
 use crate::protocol::{ClientMessage, FilePayload, OfferEntry, Outgoing};
 use crate::service::context::AppContext;
@@ -48,12 +48,13 @@ pub fn offer_files_at(ctx: &AppContext, paths: Vec<PathBuf>, target: String, dro
     }
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let has_dir = paths.iter().any(|p| p.is_dir());
+    let limits = limits_to(&target);
     if !has_dir || !caps_of(&target).file_folder {
         // Top-level files only.
         let files: Vec<(Option<PathBuf>, OfferEntry)> = paths
             .iter()
             .filter_map(|p| {
-                let meta = fs::metadata(p).ok().filter(|m| m.is_file() && m.len() <= MAX_FILE_BYTES)?;
+                let meta = fs::metadata(p).ok().filter(|m| m.is_file() && m.len() <= limits.file)?;
                 let name = p.file_name()?.to_str()?.to_string();
                 let entry = Stamp::of(&meta).entry(name, Some(meta.len()), None);
                 Some((Some(p.clone()), entry))
@@ -75,7 +76,7 @@ pub fn offer_files_at(ctx: &AppContext, paths: Vec<PathBuf>, target: String, dro
     ctx.ui.status("Preparing folder...".into());
     let (outbox, ui) = (ctx.outbox.clone(), Arc::clone(&ctx.ui));
     crate::infra::thread::spawn_named("files-offer", move || {
-        let status = match tree::walk(&paths, MAX_TREE_ENTRIES, MAX_TREE_BYTES) {
+        let status = match tree::walk(&paths, MAX_TREE_ENTRIES, limits) {
             Ok(entries) => {
                 let listing = entries
                     .into_iter()
