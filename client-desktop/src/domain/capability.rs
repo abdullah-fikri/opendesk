@@ -99,6 +99,10 @@ pub const RELAY_MONITOR: &str = "monitor";
 pub const RELAY_DEVICE_SECURITY: &str = "device-security";
 /// Administrators can name devices in the relay's host list.
 pub const RELAY_HOST_ALIAS: &str = "host-alias";
+/// Administrators can delete offline devices from the relay's host list.
+pub const RELAY_HOST_DELETE: &str = "host-delete";
+/// The relay stores communities and groups of devices for its administrators.
+pub const RELAY_COMMUNITIES: &str = "communities";
 /// This device only views; it can never be controlled (Android, Linux in a Wayland session). The relay refuses
 /// connect requests to it.
 pub const VIEWER_ONLY: &str = "viewer-only";
@@ -234,6 +238,8 @@ pub struct RelayCaps {
     pub monitor: bool,
     pub device_security: bool,
     pub host_alias: bool,
+    pub host_delete: bool,
+    pub communities: bool,
     /// Binary file chunks are forwarded.
     pub file_binary: bool,
     /// A second, file-only connection may attach as this device's file lane ([`FILE_LANE`]).
@@ -251,6 +257,8 @@ impl RelayCaps {
             monitor: has(RELAY_MONITOR),
             device_security: has(RELAY_DEVICE_SECURITY),
             host_alias: has(RELAY_HOST_ALIAS),
+            host_delete: has(RELAY_HOST_DELETE),
+            communities: has(RELAY_COMMUNITIES),
             file_binary: has(FILE_BINARY),
             file_lane: has(FILE_LANE),
         }

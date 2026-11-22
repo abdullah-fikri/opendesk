@@ -1,0 +1,246 @@
+// Building blocks of the communities feature (admin edition, docs/features/communities.md at the repository
+// root): the community tile, the glass menu rows and the macOS-style checkbox and list toolbar.
+
+import { Theme } from "../theme.slint";
+import { Glyph } from "glyph.slint";
+
+// The community tints, macOS system colours in light and dark. The names are the relay's palette
+// (model.CommunityColors); "" is the default (blue).
+export global CommunityPalette {
+    out property <[string]> names: ["blue", "indigo", "purple", "pink", "red", "orange", "yellow", "green", "teal", "graphite"];
+    // Emoji offered in the community sheet; any other emoji works too, but these read well at 14 px.
+    out property <[string]> icons: ["", "🏢", "🏪", "🏫", "🏥", "🏠", "🏭", "🛒", "☕", "🎓", "💼", "🧪", "🖥️", "🌍"];
+
+    public pure function tint(name: string) -> color {
+        if (name == "red") { return Theme.dark ? #FF453A : #FF3B30; }
+        if (name == "orange") { return Theme.dark ? #FF9F0A : #FF9500; }
+        if (name == "yellow") { return Theme.dark ? #FFD60A : #F5B800; }
+        if (name == "green") { return Theme.dark ? #30D158 : #28B248; }
+        if (name == "teal") { return Theme.dark ? #40C8E0 : #30B0C7; }
+        if (name == "indigo") { return Theme.dark ? #5E5CE6 : #5856D6; }
+        if (name == "purple") { return Theme.dark ? #BF5AF2 : #AF52DE; }
+        if (name == "pink") { return Theme.dark ? #FF375F : #FF2D55; }
+        if (name == "graphite") { return Theme.dark ? #98989D : #8E8E93; }
+        return Theme.dark ? #0A84FF : #007AFF;
+    }
+}
+
+// A community's tile: its tint as a soft gradient square (like the app tiles) with its emoji, or the people
+// mark when it has none.
+export component CommunityChip inherits Rectangle {
+    in property <string> icon;
+    in property <string> hue;
+    in property <length> edge: 22px;
+
+    property <color> base: CommunityPalette.tint(root.hue);
+
+    width: root.edge;
+    height: root.edge;
+    border-radius: root.edge * 0.236;
+    background: @linear-gradient(180deg, root.base.brighter(0.25) 0%, root.base 100%);
+    drop-shadow-blur: 1.5px;
+    drop-shadow-offset-y: 0.5px;
+    drop-shadow-color: #00000030;
+
+    if root.icon != "": Text {
+        text: root.icon;
+        font-size: root.edge * 0.6;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if root.icon == "": Glyph {
+        name: "group";
+        size: root.edge * 0.64;
+        tint: #ffffff;
+    }
+}
+
+// One action of a glass menu: glyph, label, optional trailing hint or chevron. `danger` is the destructive
+// red of macOS menus.
+export component ActionRow inherits Rectangle {
+    in property <string> label;
+    in property <string> icon;
+    in property <string> hint;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    in property <bool> chevron: false;
+    in property <bool> checked: false;
+    callback clicked();
+
+    property <color> fg: !root.enabled ? Theme.text-3 : root.danger ? Theme.accent-tx : Theme.text;
+
+    height: 28px;
+    border-radius: 6px;
+    background: ta.has-hover && root.enabled ? (root.danger ? Theme.accent-soft : Theme.hover2) : transparent;
+
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 8px;
+        Rectangle {
+            width: 16px;
+            if root.checked: Glyph {
+                name: "check";
+                size: 12px;
+                tint: root.fg;
+            }
+            if !root.checked && root.icon != "": Glyph {
+                name: root.icon;
+                size: 14px;
+                tint: root.danger ? root.fg : Theme.text-2;
+            }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.label;
+            color: root.fg;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.hint != "": Text {
+            text: root.hint;
+            color: Theme.text-3;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+        if root.chevron: Glyph {
+            y: (parent.height - self.height) / 2;
+            name: "chevron-right";
+            size: 10px;
+            tint: Theme.text-3;
+        }
+    }
+}
+
+// Hairline between menu sections.
+export component MenuSeparator inherits Rectangle {
+    height: 9px;
+    Rectangle {
+        x: 8px;
+        width: parent.width - 16px;
+        height: 1px;
+        background: Theme.line;
+    }
+}
+
+// Glass panel for the community menus and the cascading picker: the elevated popover colour, a hairline edge and a soft shadow.
+export component GlassPanel inherits Rectangle {
+    background: Theme.elev;
+    border-radius: 10px;
+    border-width: 0.5px;
+    border-color: Theme.pop-edge;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: Theme.pop-shadow;
+    drop-shadow-offset-y: 8px;
+    VerticalLayout {
+        padding: 5px;
+        spacing: 0px;
+        @children
+    }
+}
+
+// macOS checkbox: a rounded square, filled with the accent and a white check when on.
+export component CheckBox inherits Rectangle {
+    in property <bool> checked: false;
+    callback toggled();
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    background: root.checked ? Theme.blue : Theme.surf;
+    border-width: root.checked ? 0px : 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: root.checked ? 0px : 1px;
+    drop-shadow-color: #00000014;
+    if root.checked: Glyph {
+        name: "check";
+        size: 11px;
+        tint: #ffffff;
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(); }
+    }
+}
+
+// One button of a list's bottom toolbar (+, −, …), like the macOS list editors.
+export component ListToolButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback clicked();
+    width: root.label == "" ? 28px : txt.preferred-width + 20px;
+    height: 24px;
+    border-radius: 5px;
+    opacity: root.enabled ? 1.0 : 0.35;
+    background: ta.has-hover && root.enabled ? Theme.hover2 : transparent;
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+    if root.icon != "": Glyph {
+        name: root.icon;
+        size: 12px;
+        tint: Theme.text;
+    }
+    txt := Text {
+        visible: root.label != "";
+        text: root.label;
+        color: Theme.text;
+        font-size: 12px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// Bottom toolbar of an inset list: + and − (and @children) on a hairline.
+export component ListToolbar inherits Rectangle {
+    in property <bool> can_remove: false;
+    callback add();
+    callback remove();
+    height: 30px;
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Theme.line;
+    }
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        spacing: 0px;
+        alignment: start;
+        ListToolButton {
+            y: 3px;
+            icon: "plus";
+            clicked => { root.add(); }
+        }
+        Rectangle {
+            width: 1px;
+            Rectangle {
+                width: 1px;
+                height: 14px;
+                background: Theme.line;
+            }
+        }
+        ListToolButton {
+            y: 3px;
+            icon: "minus";
+            enabled: root.can_remove;
+            clicked => { root.remove(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        @children
+    }
+}

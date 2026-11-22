@@ -456,7 +456,9 @@ fn compress(paths: &[String], progress: &mut dyn FnMut(u64, u64)) -> Result<Stri
     if roots.iter().any(|r| r.parent() != Some(parent.as_path())) {
         return Err("Pick items from one folder to compress them together".into());
     }
-    let limits = crate::domain::transfer::Limits { file: MAX_TREE_BYTES, tree: MAX_TREE_BYTES };
+    // A local archive has no partner: the full (not the legacy) limits apply.
+    let limits =
+        crate::domain::transfer::Limits { file: crate::domain::transfer::MAX_FILE_BYTES, tree: MAX_TREE_BYTES };
     let entries = tree::walk(&roots, archive::LIMITS.entries, limits)
         .map_err(|e| e.trim_start_matches("Failed: ").to_string())?;
     if entries.is_empty() {

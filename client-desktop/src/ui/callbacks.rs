@@ -52,6 +52,70 @@ pub fn bind(win: &MainWindow, ctx: &Ctx, history: &Arc<History>) {
     bind_monitor_wall(win, ctx);
     #[cfg(feature = "admin")]
     bind_settings(win, ctx);
+    #[cfg(feature = "admin")]
+    bind_communities(win, ctx);
+}
+
+/// Admin edition only: deleting offline devices and managing communities, all kept by the relay. Each change is
+/// sent as is; the relay validates it (administrator, names, limits) and answers every administrator with a
+/// fresh `community-list` / `host-list`, or this one with an `error` shown in the status line.
+#[cfg(feature = "admin")]
+fn bind_communities(win: &MainWindow, ctx: &Ctx) {
+    use super::community_model;
+
+    win.on_community_view_changed(community_model::refresh);
+    win.on_manage_changed(community_model::refresh);
+    win.on_open_group_picker(|_| community_model::refresh());
+    on!(win, ctx, on_community_save, |_w, c, kind, target, name, icon, color| {
+        let (target, name, icon, color) =
+            (target.to_string(), name.trim().to_string(), icon.to_string(), color.to_string());
+        let msg = match kind {
+            1 => ClientMessage::CommunityCreate { name, icon, color },
+            2 => ClientMessage::CommunityUpdate { community_id: target, name, icon, color },
+            3 => ClientMessage::GroupCreate { community_id: target, name },
+            4 => ClientMessage::GroupRename { group_id: target, name },
+            _ => return,
+        };
+        c.send(msg);
+    });
+    on!(win, ctx, on_community_confirm, |_w, c, kind, target| {
+        let msg = match kind.as_str() {
+            "delete-hosts" => ClientMessage::HostDelete {
+                target_cleans: target.split(',').map(desk_id::clean).filter(|id| !id.is_empty()).collect(),
+            },
+            "delete-community" => ClientMessage::CommunityDelete { community_id: target.to_string() },
+            "delete-group" => ClientMessage::GroupDelete { group_id: target.to_string() },
+            _ => return,
+        };
+        c.send(msg);
+    });
+    on!(win, ctx, on_set_group_member, |_w, c, group, id, member| {
+        if group.is_empty() {
+            return;
+        }
+        let ids = vec![desk_id::clean(&id)];
+        let (add, remove) = if member { (ids, Vec::new()) } else { (Vec::new(), ids) };
+        c.send(ClientMessage::GroupMembers { group_id: group.to_string(), add, remove });
+    });
+    // Bulk delete: what the Offline section shows right now (search, sidebar filter and group applied).
+    on!(win, ctx, on_prompt_delete_offline, |w, _c| {
+        use slint::Model;
+        let ids: Vec<String> = w.get_hosts_offline().iter().map(|h| h.desk_id.to_string()).collect();
+        if ids.is_empty() {
+            return;
+        }
+        let n = ids.len();
+        w.set_confirm_target(ids.join(",").into());
+        w.set_confirm_title(
+            if n == 1 { "Delete 1 offline device?".to_string() } else { format!("Delete {n} offline devices?") }.into(),
+        );
+        w.set_confirm_body(
+            "They are removed from the device list and from every group. A device that connects to this relay \
+             again shows up again."
+                .into(),
+        );
+        w.set_confirm_kind("delete-hosts".into());
+    });
 }
 
 /// Settings › This device: kept in the local `config.json`. Bound in every edition so the settings stay one

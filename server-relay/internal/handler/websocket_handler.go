@@ -58,6 +58,8 @@ type connection struct {
 	// lastSignal rate-limits P2P signaling per session partner, so a multi-session viewer's parallel
 	// handshakes do not starve each other.
 	lastSignal map[string]signalBucket
+	// edits rate-limits administrator registry and community changes (community_handler.go).
+	edits editBucket
 }
 
 // signalBucket is a token bucket: up to signalBurst tokens, one more every minSignalInterval.
@@ -194,6 +196,11 @@ func (c *connection) onText(msg []byte) bool {
 		c.onHostRename(msg)
 	case dto.TypeLaneRequest:
 		c.onLaneRequest()
+	case dto.TypeHostDelete:
+		c.onHostDelete(msg)
+	case dto.TypeGetCommunities, dto.TypeCommunityCreate, dto.TypeCommunityUpdate, dto.TypeCommunityDelete,
+		dto.TypeGroupCreate, dto.TypeGroupRename, dto.TypeGroupDelete, dto.TypeGroupMembers:
+		c.onCommunityEdit(env.Type, msg)
 	}
 	return true
 }
@@ -502,7 +509,9 @@ func ingressKind(msgType string) string {
 		return metrics.KindSignal
 	case dto.TypeRegister, dto.TypeGetHosts, dto.TypeConnectRequest, dto.TypeApprovalResponse, dto.TypeSessionDisconnect,
 		dto.TypeMonitorSet, dto.TypeSecurityGet, dto.TypeSecuritySet, dto.TypeSecurityAllow, dto.TypeSecurityAllowOnline,
-		dto.TypeSecurityRemove, dto.TypeSecurityReset, dto.TypeHostRename, dto.TypeLaneRequest, dto.TypeLaneAttach:
+		dto.TypeSecurityRemove, dto.TypeSecurityReset, dto.TypeHostRename, dto.TypeLaneRequest, dto.TypeLaneAttach,
+		dto.TypeHostDelete, dto.TypeGetCommunities, dto.TypeCommunityCreate, dto.TypeCommunityUpdate,
+		dto.TypeCommunityDelete, dto.TypeGroupCreate, dto.TypeGroupRename, dto.TypeGroupDelete, dto.TypeGroupMembers:
 		return metrics.KindControl
 	}
 	return metrics.KindOther

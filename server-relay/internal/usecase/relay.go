@@ -21,6 +21,8 @@ type Options struct {
 	P2PDisabled bool
 	// Security persists the administrator-managed device allowlist; nil keeps it in memory only.
 	Security SecurityRepository
+	// Communities stores communities and groups; nil turns the feature off (its capability is not advertised).
+	Communities CommunityRepository
 	// UDPRelay advertises the udp-relay capability (the UDP forwarder runs).
 	UDPRelay bool
 	// MoveCoalescingDisabled queues every relayed mouse move in its own slot instead of letting a newer move
@@ -51,6 +53,7 @@ type Relay struct {
 	// sec is the device allowlist (see security.go); securityRepo may be nil.
 	sec          security
 	securityRepo SecurityRepository
+	communities  CommunityRepository
 	caps         []string
 	p2pDisabled  bool
 	fileLane     bool
@@ -63,7 +66,10 @@ type Relay struct {
 // New builds a Relay on top of the given storage.
 func New(hosts HostRepository, sessions SessionRepository, m FrameMetrics, opts Options, log *slog.Logger) *Relay {
 	caps := []string{model.CapFileGrant, model.CapFileOffer, model.CapP2PSignal, model.CapCaps, model.CapMultiSession, model.CapMonitor,
-		model.CapDeviceSecurity, model.CapHostAlias, model.CapFileBinary, model.CapSessionResume}
+		model.CapDeviceSecurity, model.CapHostAlias, model.CapFileBinary, model.CapSessionResume, model.CapHostDelete}
+	if opts.Communities != nil {
+		caps = append(caps, model.CapCommunities)
+	}
 	if opts.P2PDisabled {
 		caps = slices.DeleteFunc(caps, func(c string) bool { return c == model.CapP2PSignal })
 	}
@@ -90,6 +96,7 @@ func New(hosts HostRepository, sessions SessionRepository, m FrameMetrics, opts 
 		credentials:  creds,
 		sec:          security{devices: make(map[string]model.AllowedDevice)},
 		securityRepo: opts.Security,
+		communities:  opts.Communities,
 		caps:         caps,
 		p2pDisabled:  opts.P2PDisabled,
 		fileLane:     !opts.FileLaneDisabled,

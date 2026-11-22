@@ -53,6 +53,32 @@ type Host struct {
 	LastSeen     string `json:"last_seen"`
 }
 
+// TypeCommunityList is sent to administrators on get-communities and after every community or group change.
+const TypeCommunityList = "community-list"
+
+// CommunityList is every community with its groups and their members. Group membership lives here, not in
+// host-list, so clients that do not know communities never see it.
+type CommunityList struct {
+	Type        string      `json:"type"`
+	Communities []Community `json:"communities"`
+}
+
+// Community is one entry of a CommunityList. Icon is an emoji ("" = default mark), Color a palette name.
+type Community struct {
+	ID     string  `json:"id"`
+	Name   string  `json:"name"`
+	Icon   string  `json:"icon"`
+	Color  string  `json:"color"`
+	Groups []Group `json:"groups"`
+}
+
+// Group is one group of a Community; Members are clean desk IDs.
+type Group struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Members []string `json:"members"`
+}
+
 // IncomingRequest asks an Android host to approve a viewer.
 type IncomingRequest struct {
 	Type       string `json:"type"`

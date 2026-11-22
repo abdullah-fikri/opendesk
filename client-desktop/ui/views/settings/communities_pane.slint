@@ -1,0 +1,390 @@
+// Settings › Relay › Communities (admin edition, docs/features/communities.md at the repository root): full
+// management of the relay's communities, their groups and group members, laid out like a macOS System Settings
+// pane. Three inset lists, each revealed by a selection in the one above, with the + / − toolbars of the
+// macOS list editors. Every change goes to the relay at once; the lists refresh from its community-list.
+
+import { CommunityItem, GroupItem, MemberPick } from "../../types.slint";
+import { Theme } from "../../theme.slint";
+import { Glyph } from "../../components/glyph.slint";
+import { Card } from "../../components/controls.slint";
+import { CommunityChip, CheckBox, ListToolbar, ListToolButton } from "../../components/community.slint";
+
+// Heading above an inset list: title and a count.
+component PaneTitle inherits HorizontalLayout {
+    in property <string> text;
+    in property <string> count;
+    padding-left: 4px;
+    padding-right: 4px;
+    spacing: 6px;
+    height: 24px;
+    Text {
+        text: root.text;
+        color: Theme.text;
+        font-size: 13px;
+        font-weight: 600;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    Text {
+        horizontal-stretch: 1;
+        text: root.count;
+        color: Theme.text-3;
+        font-size: 13px;
+        vertical-alignment: center;
+    }
+}
+
+// Grey footnote under a list.
+component Footnote inherits HorizontalLayout {
+    in property <string> text;
+    padding-left: 4px;
+    padding-right: 4px;
+    Text {
+        text: root.text;
+        color: Theme.text-3;
+        font-size: 11.5px;
+        wrap: word-wrap;
+    }
+}
+
+// A selectable row of an inset list, with an indented hairline above every row but the first.
+component ListRow inherits Rectangle {
+    in property <bool> selected: false;
+    in property <bool> first: false;
+    in property <length> indent: 52px;
+    callback clicked();
+    callback double_clicked();
+    min-height: 44px;
+    background: root.selected ? Theme.blue-soft : ta.has-hover ? Theme.hover-soft : transparent;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        double-clicked => { root.double_clicked(); }
+    }
+    if !root.first && !root.selected: Rectangle {
+        x: root.indent;
+        y: 0;
+        width: root.width - root.indent;
+        height: 1px;
+        background: Theme.line;
+    }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 12px;
+        @children
+    }
+}
+
+// Placeholder line of an empty list.
+component EmptyRow inherits Rectangle {
+    in property <string> text;
+    height: 56px;
+    Text {
+        text: root.text;
+        color: Theme.text-3;
+        font-size: 12.5px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component CommunitiesPane inherits VerticalLayout {
+    in property <bool> supported: false;
+    in property <[CommunityItem]> communities: [];
+    in property <[GroupItem]> groups: [];
+    in property <[MemberPick]> members: [];
+    in property <int> member_count: 0;
+    in-out property <string> community: "";
+    in-out property <string> group: "";
+    in property <string> community_name: "";
+    in property <string> community_icon: "";
+    in property <string> community_color: "";
+    in property <string> group_name: "";
+    in-out property <string> member_search: "";
+    // The UI changed community, group or the search; Rust refreshes groups and members.
+    callback selection_changed();
+    callback open_name_sheet(int, string, string, string, string);
+    callback prompt_confirm(string, string, string, string);
+    callback set_group_member(string, string, bool);
+
+    spacing: 28px;
+
+    function pick_community(id: string) {
+        root.community = id;
+        root.group = "";
+        root.selection_changed();
+    }
+
+    function pick_group(id: string) {
+        root.group = id;
+        root.selection_changed();
+    }
+
+    function delete_community() {
+        root.prompt_confirm("delete-community", root.community, "Delete the community “" + root.community_name + "”?",
+            "Its groups are deleted for every administrator. The devices stay in All Devices.");
+    }
+
+    function delete_group() {
+        root.prompt_confirm("delete-group", root.group, "Delete the group “" + root.group_name + "”?",
+            "Its devices stay in All Devices and in their other groups.");
+    }
+
+    if !root.supported: Card {
+        HorizontalLayout {
+            padding: 14px;
+            spacing: 8px;
+            Glyph {
+                y: (parent.height - self.height) / 2;
+                name: "warn";
+                size: 14px;
+                tint: Theme.amber;
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: "This relay does not store communities. Update the relay to use them.";
+                color: Theme.amber;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    // ---- Communities
+    if root.supported: VerticalLayout {
+        spacing: 8px;
+        PaneTitle {
+            text: "Communities";
+            count: root.communities.length;
+        }
+        Card {
+            clip: true;
+            VerticalLayout {
+                if root.communities.length == 0: EmptyRow { text: "No communities yet. Click + to create one."; }
+                for c[i] in root.communities: ListRow {
+                    first: i == 0;
+                    selected: c.id == root.community;
+                    clicked => { root.pick_community(c.id); }
+                    double_clicked => { root.open_name_sheet(2, c.id, c.name, c.icon, c.color); }
+                    CommunityChip {
+                        y: (parent.height - self.height) / 2;
+                        edge: 26px;
+                        icon: c.icon;
+                        hue: c.color;
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        spacing: 1px;
+                        Text {
+                            text: c.name;
+                            color: Theme.text;
+                            font-size: 13px;
+                            font-weight: 500;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: c.groups + (c.groups == 1 ? " group · " : " groups · ") + c.total
+                                + (c.total == 1 ? " device" : " devices");
+                            color: Theme.text-2;
+                            font-size: 11.5px;
+                            overflow: elide;
+                        }
+                    }
+                    Text {
+                        text: c.online + " online";
+                        color: Theme.text-3;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+                ListToolbar {
+                    can_remove: root.community != "";
+                    add => { root.open_name_sheet(1, "", "", "", ""); }
+                    remove => { root.delete_community(); }
+                    ListToolButton {
+                        y: 3px;
+                        label: "Edit…";
+                        enabled: root.community != "";
+                        clicked => {
+                            root.open_name_sheet(2, root.community, root.community_name, root.community_icon,
+                                root.community_color);
+                        }
+                    }
+                }
+            }
+        }
+        Footnote {
+            text: "Communities are stored on the relay and shared with every administrator. Deleting a community never deletes its devices.";
+        }
+    }
+
+    // ---- Groups of the selected community
+    if root.supported && root.community != "": VerticalLayout {
+        spacing: 8px;
+        PaneTitle {
+            text: "Groups in " + root.community_name;
+            count: root.groups.length;
+        }
+        Card {
+            clip: true;
+            VerticalLayout {
+                if root.groups.length == 0: EmptyRow { text: "No groups yet. Click + to add one."; }
+                for g[i] in root.groups: ListRow {
+                    first: i == 0;
+                    indent: 44px;
+                    selected: g.id == root.group;
+                    clicked => { root.pick_group(g.id); }
+                    double_clicked => { root.open_name_sheet(4, g.id, g.name, "", ""); }
+                    Glyph {
+                        y: (parent.height - self.height) / 2;
+                        name: "group";
+                        size: 16px;
+                        tint: Theme.text-2;
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: g.name;
+                        color: Theme.text;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: g.online + " of " + g.total + " online";
+                        color: Theme.text-3;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+                ListToolbar {
+                    can_remove: root.group != "";
+                    add => { root.open_name_sheet(3, root.community, "", "", ""); }
+                    remove => { root.delete_group(); }
+                    ListToolButton {
+                        y: 3px;
+                        label: "Rename…";
+                        enabled: root.group != "";
+                        clicked => { root.open_name_sheet(4, root.group, root.group_name, "", ""); }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- Members of the selected group
+    if root.supported && root.group != "": VerticalLayout {
+        spacing: 8px;
+        PaneTitle {
+            text: "Devices in " + root.group_name;
+            count: root.member_count;
+        }
+        Card {
+            clip: true;
+            VerticalLayout {
+                // Search field, like the search of a macOS list sheet.
+                Rectangle {
+                    height: 46px;
+                    Rectangle {
+                        x: 10px;
+                        y: 9px;
+                        width: parent.width - 20px;
+                        height: 28px;
+                        border-radius: 7px;
+                        background: Theme.field;
+                        border-width: search.has-focus ? 2px : 0px;
+                        border-color: Theme.ring;
+                        Glyph {
+                            x: 9px;
+                            name: "search";
+                            size: 13px;
+                            tint: Theme.text-3;
+                        }
+                        if root.member_search == "": Text {
+                            x: 30px;
+                            width: parent.width - 40px;
+                            height: parent.height;
+                            text: "Search name, ID or platform";
+                            color: Theme.text-3;
+                            font-size: 12.5px;
+                            vertical-alignment: center;
+                        }
+                        search := TextInput {
+                            x: 30px;
+                            width: parent.width - 40px;
+                            height: parent.height;
+                            text <=> root.member_search;
+                            color: Theme.text;
+                            font-size: 12.5px;
+                            vertical-alignment: center;
+                            single-line: true;
+                            edited => { root.selection_changed(); }
+                        }
+                    }
+                    Rectangle {
+                        y: parent.height - 1px;
+                        height: 1px;
+                        background: Theme.line;
+                    }
+                }
+                if root.members.length == 0: EmptyRow {
+                    text: root.member_search != "" ? "No device matches the search." : "No devices on this relay yet.";
+                }
+                for m[i] in root.members: ListRow {
+                    first: i == 0;
+                    indent: 76px;
+                    min-height: 40px;
+                    clicked => { root.set_group_member(root.group, m.desk_id, !m.member); }
+                    CheckBox {
+                        y: (parent.height - self.height) / 2;
+                        checked: m.member;
+                        toggled => { root.set_group_member(root.group, m.desk_id, !m.member); }
+                    }
+                    // Platform mark with the online dot.
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: 26px;
+                        height: 26px;
+                        border-radius: 7px;
+                        background: Theme.surf2;
+                        Glyph {
+                            name: m.platform.to-lowercase().starts-with("android") ? "phone"
+                                : m.platform.to-lowercase().starts-with("windows") ? "windows" : "desktop";
+                            size: 13px;
+                            tint: Theme.text-2;
+                        }
+                        Rectangle {
+                            x: parent.width - 8px;
+                            y: parent.height - 8px;
+                            width: 10px;
+                            height: 10px;
+                            border-radius: 5px;
+                            background: m.online ? Theme.green : Theme.surf;
+                            border-width: m.online ? 1.5px : 1.5px;
+                            border-color: m.online ? Theme.surf : Theme.text-3;
+                        }
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: m.name;
+                        color: Theme.text;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: m.desk_id;
+                        color: Theme.text-2;
+                        font-size: 12px;
+                        font-family: Theme.mono;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+        Footnote {
+            text: "A device can be in several groups. Changes apply at once for every administrator.";
+        }
+    }
+}

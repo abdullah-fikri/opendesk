@@ -2,6 +2,8 @@
 //! events to it, the tray icon and drag-and-drop. Nothing here decides behavior; callbacks call services.
 
 mod callbacks;
+#[cfg(feature = "admin")]
+mod community_model;
 mod dashboard_model;
 mod file_browser_model;
 mod gl_frames;

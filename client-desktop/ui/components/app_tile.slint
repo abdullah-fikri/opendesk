@@ -15,7 +15,7 @@ export component AppTile inherits Rectangle {
     Image {
         width: root.tile;
         height: root.tile;
-        source: root.kind == "devices" ? @image-url("../icons/tile-devices.svg") : root.kind == "online" ? @image-url("../icons/tile-online.svg") : root.kind == "offline" ? @image-url("../icons/tile-offline.svg") : root.kind == "history" ? @image-url("../icons/tile-history.svg") : root.kind == "security" ? @image-url("../icons/tile-security.svg") : root.kind == "security-off" ? @image-url("../icons/tile-security-off.svg") : root.kind == "server" ? @image-url("../icons/tile-server.svg") : root.kind == "audio" ? @image-url("../icons/tile-audio.svg") : root.kind == "mouse" ? @image-url("../icons/tile-mouse.svg") : root.kind == "key" ? @image-url("../icons/tile-key.svg") : @image-url("../icons/tile-wall.svg");
+        source: root.kind == "devices" ? @image-url("../icons/tile-devices.svg") : root.kind == "online" ? @image-url("../icons/tile-online.svg") : root.kind == "offline" ? @image-url("../icons/tile-offline.svg") : root.kind == "history" ? @image-url("../icons/tile-history.svg") : root.kind == "security" ? @image-url("../icons/tile-security.svg") : root.kind == "security-off" ? @image-url("../icons/tile-security-off.svg") : root.kind == "server" ? @image-url("../icons/tile-server.svg") : root.kind == "audio" ? @image-url("../icons/tile-audio.svg") : root.kind == "mouse" ? @image-url("../icons/tile-mouse.svg") : root.kind == "key" ? @image-url("../icons/tile-key.svg") : root.kind == "community" ? @image-url("../icons/tile-community.svg") : @image-url("../icons/tile-wall.svg");
         image-fit: contain;
     }
 }

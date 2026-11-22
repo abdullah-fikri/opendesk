@@ -74,7 +74,8 @@ func run(configPath string, log *slog.Logger) error {
 		collector,
 		usecase.Options{
 			Credentials: cfg.DeviceCredentials, P2PDisabled: cfg.P2PDisabled, Security: postgres.NewSecurityRepository(db),
-			UDPRelay: udp != nil, MoveCoalescingDisabled: cfg.MoveCoalescingDisabled, FrameMaxAge: cfg.FrameMaxAge(),
+			Communities: postgres.NewCommunityRepository(db),
+			UDPRelay:    udp != nil, MoveCoalescingDisabled: cfg.MoveCoalescingDisabled, FrameMaxAge: cfg.FrameMaxAge(),
 			FileLaneDisabled: cfg.FileLaneDisabled,
 		},
 		log,

@@ -95,6 +95,45 @@ export struct MonitorPick {
     selected: bool,
 }
 
+// ---- Communities, admin edition (see docs/features/communities.md at the repository root) ----
+
+export struct CommunityItem {
+    id: string,
+    name: string,
+    icon: string,           // emoji, "" = default mark
+    color: string,          // palette name (CommunityPalette), "" = default
+    groups: int,            // number of groups
+    online: int,            // devices of any of its groups that are online
+    total: int,             // devices of any of its groups (each counted once)
+}
+
+export struct GroupItem {
+    id: string,             // "" = every device of the community ("All Members")
+    name: string,
+    online: int,
+    total: int,
+}
+
+// One group in the "Add to Group" sheet, listed under its community.
+export struct GroupPick {
+    id: string,
+    name: string,
+    community: string,      // community name; shown as a heading where it changes
+    icon: string,
+    color: string,
+    first: bool,            // first group of its community in the list
+    member: bool,           // the device is in this group
+}
+
+// One device in a group's member editor.
+export struct MemberPick {
+    desk_id: string,
+    name: string,
+    platform: string,
+    online: bool,
+    member: bool,
+}
+
 // ---- Settings, admin edition (see docs/features/device-security.md at the repository root) ----
 
 export struct SecurityItem {

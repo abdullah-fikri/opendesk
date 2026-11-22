@@ -31,6 +31,26 @@ type HostRepository interface {
 	List(ctx context.Context) ([]model.Host, error)
 	// SetAlias stores the administrator-given name of a device; an empty alias clears it.
 	SetAlias(ctx context.Context, cleanID, alias string) error
+	// Delete removes the rows of cleanIDs (with their group memberships) and returns how many it removed. A
+	// device that registers again simply gets a new row.
+	Delete(ctx context.Context, cleanIDs []string) (int, error)
+}
+
+// CommunityRepository persists communities, their groups and group memberships, shared by every administrator.
+type CommunityRepository interface {
+	// ListCommunities returns every community with its groups and members, in creation order.
+	ListCommunities(ctx context.Context) ([]model.Community, error)
+	CreateCommunity(ctx context.Context, c model.Community) error
+	UpdateCommunity(ctx context.Context, id, name, icon, color string) error
+	// DeleteCommunity also removes its groups and their memberships.
+	DeleteCommunity(ctx context.Context, id string) error
+	CreateGroup(ctx context.Context, g model.Group) error
+	RenameGroup(ctx context.Context, id, name string) error
+	// DeleteGroup removes the group and its memberships; the devices stay registered.
+	DeleteGroup(ctx context.Context, id string) error
+	// AddMembers adds the registered devices among cleanIDs; unknown IDs and existing members are skipped.
+	AddMembers(ctx context.Context, groupID string, cleanIDs []string) error
+	RemoveMembers(ctx context.Context, groupID string, cleanIDs []string) error
 }
 
 // SecurityRepository persists the device allowlist and whether it is enforced.
