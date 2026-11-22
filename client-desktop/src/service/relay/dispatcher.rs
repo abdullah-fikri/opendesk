@@ -77,6 +77,8 @@ impl Connection {
             ServerMessage::MonitorState { target_clean, state } => {
                 crate::service::monitor_wall::on_state(&self.ctx, &target_clean, &state)
             }
+            #[cfg(feature = "admin")]
+            ServerMessage::CommunityList { communities } => self.ctx.ui.communities_changed(communities),
             ServerMessage::Unknown => {}
         }
     }
@@ -95,8 +97,13 @@ impl Connection {
         {
             crate::service::monitor_wall::relay_registered(ctx, relay.monitor);
             ctx.ui.relay_admin_caps(relay.device_security, relay.host_alias);
+            ctx.ui.relay_registry_caps(relay.host_delete, relay.communities);
             if relay.device_security {
                 ctx.send(ClientMessage::SecurityGet);
+            }
+            // Older relays do not know communities: the page stays hidden and nothing is asked.
+            if relay.communities {
+                ctx.send(ClientMessage::GetCommunities);
             }
         }
     }

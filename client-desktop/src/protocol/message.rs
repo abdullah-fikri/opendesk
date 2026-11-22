@@ -61,6 +61,34 @@ pub enum ClientMessage {
     /// Administrators only: names a device in the shared host list (empty clears the name).
     #[cfg(feature = "admin")]
     HostRename { target_clean: String, alias: String },
+    /// Administrators only: deletes offline devices from the relay's host list (`host-delete`). Not a block: a
+    /// deleted device that connects again is listed again.
+    #[cfg(feature = "admin")]
+    HostDelete { target_cleans: Vec<String> },
+    /// Administrators only: asks for the communities (answered with `community-list`).
+    #[cfg(feature = "admin")]
+    GetCommunities,
+    /// Administrators only: creates a community (`icon` an emoji or empty, `color` a palette name or empty).
+    #[cfg(feature = "admin")]
+    CommunityCreate { name: String, icon: String, color: String },
+    /// Administrators only: renames a community and replaces its icon and color.
+    #[cfg(feature = "admin")]
+    CommunityUpdate { community_id: String, name: String, icon: String, color: String },
+    /// Administrators only: deletes a community with its groups (the devices stay).
+    #[cfg(feature = "admin")]
+    CommunityDelete { community_id: String },
+    /// Administrators only: adds an empty group to a community.
+    #[cfg(feature = "admin")]
+    GroupCreate { community_id: String, name: String },
+    /// Administrators only: renames a group.
+    #[cfg(feature = "admin")]
+    GroupRename { group_id: String, name: String },
+    /// Administrators only: deletes a group (its devices stay in All Devices).
+    #[cfg(feature = "admin")]
+    GroupDelete { group_id: String },
+    /// Administrators only: adds and removes devices (clean IDs) of a group.
+    #[cfg(feature = "admin")]
+    GroupMembers { group_id: String, add: Vec<String>, remove: Vec<String> },
 }
 
 impl ClientMessage {
@@ -178,6 +206,12 @@ pub enum ServerMessage {
         target_clean: String,
         state: String,
     },
+    /// Every community with its groups and members (administrators only).
+    #[cfg(feature = "admin")]
+    CommunityList {
+        #[serde(default)]
+        communities: Vec<CommunityEntry>,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -193,6 +227,8 @@ impl ServerMessage {
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default)]
 pub struct HostEntry {
+    /// Digits only; group members in `community-list` name devices by it.
+    pub clean_id: String,
     pub desk_id: String,
     pub device_name: String,
     /// Name an administrator gave the device on the relay; empty when none.
@@ -214,6 +250,28 @@ pub struct SecurityDevice {
     pub enrolled: bool,
     pub enrolled_at: String,
     pub online: bool,
+}
+
+/// One community of a `community-list`: an emoji `icon` ("" = default mark), a palette `color` ("" = default).
+#[cfg(feature = "admin")]
+#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(default)]
+pub struct CommunityEntry {
+    pub id: String,
+    pub name: String,
+    pub icon: String,
+    pub color: String,
+    pub groups: Vec<GroupEntry>,
+}
+
+/// One group of a community; `members` are clean desk IDs.
+#[cfg(feature = "admin")]
+#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(default)]
+pub struct GroupEntry {
+    pub id: String,
+    pub name: String,
+    pub members: Vec<String>,
 }
 
 #[cfg(test)]
@@ -297,6 +355,43 @@ mod admin_tests {
         );
         let Some(ServerMessage::SecurityState { enabled, devices, .. }) = state else { panic!("{state:?}") };
         assert!(enabled && devices[0].enrolled && devices[0].online && devices[0].name == "PC");
+    }
+
+    #[test]
+    fn community_messages_use_the_relay_field_names() {
+        let del = ClientMessage::HostDelete { target_cleans: vec!["1".into(), "2".into()] };
+        assert_eq!(del.to_json(), r#"{"type":"host-delete","targetCleans":["1","2"]}"#);
+        assert_eq!(ClientMessage::GetCommunities.to_json(), r#"{"type":"get-communities"}"#);
+        let upd = ClientMessage::CommunityUpdate {
+            community_id: "c".into(),
+            name: "Shops".into(),
+            icon: "🏪".into(),
+            color: "blue".into(),
+        };
+        assert_eq!(
+            upd.to_json(),
+            r#"{"type":"community-update","communityId":"c","name":"Shops","icon":"🏪","color":"blue"}"#
+        );
+        let members = ClientMessage::GroupMembers { group_id: "g".into(), add: vec!["1".into()], remove: vec![] };
+        assert_eq!(members.to_json(), r#"{"type":"group-members","groupId":"g","add":["1"],"remove":[]}"#);
+        assert_eq!(
+            ClientMessage::GroupCreate { community_id: "c".into(), name: "Desk".into() }.to_json(),
+            r#"{"type":"group-create","communityId":"c","name":"Desk"}"#
+        );
+
+        let list = ServerMessage::parse(
+            r#"{"type":"community-list","communities":[{"id":"c","name":"Shops","icon":"🏪","color":"blue","groups":[{"id":"g","name":"Desk","members":["123456789"]}]},{"id":"d","name":"Bare"}]}"#,
+        );
+        let Some(ServerMessage::CommunityList { communities }) = list else { panic!("{list:?}") };
+        assert_eq!(communities.len(), 2);
+        assert_eq!(communities[0].groups[0].members, vec!["123456789".to_string()]);
+        assert!(communities[1].groups.is_empty() && communities[1].icon.is_empty(), "missing fields default");
+        // A host-list from an older relay has no clean_id; newer ones add it.
+        let hosts = ServerMessage::parse(
+            r#"{"type":"host-list","hosts":[{"clean_id":"123456789","desk_id":"123 456 789","online":true,"extra":1}]}"#,
+        );
+        let Some(ServerMessage::HostList { hosts }) = hosts else { panic!() };
+        assert_eq!(hosts[0].clean_id, "123456789");
     }
 
     #[test]

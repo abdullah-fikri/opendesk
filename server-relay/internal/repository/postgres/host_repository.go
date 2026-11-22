@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lib/pq"
+
 	"opendesk/server-relay/internal/model"
 )
 
@@ -78,6 +80,21 @@ func (r *HostRepository) List(ctx context.Context) ([]model.Host, error) {
 		hosts = append(hosts, h)
 	}
 	return hosts, rows.Err()
+}
+
+// DeleteOffline removes the registry rows of cleanIDs that are offline and returns how many went. The
+// online = FALSE condition makes the check and the delete one statement: a device that registers meanwhile is
+// either kept (its upsert came first) or re-inserted by that upsert. Group memberships cascade (0004); the
+// alias lives on the row and goes with it. Session history and the allowlist are left alone (see
+// docs/features/communities.md).
+func (r *HostRepository) DeleteOffline(ctx context.Context, cleanIDs []string) (int, error) {
+	const query = `DELETE FROM hosts_registry WHERE clean_id = ANY($1) AND online = FALSE`
+	res, err := r.db.ExecContext(ctx, query, pq.Array(cleanIDs))
+	if err != nil {
+		return 0, fmt.Errorf("delete hosts: %w", err)
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
 }
 
 // SetAlias stores the administrator-given name of a registered device.

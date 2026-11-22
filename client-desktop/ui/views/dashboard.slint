@@ -9,6 +9,8 @@ import { Glyph } from "../components/glyph.slint";
 import { AppTile } from "../components/app_tile.slint";
 import { Btn, Seg, SegWrap, Card, GroupLabel, RowLine, TipBox, AppearancePicker } from "../components/controls.slint";
 import { DragArea } from "../components/window_frame.slint";
+import { CommunityItem, GroupItem } from "../types.slint";
+import { CommunityChip, ActionRow, MenuSeparator, GlassMenu } from "../components/community.slint";
 
 // Sidebar entry: coloured tile, label and an optional count.
 export component NavItem inherits Rectangle {
@@ -120,6 +122,55 @@ component SectionHead inherits HorizontalLayout {
     }
 }
 
+// Context menu of a relay host (admin edition): right-click on a card or row, or its "…" button.
+component DeviceActions inherits GlassMenu {
+    in property <bool> online;
+    in property <bool> can_rename;
+    in property <bool> can_group;
+    in property <bool> in_group;
+    in property <string> group_name;
+    in property <bool> can_delete;
+    callback connect();
+    callback rename();
+    callback add_to_group();
+    callback remove_from_group();
+    callback delete();
+
+    width: 220px;
+    ActionRow {
+        label: "Connect";
+        icon: "desktop";
+        enabled: root.online;
+        clicked => { root.connect(); }
+    }
+    if root.can_rename: ActionRow {
+        label: "Rename…";
+        icon: "pencil";
+        clicked => { root.rename(); }
+    }
+    if root.can_group: MenuSeparator { }
+    if root.can_group: ActionRow {
+        label: "Add to Group…";
+        icon: "group";
+        clicked => { root.add_to_group(); }
+    }
+    if root.in_group: ActionRow {
+        label: "Remove from “" + root.group_name + "”";
+        icon: "minus";
+        clicked => { root.remove_from_group(); }
+    }
+    if root.can_delete: MenuSeparator { }
+    if root.can_delete: ActionRow {
+        label: "Delete Device…";
+        icon: "trash";
+        danger: true;
+        // Only offline devices can be deleted; the relay refuses online ones too.
+        enabled: !root.online;
+        hint: root.online ? "Online" : "";
+        clicked => { root.delete(); }
+    }
+}
+
 // One device as a card: platform tile, name and ID; the host details and the Rename / Remove actions appear in
 // the bottom row on hover or selection, beside Connect.
 component DeviceCard inherits Rectangle {
@@ -131,13 +182,31 @@ component DeviceCard inherits Rectangle {
     in property <bool> history: false;
     in property <bool> selected: false;
     in property <bool> can_rename: false;
+    // Admin host list: the context menu (right-click or "…") with the group and delete actions.
+    in property <bool> admin_menu: false;
+    in property <bool> can_group: false;
+    in property <bool> in_group: false;
+    in property <string> group_name;
+    in property <bool> can_delete: false;
     callback select();
     callback connect();
     callback rename();
     callback remove();
+    callback add_to_group();
+    callback remove_from_group();
+    callback delete();
 
     property <bool> dim: !root.online && !root.history;
     property <bool> hot: ta.has-hover || root.selected;
+    property <length> menu_x;
+    property <length> menu_y;
+
+    function open_menu(x: length, y: length) {
+        root.menu_x = x;
+        root.menu_y = y;
+        root.select();
+        menu.show();
+    }
 
     border-radius: 12px;
     background: root.hot ? Theme.card-hover : Theme.surf;
@@ -154,6 +223,29 @@ component DeviceCard inherits Rectangle {
             if (!root.dim) {
                 root.connect();
             }
+        }
+        pointer-event(e) => {
+            if (root.admin_menu && e.button == PointerEventButton.right && e.kind == PointerEventKind.up) {
+                root.open_menu(self.mouse-x, self.mouse-y);
+            }
+        }
+    }
+
+    menu := PopupWindow {
+        x: root.menu_x;
+        y: root.menu_y;
+        DeviceActions {
+            online: root.online;
+            can_rename: root.can_rename;
+            can_group: root.can_group;
+            in_group: root.in_group;
+            group_name: root.group_name;
+            can_delete: root.can_delete;
+            connect => { root.connect(); }
+            rename => { root.rename(); }
+            add_to_group => { root.add_to_group(); }
+            remove_from_group => { root.remove_from_group(); }
+            delete => { root.delete(); }
         }
     }
 
@@ -218,6 +310,15 @@ component DeviceCard inherits Rectangle {
                 tip: "Rename";
                 clicked => { root.rename(); }
             }
+            if root.admin_menu && root.hot: more := Btn {
+                height: 26px;
+                kind: "ghost";
+                icon: "more";
+                icon-size: 14px;
+                tip: "More";
+                // Below the button: card padding 16 px, then the 40 px header and 12 px spacing above this row.
+                clicked => { root.open_menu(16px + self.x, 16px + 40px + 12px + self.height + 4px); }
+            }
             Btn {
                 height: 26px;
                 label: "Connect";
@@ -242,13 +343,30 @@ component DeviceRow inherits Rectangle {
     in property <bool> can_rename: false;
     in property <bool> narrow: false;
     in property <bool> first: false;
+    in property <bool> admin_menu: false;
+    in property <bool> can_group: false;
+    in property <bool> in_group: false;
+    in property <string> group_name;
+    in property <bool> can_delete: false;
     callback select();
     callback connect();
     callback rename();
     callback remove();
+    callback add_to_group();
+    callback remove_from_group();
+    callback delete();
 
     property <bool> dim: !root.online && !root.history;
     property <bool> hot: ta.has-hover || root.selected;
+    property <length> menu_x;
+    property <length> menu_y;
+
+    function open_menu(x: length, y: length) {
+        root.menu_x = x;
+        root.menu_y = y;
+        root.select();
+        menu.show();
+    }
 
     height: 56px;
     background: root.selected ? Theme.accent-soft : ta.has-hover ? Theme.hover-soft : transparent;
@@ -260,6 +378,29 @@ component DeviceRow inherits Rectangle {
             if (!root.dim) {
                 root.connect();
             }
+        }
+        pointer-event(e) => {
+            if (root.admin_menu && e.button == PointerEventButton.right && e.kind == PointerEventKind.up) {
+                root.open_menu(self.mouse-x, self.mouse-y);
+            }
+        }
+    }
+
+    menu := PopupWindow {
+        x: root.menu_x;
+        y: root.menu_y;
+        DeviceActions {
+            online: root.online;
+            can_rename: root.can_rename;
+            can_group: root.can_group;
+            in_group: root.in_group;
+            group_name: root.group_name;
+            can_delete: root.can_delete;
+            connect => { root.connect(); }
+            rename => { root.rename(); }
+            add_to_group => { root.add_to_group(); }
+            remove_from_group => { root.remove_from_group(); }
+            delete => { root.delete(); }
         }
     }
     if !root.first: Rectangle {
@@ -320,7 +461,7 @@ component DeviceRow inherits Rectangle {
         }
         // Actions: a fixed slot, filled on hover or selection
         HorizontalLayout {
-            width: 180px;
+            width: root.admin_menu ? 216px : 180px;
             spacing: 4px;
             alignment: end;
             if root.history && root.hot: Btn {
@@ -341,6 +482,15 @@ component DeviceRow inherits Rectangle {
                 label: "Rename";
                 clicked => { root.rename(); }
             }
+            if root.admin_menu && root.hot: Btn {
+                y: (parent.height - self.height) / 2;
+                height: 28px;
+                kind: "ghost";
+                icon: "more";
+                tip: "More";
+                // Below the button, right-aligned with it (the actions slot ends 12 px from the row's edge).
+                clicked => { root.open_menu(root.width - 12px - 220px, root.height - 8px); }
+            }
             Btn {
                 y: (parent.height - self.height) / 2;
                 height: 28px;
@@ -350,6 +500,381 @@ component DeviceRow inherits Rectangle {
                 clicked => { root.connect(); }
             }
         }
+    }
+}
+
+// Sidebar entry of a community: its tile, name, count and (several communities) the chevron of the picker.
+component CommunityNavItem inherits Rectangle {
+    in property <string> label;
+    in property <string> icon;
+    in property <string> hue;
+    in property <string> count;
+    in property <bool> active: false;
+    in property <bool> compact: false;
+    in property <bool> chevron: false;
+    callback clicked();
+
+    height: 30px;
+    border-radius: 7px;
+    background: root.active ? Theme.hover2 : ta.has-hover ? Theme.hover-soft : transparent;
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: root.compact ? (root.width - 22px) / 2 : 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        CommunityChip {
+            y: (parent.height - self.height) / 2;
+            icon: root.icon;
+            hue: root.hue;
+        }
+        if !root.compact: Text {
+            horizontal-stretch: 1;
+            text: root.label;
+            color: Theme.text;
+            font-size: 13px;
+            font-weight: 500;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if !root.compact && root.count != "": Text {
+            text: root.count;
+            color: Theme.text-3;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+        if !root.compact && root.chevron: Glyph {
+            y: (parent.height - self.height) / 2;
+            name: "chevron-right";
+            size: 10px;
+            tint: Theme.text-3;
+        }
+    }
+    if root.compact: Tooltip {
+        TipBox { text: root.label; }
+    }
+}
+
+// One community in the cascading picker: tile, name, online / total devices, a check on the open one.
+component CommunityMenuRow inherits Rectangle {
+    in property <CommunityItem> item;
+    in property <bool> current: false;
+    callback clicked();
+
+    height: 30px;
+    border-radius: 6px;
+    background: ta.has-hover ? Theme.hover2 : transparent;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 9px;
+        CommunityChip {
+            y: (parent.height - self.height) / 2;
+            edge: 20px;
+            icon: root.item.icon;
+            hue: root.item.color;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.item.name;
+            color: Theme.text;
+            font-size: 13px;
+            font-weight: root.current ? 600 : 400;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            text: root.item.online + "/" + root.item.total;
+            color: Theme.text-3;
+            font-size: 11.5px;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            width: 12px;
+            if root.current: Glyph {
+                name: "check";
+                size: 11px;
+                tint: Theme.text-2;
+            }
+        }
+    }
+}
+
+// The cascading community picker (several communities): a glass panel beside the sidebar entry.
+component CommunityPicker inherits GlassMenu {
+    in property <[CommunityItem]> communities;
+    in property <string> current;
+    callback pick(string);
+    callback create();
+    callback manage();
+
+    width: 260px;
+    Text {
+        height: 24px;
+        x: 10px;
+        text: "Communities";
+        color: Theme.text-3;
+        font-size: 11px;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+    for c in root.communities: CommunityMenuRow {
+        item: c;
+        current: c.id == root.current;
+        clicked => { root.pick(c.id); }
+    }
+    MenuSeparator { }
+    ActionRow {
+        label: "New Community…";
+        icon: "plus";
+        clicked => { root.create(); }
+    }
+    ActionRow {
+        label: "Manage Communities…";
+        icon: "sliders";
+        clicked => { root.manage(); }
+    }
+}
+
+// One group in the group column: name and online / total devices; right-click for rename and delete.
+component GroupRow inherits Rectangle {
+    in property <GroupItem> item;
+    in property <bool> active: false;
+    in property <bool> compact: false;
+    callback clicked();
+    callback rename();
+    callback delete();
+
+    property <length> menu_x;
+    property <length> menu_y;
+
+    height: 30px;
+    border-radius: 7px;
+    background: root.active ? Theme.hover2 : ta.has-hover ? Theme.hover-soft : transparent;
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        pointer-event(e) => {
+            // "All Members" (no ID) cannot be renamed or deleted.
+            if (root.item.id != "" && e.button == PointerEventButton.right && e.kind == PointerEventKind.up) {
+                root.menu_x = self.mouse-x;
+                root.menu_y = self.mouse-y;
+                menu.show();
+            }
+        }
+    }
+    menu := PopupWindow {
+        x: root.menu_x;
+        y: root.menu_y;
+        GlassMenu {
+            width: 200px;
+            ActionRow {
+                label: "Rename Group…";
+                icon: "pencil";
+                clicked => { root.rename(); }
+            }
+            MenuSeparator { }
+            ActionRow {
+                label: "Delete Group…";
+                icon: "trash";
+                danger: true;
+                clicked => { root.delete(); }
+            }
+        }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        Glyph {
+            y: (parent.height - self.height) / 2;
+            name: root.item.id == "" ? "grid" : "group";
+            size: 14px;
+            tint: root.active ? Theme.text : Theme.text-2;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.item.name;
+            color: Theme.text;
+            font-size: 13px;
+            font-weight: root.active ? 600 : 400;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        // Online first, like the sidebar counts: "3/8".
+        Text {
+            text: root.item.total == 0 ? "" : root.item.online + "/" + root.item.total;
+            color: Theme.text-3;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Second sidebar column of an open community (Slack-like): the community's name with its actions, then its
+// groups with counts and "New Group".
+component GroupColumn inherits Rectangle {
+    in property <string> name;
+    in property <string> icon;
+    in property <string> hue;
+    in property <[GroupItem]> groups;
+    in property <string> active_group;
+    callback select(string);
+    callback new_group();
+    callback rename_group(string, string);
+    callback delete_group(string, string);
+    callback edit_community();
+    callback delete_community();
+    callback manage();
+
+    background: Theme.dark ? #282828 : #F1EFEB;
+
+    // Hairline towards the content.
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: Theme.line;
+    }
+
+    VerticalLayout {
+        padding-left: 10px;
+        padding-right: 11px;
+        padding-bottom: 12px;
+        spacing: 2px;
+
+        // Header: the community, with its menu.
+        Rectangle {
+            height: 52px;
+            DragArea { }
+            HorizontalLayout {
+                padding-left: 6px;
+                spacing: 8px;
+                CommunityChip {
+                    y: (parent.height - self.height) / 2;
+                    edge: 24px;
+                    icon: root.icon;
+                    hue: root.hue;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.name;
+                    color: Theme.text;
+                    font-size: 14px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                more := Btn {
+                    y: (parent.height - self.height) / 2;
+                    height: 24px;
+                    kind: "ghost";
+                    icon: "more";
+                    tip: "Community";
+                    clicked => { cmenu.show(); }
+                }
+            }
+            cmenu := PopupWindow {
+                x: parent.width - 210px;
+                y: 42px;
+                GlassMenu {
+                    width: 210px;
+                    ActionRow {
+                        label: "Edit Community…";
+                        icon: "pencil";
+                        clicked => { root.edit_community(); }
+                    }
+                    ActionRow {
+                        label: "New Group…";
+                        icon: "plus";
+                        clicked => { root.new_group(); }
+                    }
+                    ActionRow {
+                        label: "Manage Members…";
+                        icon: "sliders";
+                        clicked => { root.manage(); }
+                    }
+                    MenuSeparator { }
+                    ActionRow {
+                        label: "Delete Community…";
+                        icon: "trash";
+                        danger: true;
+                        clicked => { root.delete_community(); }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            height: 22px;
+            padding-left: 10px;
+            GroupLabel {
+                horizontal-stretch: 1;
+                text: "Groups";
+                vertical-alignment: center;
+            }
+            Btn {
+                y: (parent.height - self.height) / 2;
+                height: 20px;
+                kind: "ghost";
+                icon: "plus";
+                icon-size: 11px;
+                tip: "New Group";
+                clicked => { root.new_group(); }
+            }
+        }
+        for g in root.groups: GroupRow {
+            item: g;
+            active: g.id == root.active_group;
+            clicked => { root.select(g.id); }
+            rename => { root.rename_group(g.id, g.name); }
+            delete => { root.delete_group(g.id, g.name); }
+        }
+        // Only "All Members": no group yet.
+        if root.groups.length <= 1: VerticalLayout {
+            padding: 10px;
+            spacing: 6px;
+            Text {
+                text: "Create groups to sort this community's devices, like shops or floors.";
+                color: Theme.text-3;
+                font-size: 11.5px;
+                wrap: word-wrap;
+            }
+        }
+        // Subtle "+ New Group" at the end of the list, like macOS sidebars.
+        Rectangle {
+            height: 28px;
+            border-radius: 7px;
+            background: nta.has-hover ? Theme.hover-soft : transparent;
+            nta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.new_group(); }
+            }
+            HorizontalLayout {
+                padding-left: 10px;
+                spacing: 8px;
+                Glyph {
+                    y: (parent.height - self.height) / 2;
+                    name: "plus";
+                    size: 12px;
+                    tint: Theme.text-3;
+                }
+                Text {
+                    text: "New Group";
+                    color: Theme.text-3;
+                    font-size: 12.5px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Rectangle { vertical-stretch: 1; }
     }
 }
 
@@ -389,6 +914,35 @@ export component DashboardView inherits FocusScope {
     // Settings or the server dialog is open (highlights its button).
     in property <bool> settings_shown: false;
 
+    // ---- Communities (admin edition; see docs/features/communities.md at the repository root)
+    // The relay stores communities / can delete offline devices.
+    in property <bool> communities_supported: false;
+    in property <bool> host_delete_supported: false;
+    in property <[CommunityItem]> communities: [];
+    // Groups of the open community, "All Members" first.
+    in property <[GroupItem]> community_groups: [];
+    // The open community and group (active_tab 2). The UI sets them and calls community_view_changed; Rust
+    // fills the names and shows the group's devices in hosts_online / hosts_offline.
+    in-out property <string> active_community: "";
+    in-out property <string> active_group: "";
+    in property <string> active_community_name: "";
+    in property <string> active_community_icon: "";
+    in property <string> active_community_color: "";
+    in property <string> active_group_name: "";
+    callback community_view_changed();
+    // Asks the window to open the name sheet: (SheetKind, target ID, name, icon, color).
+    callback open_name_sheet(int, string, string, string, string);
+    // Asks the window to confirm a deletion: (kind, target, title, body).
+    callback prompt_confirm(string, string, string, string);
+    // (desk ID, display name): the "Add to Group" sheet.
+    callback open_group_picker(string, string);
+    // (group ID, desk ID, member)
+    callback set_group_member(string, string, bool);
+    // Deletes every offline device the page shows (after a confirmation Rust prepares).
+    callback prompt_delete_offline();
+    // Settings › Communities.
+    callback manage_communities();
+
     callback copy_local_id();
     callback request_connect(string);
     callback open_rename(string, string);
@@ -413,11 +967,30 @@ export component DashboardView inherits FocusScope {
     in property <int> open_sessions: 0;
     callback back_to_sessions();
 
-    property <bool> hosts_view: root.is_admin && root.active_tab == 1;
+    // Tab 1: the relay's host list; tab 2: one community's group (the same list, filtered by Rust).
+    property <bool> hosts_view: root.is_admin && (root.active_tab == 1 || root.active_tab == 2);
+    property <bool> community_view: root.is_admin && root.active_tab == 2 && root.active_community != "";
     property <bool> compact_side: root.width < 980px;
-    // Width of the content beside the sidebar decides the narrow layout.
-    property <bool> narrow: root.width - root.side_w < 620px;
+    // Width of the content beside the sidebar (and group column) decides the narrow layout.
+    property <bool> narrow: root.width - root.side_w - root.groups_w < 620px;
     property <length> side_w: root.compact_side ? 64px : 260px;
+    property <length> groups_w: root.community_view ? (root.compact_side ? 180px : 220px) : 0px;
+    // Group actions offered on the device cards.
+    property <bool> can_group: root.communities_supported && root.communities.length > 0;
+    property <bool> in_group_page: root.community_view && root.active_group != "";
+
+    function open_community(id: string) {
+        root.active_tab = 2;
+        root.active_community = id;
+        root.active_group = "";
+        root.host_filter = 0;
+        root.community_view_changed();
+    }
+
+    function delete_host(id: string, name: string) {
+        root.prompt_confirm("delete-hosts", id, "Delete “" + name + "”?",
+            "It is removed from the device list and from every group. If it connects to this relay again, it shows up again.");
+    }
     property <length> pad: root.narrow ? 20px : 40px;
     property <bool> show_online: root.hosts_view && root.host_filter != 2 && root.hosts_online.length > 0;
     property <bool> show_offline: root.hosts_view && root.host_filter != 1 && root.hosts_offline.length > 0;
@@ -530,7 +1103,7 @@ export component DashboardView inherits FocusScope {
                         tile: "devices";
                         label: "All Devices";
                         count: root.host_online_total + root.host_offline_total;
-                        active: root.hosts_view && root.host_filter == 0;
+                        active: root.is_admin && root.active_tab == 1 && root.host_filter == 0;
                         clicked => { root.show_hosts(0); }
                     }
                     NavItem {
@@ -538,7 +1111,7 @@ export component DashboardView inherits FocusScope {
                         tile: "online";
                         label: "Online";
                         count: root.host_online_total;
-                        active: root.hosts_view && root.host_filter == 1;
+                        active: root.is_admin && root.active_tab == 1 && root.host_filter == 1;
                         clicked => { root.show_hosts(1); }
                     }
                     NavItem {
@@ -546,8 +1119,96 @@ export component DashboardView inherits FocusScope {
                         tile: "offline";
                         label: "Offline";
                         count: root.host_offline_total;
-                        active: root.hosts_view && root.host_filter == 2;
+                        active: root.is_admin && root.active_tab == 1 && root.host_filter == 2;
                         clicked => { root.show_hosts(2); }
+                    }
+                }
+
+                // Communities: one is listed directly; several open the cascading picker from one entry.
+                if root.is_admin && root.communities_supported: VerticalLayout {
+                    spacing: 2px;
+                    padding-top: 20px;
+                    if !root.compact_side: HorizontalLayout {
+                        height: 19px;
+                        padding-left: 10px;
+                        GroupLabel {
+                            horizontal-stretch: 1;
+                            text: "Communities";
+                            vertical-alignment: center;
+                        }
+                        if root.communities.length > 0: Btn {
+                            y: (parent.height - self.height) / 2;
+                            height: 19px;
+                            kind: "ghost";
+                            icon: "plus";
+                            icon-size: 10px;
+                            tip: "New Community";
+                            clicked => { root.open_name_sheet(1, "", "", "", ""); }
+                        }
+                    }
+                    if root.communities.length == 1: CommunityNavItem {
+                        compact: root.compact_side;
+                        label: root.communities[0].name;
+                        icon: root.communities[0].icon;
+                        hue: root.communities[0].color;
+                        count: root.communities[0].total;
+                        active: root.community_view && root.active_community == root.communities[0].id;
+                        clicked => { root.open_community(root.communities[0].id); }
+                    }
+                    if root.communities.length > 1: Rectangle {
+                        height: 30px;
+                        CommunityNavItem {
+                            width: parent.width;
+                            height: parent.height;
+                            compact: root.compact_side;
+                            label: root.community_view ? root.active_community_name : "Communities";
+                            icon: root.community_view ? root.active_community_icon : "";
+                            hue: root.community_view ? root.active_community_color : "indigo";
+                            count: root.communities.length;
+                            chevron: true;
+                            active: root.community_view;
+                            clicked => { picker.show(); }
+                        }
+                        picker := PopupWindow {
+                            x: parent.width + 6px;
+                            y: -34px;
+                            CommunityPicker {
+                                communities: root.communities;
+                                current: root.community_view ? root.active_community : "";
+                                pick(id) => { root.open_community(id); }
+                                create => { root.open_name_sheet(1, "", "", "", ""); }
+                                manage => { root.manage_communities(); }
+                            }
+                        }
+                    }
+                    // Subtle affordance while there is none.
+                    if root.communities.length == 0: Rectangle {
+                        height: 28px;
+                        border-radius: 7px;
+                        background: nca.has-hover ? Theme.hover-soft : transparent;
+                        nca := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.open_name_sheet(1, "", "", "", ""); }
+                        }
+                        HorizontalLayout {
+                            padding-left: root.compact_side ? (parent.width - 12px) / 2 : 15px;
+                            spacing: 13px;
+                            Glyph {
+                                y: (parent.height - self.height) / 2;
+                                name: "plus";
+                                size: 12px;
+                                tint: Theme.text-3;
+                            }
+                            if !root.compact_side: Text {
+                                text: "New Community";
+                                color: Theme.text-3;
+                                font-size: 12.5px;
+                                vertical-alignment: center;
+                            }
+                        }
+                        if root.compact_side: Tooltip {
+                            TipBox { text: "New Community"; }
+                        }
                     }
                 }
 
@@ -595,6 +1256,37 @@ export component DashboardView inherits FocusScope {
                     }
                 }
             }
+        }
+
+        // ---- Groups of the open community
+        if root.community_view: GroupColumn {
+            width: root.groups_w;
+            name: root.active_community_name;
+            icon: root.active_community_icon;
+            hue: root.active_community_color;
+            groups: root.community_groups;
+            active_group: root.active_group;
+            select(id) => {
+                root.active_group = id;
+                root.selected_id = "";
+                root.community_view_changed();
+            }
+            new_group => { root.open_name_sheet(3, root.active_community, "", "", ""); }
+            rename_group(id, name) => { root.open_name_sheet(4, id, name, "", ""); }
+            delete_group(id, name) => {
+                root.prompt_confirm("delete-group", id, "Delete the group “" + name + "”?",
+                    "Its devices stay in All Devices and in their other groups.");
+            }
+            edit_community => {
+                root.open_name_sheet(2, root.active_community, root.active_community_name, root.active_community_icon,
+                    root.active_community_color);
+            }
+            delete_community => {
+                root.prompt_confirm("delete-community", root.active_community,
+                    "Delete the community “" + root.active_community_name + "”?",
+                    "Its groups are deleted for every administrator. The devices stay in All Devices.");
+            }
+            manage => { root.manage_communities(); }
         }
 
         // ---- Main
@@ -785,6 +1477,7 @@ export component DashboardView inherits FocusScope {
                         // Title
                         Text {
                             text: !root.hosts_view ? "Session History"
+                                : root.community_view ? (root.active_group != "" ? root.active_group_name : root.active_community_name)
                                 : root.host_filter == 1 ? "Online" : root.host_filter == 2 ? "Offline" : "All Devices";
                             color: Theme.text;
                             font-size: 28px;
@@ -793,7 +1486,10 @@ export component DashboardView inherits FocusScope {
                             overflow: elide;
                         }
                         Text {
-                            text: root.hosts_view
+                            text: root.community_view
+                                ? (root.active_group != "" ? root.active_community_name : "Every device of this community") + " — "
+                                    + root.hosts_online.length + " online · " + root.hosts_offline.length + " offline"
+                                : root.hosts_view
                                 ? root.host_online_total + " online · " + root.host_offline_total + " offline"
                                 : root.history_total == 0 ? "Devices you connect to appear here."
                                 : root.history_total + (root.history_total == 1 ? " device" : " devices") + " you connected to";
@@ -1067,11 +1763,13 @@ export component DashboardView inherits FocusScope {
                                 alignment: center;
                                 AppTile {
                                     tile: 44px;
-                                    kind: root.hosts_view ? (root.host_filter == 2 ? "offline" : "devices") : "history";
+                                    kind: root.community_view ? "community"
+                                        : root.hosts_view ? (root.host_filter == 2 ? "offline" : "devices") : "history";
                                 }
                             }
                             Text {
                                 text: !root.hosts_view ? "No sessions yet"
+                                    : root.community_view ? (root.active_group != "" ? "No devices in this group" : "No devices in this community yet")
                                     : root.host_filter == 1 ? "No device is online"
                                     : root.host_filter == 2 ? "No device is offline"
                                     : "No devices on this relay yet";
@@ -1082,11 +1780,21 @@ export component DashboardView inherits FocusScope {
                             }
                             Text {
                                 text: !root.hosts_view ? "Enter a device ID above to start your first session."
+                                    : root.community_view ? "In All Devices, right-click a device and choose Add to Group, or manage the members here."
                                     : "Devices appear here once OpenDesk runs on them with this relay.";
                                 color: Theme.text-2;
                                 font-size: 12px;
                                 horizontal-alignment: center;
                                 wrap: word-wrap;
+                            }
+                            if root.community_view: HorizontalLayout {
+                                alignment: center;
+                                padding-top: 6px;
+                                Btn {
+                                    kind: "link";
+                                    label: "Manage Members…";
+                                    clicked => { root.manage_communities(); }
+                                }
                             }
                         }
 
@@ -1122,6 +1830,14 @@ export component DashboardView inherits FocusScope {
                                     select => { root.select_row(h.desk_id); }
                                     connect => { root.request_connect(h.desk_id); }
                                     rename => { root.open_host_rename(h.desk_id, h.alias); }
+                                    admin_menu: root.can_group || root.host_delete_supported;
+                                    can_group: root.can_group;
+                                    in_group: root.in_group_page;
+                                    group_name: root.active_group_name;
+                                    can_delete: root.host_delete_supported;
+                                    add_to_group => { root.open_group_picker(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
+                                    remove_from_group => { root.set_group_member(root.active_group, h.desk_id, false); }
+                                    delete => { root.delete_host(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
                                 }
                             }
                             if root.view_mode == 1: on-list := Card {
@@ -1147,6 +1863,14 @@ export component DashboardView inherits FocusScope {
                                     select => { root.select_row(h.desk_id); }
                                     connect => { root.request_connect(h.desk_id); }
                                     rename => { root.open_host_rename(h.desk_id, h.alias); }
+                                    admin_menu: root.can_group || root.host_delete_supported;
+                                    can_group: root.can_group;
+                                    in_group: root.in_group_page;
+                                    group_name: root.active_group_name;
+                                    can_delete: root.host_delete_supported;
+                                    add_to_group => { root.open_group_picker(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
+                                    remove_from_group => { root.set_group_member(root.active_group, h.desk_id, false); }
+                                    delete => { root.delete_host(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
                                 }
                             }
                         }
@@ -1155,10 +1879,23 @@ export component DashboardView inherits FocusScope {
                         if root.show_offline: off-sec := VerticalLayout {
                             padding-top: 32px;
                             spacing: 12px;
-                            SectionHead {
-                                title: "Offline";
-                                count: root.hosts_offline.length;
-                                muted: true;
+                            HorizontalLayout {
+                                SectionHead {
+                                    horizontal-stretch: 1;
+                                    title: "Offline";
+                                    count: root.hosts_offline.length;
+                                    muted: true;
+                                }
+                                // Bulk delete of what this section shows (search and group applied).
+                                if root.host_delete_supported: Btn {
+                                    height: 24px;
+                                    kind: "ghost";
+                                    icon: "trash";
+                                    icon-size: 12px;
+                                    label: root.narrow ? "" : "Delete Offline…";
+                                    tip: "Delete the offline devices shown here";
+                                    clicked => { root.prompt_delete_offline(); }
+                                }
                             }
                             if root.view_mode == 0: off-grid := Rectangle {
                                 property <int> cols: max(1, min(4, floor((self.width + 16px) / 316px)));
@@ -1184,6 +1921,14 @@ export component DashboardView inherits FocusScope {
                                     select => { root.select_row(h.desk_id); }
                                     connect => { root.request_connect(h.desk_id); }
                                     rename => { root.open_host_rename(h.desk_id, h.alias); }
+                                    admin_menu: root.can_group || root.host_delete_supported;
+                                    can_group: root.can_group;
+                                    in_group: root.in_group_page;
+                                    group_name: root.active_group_name;
+                                    can_delete: root.host_delete_supported;
+                                    add_to_group => { root.open_group_picker(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
+                                    remove_from_group => { root.set_group_member(root.active_group, h.desk_id, false); }
+                                    delete => { root.delete_host(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
                                 }
                             }
                             if root.view_mode == 1: off-list := Card {
@@ -1209,6 +1954,14 @@ export component DashboardView inherits FocusScope {
                                     select => { root.select_row(h.desk_id); }
                                     connect => { root.request_connect(h.desk_id); }
                                     rename => { root.open_host_rename(h.desk_id, h.alias); }
+                                    admin_menu: root.can_group || root.host_delete_supported;
+                                    can_group: root.can_group;
+                                    in_group: root.in_group_page;
+                                    group_name: root.active_group_name;
+                                    can_delete: root.host_delete_supported;
+                                    add_to_group => { root.open_group_picker(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
+                                    remove_from_group => { root.set_group_member(root.active_group, h.desk_id, false); }
+                                    delete => { root.delete_host(h.desk_id, h.alias != "" ? h.alias : h.device_name); }
                                 }
                             }
                         }

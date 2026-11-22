@@ -224,6 +224,13 @@ pub trait UiPort: Send + Sync {
     /// What the relay supports for administrators, known after each registration (admin edition).
     #[cfg(feature = "admin")]
     fn relay_admin_caps(&self, _device_security: bool, _host_alias: bool) {}
+    /// Whether the relay can delete offline devices and stores communities, known after each registration
+    /// (admin edition).
+    #[cfg(feature = "admin")]
+    fn relay_registry_caps(&self, _host_delete: bool, _communities: bool) {}
+    /// The relay's communities changed or were fetched (admin edition).
+    #[cfg(feature = "admin")]
+    fn communities_changed(&self, _communities: Vec<crate::protocol::CommunityEntry>) {}
 }
 
 /// Headless mode: nothing to show.
