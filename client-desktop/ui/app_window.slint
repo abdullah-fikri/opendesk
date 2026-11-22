@@ -211,14 +211,32 @@ export component MainWindow inherits Window {
     in property <bool> browser_remote_can_up;
     in property <int> browser_local_selected;
     in property <int> browser_remote_selected;
+    in property <string> browser_local_footer;
+    in property <string> browser_remote_footer;
+    in property <bool> browser_local_can_back;
+    in property <bool> browser_remote_can_back;
+    in property <int> browser_local_cursor: -1;
+    in property <int> browser_remote_cursor: -1;
+    in property <string> browser_local_single;
+    in property <string> browser_remote_single;
+    in property <int> browser_local_sort;
+    in property <int> browser_remote_sort;
+    in property <bool> browser_local_sort_desc;
+    in property <bool> browser_remote_sort_desc;
+    in property <bool> browser_remote_ops;
+    in property <bool> browser_local_trash;
+    in property <string> browser_reveal_label: "Show in Explorer";
     in property <string> browser_status;
     callback browser_close();
     callback browser_local_up();
     callback browser_remote_up();
     callback browser_local_go(string);
     callback browser_remote_go(string);
-    callback browser_local_select(int, bool);
-    callback browser_remote_select(int, bool);
+    callback browser_select(bool, int, int);
+    callback browser_action(bool, string);
+    callback browser_rename(bool, string);
+    callback browser_delete(bool);
+    callback browser_sort(bool, int);
     callback browser_local_open(int);
     callback browser_remote_open(int);
     callback browser_local_mkdir(string);
@@ -527,14 +545,32 @@ export component MainWindow inherits Window {
         remote-can-up: root.browser_remote_can_up;
         local-selected: root.browser_local_selected;
         remote-selected: root.browser_remote_selected;
+        local-footer: root.browser_local_footer;
+        remote-footer: root.browser_remote_footer;
+        local-can-back: root.browser_local_can_back;
+        remote-can-back: root.browser_remote_can_back;
+        local-cursor: root.browser_local_cursor;
+        remote-cursor: root.browser_remote_cursor;
+        local-single: root.browser_local_single;
+        remote-single: root.browser_remote_single;
+        local-sort: root.browser_local_sort;
+        remote-sort: root.browser_remote_sort;
+        local-sort-desc: root.browser_local_sort_desc;
+        remote-sort-desc: root.browser_remote_sort_desc;
+        remote-ops: root.browser_remote_ops;
+        local-trash: root.browser_local_trash;
+        reveal-label: root.browser_reveal_label;
         status: root.browser_status;
         close => { root.browser_close(); }
         local-up => { root.browser_local_up(); }
         remote-up => { root.browser_remote_up(); }
         local-go(p) => { root.browser_local_go(p); }
         remote-go(p) => { root.browser_remote_go(p); }
-        local-select(i, add) => { root.browser_local_select(i, add); }
-        remote-select(i, add) => { root.browser_remote_select(i, add); }
+        select(remote, i, mode) => { root.browser_select(remote, i, mode); }
+        action(remote, a) => { root.browser_action(remote, a); }
+        rename(remote, n) => { root.browser_rename(remote, n); }
+        delete(remote) => { root.browser_delete(remote); }
+        sort(remote, k) => { root.browser_sort(remote, k); }
         local-open(i) => { root.browser_local_open(i); }
         remote-open(i) => { root.browser_remote_open(i); }
         local-mkdir(n) => { root.browser_local_mkdir(n); }

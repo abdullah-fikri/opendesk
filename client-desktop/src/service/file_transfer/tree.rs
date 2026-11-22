@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::domain::transfer::{MAX_FILE_BYTES, safe_rel_path};
+use crate::domain::transfer::{Limits, safe_rel_path, size_label};
 use crate::infra::logger;
 
 /// One entry of a walked selection. `rel` uses `\` separators; folders have `dir` set and size 0.
@@ -18,22 +18,22 @@ pub struct TreeEntry {
 /// Expands the selected paths into files and folders (folders before their contents) without reading any
 /// file contents. Symlinks and junctions inside folders are skipped (no loops, nothing outside the
 /// selection). Errors are user-facing status lines.
-pub fn walk(roots: &[PathBuf], max_entries: usize, max_bytes: u64) -> Result<Vec<TreeEntry>, String> {
+pub fn walk(roots: &[PathBuf], max_entries: usize, limits: Limits) -> Result<Vec<TreeEntry>, String> {
     let mut out = Vec::new();
     let mut total = 0u64;
     let mut push = |out: &mut Vec<TreeEntry>, e: TreeEntry| -> Result<(), String> {
         if safe_rel_path(&e.rel).is_none() {
             return Err(format!("Failed: unsupported name or path: {}", e.rel));
         }
-        if e.size > MAX_FILE_BYTES {
-            return Err(format!("Failed: {} is larger than 2 GB", e.rel));
+        if e.size > limits.file {
+            return Err(format!("Failed: {} is larger than {}", e.rel, size_label(limits.file)));
         }
         total += e.size;
         if out.len() >= max_entries {
             return Err(format!("Failed: the folder has too many items (max {max_entries})"));
         }
-        if total > max_bytes {
-            return Err(format!("Failed: total size exceeds {} GB", max_bytes >> 30));
+        if total > limits.tree {
+            return Err(format!("Failed: total size exceeds {}", size_label(limits.tree)));
         }
         out.push(e);
         Ok(())
@@ -148,7 +148,7 @@ pub(super) mod tests {
     #[test]
     fn walk_lists_folders_before_contents_with_relative_names() {
         let root = temp_tree("order");
-        let entries = walk(&[root.join("Project"), root.join("loose.txt")], 100, 1 << 20).unwrap();
+        let entries = walk(&[root.join("Project"), root.join("loose.txt")], 100, lim(1 << 20)).unwrap();
         let rels: Vec<(&str, bool, u64)> = entries.iter().map(|e| (e.rel.as_str(), e.dir, e.size)).collect();
         assert_eq!(rels.len(), 7);
         for (rel, dir, size) in [
@@ -175,9 +175,15 @@ pub(super) mod tests {
     fn walk_enforces_entry_and_size_limits() {
         let root = temp_tree("limits");
         let sel = [root.join("Project")];
-        assert!(walk(&sel, 6, 1 << 20).is_ok());
-        assert!(walk(&sel, 5, 1 << 20).unwrap_err().contains("max 5"));
-        assert!(walk(&sel, 100, 12).unwrap_err().contains("total size"));
+        assert!(walk(&sel, 6, lim(1 << 20)).is_ok());
+        assert!(walk(&sel, 5, lim(1 << 20)).unwrap_err().contains("max 5"));
+        assert!(walk(&sel, 100, lim(12)).unwrap_err().contains("total size"));
+        let one_file_cap = Limits { file: 11, tree: 1 << 20 };
+        assert!(walk(&sel, 100, one_file_cap).unwrap_err().contains("main.rs is larger"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    fn lim(tree: u64) -> Limits {
+        Limits { file: tree, tree }
     }
 }

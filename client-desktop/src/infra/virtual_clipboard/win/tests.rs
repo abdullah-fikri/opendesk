@@ -312,7 +312,7 @@ fn offer_parsing_drops_unsafe_names_and_keeps_partner_indices() {
         { "name": "\\\\server\\share\\x", "size": 1 },
         { "name": "a\\NUL.txt", "size": 1 },
         { "name": "ok.txt", "size": 1 },
-        { "name": "big.bin", "size": 3u64 << 30 },
+        { "name": "big.bin", "size": 2u64 << 40 },
         { "name": "d", "dir": true },
     ])))
     .unwrap();

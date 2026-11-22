@@ -328,11 +328,8 @@ impl Connection {
                     }
                 }
                 self.maintain_channels();
-                for p in &self.links {
-                    file_transfer::set_fast_path(&p.partner, self.file_path_to(&p.partner) != Path::Relay);
-                }
-                for c in &self.channels {
-                    file_transfer::set_fast_path(&c.partner, self.file_path_to(&c.partner) != Path::Relay);
+                for partner in self.links.iter().map(|p| &p.partner).chain(self.channels.iter().map(|c| &c.partner)) {
+                    file_transfer::set_route(partner, self.file_route_now(partner));
                 }
                 self.maintain_lane();
                 let hosted_p2p = self.links.iter().any(|p| p.is_host() && p.is_active());
