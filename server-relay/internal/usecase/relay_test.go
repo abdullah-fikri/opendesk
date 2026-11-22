@@ -246,3 +246,23 @@ func TestViewerOnlyDevicesCannotBeControlled(t *testing.T) {
 		t.Fatalf("viewer-only device could not view: %v", err)
 	}
 }
+
+// staleHosts is a registry whose stored online flags are wrong: the offline write of a dropped connection
+// landed after the online write of its replacement.
+type staleHosts struct{ nopStore }
+
+func (staleHosts) List(context.Context) ([]model.Host, error) {
+	return []model.Host{{CleanID: "111111111", Online: true}, {CleanID: "222222222", Online: false}}, nil
+}
+
+func TestHostListTakesOnlineFromLiveConnections(t *testing.T) {
+	r := New(staleHosts{}, nopStore{}, metrics.New(), Options{}, slog.New(slog.DiscardHandler))
+	addPeer(r, "222222222", false)
+	hosts, err := r.HostList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hosts) != 2 || hosts[0].CleanID != "222222222" || !hosts[0].Online || hosts[1].Online {
+		t.Fatalf("want the connected device online and first, got %+v", hosts)
+	}
+}

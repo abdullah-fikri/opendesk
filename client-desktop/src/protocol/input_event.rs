@@ -150,6 +150,22 @@ pub enum InputEvent {
     PointerLock {
         on: bool,
     },
+    /// Host -> viewer (viewers listing `text-focus`): keyboard focus moved into (`editable`) or out of a control
+    /// that takes typed text; the rect is that control on the streamed monitor (0..=1, empty when it lies on
+    /// another monitor). `password`: it hides what is typed. Sent only on change.
+    TextFocus {
+        editable: bool,
+        #[serde(default)]
+        norm_x: f64,
+        #[serde(default)]
+        norm_y: f64,
+        #[serde(default)]
+        norm_w: f64,
+        #[serde(default)]
+        norm_h: f64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        password: bool,
+    },
     /// Viewer -> host while the pointer is locked: relative motion in viewer pixels.
     MouseDelta {
         dx: i32,
@@ -177,6 +193,16 @@ pub enum InputEvent {
     },
     /// Host -> viewer: about once a second while the viewer asked for `stats`.
     HostStats(HostStats),
+    /// A file browser message (`domain::file_browser::BrowseMsg`), either way, when the session has no direct
+    /// path: sealed like every other event, so the relay only forwards it. Older peers ignore it.
+    Browse {
+        msg: Value,
+    },
+    /// The viewer stops (`on: false`) or resumes the screen stream; a files-only session keeps it off. Hosts that
+    /// predate it keep streaming.
+    SetVideo {
+        on: bool,
+    },
 }
 
 impl InputEvent {
@@ -285,6 +311,27 @@ mod tests {
             serde_json::to_value(InputEvent::Wheel { norm_x: 0.5, norm_y: 0.25, delta_y: 0, delta_x: 120 }).unwrap(),
             json!({ "action": "wheel", "normX": 0.5, "normY": 0.25, "deltaY": 0, "deltaX": 120 })
         );
+    }
+
+    #[test]
+    fn text_focus_wire_shape() {
+        let e = InputEvent::TextFocus {
+            editable: true,
+            norm_x: 0.1,
+            norm_y: 0.2,
+            norm_w: 0.3,
+            norm_h: 0.04,
+            password: false,
+        };
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            json!({ "action": "text-focus", "editable": true, "normX": 0.1, "normY": 0.2, "normW": 0.3, "normH": 0.04 })
+        );
+        let secret = json!({ "action": "text-focus", "editable": true, "normX": 0, "normY": 0, "normW": 1, "normH": 1,
+            "password": true });
+        assert!(matches!(InputEvent::parse(&secret), Some(InputEvent::TextFocus { password: true, .. })));
+        let off = InputEvent::parse(&json!({ "action": "text-focus", "editable": false })).unwrap();
+        assert!(matches!(off, InputEvent::TextFocus { editable: false, norm_w, .. } if norm_w == 0.0));
     }
 
     #[test]

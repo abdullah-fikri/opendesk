@@ -187,8 +187,7 @@ impl E2e {
         self.transport.get().cloned()
     }
 
-    /// The partner's verified static key.
-    #[cfg(test)]
+    /// The partner's verified static key (the file channel requires the same key on its own handshake).
     pub fn peer_key(&self) -> Option<&[u8]> {
         self.peer_key.get().map(Vec::as_slice)
     }

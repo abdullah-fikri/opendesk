@@ -128,6 +128,8 @@ impl Xtest {
 /// Injects mouse and keyboard input into the X display. Connects on first use and reconnects after errors.
 pub struct InputInjector {
     x: Mutex<Option<Xtest>>,
+    /// Wheel units short of a whole notch, vertical and horizontal (see [`super::wheel_notches`]).
+    wheel_rest: Mutex<(i32, i32)>,
 }
 
 impl Default for InputInjector {
@@ -139,7 +141,7 @@ impl Default for InputInjector {
 impl InputInjector {
     /// Cheap to create; the X connection opens on the first injected event.
     pub fn new() -> Self {
-        Self { x: Mutex::new(None) }
+        Self { x: Mutex::new(None), wheel_rest: Mutex::new((0, 0)) }
     }
 
     fn with(&self, f: impl FnOnce(&mut Xtest) -> Res<()>) {
@@ -189,13 +191,17 @@ impl InputInjector {
         self.button(button, false);
     }
 
-    /// Scrolls by `delta_y` (120 = one notch up; small values are notches, as on Windows).
+    /// Scrolls by `delta_y` (120 = one notch up; small values are notches, as on Windows; partial notches add up).
     pub fn mouse_wheel(&self, delta_y: i32) {
-        if delta_y == 0 {
+        let notches = {
+            let mut rest = self.wheel_rest.lock().unwrap_or_else(|e| e.into_inner());
+            super::wheel_notches(&mut rest.0, delta_y)
+        };
+        if notches == 0 {
             return;
         }
-        let notches = if delta_y.abs() < 40 { delta_y.abs() } else { (delta_y.abs() / 120).max(1) };
-        let detail = if delta_y > 0 { 4 } else { 5 };
+        let detail = if notches > 0 { 4 } else { 5 };
+        let notches = notches.abs();
         self.with(|t| {
             for _ in 0..notches.min(20) {
                 t.fake(BUTTON_PRESS_EVENT, detail, 0, 0)?;
@@ -207,11 +213,15 @@ impl InputInjector {
 
     /// Scrolls sideways by `delta_x` (120 = one notch right): X buttons 6 (left) and 7 (right).
     pub fn mouse_hwheel(&self, delta_x: i32) {
-        if delta_x == 0 {
+        let notches = {
+            let mut rest = self.wheel_rest.lock().unwrap_or_else(|e| e.into_inner());
+            super::wheel_notches(&mut rest.1, delta_x)
+        };
+        if notches == 0 {
             return;
         }
-        let notches = if delta_x.abs() < 40 { delta_x.abs() } else { (delta_x.abs() / 120).max(1) };
-        let detail = if delta_x > 0 { 7 } else { 6 };
+        let detail = if notches > 0 { 7 } else { 6 };
+        let notches = notches.abs();
         self.with(|t| {
             for _ in 0..notches.min(20) {
                 t.fake(BUTTON_PRESS_EVENT, detail, 0, 0)?;
