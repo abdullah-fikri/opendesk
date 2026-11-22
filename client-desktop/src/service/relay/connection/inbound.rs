@@ -25,6 +25,7 @@ impl Connection {
             self.busy = true;
             self.on_direct_file(&from, Path::Channel, kind, &payload);
         }
+        self.drain_lane();
         loop {
             let read = socket.read();
             if read.is_ok() {

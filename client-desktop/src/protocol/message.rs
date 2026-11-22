@@ -37,6 +37,8 @@ pub enum ClientMessage {
     RelayFile { target_clean: String, payload: FilePayload },
     /// P2P handshake or address candidate for the session partner.
     P2pSignal { target_clean: String, candidate: String },
+    /// Asks for a one-time token to attach a relay file lane (`file-lane`, answered with `file-lane-token`).
+    FileLaneRequest,
     /// Administrators only: replaces the hosts shown on the monitor wall (at most 16; empty stops watching).
     #[cfg(feature = "admin")]
     MonitorSet { targets: Vec<String> },
@@ -134,6 +136,16 @@ pub enum ServerMessage {
     P2pSignal {
         from_clean: String,
         candidate: String,
+    },
+    /// A one-time token for attaching our relay file lane (answers `file-lane-request`).
+    FileLaneToken {
+        token: String,
+    },
+    /// The transfers `ids` between us and `from_clean` that ran over a relay file lane (ours or its) were cut.
+    FileLaneLost {
+        from_clean: String,
+        #[serde(default)]
+        ids: Vec<String>,
     },
     /// The relay's UDP forwarder for the session with `target_clean`: where to send and the bind token.
     UdpRelayOffer {

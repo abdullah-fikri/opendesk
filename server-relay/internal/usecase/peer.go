@@ -40,6 +40,14 @@ type Peer struct {
 	// and lets its next connection take over this one's sessions (see resume.go).
 	Resume      bool
 	ResumeToken string
+	// FileLane is set from the file-lane capability: the device may attach a file lane (see lane.go).
+	FileLane bool
+
+	// lane is the attached file lane, if any; laneToken is the one-time token a new lane must present until
+	// laneTokenExpires (guarded by Relay.mu).
+	lane             *Lane
+	laneToken        string
+	laneTokenExpires time.Time
 
 	// Single-session state: hosts, legacy viewers and Android peers (guarded by Relay.mu).
 	sessionWith   string
@@ -103,6 +111,7 @@ func buildPeer(info PeerInfo, deskID string, multi bool, conn Conn, m FrameMetri
 		MonitorView: slices.Contains(info.Caps, model.CapMonitorView),
 		FileBinary:  slices.Contains(info.Caps, model.CapFileBinary),
 		Resume:      slices.Contains(info.Caps, model.CapSessionResume),
+		FileLane:    slices.Contains(info.Caps, model.CapFileLane),
 		conn:        conn,
 		metrics:     m,
 		control:     newMsgRing(controlQueueLen),

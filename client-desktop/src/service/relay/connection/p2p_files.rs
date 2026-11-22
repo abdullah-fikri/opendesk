@@ -22,15 +22,10 @@ impl Connection {
         self.channels.iter().find(|c| c.partner == target && c.is_up())
     }
 
-    /// The path a transfer to `target` starting now takes: the file channel, else the P2P path, else the relay.
+    /// The path a transfer to `target` starting now takes: the file channel, else the P2P path, else our relay file
+    /// lane, else the relay socket.
     pub(super) fn file_path_to(&self, target: &str) -> Path {
-        if self.channel_to(target).is_some() {
-            Path::Channel
-        } else if self.file_p2p_to(target) {
-            Path::P2p
-        } else {
-            Path::Relay
-        }
+        Path::choose(self.channel_to(target).is_some(), self.file_p2p_to(target), self.lane_to(target))
     }
 
     /// The path of file message `payload` to `target` (see `domain::file_route`).
@@ -107,6 +102,7 @@ impl Connection {
             }
         });
         let sent = match path {
+            Path::Lane => self.send_lane(target, kind, payload, done),
             Path::Channel => match self.channels.iter().find(|c| c.partner == target) {
                 Some(c) => c.send(kind, payload, Some(done)),
                 None => {

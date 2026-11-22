@@ -47,8 +47,21 @@ pub enum Stream {
     Audio = 2,
     File = 3,
     Input = 4,
+    /// File chunks sent over the relay file lane (`file-lane`): a socket of their own, so a counter of their own;
+    /// sealed and routed like [`Stream::File`] otherwise.
+    LaneFile = 5,
 }
-const STREAMS: usize = 5;
+const STREAMS: usize = 6;
+
+impl Stream {
+    /// The kind of message the stream carries (a lane file chunk is a file chunk).
+    fn kind(self) -> Self {
+        match self {
+            Self::LaneFile => Self::File,
+            s => s,
+        }
+    }
+}
 
 /// Client-side kill switch: `OPENDESK_E2E=0` neither advertises nor uses end-to-end encryption.
 pub fn enabled() -> bool {
@@ -200,10 +213,21 @@ impl E2e {
     /// Seals a binary message for the relay path. None: send it unchanged (not sealing yet, or a kind that
     /// stays plain, such as a legacy JPEG).
     pub fn seal(&self, msg: &[u8]) -> Option<Vec<u8>> {
+        self.seal_on(msg, false)
+    }
+
+    /// Seals a file chunk for the relay file lane: like [`Self::seal`], in the lane's own nonce domain, because the
+    /// receiver may get lane and main-connection chunks interleaved in another order than they were sealed.
+    pub fn seal_lane_file(&self, msg: &[u8]) -> Option<Vec<u8>> {
+        self.seal_on(msg, true)
+    }
+
+    fn seal_on(&self, msg: &[u8], lane: bool) -> Option<Vec<u8>> {
         if !self.is_on() {
             return None;
         }
         let (stream, header) = classify_plain(msg)?;
+        let stream = if lane && stream == Stream::File { Stream::LaneFile } else { stream };
         let t = self.transport.get()?;
         let nonce = self.reserve(stream, msg.len())?;
         let mut out = Vec::with_capacity(header + 8 + 4 + msg.len() + TAG * (2 + msg.len() / SEGMENT));
@@ -227,14 +251,20 @@ impl E2e {
         let t = self.transport.get()?;
         let body = msg.get(header..)?;
         let nonce = u64::from_be_bytes(body.get(..8)?.try_into().ok()?);
+        // A file chunk names its stream by its nonce domain: the main connection's or the file lane's.
+        let stream = if stream == Stream::File && nonce >> DOMAIN_SHIFT == Stream::LaneFile as u64 {
+            Stream::LaneFile
+        } else {
+            stream
+        };
         let (plain, last) = open_checked(t, &mut inner, stream, nonce, &body[8..])?;
         let mut expected = plain.get(..header)?.to_vec();
         mark(stream, &mut expected);
-        if expected != msg[..header] || classify_plain(&plain).map(|c| c.0) != Some(stream) {
+        if expected != msg[..header] || classify_plain(&plain).map(|c| c.0) != Some(stream.kind()) {
             return None;
         }
         inner.rx[stream as usize] = Some(last);
-        inner.sealed_seen[stream as usize] = true;
+        inner.sealed_seen[stream.kind() as usize] = true;
         Some(Cow::Owned(plain))
     }
 
@@ -370,7 +400,7 @@ fn mark(stream: Stream, header: &mut [u8]) {
     match stream {
         Stream::Video => header[7] = SEALED,
         Stream::Audio => header[1] = SEALED,
-        Stream::File => {
+        Stream::File | Stream::LaneFile => {
             let n = header.len();
             header[n - 8..].copy_from_slice(&SEALED_OFFSET);
         }
@@ -469,6 +499,28 @@ mod tests {
         assert!(host.open(&chunk).is_none());
         let pcm = [binary::AUDIO_MARKER, 48, 0, 0];
         assert!(viewer.open(&pcm).is_some(), "no sealed voice seen from the host yet");
+    }
+
+    #[test]
+    fn lane_chunks_count_on_their_own() {
+        let (viewer, host) = session(Verdict::Trust);
+        let chunk = |id: &str| binary::file_chunk(id, 0, &[3u8; 100]).unwrap();
+        // Sealed main, lane, main, lane; the two sockets deliver them in another order.
+        let main1 = viewer.seal(&chunk("m1")).unwrap();
+        let lane1 = viewer.seal_lane_file(&chunk("l1")).unwrap();
+        let main2 = viewer.seal(&chunk("m2")).unwrap();
+        let lane2 = viewer.seal_lane_file(&chunk("l2")).unwrap();
+        assert_eq!(binary::parse_file_chunk(&lane1).unwrap().id, "l1", "relay still finds the grant");
+        assert_eq!(host.open(&lane1).unwrap().as_ref(), &chunk("l1")[..]);
+        assert_eq!(host.open(&lane2).unwrap().as_ref(), &chunk("l2")[..]);
+        assert_eq!(host.open(&main1).unwrap().as_ref(), &chunk("m1")[..]);
+        assert_eq!(host.open(&main2).unwrap().as_ref(), &chunk("m2")[..]);
+        assert!(host.open(&lane1).is_none(), "lane replay accepted");
+        assert!(host.open(&chunk("l3")).is_none(), "plain chunk accepted once chunks are sealed");
+        // Only file chunks have a lane domain.
+        let frame = framed(1, 100);
+        let sealed = viewer.seal_lane_file(&frame).unwrap();
+        assert_eq!(host.open(&sealed).unwrap().as_ref(), &frame[..]);
     }
 
     #[test]

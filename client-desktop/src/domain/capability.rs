@@ -38,6 +38,9 @@ pub const FILE_RESUME: &str = "file-resume";
 pub const FILE_DROP: &str = "file-drop";
 /// File transfers may run over a direct TCP file channel of their own (`infra::file_channel`); needs `e2e`.
 pub const FILE_CHANNEL: &str = "file-channel";
+/// File transfers may run over a relay file lane: a second, file-only WebSocket to the relay
+/// (`service::relay::connection::file_lane`). Both the relay and the partner list it; needs `file-binary`.
+pub const FILE_LANE: &str = "file-lane";
 /// The viewer draws its own cursor in the host's shape.
 pub const CURSOR_SHAPE: &str = "cursor-shape";
 /// The viewer locks its pointer and sends relative motion while a host application captured the mouse
@@ -133,6 +136,8 @@ pub struct PeerCaps {
     /// Transfers may run over a direct file channel ([`FILE_CHANNEL`]); the channel authenticates with the
     /// end-to-end keys, so the partner must list `e2e` too.
     pub file_channel: bool,
+    /// Transfers to the partner may run over our relay file lane ([`FILE_LANE`]); the relay must list it too.
+    pub file_lane: bool,
     pub cursor_shape: bool,
     /// The viewer can lock its pointer for relative motion ([`MOUSE_RELATIVE`]).
     pub mouse_relative: bool,
@@ -185,6 +190,7 @@ impl PeerCaps {
             file_resume: has(FILE_ACK) && has(FILE_RESUME),
             file_drop: has(FILE_OFFER) && has(FILE_DROP),
             file_channel: has(FILE_CHANNEL) && has(E2E) && has(FILE_BINARY),
+            file_lane: has(FILE_LANE) && has(FILE_BINARY),
             cursor_shape: has(CURSOR_SHAPE),
             mouse_relative: has(MOUSE_RELATIVE),
             text_focus: has(TEXT_FOCUS),
@@ -228,6 +234,8 @@ pub struct RelayCaps {
     pub host_alias: bool,
     /// Binary file chunks are forwarded.
     pub file_binary: bool,
+    /// A second, file-only connection may attach as this device's file lane ([`FILE_LANE`]).
+    pub file_lane: bool,
 }
 
 impl RelayCaps {
@@ -242,6 +250,7 @@ impl RelayCaps {
             device_security: has(RELAY_DEVICE_SECURITY),
             host_alias: has(RELAY_HOST_ALIAS),
             file_binary: has(FILE_BINARY),
+            file_lane: has(FILE_LANE),
         }
     }
 }

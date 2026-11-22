@@ -49,6 +49,9 @@ type Config struct {
 	// FrameMaxAgeMS drops a WebSocket video frame that waited longer than this many milliseconds in a viewer's
 	// queue (OPENDESK_WS_FRAME_MAX_AGE_MS, default 50); 0 keeps only the 8-frame queue bound.
 	FrameMaxAgeMS int `json:"-"`
+	// FileLaneDisabled withdraws the file-lane capability: transfers stay on the main connection
+	// (OPENDESK_FILE_LANE_DISABLED=1).
+	FileLaneDisabled bool `json:"-"`
 }
 
 // FrameMaxAge is the WebSocket video frame age limit; zero means none.
@@ -108,6 +111,7 @@ func Load(path string) (Config, error) {
 	cfg.TLSProxy = os.Getenv("OPENDESK_TLS_PROXY") == "1"
 	cfg.P2PDisabled = os.Getenv("OPENDESK_P2P_DISABLED") == "1"
 	cfg.MoveCoalescingDisabled = os.Getenv("OPENDESK_RELAY_COALESCE_MOVES") == "0"
+	cfg.FileLaneDisabled = os.Getenv("OPENDESK_FILE_LANE_DISABLED") == "1"
 	cfg.UDPRelayPublic = os.Getenv("OPENDESK_UDP_RELAY_PUBLIC")
 	cfg.UDPRelayAddr = "0.0.0.0:8089"
 	overrideString(&cfg.UDPRelayAddr, "OPENDESK_UDP_RELAY_ADDR")

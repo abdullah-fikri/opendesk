@@ -127,6 +127,8 @@ impl Connection {
     /// sessions end with it (a reconnect starts without them), except the sessions that wait for a resume,
     /// which keep their direct path and end-to-end keys.
     pub(super) fn on_connection_ended(&mut self) {
+        // The lane's token and grants belonged to this connection; the next one opens a new lane.
+        self.close_lane();
         let resume = &self.resume;
         self.links.retain(|p| {
             let keep = resume.is_waiting(&p.partner);

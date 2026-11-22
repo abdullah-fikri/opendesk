@@ -32,6 +32,8 @@ type Options struct {
 	// a slow relay-to-viewer leg cannot hold up to 8 frames (about 133 ms at 60 fps) of latency. Zero keeps only
 	// the length bound.
 	FrameMaxAge time.Duration
+	// FileLaneDisabled withdraws the file-lane capability: no lane tokens are issued and no lane attaches.
+	FileLaneDisabled bool
 }
 
 // Relay is the in-memory session broker. All exported methods are safe for concurrent use.
@@ -51,6 +53,7 @@ type Relay struct {
 	securityRepo SecurityRepository
 	caps         []string
 	p2pDisabled  bool
+	fileLane     bool
 	mergeMoves   bool
 	resumeGrace  time.Duration
 	frameMaxAge  time.Duration
@@ -66,6 +69,9 @@ func New(hosts HostRepository, sessions SessionRepository, m FrameMetrics, opts 
 	}
 	if opts.UDPRelay && !opts.P2PDisabled {
 		caps = append(caps, model.CapUDPRelay)
+	}
+	if !opts.FileLaneDisabled {
+		caps = append(caps, model.CapFileLane)
 	}
 	if opts.ResumeGrace <= 0 {
 		opts.ResumeGrace = DefaultResumeGrace
@@ -86,6 +92,7 @@ func New(hosts HostRepository, sessions SessionRepository, m FrameMetrics, opts 
 		securityRepo: opts.Security,
 		caps:         caps,
 		p2pDisabled:  opts.P2PDisabled,
+		fileLane:     !opts.FileLaneDisabled,
 		mergeMoves:   !opts.MoveCoalescingDisabled,
 		resumeGrace:  opts.ResumeGrace,
 		frameMaxAge:  opts.FrameMaxAge,
@@ -125,6 +132,8 @@ type RegisterResult struct {
 	// which the new connection receives session-suspended right after its ack.
 	Back    []*Peer
 	Waiting []string
+	// LaneLost are the partners whose transfers over the replaced connection's file lane were cut.
+	LaneLost []LaneLost
 }
 
 // RegisterResume admits a new connection. With the resume token of the previous registration of the same ID
@@ -157,6 +166,7 @@ func (r *Relay) RegisterResume(conn Conn, info PeerInfo, token, resumeToken stri
 		} else {
 			res.Orphans = r.detachPartnersLocked(old)
 		}
+		res.LaneLost = r.closeLaneLocked(old)
 		r.dropGrantsLocked(old, now)
 		old.close()
 		_ = old.conn.Close()
@@ -189,6 +199,8 @@ type LeaveResult struct {
 	// Closed are partners whose session ended (send session-closed); Waiting are partners whose session is
 	// suspended (send session-suspended).
 	Closed, Waiting []*Peer
+	// LaneLost are the partners whose transfers over the connection's file lane were cut (the lane ends with it).
+	LaneLost []LaneLost
 }
 
 // Leave runs when p's socket ended. If p is still current, its resumable sessions (see resume.go) are
@@ -202,6 +214,7 @@ func (r *Relay) Leave(p *Peer) LeaveResult {
 		return res
 	}
 	p.close()
+	res.LaneLost = r.closeLaneLocked(p)
 	if p.Resume {
 		var keep []string
 		keep, res.Closed = r.splitLocked(p)

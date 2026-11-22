@@ -53,6 +53,8 @@ type connection struct {
 	remoteAddr string
 	// peer is nil until a successful register.
 	peer *usecase.Peer
+	// lane is set once this connection attached as a device's file lane (see lane.go); it then never registers.
+	lane *usecase.Lane
 	// lastSignal rate-limits P2P signaling per session partner, so a multi-session viewer's parallel
 	// handshakes do not starve each other.
 	lastSignal map[string]signalBucket
@@ -111,6 +113,10 @@ func (h *Handler) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 		if liveness > 0 {
 			_ = ws.SetReadDeadline(time.Now().Add(liveness))
 		}
+		if c.lane != nil {
+			c.onLaneMessage(kind, msg)
+			continue
+		}
 		if kind == websocket.BinaryMessage {
 			c.onBinary(msg)
 			continue
@@ -154,6 +160,10 @@ func (c *connection) onText(msg []byte) bool {
 		}
 		return c.onRegister(msg)
 	}
+	if env.Type == dto.TypeLaneAttach {
+		// Only a fresh connection can become a lane; a registered one stays the main connection.
+		return c.peer != nil || c.onLaneAttach(msg)
+	}
 	// Everything else needs a registered connection that has not been replaced by a newer one.
 	if !c.h.relay.IsCurrent(c.peer) {
 		return true
@@ -182,6 +192,8 @@ func (c *connection) onText(msg []byte) bool {
 		c.onSecurity(env.Type, msg)
 	case dto.TypeHostRename:
 		c.onHostRename(msg)
+	case dto.TypeLaneRequest:
+		c.onLaneRequest()
 	}
 	return true
 }
@@ -225,6 +237,7 @@ func (c *connection) onRegister(msg []byte) bool {
 	_ = peer.Send(dto.RegisteredAck{Type: dto.TypeRegisteredAck, DeskID: peer.DeskID, Caps: c.h.relay.Capabilities(),
 		ResumeToken: peer.ResumeToken, Resumed: res.Resumed})
 	c.announceResume(res)
+	c.h.sendLaneLost(res.LaneLost)
 	if peer.EnrollToken != "" {
 		// First connection of an allowlisted device: from now on it must present this token.
 		_ = peer.Send(dto.DeviceCredential{Type: dto.TypeDeviceCredential, Token: peer.EnrollToken})
@@ -413,10 +426,15 @@ func (c *connection) onP2PSignal(msg []byte) {
 
 // unregister runs when the socket closes: it releases the peer's sessions and tells the partners.
 func (c *connection) unregister() {
+	if c.lane != nil {
+		c.detachLane()
+		return
+	}
 	if c.peer == nil {
 		return
 	}
 	res := c.h.relay.Leave(c.peer)
+	c.h.sendLaneLost(res.LaneLost)
 	// Also for a replaced connection: its own monitor-wall tiles end with it.
 	sendMonitorUpdate(c.h.relay.MonitorDetach(c.peer))
 	if !res.Removed && !res.Suspended {
@@ -483,7 +501,7 @@ func ingressKind(msgType string) string {
 		return metrics.KindSignal
 	case dto.TypeRegister, dto.TypeGetHosts, dto.TypeConnectRequest, dto.TypeApprovalResponse, dto.TypeSessionDisconnect,
 		dto.TypeMonitorSet, dto.TypeSecurityGet, dto.TypeSecuritySet, dto.TypeSecurityAllow, dto.TypeSecurityAllowOnline,
-		dto.TypeSecurityRemove, dto.TypeSecurityReset, dto.TypeHostRename:
+		dto.TypeSecurityRemove, dto.TypeSecurityReset, dto.TypeHostRename, dto.TypeLaneRequest, dto.TypeLaneAttach:
 		return metrics.KindControl
 	}
 	return metrics.KindOther

@@ -44,6 +44,8 @@ impl Connection {
             ServerMessage::InputCommand { event, from_clean } => self.on_input(&event, from_clean.as_deref()),
             ServerMessage::ClipboardSync { text, from_clean } => self.on_clipboard(text, from_clean.as_deref()),
             ServerMessage::FileTransfer { from_clean, payload } => self.on_file(from_clean, *payload),
+            ServerMessage::FileLaneToken { token } => self.on_lane_token(token),
+            ServerMessage::FileLaneLost { from_clean, ids } => self.on_file_lane_lost(&from_clean, &ids),
             ServerMessage::P2pSignal { from_clean, candidate } => self.on_signal(&from_clean, &candidate),
             ServerMessage::UdpRelayOffer { target_clean, addr, token } => {
                 if let Some(p) = self.links.iter().find(|p| p.partner == target_clean) {

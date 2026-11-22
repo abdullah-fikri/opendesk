@@ -77,7 +77,14 @@ type BulkIn = (String, u8, Vec<u8>);
 fn test_conn(ctx: Ctx, links: Vec<Arc<P2p>>, bulk: (Sender<BulkIn>, Receiver<BulkIn>)) -> Connection {
     let (input_tx, input_rx) = mpsc::channel();
     let (_keep, outbox) = mpsc::channel();
+    let (lane_tx, lane_rx) = mpsc::channel();
     Connection {
+        lane: None,
+        lane_gen: 0,
+        lane_in_tx: lane_tx,
+        lane_in: lane_rx,
+        lane_incoming: Vec::new(),
+        lane_idle: None,
         ctx,
         outbox,
         files: VecDeque::new(),
@@ -203,4 +210,56 @@ fn idle_sleep_grows_gradually_to_the_cap() {
         [2, 3, 4, 5, 60].iter().map(|s| idle_sleep(Duration::from_secs(*s), false).as_millis()).collect();
     assert_eq!(steps, vec![2, 5, 10, 20, 20]);
     assert!(idle_sleep(Duration::MAX, false) <= IDLE_MAX_SLEEP);
+}
+
+/// Messages from the relay file lane feed the same handlers as the main socket's: a rejected start and a chunk of
+/// an unknown transfer are answered with a NACK over the relay (which holds the grant), events of an earlier lane
+/// are ignored, and a lost lane forgets what ran on it.
+#[test]
+fn lane_messages_take_the_relay_handlers_and_a_lost_lane_cuts_them() {
+    const VIEWER: &str = "111111111";
+    let (ctx, out) = crate::service::test_support::context_with_outbox();
+    let mut host = test_conn(ctx, Vec::new(), mpsc::channel());
+
+    let start = FilePayload::start("ft_lane1", "", 5);
+    let text = serde_json::json!({ "type": "file-transfer", "fromClean": VIEWER, "payload": start }).to_string();
+    host.on_lane_text(&text);
+    let (target, ack) = next_ack(&out);
+    assert_eq!((target.as_str(), ack.id.as_str(), ack.ok), (VIEWER, "ft_lane1", Some(false)));
+    assert!(!host.ack_over_p2p(&target, &ack), "a lane transfer's verdict goes over the relay");
+    assert_eq!(host.lane_incoming, vec![format!("{VIEWER}:ft_lane1")]);
+
+    // Binaries: untagged chunks, non-file data and chunks of unknown transfers are dropped without a verdict; the
+    // next verdict is the one for an `end` nobody started.
+    host.on_lane_binary(&binary::file_chunk("ft_nolane", 0, b"abc").unwrap());
+    host.on_lane_binary(&[0xFF, 0xD8, 1, 2, 3]);
+    host.on_lane_binary(&binary::tag(VIEWER, &binary::file_chunk("ft_unknown", 0, b"abc").unwrap()).unwrap());
+    let end = FilePayload::end("ft_lane_end", "a.txt", "00".into(), false);
+    host.on_lane_text(&serde_json::json!({ "type": "file-transfer", "fromClean": VIEWER, "payload": end }).to_string());
+    let (_, ack) = next_ack(&out);
+    assert_eq!((ack.id.as_str(), ack.ok), ("ft_lane_end", Some(false)));
+    // Anything but `file-transfer` is ignored on a lane.
+    host.on_lane_text(r#"{"type":"session-closed","message":"spoofed"}"#);
+
+    // Events of an earlier lane are stale.
+    host.lane_gen = 2;
+    host.lane_in_tx.send((1, file_lane::LaneEvent::Lost)).unwrap();
+    host.drain_lane();
+    assert_eq!(host.lane_incoming.len(), 1, "stale loss ignored");
+
+    // The relay reports the transfer cut by a lane on the other side.
+    host.on_file_lane_lost(VIEWER, &["ft_lane1".to_string()]);
+    assert!(host.lane_incoming.is_empty());
+
+    // Our own lane drops: transfers we started on it are forgotten (and resume elsewhere).
+    host.file_routes.route(VIEWER, "ft_out", None, Step::Start, || Path::Lane);
+    host.lane_in_tx.send((2, file_lane::LaneEvent::Lost)).unwrap();
+    host.drain_lane();
+    assert!(!host.file_routes.uses(Path::Lane));
+    // Without a lane nothing is sent on it, and the caller learns at once.
+    let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let f = Arc::clone(&failed);
+    assert!(!host.send_lane(VIEWER, bulk::MSG_JSON, b"{}", Box::new(move |ok| f.store(!ok, Ordering::SeqCst))));
+    assert!(failed.load(Ordering::SeqCst));
+    assert_eq!(host.file_path_to(VIEWER), Path::Relay);
 }

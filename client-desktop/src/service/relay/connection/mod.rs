@@ -39,7 +39,9 @@ use super::signal_pacer::SignalPacer;
 
 mod channels;
 mod dial;
+mod file_lane;
 mod inbound;
+mod lane;
 mod outbound;
 mod p2p_files;
 mod sessions;
@@ -103,7 +105,14 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
         let (input_tx, input_rx) = mpsc::channel();
         let (bulk_tx, bulk_rx) = mpsc::channel();
         let (channel_tx, channel_rx) = mpsc::channel();
+        let (lane_tx, lane_rx) = mpsc::channel();
         let mut conn = Connection {
+            lane: None,
+            lane_gen: 0,
+            lane_in_tx: lane_tx,
+            lane_in: lane_rx,
+            lane_incoming: Vec::new(),
+            lane_idle: None,
             ctx,
             outbox,
             files: VecDeque::new(),
@@ -212,6 +221,17 @@ pub(super) struct Connection {
     channel_pending: Vec<(String, Vec<SocketAddr>)>,
     /// The direct path the file message being sent was routed to (see `file_route_ready`).
     routed_now: Path,
+    /// Our relay file lane while a session partner can use it (see `lane.rs`), and its generation: events of an
+    /// earlier lane are stale.
+    lane: Option<Arc<file_lane::FileLane>>,
+    lane_gen: u64,
+    /// Messages and state changes from the lane, tagged with its generation.
+    lane_in_tx: Sender<(u64, file_lane::LaneEvent)>,
+    lane_in: Receiver<(u64, file_lane::LaneEvent)>,
+    /// Incoming transfers (`sender:id`) that arrive over the lane, cut if it drops.
+    lane_incoming: Vec<String>,
+    /// Since when no session needed the lane.
+    lane_idle: Option<Instant>,
     /// Path of each outgoing transfer (relay or P2P, see `domain::file_route`).
     file_routes: FileRoutes,
     /// Incoming transfers (`sender:id`) that arrived over a P2P path, cancelled if that path drops.
@@ -314,6 +334,7 @@ impl Connection {
                 for c in &self.channels {
                     file_transfer::set_fast_path(&c.partner, self.file_path_to(&c.partner) != Path::Relay);
                 }
+                self.maintain_lane();
                 let hosted_p2p = self.links.iter().any(|p| p.is_host() && p.is_active());
                 ctx.host.p2p_active.store(hosted_p2p, Ordering::Relaxed);
                 let wanted = wanted_send_buffer(ctx.is_hosting() && !hosted_p2p, send_buffer, sndbuf_env.as_deref());
@@ -615,6 +636,11 @@ impl Connection {
             if preset != Performance::Medium {
                 caps.push(preset.cap().to_string());
             }
+        }
+        // After everything: a relay that keeps only its first 32 names (up to 1.5.0) drops this first, and it
+        // cannot run a file lane anyway.
+        if file_lane::enabled() {
+            caps.push(capability::FILE_LANE.to_string());
         }
         let gateway = self.ctx.relay.gateway_url.lock().clone();
         let device_token =
