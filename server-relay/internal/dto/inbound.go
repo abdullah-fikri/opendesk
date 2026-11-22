@@ -41,6 +41,9 @@ type RegisterRequest struct {
 	DeviceName  string       `json:"deviceName"`
 	Caps        Capabilities `json:"caps"`
 	ResumeToken string       `json:"resumeToken"`
+	// FileLane: the client can use a file lane (see dto/lane.go); a field, not a capability name, because the
+	// relay keeps only the first 32 names.
+	FileLane bool `json:"fileLane"`
 }
 
 // Capabilities decodes a JSON array and keeps only its string entries, so one malformed entry

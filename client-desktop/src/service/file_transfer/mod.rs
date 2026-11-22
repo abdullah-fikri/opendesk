@@ -279,9 +279,16 @@ fn route_of(target: &str) -> Route {
     ROUTES.lock().iter().find(|(t, _)| t == target).map(|(_, r)| *r).unwrap_or_default()
 }
 
-/// True while new transfers to `target` take a direct path (P2P or the file channel).
+/// True while new transfers to `target` pace themselves: a direct path (P2P or the file channel) or the relay file
+/// lane, which has a socket of its own (no spacing behind video).
 pub(super) fn fast_path(target: &str) -> bool {
     route_of(target).path != FilePath::Relay
+}
+
+/// True while new transfers to `target` go through the relay (its socket or our file lane): each then holds one of
+/// the 8 grants the relay allows per device until its verdict, which bounds the sender's window.
+pub(super) fn holds_relay_grants(target: &str) -> bool {
+    matches!(route_of(target).path, FilePath::Relay | FilePath::Lane)
 }
 
 /// Most file messages queued toward `target`, in [`chunk_units`], before its sender waits. The relay path keeps
@@ -291,9 +298,15 @@ pub(super) fn fast_path(target: &str) -> bool {
 pub(super) fn in_flight_limit(target: &str) -> usize {
     match route_of(target).path {
         FilePath::Channel => MAX_IN_FLIGHT_CHANNEL,
+        FilePath::Lane => MAX_IN_FLIGHT_LANE,
         _ => MAX_IN_FLIGHT,
     }
 }
+
+/// See [`in_flight_limit`]: the relay file lane (4 MB). Units are released once a message is in the lane's socket,
+/// whose 8 MB kernel buffer holds the path's bytes in flight; this only keeps the lane's writer fed between two
+/// sender wake-ups.
+const MAX_IN_FLIGHT_LANE: usize = (4 << 20) / CHUNK_SIZE;
 
 /// See [`in_flight_limit`]: relay and P2P path (~1.5 MB).
 const MAX_IN_FLIGHT: usize = 48;

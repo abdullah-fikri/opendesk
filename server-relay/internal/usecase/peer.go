@@ -16,6 +16,8 @@ type PeerInfo struct {
 	IsAdmin    bool
 	Caps       []string
 	RemoteAddr string
+	// FileLane: the client set fileLane in register (see model.CapFileLane).
+	FileLane bool
 }
 
 // Peer is one registered connection. Identity fields never change after registration; session fields are

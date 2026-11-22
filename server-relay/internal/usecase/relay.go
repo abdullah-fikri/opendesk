@@ -149,6 +149,10 @@ func (r *Relay) RegisterResume(conn Conn, info PeerInfo, token, resumeToken stri
 	}
 	info.IsAdmin = auth.admin
 	info.Caps = model.SanitizeCapabilities(info.Caps)
+	// Added after the 32-name cut, so a client with a full list still gets it to its partners in peerCaps.
+	if info.FileLane && r.fileLane && !slices.Contains(info.Caps, model.CapFileLane) {
+		info.Caps = append(info.Caps, model.CapFileLane)
+	}
 	peer := buildPeer(info, model.FormatDeskID(info.CleanID), slices.Contains(info.Caps, model.CapMultiSession), conn, r.metrics)
 	peer.frameMaxAge = r.frameMaxAge
 	go peer.writeLoop()

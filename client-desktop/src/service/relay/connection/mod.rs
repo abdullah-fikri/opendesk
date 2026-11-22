@@ -634,11 +634,6 @@ impl Connection {
                 caps.push(preset.cap().to_string());
             }
         }
-        // After everything: a relay that keeps only its first 32 names (up to 1.5.0) drops this first, and it
-        // cannot run a file lane anyway.
-        if file_lane::enabled() {
-            caps.push(capability::FILE_LANE.to_string());
-        }
         let gateway = self.ctx.relay.gateway_url.lock().clone();
         let device_token =
             std::env::var("OPENDESK_DEVICE_TOKEN").unwrap_or_else(|_| settings::token_for(&stored, &gateway));
@@ -650,6 +645,8 @@ impl Connection {
             is_admin: edition.is_admin(),
             caps,
             resume_token,
+            // Not in `caps`: an admin build already sends the 32 names the relay keeps (see `FileLaneRequest`).
+            file_lane: file_lane::enabled(),
         }
     }
 

@@ -2,7 +2,9 @@ package handler
 
 import (
 	"bytes"
+	"fmt"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -34,12 +36,24 @@ func (c laneClient) open() *websocket.Conn {
 	return ws
 }
 
-// register opens a main connection for id that lists file-lane and file-binary.
+// fullCaps is a capability list as long as the relay keeps (a Windows admin build sends 32 names), file-binary
+// among them.
+func fullCaps() []string {
+	caps := []string{"file-binary"}
+	for i := len(caps); i < 32; i++ {
+		caps = append(caps, fmt.Sprintf("cap-%d", i))
+	}
+	return caps
+}
+
+// register opens a main connection for id with a full capability list and fileLane set.
 func (c laneClient) register(id string) *websocket.Conn {
 	c.t.Helper()
 	ws := c.open()
-	_ = ws.WriteJSON(map[string]any{"type": "register", "deskId": id, "caps": []string{"file-lane", "file-binary"}})
-	readJSON(c.t, ws, "registered-ack")
+	_ = ws.WriteJSON(map[string]any{"type": "register", "deskId": id, "caps": fullCaps(), "fileLane": true})
+	if ack := readJSON(c.t, ws, "registered-ack"); !slices.Contains(ack["caps"].([]any), any("file-lane")) {
+		c.t.Fatalf("relay does not advertise file-lane: %v", ack["caps"])
+	}
 	return ws
 }
 
@@ -80,8 +94,13 @@ func TestFileLaneOnTheWire(t *testing.T) {
 
 	viewerLane, hostLane := c.lane(viewer, "111111111"), c.lane(host, "222222222")
 	_ = viewer.WriteJSON(map[string]string{"type": "connect-request", "targetId": "222222222"})
-	readJSON(t, viewer, "session-connected")
-	readJSON(t, host, "session-connected")
+	// A full list does not crowd the lane out: the partner sees it after the 32 names it sent.
+	for _, ws := range []*websocket.Conn{viewer, host} {
+		caps, _ := readJSON(t, ws, "session-connected")["peerCaps"].([]any)
+		if len(caps) != 33 || caps[32] != "file-lane" {
+			t.Fatalf("peerCaps %v", caps)
+		}
+	}
 
 	_ = viewerLane.WriteJSON(map[string]any{"type": "relay-file", "targetClean": "222222222",
 		"payload": map[string]any{"action": "start", "id": "ft_1", "name": "a.bin", "size": 3}})

@@ -39,7 +39,9 @@ pub const FILE_DROP: &str = "file-drop";
 /// File transfers may run over a direct TCP file channel of their own (`infra::file_channel`); needs `e2e`.
 pub const FILE_CHANNEL: &str = "file-channel";
 /// File transfers may run over a relay file lane: a second, file-only WebSocket to the relay
-/// (`service::relay::connection::file_lane`). Both the relay and the partner list it; needs `file-binary`.
+/// (`service::relay::connection::file_lane`). Both the relay and the partner list it; needs `file-binary`. Clients
+/// never send it in `caps` (the relay keeps 32 names): `register` carries `fileLane`, and the relay adds this name
+/// to the client's `peerCaps` after the cut.
 pub const FILE_LANE: &str = "file-lane";
 /// The viewer draws its own cursor in the host's shape.
 pub const CURSOR_SHAPE: &str = "cursor-shape";

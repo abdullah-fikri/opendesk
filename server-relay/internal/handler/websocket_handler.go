@@ -210,6 +210,7 @@ func (c *connection) onRegister(msg []byte) bool {
 		IsAdmin:    req.IsAdmin,
 		Caps:       req.Caps,
 		RemoteAddr: c.remoteAddr,
+		FileLane:   req.FileLane,
 	}
 	res, err := c.h.relay.RegisterResume(c.conn, info, req.DeviceToken, req.ResumeToken)
 	peer := res.Peer

@@ -40,9 +40,9 @@ impl Connection {
                 self.close_lane();
             }
         }
-        // The lane paces itself through TCP: the senders' relay spacing does not apply to it.
+        // The lane paces itself through TCP: the senders' relay spacing does not apply to it (`set_route`).
         for p in &partners {
-            file_transfer::set_fast_path(p, self.file_path_to(p) != Path::Relay);
+            file_transfer::set_route(p, self.file_route_now(p));
         }
     }
 

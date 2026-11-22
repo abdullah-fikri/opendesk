@@ -28,7 +28,9 @@ const (
 // CapFileLane: the relay accepts a second, file-only WebSocket per device, its file lane (see
 // docs/features/relay-file-lane.md at the repository root). As a client capability it means the client can open
 // one and understands file-lane-lost: the relay issues lane tokens only to such clients, and clients send a
-// transfer over their lane only to partners that list it.
+// transfer over their lane only to partners that list it. Clients do not send it in caps (a desktop admin build
+// already fills the 32 names kept) but set fileLane in register; the relay then adds it to the device's
+// capabilities after the cut, so partners see it in peerCaps.
 const CapFileLane = "file-lane"
 
 // CapP2P is the client capability of the direct UDP path, which the UDP relay carries.
@@ -50,13 +52,11 @@ const CapViewerOnly = "viewer-only"
 const PlatformAndroid = "android"
 
 const (
-	// maxCapabilities: a Windows admin build already lists about 32 names; room for new ones without dropping the
-	// performance preset, which comes last.
-	maxCapabilities  = 48
+	maxCapabilities  = 32
 	maxCapabilityLen = 32
 )
 
-// SanitizeCapabilities keeps at most 48 well-formed capability names (lowercase letters, digits, '-' and '.',
+// SanitizeCapabilities keeps at most 32 well-formed capability names (lowercase letters, digits, '-' and '.',
 // 1..32 characters) and drops everything else. The result is never nil.
 func SanitizeCapabilities(raw []string) []string {
 	caps := make([]string, 0, min(len(raw), maxCapabilities))

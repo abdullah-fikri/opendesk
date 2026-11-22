@@ -212,6 +212,24 @@ fn idle_sleep_grows_gradually_to_the_cap() {
     assert!(idle_sleep(Duration::MAX, false) <= IDLE_MAX_SLEEP);
 }
 
+/// The lane is negotiated outside the 32 capability names the relay keeps: `register` carries `fileLane`, the list
+/// itself fits (the admin build is the longest), and the name the relay appends after them is read from `peerCaps`.
+#[test]
+fn the_file_lane_is_negotiated_outside_the_capability_list() {
+    let conn = test_conn(crate::service::test_support::context(), Vec::new(), mpsc::channel());
+    let ClientMessage::Register { caps, file_lane, .. } = conn.register_message(None) else { panic!("not register") };
+    assert!(file_lane, "fileLane set");
+    assert!(!caps.iter().any(|c| c == capability::FILE_LANE));
+    assert!(caps.len() <= 32, "{} names; the relay keeps 32", caps.len());
+    let mut peer = caps.clone();
+    peer.truncate(32);
+    peer.push(capability::FILE_LANE.into());
+    assert_eq!(
+        capability::PeerCaps::from_list(&peer, true).file_lane,
+        caps.iter().any(|c| c == capability::FILE_BINARY)
+    );
+}
+
 /// Messages from the relay file lane feed the same handlers as the main socket's: a rejected start and a chunk of
 /// an unknown transfer are answered with a NACK over the relay (which holds the grant), events of an earlier lane
 /// are ignored, and a lost lane forgets what ran on it.
@@ -251,11 +269,13 @@ fn lane_messages_take_the_relay_handlers_and_a_lost_lane_cuts_them() {
     host.on_file_lane_lost(VIEWER, &["ft_lane1".to_string()]);
     assert!(host.lane_incoming.is_empty());
 
-    // Our own lane drops: transfers we started on it are forgotten (and resume elsewhere).
-    host.file_routes.route(VIEWER, "ft_out", None, Step::Start, || Path::Lane);
+    // Our own lane drops: what arrived over it is cut (and parked for resuming). Outgoing routes are dropped by
+    // `FileRoutes::drop_everywhere` (domain tests); not exercised here, since aborting sends is process-wide and
+    // would cut the sender tests running alongside.
+    host.lane_incoming.push(format!("{VIEWER}:ft_in"));
     host.lane_in_tx.send((2, file_lane::LaneEvent::Lost)).unwrap();
     host.drain_lane();
-    assert!(!host.file_routes.uses(Path::Lane));
+    assert!(host.lane_incoming.is_empty());
     // Without a lane nothing is sent on it, and the caller learns at once.
     let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let f = Arc::clone(&failed);

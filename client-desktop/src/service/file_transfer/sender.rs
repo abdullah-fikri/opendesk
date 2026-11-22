@@ -374,7 +374,7 @@ fn group_loose(paths: Vec<PathBuf>, grouped: bool) -> Vec<SendItem> {
 
 /// Files and folder entries a send may have waiting for their verdict toward `target` (see [`Window`]).
 fn window_limit(target: &str) -> usize {
-    if super::fast_path(target) { WINDOW_DIRECT } else { WINDOW_RELAY }
+    if super::holds_relay_grants(target) { WINDOW_RELAY } else { WINDOW_DIRECT }
 }
 
 /// Sends `items` in order on the connection of epoch `started`; false when the connection was lost and the rest

@@ -20,8 +20,11 @@ Implemented in:
 
 ## When it applies
 
-Only when the relay lists `file-lane` in `registered-ack` and the partner lists `file-lane` (with `file-binary`)
-in `peerCaps`. Path order for a new transfer: file channel, then the direct P2P path, then the lane, then the
+Only when the relay lists `file-lane` in `registered-ack` and the partner's `peerCaps` list `file-lane` (with
+`file-binary`). Clients do not put `file-lane` in their `caps`: the relay keeps only the first 32 names and a
+Windows admin build already sends 32. Instead `register` carries `"fileLane": true`; the relay then appends
+`file-lane` to that device's capabilities after the cut, so its partners always see it (tested with a full
+32-name list in `handler/lane_test.go`). Path order for a new transfer: file channel, then the direct P2P path, then the lane, then the
 main relay socket (`Path::choose`). A transfer keeps the path it started on. Older relays and partners see
 exactly the old behavior. Switches: `OPENDESK_FILE_LANE_DISABLED=1` on the relay withdraws the capability;
 `OPENDESK_FILE_LANE=0` on a desktop client neither lists nor uses it.
@@ -32,6 +35,7 @@ All messages are JSON text unless noted; the lane connects to the same URL as th
 
 | Direction | Connection | Message |
 |---|---|---|
+| client → relay | main | `register` with `"fileLane": true` |
 | client → relay | main | `{"type":"file-lane-request"}` |
 | relay → client | main | `{"type":"file-lane-token","token":"<32 hex>"}` |
 | client → relay | lane (first message) | `{"type":"file-lane-attach","deskId":"<id>","token":"<token>"}` |
@@ -68,9 +72,12 @@ connection and dropped after the same silence.
 ### 2. Throughput and the main socket's latency
 
 - Client: the lane's own thread writes as long as the socket takes data (8 MiB send buffer, ~280 Mbps at 234 ms
-  to a far relay); the 1 ms burst budget and the relay pacer do not apply, and the lane is a fast path for the
-  sender (`file_transfer::set_fast_path`), so the 3 ms sleep per chunk does not either. In-flight units are
-  released when a message is in the lane socket, so the sender's existing in-flight limit is its flow control.
+  to a far relay); the 1 ms burst budget and the relay pacer do not apply, and the lane counts as a fast route
+  for the sender (`file_transfer::set_route` with `Path::Lane`), so the 3 ms sleep per chunk does not either.
+  In-flight units are released when a message is in the lane socket; the lane's in-flight cap is 4 MB (the
+  kernel buffer holds the path's bytes in flight, this only keeps the writer fed).
+- Pipelining window: lane transfers still hold relay grants (8 per device, shared with the main socket and with
+  pulled files), so the sender keeps the relay window of 4 files (`holds_relay_grants`), not the direct one.
 - Relay: a receiving lane has its own writer and a 16 MiB / 256-message queue with nothing ahead of it. Video,
   voice and input of the session never wait behind lane traffic: they are on another socket and another writer.
 

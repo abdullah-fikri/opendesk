@@ -22,6 +22,10 @@ pub enum ClientMessage {
         /// The token of the previous connection, whose sessions this one takes over (`session-resume`).
         #[serde(skip_serializing_if = "Option::is_none")]
         resume_token: Option<String>,
+        /// We can use a relay file lane (`file-lane`). A field, not a name in `caps`: the relay keeps only 32
+        /// names and an admin build already sends that many; the relay adds `file-lane` to our `peerCaps` itself.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        file_lane: bool,
     },
     /// Administrators only: asks for the device registry.
     GetHosts,
@@ -242,10 +246,12 @@ mod tests {
             is_admin: false,
             caps: vec!["file-ack".into()],
             resume_token: None,
+            file_lane: false,
         };
         let v: Value = serde_json::from_str(&reg.to_json()).unwrap();
         assert_eq!(v["type"], "register");
         assert!(v.get("resumeToken").is_none(), "no token unless resuming");
+        assert!(v.get("fileLane").is_none(), "older relays see the old message");
         assert_eq!(v["deskId"], "123456789");
         assert_eq!(v["isAdmin"], false);
         let sig = ClientMessage::P2pSignal { target_clean: "1".into(), candidate: "c".into() };
@@ -342,7 +348,9 @@ mod admin_tests {
             is_admin: false,
             caps: vec![],
             resume_token: Some("ab".into()),
+            file_lane: true,
         };
+        assert_eq!(serde_json::to_value(&reg).unwrap()["fileLane"], true);
         assert_eq!(serde_json::to_value(&reg).unwrap()["resumeToken"], "ab");
     }
 }

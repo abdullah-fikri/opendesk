@@ -29,7 +29,7 @@ func openLane(t *testing.T, r *relay, p *peer, id string) *peer {
 // dropped lane is reported to the partner (see docs/features/relay-file-lane.md at the repository root).
 func TestFileLane(t *testing.T) {
 	r := startRelay(t)
-	caps := map[string]any{"caps": []string{"file-lane", "file-binary", "file-ack"}}
+	caps := map[string]any{"caps": []string{"file-binary", "file-ack"}, "fileLane": true}
 	host := dial(t, r, hostID, caps)
 	if m := host.expect("registered-ack"); !strings.Contains(fmt.Sprint(m["caps"]), "file-lane") {
 		t.Fatalf("relay does not advertise file-lane: %v", m["caps"])
