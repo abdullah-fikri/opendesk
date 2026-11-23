@@ -74,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "core-engine"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "arboard",
  "jpeg-encoder",

@@ -5,6 +5,8 @@ truth is `VERSION`. The release workflow copies the section of the tagged versio
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-23
+
 ### Added
 - Desktop: direct file channel. File transfers between two desktops now get a TCP connection of their own,
   end-to-end encrypted with the device keys, instead of crawling behind the video on the P2P path or the relay
@@ -404,6 +406,7 @@ First public release.
 - Windows binaries are not code-signed yet (SmartScreen warns on first run); Linux packages are unsigned `.deb`
   files. Verify downloads against `SHA256SUMS.txt`.
 
+[1.6.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.6.0
 [1.5.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.5.0
 [1.4.1]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.4.1
 [1.4.0]: https://github.com/abdullah-fikri/opendesk/releases/tag/v1.4.0
