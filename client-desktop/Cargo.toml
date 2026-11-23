@@ -1,6 +1,6 @@
 [package]
 name = "opendesk-client"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2024"
 description = "OpenDesk self-hosted remote desktop client for Windows and Linux"
 license-file = "../LICENSE"
@@ -39,8 +39,8 @@ native-tls = "0.2"
 miniz_oxide = "0.8.9"
 
 [target.'cfg(windows)'.dependencies]
-# Host sound: WASAPI loopback capture (COM); Wi-Fi streaming mode: WLAN types, with wlanapi.dll loaded at run
-# time. Same pinned version core-engine already builds, so nothing new to download or audit; only these API
+# Host sound: WASAPI loopback capture (COM); text-focus detection: UI Automation (COM); Wi-Fi streaming mode:
+# WLAN types, with wlanapi.dll loaded at run time. Same pinned version core-engine already builds, so nothing new to download or audit; only these API
 # features are added.
 windows = { version = "=0.62.2", features = [
     "Win32_Foundation",
@@ -51,6 +51,7 @@ windows = { version = "=0.62.2", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
     "Win32_System_Variant",
+    "Win32_UI_Accessibility",
 ] }
 
 [target.'cfg(not(windows))'.dependencies]

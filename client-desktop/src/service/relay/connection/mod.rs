@@ -19,11 +19,12 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
 use crate::domain::bulk;
-use crate::domain::file_route::{FileRoutes, Step};
+use crate::domain::file_route::{FileRoutes, Path, Step};
 use crate::domain::performance::Performance;
 use crate::domain::settings::{self, normalize_gateway_url};
 use crate::domain::{capability, file_squeeze, frame_rate};
 use crate::infra::e2e::{self, E2e};
+use crate::infra::file_channel::{self, FileChannel};
 use crate::infra::p2p::{self, P2p};
 use crate::infra::{device, logger, power, storage, virtual_clipboard, window};
 use crate::protocol::{ClientMessage, FileAction, FileMark, FilePayload, InputEvent, Outgoing, ServerMessage, binary};
@@ -36,13 +37,18 @@ use super::file_pacer::FilePacer;
 use super::resume::{self, Resume};
 use super::signal_pacer::SignalPacer;
 
+mod channels;
+mod dial;
+mod file_lane;
 mod inbound;
+mod lane;
 mod outbound;
 mod p2p_files;
 mod sessions;
 mod socket;
 #[cfg(test)]
 mod tests;
+mod watchdog;
 
 use socket::*;
 
@@ -75,6 +81,9 @@ const IDLE_MAX_SLEEP: Duration = Duration::from_millis(20);
 /// the new connection while the relay still holds the old one, so it replaces it and the device never shows
 /// offline. Waiting on the OS instead could leave the device offline for good.
 const RELAY_SILENCE_LIMIT: Duration = Duration::from_secs(45);
+/// Connected but no `registered-ack` for this long: the relay never took the registration (it was lost, or
+/// the relay keeps the socket after an error). Start over on a fresh socket instead of waiting forever.
+const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often the loop checks whether the main window is on screen.
 const WINDOW_CHECK: Duration = Duration::from_millis(500);
 /// Kernel send buffer (`SO_SNDBUF`) while the hosted session's video goes over this socket. The video gate
@@ -95,7 +104,15 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
     crate::infra::thread::spawn_named("relay-conn", move || {
         let (input_tx, input_rx) = mpsc::channel();
         let (bulk_tx, bulk_rx) = mpsc::channel();
+        let (channel_tx, channel_rx) = mpsc::channel();
+        let (lane_tx, lane_rx) = mpsc::channel();
         let mut conn = Connection {
+            lane: None,
+            lane_gen: 0,
+            lane_in_tx: lane_tx,
+            lane_in: lane_rx,
+            lane_incoming: Vec::new(),
+            lane_idle: None,
             ctx,
             outbox,
             files: VecDeque::new(),
@@ -105,6 +122,11 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
             p2p_input: input_rx,
             bulk_in_tx: bulk_tx,
             bulk_in: bulk_rx,
+            channel_in_tx: channel_tx,
+            channel_in: channel_rx,
+            channels: Vec::new(),
+            channel_pending: Vec::new(),
+            routed_now: Path::Relay,
             file_routes: FileRoutes::default(),
             p2p_incoming: Vec::new(),
             p2p_acks: VecDeque::new(),
@@ -123,6 +145,8 @@ pub fn spawn(ctx: Ctx, outbox: Receiver<Outgoing>) {
         };
         // This process idles under EcoQoS until a session or traffic needs full speed.
         power::arm();
+        // A loop stuck in some blocking call is caught by the watchdog (see `watchdog.rs`).
+        watchdog::spawn();
         // The app is useless without this loop: after a panic, clean up like a lost socket and start over.
         let pump = |conn: &mut Connection| loop {
             conn.run_once();
@@ -188,6 +212,26 @@ pub(super) struct Connection {
     /// File stream messages that arrived over a P2P path (`file-p2p`): sender, kind, payload.
     pub(super) bulk_in_tx: Sender<(String, u8, Vec<u8>)>,
     bulk_in: Receiver<(String, u8, Vec<u8>)>,
+    /// File stream messages from the file channels, as `bulk_in` for the P2P paths.
+    channel_in_tx: Sender<(String, u8, Vec<u8>)>,
+    channel_in: Receiver<(String, u8, Vec<u8>)>,
+    /// One direct file channel per session whose partner lists `file-channel` (see `channels.rs`).
+    pub(super) channels: Vec<Arc<FileChannel>>,
+    /// The partner's channel candidates that arrived before our side of the channel started.
+    channel_pending: Vec<(String, Vec<SocketAddr>)>,
+    /// The direct path the file message being sent was routed to (see `file_route_ready`).
+    routed_now: Path,
+    /// Our relay file lane while a session partner can use it (see `lane.rs`), and its generation: events of an
+    /// earlier lane are stale.
+    lane: Option<Arc<file_lane::FileLane>>,
+    lane_gen: u64,
+    /// Messages and state changes from the lane, tagged with its generation.
+    lane_in_tx: Sender<(u64, file_lane::LaneEvent)>,
+    lane_in: Receiver<(u64, file_lane::LaneEvent)>,
+    /// Incoming transfers (`sender:id`) that arrive over the lane, cut if it drops.
+    lane_incoming: Vec<String>,
+    /// Since when no session needed the lane.
+    lane_idle: Option<Instant>,
     /// Path of each outgoing transfer (relay or P2P, see `domain::file_route`).
     file_routes: FileRoutes,
     /// Incoming transfers (`sender:id`) that arrived over a P2P path, cancelled if that path drops.
@@ -225,6 +269,7 @@ pub(super) struct Connection {
 impl Connection {
     /// One connection lifetime: connect, register, pump until it drops or a reconnect is requested.
     fn run_once(&mut self) {
+        watchdog::beat();
         let ctx = Arc::clone(&self.ctx);
         ctx.relay.reconnect.store(false, Ordering::SeqCst);
         ctx.relay.online.store(false, Ordering::SeqCst);
@@ -242,6 +287,7 @@ impl Connection {
             return;
         };
         self.last_rx = Instant::now();
+        let connected_at = Instant::now();
         let resume_token = self.resume.token_for(&url);
         self.quiet = resume_token.is_some();
         self.url = url;
@@ -267,6 +313,7 @@ impl Connection {
         let sndbuf_env = std::env::var("OPENDESK_WS_SNDBUF").ok();
 
         while !ctx.relay.reconnect.load(Ordering::SeqCst) && !lost {
+            watchdog::beat();
             self.show_countdown();
             self.show_partner_countdown();
             let partner = ctx.partner();
@@ -280,9 +327,11 @@ impl Connection {
                         s.p2p_relayed.store(matches!(route, Some(p2p::Route::Relayed(_))), Ordering::Relaxed);
                     }
                 }
-                for p in &self.links {
-                    file_transfer::set_fast_path(&p.partner, self.file_p2p_to(&p.partner));
+                self.maintain_channels();
+                for partner in self.links.iter().map(|p| &p.partner).chain(self.channels.iter().map(|c| &c.partner)) {
+                    file_transfer::set_route(partner, self.file_route_now(partner));
                 }
+                self.maintain_lane();
                 let hosted_p2p = self.links.iter().any(|p| p.is_host() && p.is_active());
                 ctx.host.p2p_active.store(hosted_p2p, Ordering::Relaxed);
                 let wanted = wanted_send_buffer(ctx.is_hosting() && !hosted_p2p, send_buffer, sndbuf_env.as_deref());
@@ -308,7 +357,7 @@ impl Connection {
                 // Thumbnails only fill gaps: they never queue in front of the hosted session's video.
                 self.pump_monitor(&mut socket);
             }
-            let mut status = self.pump_files(&mut socket, partner.is_empty());
+            let mut status = self.pump_files(&mut socket, self.no_video(&partner));
             self.pacer.poll(&mut socket, !self.files.is_empty(), Instant::now());
             if last_expire.elapsed() >= Duration::from_secs(1) {
                 last_expire = Instant::now();
@@ -355,6 +404,13 @@ impl Connection {
                 );
                 lost = true;
             }
+            if !lost && registration_overdue(ctx.relay.online.load(Ordering::SeqCst), connected_at.elapsed()) {
+                logger::warn(
+                    "relay",
+                    &format!("No registered-ack within {} s; reconnecting.", REGISTER_TIMEOUT.as_secs()),
+                );
+                lost = true;
+            }
             if lost {
                 self.on_connection_lost();
                 break;
@@ -391,23 +447,43 @@ impl Connection {
         }
     }
 
-    /// Opens the relay socket. While sessions wait for it, the (blocking) connect runs on its own thread and
-    /// this one keeps their direct paths going meanwhile (see `pump_offline`).
+    /// Opens the relay socket. The attempt runs on its own thread and is abandoned after `CONNECT_DEADLINE`
+    /// (see `dial.rs`); while sessions wait for the connection, this thread keeps their direct paths going
+    /// meanwhile (see `pump_offline`).
     fn connect(&mut self, url: &str) -> Option<Socket> {
-        let failed = |e: tungstenite::Error| logger::warn("relay", &format!("Connection failed: {e}"));
-        if !self.resume.any_waiting() {
-            return tungstenite::connect(url).map(|(s, _)| s).map_err(failed).ok();
-        }
+        let attempt = Arc::new(dial::Attempt::default());
         let (tx, rx) = mpsc::channel();
-        let target = url.to_string();
+        let (target, a) = (url.to_string(), Arc::clone(&attempt));
         crate::infra::thread::spawn_named("relay-connect", move || {
-            let _ = tx.send(tungstenite::connect(&target).map(|(s, _)| s));
+            let _ = tx.send(dial::dial(&target, &a, dial::HANDSHAKE_TIMEOUT));
         });
+        let deadline = Instant::now() + dial::CONNECT_DEADLINE;
         loop {
-            match rx.recv_timeout(BUSY_SLEEP) {
-                Ok(result) => return result.map_err(failed).ok(),
-                Err(mpsc::RecvTimeoutError::Timeout) => self.pump_offline(),
+            watchdog::beat();
+            let wait = if self.resume.any_waiting() { BUSY_SLEEP } else { Duration::from_millis(100) };
+            match rx.recv_timeout(wait) {
+                Ok(Ok(socket)) => return Some(socket),
+                Ok(Err(e)) => {
+                    logger::warn("relay", &format!("Connection failed: {e}"));
+                    return None;
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+                Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() >= deadline => {
+                    attempt.abandon();
+                    logger::warn(
+                        "relay",
+                        &format!(
+                            "Connection failed: no answer within {} s (network down or the handshake hung); retrying.",
+                            dial::CONNECT_DEADLINE.as_secs()
+                        ),
+                    );
+                    return None;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if self.resume.any_waiting() {
+                        self.pump_offline();
+                    }
+                }
             }
         }
     }
@@ -415,7 +491,9 @@ impl Connection {
     /// Sleeps `delay` before the next connect, pumping the waiting sessions' direct paths meanwhile.
     fn sleep_offline(&mut self, delay: Duration) {
         let end = Instant::now() + delay;
+        watchdog::beat();
         while self.resume.any_waiting() && Instant::now() < end {
+            watchdog::beat();
             self.pump_offline();
             thread::sleep(BUSY_SLEEP);
         }
@@ -433,7 +511,7 @@ impl Connection {
         let partner = self.ctx.partner();
         self.prune_links(&partner);
         while let Ok(event) = self.p2p_input.try_recv() {
-            crate::service::host::input::apply(&self.ctx, event);
+            self.on_p2p_event(event);
         }
         while let Ok(item) = self.outbox.try_recv() {
             if !is_live(&item) {
@@ -482,6 +560,8 @@ impl Connection {
         }
         caps.extend([capability::FILE_FOLDER, capability::FILE_BINARY, capability::CURSOR_SHAPE]);
         caps.extend(decoder::supported_video_caps());
+        // As a host: early H.264 for viewers that ask (phones), so they need not request the High preset.
+        caps.push(capability::H264_EAGER);
         // The Opus codec is built in, so every desktop build decodes it.
         caps.push(capability::AUDIO_OPUS);
         caps.push(capability::REMOTE_MIC);
@@ -532,6 +612,9 @@ impl Connection {
         caps.push(capability::FILE_RESUME);
         #[cfg(windows)]
         caps.push(capability::FILE_DROP);
+        if file_channel::enabled() && e2e::enabled() && crate::infra::identity::local().is_some() {
+            caps.push(capability::FILE_CHANNEL);
+        }
         let stored = storage::load_settings();
         let mut caps: Vec<String> = caps.into_iter().map(String::from).collect();
         // Right before `fps-N`: a relay that keeps only 16 names drops it first, which only turns host sound off.
@@ -562,6 +645,8 @@ impl Connection {
             is_admin: edition.is_admin(),
             caps,
             resume_token,
+            // Not in `caps`: an admin build already sends the 32 names the relay keeps (see `FileLaneRequest`).
+            file_lane: file_lane::enabled(),
         }
     }
 
@@ -584,6 +669,9 @@ impl Connection {
         self.e2e.retain(|e| {
             if e.is_host() { e.partner == partner && ctx.is_hosting() } else { ctx.viewers.is_live(&e.partner) }
         });
+        // A channel lives as long as the session's end-to-end channel.
+        let live: Vec<String> = self.e2e.iter().map(|e| e.partner.clone()).collect();
+        self.prune_channels(|p| live.iter().any(|l| l == p));
     }
 
     /// Sleeps `pause`; a longer (idle) pause ends early when a message is queued, which is kept for
@@ -628,6 +716,11 @@ fn is_live(item: &Outgoing) -> bool {
 /// Whether the relay has been silent long enough to call the socket dead (see `RELAY_SILENCE_LIMIT`).
 fn relay_silent(since_last_rx: Duration) -> bool {
     since_last_rx >= RELAY_SILENCE_LIMIT
+}
+
+/// Whether a connection up for `connected_for` should have been registered by now (see `REGISTER_TIMEOUT`).
+fn registration_overdue(registered: bool, connected_for: Duration) -> bool {
+    !registered && connected_for >= REGISTER_TIMEOUT
 }
 
 /// Idle backoff of the connection loop: on unless `OPENDESK_IDLE_BACKOFF=0` (a fixed 1 ms tick).

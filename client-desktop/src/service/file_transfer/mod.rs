@@ -23,11 +23,14 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use parking_lot::Mutex;
 
 use crate::domain::capability::PeerCaps;
+use crate::domain::file_route::Path as FilePath;
 use crate::domain::received_files::ReceivedFiles;
+use crate::domain::transfer::Limits;
 use crate::infra::{autostart, logger};
 use crate::protocol::{FileMark, FilePayload, OfferEntry};
 
 pub use receiver::FileReceiver;
+pub use sender::send_browsed;
 
 /// Chunk size of JSON (base64) chunks; also the most a receiver accepts per JSON chunk.
 pub const CHUNK_SIZE: usize = 32 * 1024;
@@ -65,13 +68,17 @@ static PARTNER_CAPS: Mutex<PeerCaps> = Mutex::new(PeerCaps {
     file_pull_bin: false,
     cursor_shape: false,
     mouse_relative: false,
+    text_focus: false,
     clipboard_image: false,
     file_p2p: false,
     file_deflate: false,
     file_resume: false,
     file_drop: false,
+    file_channel: false,
+    file_lane: false,
     video_delta: false,
     video_h264: false,
+    h264_eager: false,
     tile_lossless: false,
     video_nack: false,
     frame_stamp: false,
@@ -239,22 +246,76 @@ fn remember_received(partner: &str, paths: &[PathBuf]) {
     }
 }
 
-/// Partners whose transfers currently start on a direct P2P path (`file-p2p`); see [`set_fast_path`].
-static FAST_PATH: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Size limits toward `target`: builds that list `file-channel` take files over 2 GiB (see
+/// [`Limits::for_partner`]); Android and older desktops keep the old ones.
+pub fn limits_to(target: &str) -> Limits {
+    Limits::for_partner(caps_of(target).file_channel)
+}
 
-/// The relay connection's view of whether new transfers to `target` take a direct P2P path: they are then paced
-/// by that path's window instead of being spaced out for the relay.
-pub fn set_fast_path(target: &str, on: bool) {
-    let mut fast = FAST_PATH.lock();
-    fast.retain(|t| t != target);
-    if on {
-        fast.push(target.to_string());
+/// How new transfers to each partner travel right now; see [`set_route`].
+static ROUTES: Mutex<Vec<(String, Route)>> = Mutex::new(Vec::new());
+
+/// The relay connection's view of one partner's file path, refreshed every 250 ms.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Route {
+    /// The path a transfer starting now takes.
+    pub path: FilePath,
+    /// The file channel was lost and is being set up again (`infra::file_channel` redials): a cut transfer waits
+    /// a moment for it instead of resuming on a slower path for the rest of the file.
+    pub channel_redialing: bool,
+}
+
+/// Records how new transfers to `target` travel: a direct path paces itself (`domain::bulk`, TCP) instead of being
+/// spaced out for the relay, and the file channel may keep far more in flight.
+pub fn set_route(target: &str, route: Route) {
+    let mut all = ROUTES.lock();
+    all.retain(|(t, _)| t != target);
+    if route != Route::default() {
+        all.push((target.to_string(), route));
     }
 }
 
-/// True while new transfers to `target` take a direct P2P path.
+fn route_of(target: &str) -> Route {
+    ROUTES.lock().iter().find(|(t, _)| t == target).map(|(_, r)| *r).unwrap_or_default()
+}
+
+/// True while new transfers to `target` pace themselves: a direct path (P2P or the file channel) or the relay file
+/// lane, which has a socket of its own (no spacing behind video).
 pub(super) fn fast_path(target: &str) -> bool {
-    FAST_PATH.lock().iter().any(|t| t == target)
+    route_of(target).path != FilePath::Relay
+}
+
+/// True while new transfers to `target` go through the relay (its socket or our file lane): each then holds one of
+/// the 8 grants the relay allows per device until its verdict, which bounds the sender's window.
+pub(super) fn holds_relay_grants(target: &str) -> bool {
+    matches!(route_of(target).path, FilePath::Relay | FilePath::Lane)
+}
+
+/// Most file messages queued toward `target`, in [`chunk_units`], before its sender waits. The relay path keeps
+/// ~1.5 MB so a file never queues far ahead of video and progress follows the network. The file channel is TCP of
+/// its own with 8 MB socket buffers on each of its streams; 16 MB here keeps every stream busy on a long fat
+/// path (1 Gbit/s at 100 ms holds 12.5 MB) instead of starving it between two sender wake-ups.
+pub(super) fn in_flight_limit(target: &str) -> usize {
+    match route_of(target).path {
+        FilePath::Channel => MAX_IN_FLIGHT_CHANNEL,
+        FilePath::Lane => MAX_IN_FLIGHT_LANE,
+        _ => MAX_IN_FLIGHT,
+    }
+}
+
+/// See [`in_flight_limit`]: the relay file lane (4 MB). Units are released once a message is in the lane's socket,
+/// whose 8 MB kernel buffer holds the path's bytes in flight; this only keeps the lane's writer fed between two
+/// sender wake-ups.
+const MAX_IN_FLIGHT_LANE: usize = (4 << 20) / CHUNK_SIZE;
+
+/// See [`in_flight_limit`]: relay and P2P path (~1.5 MB).
+const MAX_IN_FLIGHT: usize = 48;
+/// See [`in_flight_limit`]: the file channel (16 MB).
+const MAX_IN_FLIGHT_CHANNEL: usize = (16 << 20) / CHUNK_SIZE;
+
+/// True while the file channel to `target` is being set up again after it was lost.
+pub(super) fn channel_redialing(target: &str) -> bool {
+    route_of(target).channel_redialing
 }
 
 /// Records how far a sent transfer has reached the relay (from the relay connection); transfers no sender

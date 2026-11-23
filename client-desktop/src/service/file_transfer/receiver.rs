@@ -67,6 +67,8 @@ struct Incoming {
     dest: Option<(PathBuf, String, String)>,
     /// Sender's times and attributes, applied once the file is complete.
     stamp: super::Stamp,
+    /// File browser transfer: the folder it goes to instead of the clipboard (`service::file_browser`).
+    place: Option<PathBuf>,
 }
 
 /// A folder transfer in progress (`group` on start messages).
@@ -78,11 +80,20 @@ struct FolderGroup {
     entries: usize,
     bytes: u64,
     last_activity: Instant,
+    /// File browser transfer: the folder its top-level items go to instead of the clipboard.
+    place: Option<PathBuf>,
 }
 
 impl FolderGroup {
     fn new() -> Self {
-        Self { tops: Vec::new(), roots: HashMap::new(), entries: 0, bytes: 0, last_activity: Instant::now() }
+        Self {
+            tops: Vec::new(),
+            roots: HashMap::new(),
+            entries: 0,
+            bytes: 0,
+            last_activity: Instant::now(),
+            place: None,
+        }
     }
 
     /// Maps validated components to a local folder under `base`: the folder itself for `dir`, else the file's
@@ -159,6 +170,9 @@ fn finish_group(
     payload: &FilePayload,
     allow_auto_paste: bool,
 ) -> Outcome {
+    if let Some(dir) = &group.place {
+        return place_all(ctx, &group.tops, dir);
+    }
     let paste = payload.auto_paste.unwrap_or(true) && allow_auto_paste;
     publish(ctx, from, &group.tops, paste);
     let label = match group.tops.as_slice() {
@@ -167,6 +181,30 @@ fn finish_group(
     };
     logger::info("file_transfer", &format!("Group transfer complete: {:?} (auto_paste={paste})", group.tops));
     (Some(done_status(&label)), Some(true))
+}
+
+/// File browser transfers: moves what arrived into the chosen folder (as the signed-in user); a failure leaves it
+/// in Downloads and says so.
+fn place_all(ctx: &AppContext, items: &[PathBuf], dir: &Path) -> Outcome {
+    let mut last = None;
+    for item in items {
+        match crate::service::file_browser::place(item, dir) {
+            Ok(saved) => {
+                logger::info("file_transfer", &format!("File browser: saved {}", saved.display()));
+                last = Some(saved);
+            }
+            Err(e) => {
+                logger::warn("file_transfer", &format!("File browser: {} stays in Downloads: {e}", item.display()));
+                return (Some(format!("Kept in Downloads\\OpenDesk: {e}")), Some(true));
+            }
+        }
+    }
+    let label = match (items, &last) {
+        ([_], Some(saved)) => saved.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+        _ => format!("{} items", items.len()),
+    };
+    badge_finished(ctx, &format!("Received {label} in {}", dir.display()));
+    (Some(format!("Saved {label} in {}", dir.display())), Some(true))
 }
 
 /// Folder that receives files (`Downloads\OpenDesk` in the user's home, else `<app dir>/Downloads`).
@@ -230,6 +268,9 @@ pub struct FileReceiver {
     groups: HashMap<String, FolderGroup>,
     /// Transfers cut by a lost connection or path, kept for their sender to resume, keyed `sender:id`.
     parked: HashMap<String, Parked>,
+    /// Resumes (`sender:new id`) of transfers that had already arrived whole: the cut took only our verdict with
+    /// it. Their `end` is confirmed without receiving the file again.
+    arrived: HashMap<String, Instant>,
 }
 
 /// A cut transfer waiting to be resumed.
@@ -248,6 +289,7 @@ impl FileReceiver {
             completed_ids: HashMap::new(),
             groups: HashMap::new(),
             parked: HashMap::new(),
+            arrived: HashMap::new(),
         }
     }
 
@@ -284,6 +326,7 @@ impl FileReceiver {
     /// Returns a status line for the last abandoned transfer.
     pub fn expire_stale(&mut self, ui: &dyn UiPort, now: Instant) -> Option<String> {
         self.completed_ids.retain(|_, done| now.duration_since(*done) < COMPLETED_TTL);
+        self.arrived.retain(|_, at| now.duration_since(*at) < RESUME_KEEP);
         let stale: Vec<String> = self
             .active_files
             .iter()
@@ -478,6 +521,11 @@ impl FileReceiver {
                         shown_percent: 0,
                         dest,
                         stamp: super::Stamp::from_payload(payload),
+                        place: if payload.group.is_some() {
+                            None
+                        } else {
+                            crate::service::file_browser::place_for(ctx, from, payload)
+                        },
                     },
                 );
                 self.show_badge(ctx);
@@ -511,6 +559,20 @@ impl FileReceiver {
             return (None, None);
         }
         let cut_key = format!("{from}:{cut}");
+        // It arrived and was verified; only our ACK was lost with the connection (a pipelining sender has several
+        // files waiting for theirs). "All of it" makes the sender send just `end`, which is then confirmed, instead
+        // of a second copy.
+        if self.completed_ids.contains_key(&cut_key)
+            && let Some(size) = payload.size
+        {
+            logger::info(
+                "file_transfer",
+                &format!("{cut_key} had arrived already; confirming it as id={}.", payload.id),
+            );
+            self.arrived.insert(key, Instant::now());
+            answer(size);
+            return (None, None);
+        }
         let kept = match self.parked.remove(&cut_key) {
             Some(p) => Some(p.file),
             // The sender's side dropped while ours stayed up: the transfer is still active here.
@@ -571,6 +633,9 @@ impl FileReceiver {
         }
         let base = download_dir();
         let group = self.groups.entry(gkey.clone()).or_insert_with(FolderGroup::new);
+        if group.entries == 0 {
+            group.place = crate::service::file_browser::place_for(ctx, from, payload);
+        }
         group.entries += 1;
         group.bytes = group.bytes.saturating_add(size);
         group.last_activity = Instant::now();
@@ -698,7 +763,11 @@ impl FileReceiver {
         key: String,
         allow_auto_paste: bool,
     ) -> Outcome {
-        let Some(Incoming { row, mut file, path: staging, name, received, total, hash, dest, stamp, .. }) =
+        if self.arrived.remove(&key).is_some() {
+            self.completed_ids.insert(key, Instant::now());
+            return (None, Some(true));
+        }
+        let Some(Incoming { row, mut file, path: staging, name, received, total, hash, dest, stamp, place, .. }) =
             self.active_files.remove(&key)
         else {
             // Unknown transfer (expired or rejected start): NACK so the sender does not wait for a timeout.
@@ -746,6 +815,9 @@ impl FileReceiver {
             }
             self.show_badge(ctx);
             return (Some(format!("Received: {name}")), Some(true));
+        }
+        if let Some(dir) = place {
+            return place_all(ctx, &[saved], &dir);
         }
         let paste = payload.auto_paste.unwrap_or(true) && allow_auto_paste;
         logger::info("file_transfer", &format!("File transfer complete: {} (auto_paste={paste})", saved.display()));
@@ -824,6 +896,52 @@ pub(super) mod tests {
         }
         assert!(rx.active_files.is_empty());
         assert_eq!(rx.handle_chunk(&ctx, &FileChunk { id: "../x", offset: 0, data: b"" }, "111"), (None, None));
+        *TEST_DOWNLOADS.lock() = None;
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A sender resuming a file that had arrived whole (only the ACK was lost) hears "all of it" and gets its
+    /// `end` confirmed; nothing is received or saved a second time.
+    #[test]
+    fn resuming_a_file_that_arrived_confirms_it_without_a_second_copy() {
+        let dir = env::temp_dir().join(format!("opendesk-arrived-{}-{}", std::process::id(), now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        *TEST_DOWNLOADS.lock() = Some(dir.clone());
+        let (ctx, outbox) = crate::service::test_support::context_with_outbox();
+        let mut rx = FileReceiver::new();
+        let data = b"hello, pipelined world";
+        // Inside a group, so finishing it does not touch the clipboard.
+        let start = FilePayload {
+            group: Some("fg_7".into()),
+            rel: Some("a.txt".into()),
+            ..FilePayload::start("ft_7", "a.txt", data.len() as u64)
+        };
+        rx.handle(&ctx, &start, "111", false);
+        rx.handle_chunk(&ctx, &FileChunk { id: "ft_7", offset: 0, data }, "111");
+        let end = FilePayload::end("ft_7", "a.txt", hex(&Sha256::digest(data)), false);
+        assert_eq!(rx.handle(&ctx, &end, "111", false).1, Some(true));
+        while outbox.try_recv().is_ok() {}
+
+        let resume =
+            FilePayload { resume_of: Some("ft_7".into()), ..FilePayload::start("ft_7_r1", "a.txt", data.len() as u64) };
+        assert_eq!(rx.handle(&ctx, &resume, "111", false), (None, None));
+        let answer = loop {
+            match outbox.try_recv().expect("no resume answer") {
+                crate::protocol::Outgoing::Message(ClientMessage::RelayFile { payload, .. }) => break payload,
+                _ => continue,
+            }
+        };
+        assert_eq!((answer.id.as_str(), answer.resume_at), ("ft_7_r1", Some(data.len() as u64)));
+        // Another sender cannot ride on it.
+        let foreign = FilePayload { resume_of: Some("ft_7".into()), ..FilePayload::start("ft_8", "a.txt", 1) };
+        rx.handle(&ctx, &foreign, "222", false);
+        assert!(!rx.arrived.contains_key("222:ft_8"), "a foreign resume starts over");
+        // Nothing is being received for the resumed ID: no second copy.
+        assert!(!rx.active_files.contains_key("111:ft_7_r1"));
+        let end = FilePayload::end("ft_7_r1", "a.txt", hex(&Sha256::digest(data)), false);
+        assert_eq!(rx.handle(&ctx, &end, "111", false).1, Some(true));
+        assert!(rx.arrived.is_empty());
+        rx.discard(ctx.ui.as_ref(), "222:ft_8", "test over");
         *TEST_DOWNLOADS.lock() = None;
         let _ = fs::remove_dir_all(dir);
     }

@@ -3,16 +3,29 @@
 use super::*;
 
 impl Connection {
+    /// An event of the hosted viewer over P2P; file browser requests go to the browser.
+    pub(super) fn on_p2p_event(&self, event: InputEvent) {
+        match event {
+            InputEvent::Browse { msg } => crate::service::file_browser::on_event(&self.ctx, &self.ctx.partner(), msg),
+            event => crate::service::host::input::apply(&self.ctx, event),
+        }
+    }
+
     /// Drains P2P input and every readable socket message. Returns false when the connection is gone.
     pub(super) fn read_all(&mut self, socket: &mut Socket) -> bool {
         while let Ok(event) = self.p2p_input.try_recv() {
             self.busy = true;
-            crate::service::host::input::apply(&self.ctx, event);
+            self.on_p2p_event(event);
         }
         while let Ok((from, kind, payload)) = self.bulk_in.try_recv() {
             self.busy = true;
             self.on_bulk(&from, kind, &payload);
         }
+        while let Ok((from, kind, payload)) = self.channel_in.try_recv() {
+            self.busy = true;
+            self.on_direct_file(&from, Path::Channel, kind, &payload);
+        }
+        self.drain_lane();
         loop {
             let read = socket.read();
             if read.is_ok() {

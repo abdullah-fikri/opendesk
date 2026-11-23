@@ -21,6 +21,8 @@ type Options struct {
 	P2PDisabled bool
 	// Security persists the administrator-managed device allowlist; nil keeps it in memory only.
 	Security SecurityRepository
+	// Communities stores communities and groups; nil turns the feature off (its capability is not advertised).
+	Communities CommunityRepository
 	// UDPRelay advertises the udp-relay capability (the UDP forwarder runs).
 	UDPRelay bool
 	// MoveCoalescingDisabled queues every relayed mouse move in its own slot instead of letting a newer move
@@ -32,6 +34,8 @@ type Options struct {
 	// a slow relay-to-viewer leg cannot hold up to 8 frames (about 133 ms at 60 fps) of latency. Zero keeps only
 	// the length bound.
 	FrameMaxAge time.Duration
+	// FileLaneDisabled withdraws the file-lane capability: no lane tokens are issued and no lane attaches.
+	FileLaneDisabled bool
 }
 
 // Relay is the in-memory session broker. All exported methods are safe for concurrent use.
@@ -49,8 +53,10 @@ type Relay struct {
 	// sec is the device allowlist (see security.go); securityRepo may be nil.
 	sec          security
 	securityRepo SecurityRepository
+	communities  CommunityRepository
 	caps         []string
 	p2pDisabled  bool
+	fileLane     bool
 	mergeMoves   bool
 	resumeGrace  time.Duration
 	frameMaxAge  time.Duration
@@ -60,12 +66,18 @@ type Relay struct {
 // New builds a Relay on top of the given storage.
 func New(hosts HostRepository, sessions SessionRepository, m FrameMetrics, opts Options, log *slog.Logger) *Relay {
 	caps := []string{model.CapFileGrant, model.CapFileOffer, model.CapP2PSignal, model.CapCaps, model.CapMultiSession, model.CapMonitor,
-		model.CapDeviceSecurity, model.CapHostAlias, model.CapFileBinary, model.CapSessionResume}
+		model.CapDeviceSecurity, model.CapHostAlias, model.CapFileBinary, model.CapSessionResume, model.CapHostDelete}
+	if opts.Communities != nil {
+		caps = append(caps, model.CapCommunities)
+	}
 	if opts.P2PDisabled {
 		caps = slices.DeleteFunc(caps, func(c string) bool { return c == model.CapP2PSignal })
 	}
 	if opts.UDPRelay && !opts.P2PDisabled {
 		caps = append(caps, model.CapUDPRelay)
+	}
+	if !opts.FileLaneDisabled {
+		caps = append(caps, model.CapFileLane)
 	}
 	if opts.ResumeGrace <= 0 {
 		opts.ResumeGrace = DefaultResumeGrace
@@ -84,8 +96,10 @@ func New(hosts HostRepository, sessions SessionRepository, m FrameMetrics, opts 
 		credentials:  creds,
 		sec:          security{devices: make(map[string]model.AllowedDevice)},
 		securityRepo: opts.Security,
+		communities:  opts.Communities,
 		caps:         caps,
 		p2pDisabled:  opts.P2PDisabled,
+		fileLane:     !opts.FileLaneDisabled,
 		mergeMoves:   !opts.MoveCoalescingDisabled,
 		resumeGrace:  opts.ResumeGrace,
 		frameMaxAge:  opts.FrameMaxAge,
@@ -125,6 +139,8 @@ type RegisterResult struct {
 	// which the new connection receives session-suspended right after its ack.
 	Back    []*Peer
 	Waiting []string
+	// LaneLost are the partners whose transfers over the replaced connection's file lane were cut.
+	LaneLost []LaneLost
 }
 
 // RegisterResume admits a new connection. With the resume token of the previous registration of the same ID
@@ -140,6 +156,10 @@ func (r *Relay) RegisterResume(conn Conn, info PeerInfo, token, resumeToken stri
 	}
 	info.IsAdmin = auth.admin
 	info.Caps = model.SanitizeCapabilities(info.Caps)
+	// Added after the 32-name cut, so a client with a full list still gets it to its partners in peerCaps.
+	if info.FileLane && r.fileLane && !slices.Contains(info.Caps, model.CapFileLane) {
+		info.Caps = append(info.Caps, model.CapFileLane)
+	}
 	peer := buildPeer(info, model.FormatDeskID(info.CleanID), slices.Contains(info.Caps, model.CapMultiSession), conn, r.metrics)
 	peer.frameMaxAge = r.frameMaxAge
 	go peer.writeLoop()
@@ -157,6 +177,7 @@ func (r *Relay) RegisterResume(conn Conn, info PeerInfo, token, resumeToken stri
 		} else {
 			res.Orphans = r.detachPartnersLocked(old)
 		}
+		res.LaneLost = r.closeLaneLocked(old)
 		r.dropGrantsLocked(old, now)
 		old.close()
 		_ = old.conn.Close()
@@ -189,6 +210,8 @@ type LeaveResult struct {
 	// Closed are partners whose session ended (send session-closed); Waiting are partners whose session is
 	// suspended (send session-suspended).
 	Closed, Waiting []*Peer
+	// LaneLost are the partners whose transfers over the connection's file lane were cut (the lane ends with it).
+	LaneLost []LaneLost
 }
 
 // Leave runs when p's socket ended. If p is still current, its resumable sessions (see resume.go) are
@@ -202,6 +225,7 @@ func (r *Relay) Leave(p *Peer) LeaveResult {
 		return res
 	}
 	p.close()
+	res.LaneLost = r.closeLaneLocked(p)
 	if p.Resume {
 		var keep []string
 		keep, res.Closed = r.splitLocked(p)
@@ -289,7 +313,27 @@ func (r *Relay) HostList(ctx context.Context) ([]model.Host, error) {
 	started := time.Now()
 	hosts, err := r.hosts.List(ctx)
 	r.metrics.ObserveHostList(time.Since(started))
-	return hosts, err
+	if err != nil {
+		return hosts, err
+	}
+	// Online comes from the live connections, not the stored flag: the offline write of a dropped connection
+	// and the online write of its replacement run outside the lock, and the later-finishing one would otherwise
+	// show a connected device offline until it next reconnects.
+	r.mu.RLock()
+	for i := range hosts {
+		_, hosts[i].Online = r.peers[hosts[i].CleanID]
+	}
+	r.mu.RUnlock()
+	slices.SortStableFunc(hosts, func(a, b model.Host) int {
+		switch {
+		case a.Online == b.Online:
+			return 0
+		case a.Online:
+			return -1
+		}
+		return 1
+	})
+	return hosts, nil
 }
 
 // RunJanitor drops expired file grants every interval until ctx ends.

@@ -119,6 +119,9 @@ func (h *Handler) RunPinger(ctx context.Context) {
 			for _, p := range h.relay.Peers() {
 				_ = p.Ping()
 			}
+			for _, l := range h.relay.Lanes() {
+				_ = l.Ping()
+			}
 		}
 	}
 }

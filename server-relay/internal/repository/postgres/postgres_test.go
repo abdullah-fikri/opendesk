@@ -76,4 +76,69 @@ func TestRepositoriesAgainstPostgres(t *testing.T) {
 	if state, _ := sec.LoadSecurity(ctx); len(state.Devices) != 0 {
 		t.Fatal("device not deleted")
 	}
+
+	testCommunities(t, ctx, hosts, NewCommunityRepository(db), now)
+}
+
+// testCommunities covers migration 0004: groups and memberships cascade, deleting a device drops its memberships.
+func testCommunities(t *testing.T, ctx context.Context, hosts *HostRepository, repo *CommunityRepository, now time.Time) {
+	for _, id := range []string{"222222222", "333333333"} {
+		if err := hosts.Upsert(ctx, model.Host{CleanID: id, DeskID: id, DeviceName: "PC", Platform: "windows-pc", Online: id == "222222222", LastSeen: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := model.Community{ID: "c1test", Name: "Shops", Icon: "🏪", Color: "blue", CreatedBy: "111111111", CreatedAt: now}
+	if err := repo.CreateCommunity(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range []model.Group{{ID: "g1test", CommunityID: c.ID, Name: "Front", CreatedAt: now}, {ID: "g2test", CommunityID: c.ID, Name: "Back", CreatedAt: now.Add(time.Second)}} {
+		if err := repo.CreateGroup(ctx, g); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 999999999 is not registered and is skipped; adding twice is harmless.
+	for i := 0; i < 2; i++ {
+		if err := repo.AddMembers(ctx, "g1test", []string{"222222222", "333333333", "999999999"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.AddMembers(ctx, "g2test", []string{"333333333"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateCommunity(ctx, c.ID, "Stores", "🛒", "green"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RenameGroup(ctx, "g2test", "Kitchen"); err != nil {
+		t.Fatal(err)
+	}
+	all, err := repo.ListCommunities(ctx)
+	if err != nil || len(all) != 1 || all[0].Name != "Stores" || all[0].Icon != "🛒" || len(all[0].Groups) != 2 ||
+		all[0].Groups[1].Name != "Kitchen" || len(all[0].Groups[0].Members) != 2 {
+		t.Fatalf("communities: %+v %v", all, err)
+	}
+
+	n, err := hosts.Delete(ctx, []string{"333333333"})
+	if err != nil || n != 1 {
+		t.Fatalf("delete offline: %d %v", n, err)
+	}
+	all, _ = repo.ListCommunities(ctx)
+	if m := all[0].Groups[0].Members; len(m) != 1 || m[0] != "222222222" || len(all[0].Groups[1].Members) != 0 {
+		t.Fatalf("memberships after delete: %+v", all[0].Groups)
+	}
+	if err := repo.RemoveMembers(ctx, "g1test", []string{"222222222"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.DeleteGroup(ctx, "g1test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.DeleteCommunity(ctx, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	if all, _ = repo.ListCommunities(ctx); len(all) != 0 {
+		t.Fatalf("community not deleted: %+v", all)
+	}
+	var left int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM community_groups`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("groups did not cascade: %d %v", left, err)
+	}
 }

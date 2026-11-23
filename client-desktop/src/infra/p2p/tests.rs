@@ -405,7 +405,12 @@ pub(crate) fn relayed_pair(
 
 /// Frames through a path that loses every `drop_every`-th video fragment; returns how many of `frames`
 /// arrived intact, and whether they arrived in sending order.
+/// The timing-sensitive streams below take turns: run side by side (the bulk flood next to the 30 ms video
+/// frames) they starved each other's retransmits and the video test failed now and then.
+static STREAM_TESTS: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 fn lossy_stream(nack: bool, drop_every: u32, frames: usize) -> (usize, bool) {
+    let _turn = STREAM_TESTS.lock();
     let inbox: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
     let sink = Arc::clone(&inbox);
     let (viewer, host, stop) = relayed_pair(nack, drop_every, Arc::new(move |f| sink.lock().push(f)), None, None);
@@ -415,7 +420,11 @@ fn lossy_stream(nack: bool, drop_every: u32, frames: usize) -> (usize, bool) {
         assert!(host.send_video(&frame(n)));
         thread::sleep(Duration::from_millis(30));
     }
-    thread::sleep(Duration::from_millis(500));
+    // Late repairs still land; stop waiting as soon as every frame is in.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while inbox.lock().len() < frames && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
     let got = inbox.lock().clone();
     let ids: Vec<usize> = got.iter().filter_map(|f| (0..frames).find(|&n| *f == frame(n))).collect();
     stop.store(true, Ordering::SeqCst);
@@ -430,6 +439,7 @@ type Message = (u8, Vec<u8>);
 /// `drop_every`-th full datagram; returns whether all arrived whole and in order, how many were acknowledged
 /// and the throughput in MB/s.
 fn file_stream(drop_every: u32, count: usize, size: usize) -> (bool, usize, f64) {
+    let _turn = STREAM_TESTS.lock();
     let got: Arc<Mutex<Vec<Message>>> = Arc::default();
     let sink = Arc::clone(&got);
     let host_bulk: Bulk = Some(Arc::new(move |kind, payload| sink.lock().push((kind, payload))));

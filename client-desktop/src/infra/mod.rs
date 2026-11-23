@@ -2,6 +2,7 @@
 //! hold no business rules; they wrap one external facility each. OS-specific modules are directories with a
 //! `win` and a `unix` backend exposing the same functions, selected with `cfg` (static dispatch).
 
+pub mod archive;
 pub mod audio;
 pub mod autostart;
 #[cfg(windows)]
@@ -11,6 +12,7 @@ pub mod console;
 pub mod device;
 pub mod e2e;
 pub mod file_attrs;
+pub mod file_channel;
 pub mod identity;
 pub mod key_pins;
 pub mod logger;
@@ -21,15 +23,18 @@ pub mod power;
 pub mod privacy;
 pub mod process_usage;
 pub mod send_gate;
+pub mod shell;
 pub mod storage;
 pub mod system_service;
 pub mod system_theme;
 pub mod tcp_path;
+pub mod text_focus;
 pub mod thread;
 pub mod transfer_badge;
 pub mod tray;
 pub mod udp_socket;
 pub mod user_clipboard;
+pub mod user_scope;
 pub mod virtual_clipboard;
 pub mod wifi;
 pub mod window;

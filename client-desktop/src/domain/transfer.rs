@@ -1,11 +1,41 @@
 //! File-transfer limits and path rules shared by sending, receiving and clipboard offers.
 
-/// Largest single file.
-pub const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Largest single file this build receives (1 TiB): sizes and offsets are 64-bit everywhere and a received file
+/// is streamed to disk, so the real limit is the receiver's free space.
+pub const MAX_FILE_BYTES: u64 = 1 << 40;
 /// Most entries (files and folders) in one folder transfer or offer.
 pub const MAX_TREE_ENTRIES: usize = 10_000;
-/// Most bytes in one folder transfer or offer.
-pub const MAX_TREE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
+/// Most bytes in one folder transfer or offer this build receives (4 TiB).
+pub const MAX_TREE_BYTES: u64 = 4 << 40;
+/// What builds before large files accept (Android, desktop up to 1.5.x): one file of 2 GiB, a folder of 32 GiB.
+/// They refuse anything bigger, so a sender keeps to these toward them (see [`Limits::for_partner`]).
+pub const LEGACY_MAX_FILE_BYTES: u64 = 2 << 30;
+pub const LEGACY_MAX_TREE_BYTES: u64 = 32 << 30;
+
+/// Size limits of what may be sent to one partner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    pub file: u64,
+    pub tree: u64,
+}
+
+impl Limits {
+    /// Limits toward a partner; `large` is whether it takes files over 2 GiB. No capability of its own says so:
+    /// the relay keeps only 32 capability names and a desktop build lists that many already. Every build that
+    /// lists `file-channel` takes large files (both came in the same release), so that capability stands for it.
+    pub fn for_partner(large: bool) -> Self {
+        if large {
+            Self { file: MAX_FILE_BYTES, tree: MAX_TREE_BYTES }
+        } else {
+            Self { file: LEGACY_MAX_FILE_BYTES, tree: LEGACY_MAX_TREE_BYTES }
+        }
+    }
+}
+
+/// A limit for status lines: "2 GB", "1 TB".
+pub fn size_label(bytes: u64) -> String {
+    if bytes >= 1 << 40 { format!("{} TB", bytes >> 40) } else { format!("{} GB", bytes >> 30) }
+}
 /// FILEDESCRIPTORW.cFileName holds 260 UTF-16 units including the terminator.
 const MAX_REL_UTF16: usize = 259;
 /// Longest transfer, group or offer ID accepted from the wire.
@@ -116,5 +146,16 @@ mod tests {
         assert!(is_safe_id("ft_123") && !is_safe_id("../g") && !is_safe_id("") && !is_safe_id(&"a".repeat(81)));
         assert_eq!(sanitize_file_name(r"a\b:c?.txt"), "a_b_c_.txt");
         assert_eq!((percent(50, 100), percent(100, 100), percent(0, 0)), (50, 99, 99));
+        // A terabyte file: no overflow, and the percentage still moves.
+        assert_eq!(percent(MAX_FILE_BYTES / 2, MAX_FILE_BYTES), 50);
+    }
+
+    #[test]
+    fn older_partners_keep_the_old_limits() {
+        let old = Limits::for_partner(false);
+        assert_eq!((old.file, old.tree), (2 * 1024 * 1024 * 1024, 32 * 1024 * 1024 * 1024));
+        let new = Limits::for_partner(true);
+        assert!(new.file >= 1 << 40 && new.tree >= new.file);
+        assert_eq!((size_label(old.file), size_label(new.file)), ("2 GB".to_string(), "1 TB".to_string()));
     }
 }

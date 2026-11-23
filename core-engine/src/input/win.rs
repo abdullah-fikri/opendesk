@@ -300,7 +300,8 @@ impl InputInjector {
         }
     }
 
-    /// Scrolls by `delta_y` (120 = one notch up).
+    /// Scrolls by `delta_y` (120 = one notch up). Values from 40 go through as wheel units, so partial notches
+    /// (a phone scrolling a line at a time) scroll smoothly in applications that honour them.
     pub fn mouse_wheel(&self, delta_y: i32) {
         unsafe {
             let win_delta = if delta_y.abs() < 40 { delta_y * 120 } else { delta_y };

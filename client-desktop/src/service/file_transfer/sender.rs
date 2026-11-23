@@ -5,6 +5,11 @@
 //! clipboard offers go binary only to receivers that also list `file-pull-bin`. Receivers that advertise `file-ack`
 //! answer `end` with an ACK/NACK; for them "Sent" means verified on the other side. Folders go only to
 //! `file-folder` receivers, as folder entries plus files carrying their relative path.
+//!
+//! Files are pipelined: the next file starts streaming as soon as the previous one's `end` is queued, and up to
+//! [`window_limit`] files wait for their verdict at once ([`Window`]). A folder of many small files used to cost a
+//! round trip per file. The receiver handles each `end` before anything that follows it, so the files arrive and
+//! are verified in order either way; a NACK, timeout or cut fails or resumes only its own file.
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -12,7 +17,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,12 +27,12 @@ use sha2::{Digest, Sha256};
 
 use super::{
     BINARY_CHUNK_SIZE, CHUNK_SIZE, Delivery, IN_FLIGHT_CHUNKS, Resumes, caps_of, chunk_units, epoch, expect_ack,
-    forget_ack, hex, now_micros, tree,
+    forget_ack, hex, limits_to, now_micros, tree,
 };
 use crate::domain::file_squeeze::{OFFSET_DEFLATED, Squeeze};
-use crate::domain::transfer::{MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_ENTRIES, percent, safe_rel_path};
+use crate::domain::transfer::{MAX_TREE_ENTRIES, percent, safe_rel_path, size_label};
 use crate::infra::logger;
-use crate::protocol::{ClientMessage, FileMark, FilePayload, Outgoing, binary};
+use crate::protocol::{ClientMessage, FileAction, FileMark, FilePayload, Outgoing, binary};
 use crate::service::context::AppContext;
 use crate::service::ui_port::{TransferState, TransferUpdate, UiPort};
 
@@ -35,8 +40,16 @@ use crate::service::ui_port::{TransferState, TransferUpdate, UiPort};
 const ACK_TIMEOUT: Duration = Duration::from_secs(120);
 /// How often a sender waiting for the verdict refreshes its progress.
 const PROGRESS_POLL: Duration = Duration::from_millis(250);
-/// Most file messages allowed in the connection queue (~1.5 MB), in [`chunk_units`], before the sender waits.
-const MAX_QUEUED_CHUNKS: usize = 48;
+/// Files and folder entries waiting for their verdict while later ones stream, toward a partner reached directly
+/// (P2P path or file channel). The receiver has handled them already when the verdict leaves, so this costs it
+/// nothing; it bounds what a lost connection leaves the sender to resume.
+const WINDOW_DIRECT: usize = 32;
+/// The same over the relay: there every transfer holds one of the 8 grants the relay allows per peer until its
+/// ACK passes, and the file being streamed and up to two pulled files need theirs too.
+const WINDOW_RELAY: usize = 4;
+/// A transfer cut because the file channel dropped waits up to this long for it to come back before it resumes
+/// on a slower path (where it would then stay for the rest of the file).
+const CHANNEL_GRACE: Duration = Duration::from_secs(10);
 /// Status shown when a selection contained folders the partner cannot receive.
 pub(super) const SKIPPED_FOLDERS: &str = "Folders skipped: the other device needs a newer OpenDesk to receive folders";
 
@@ -83,6 +96,9 @@ struct Link {
     target: String,
     /// The relay forwards binary file chunks (sampled once: a new relay connection aborts the send anyway).
     relay_binary: bool,
+    /// File browser transfers: the request they answer, or the folder they go to (put on every `start`).
+    browse: Option<u64>,
+    dest: Option<String>,
 }
 
 impl Link {
@@ -91,7 +107,11 @@ impl Link {
     }
 
     /// Queues `payload`; `mark` comes back through [`super::set_delivered`] once the relay has read it.
-    fn queue_marked(&self, payload: FilePayload, status: Option<String>, mark: Option<FileMark>) {
+    fn queue_marked(&self, mut payload: FilePayload, status: Option<String>, mark: Option<FileMark>) {
+        if payload.action == FileAction::Start {
+            payload.browse = self.browse;
+            payload.dest.clone_from(&self.dest);
+        }
         IN_FLIGHT_CHUNKS.fetch_add(1, Ordering::SeqCst);
         let message = ClientMessage::file(&self.target, payload);
         let _ = self.outbox.send(Outgoing::File { message, status, mark });
@@ -150,14 +170,42 @@ pub(super) fn send_pulled(ctx: &AppContext, path: PathBuf, tid: String, target: 
     let started = epoch();
     PULLS.submit(Box::new(move || {
         if epoch() == started {
-            send_file(&link, SendItem { path, id: Some(tid), tag: None }, &mut started.clone(), false);
+            send_items(&link, vec![SendItem { path, id: Some(tid), tag: None }], false, started);
         }
     }));
 }
 
 fn link_for(ctx: &AppContext, target: String) -> Link {
     let relay_binary = ctx.relay.caps.lock().file_binary;
-    Link { outbox: ctx.outbox.clone(), ui: Arc::clone(&ctx.ui), target, relay_binary }
+    Link { outbox: ctx.outbox.clone(), ui: Arc::clone(&ctx.ui), target, relay_binary, browse: None, dest: None }
+}
+
+/// Sends `paths` for the file browser, reading them as the signed-in user (`infra::user_scope`): `browse`
+/// answers the partner's request of that number, `dest` names the partner's folder they go to. Nothing is pasted.
+pub fn send_browsed(ctx: &AppContext, paths: Vec<PathBuf>, target: String, browse: Option<u64>, dest: Option<String>) {
+    if paths.is_empty() || target.is_empty() {
+        return;
+    }
+    let mut link = link_for(ctx, target);
+    link.browse = browse;
+    link.dest = dest;
+    crate::infra::thread::spawn_named("files-browse-send", move || {
+        let result = crate::infra::user_scope::as_user(|| {
+            let (items, skipped_folders) = match expand(paths, &link.target) {
+                Ok(expanded) => expanded,
+                Err(status) => return link.status(status),
+            };
+            if !send_items(&link, items, false, epoch()) {
+                return;
+            }
+            if skipped_folders {
+                link.status(SKIPPED_FOLDERS.into());
+            }
+        });
+        if let Err(why) = result {
+            link.status(format!("Could not send files: {why}"));
+        }
+    });
 }
 
 /// Most pulled files sent at the same time. Explorer reads a multi-file paste one stream after another, so a
@@ -255,15 +303,8 @@ fn run(ctx: &AppContext, paths: Vec<PathBuf>, target: String, auto_paste: bool) 
             Ok(expanded) => expanded,
             Err(status) => return link.status(status),
         };
-        let mut started = epoch();
-        for item in items {
-            if epoch() != started {
-                return link.status("Could not send files: connection lost".into());
-            }
-            match &item.tag {
-                Some(tag) if tag.dir => send_folder_entry(&link, tag, auto_paste),
-                _ => send_file(&link, item, &mut started, auto_paste),
-            }
+        if !send_items(&link, items, auto_paste, epoch()) {
+            return;
         }
         if skipped_folders {
             link.status(SKIPPED_FOLDERS.into());
@@ -282,7 +323,7 @@ fn expand(paths: Vec<PathBuf>, target: &str) -> Result<(Vec<SendItem>, bool), St
         logger::info("file_transfer", "Partner lacks file-folder; skipping folders in the selection.");
         return Ok((paths.into_iter().filter(|p| !p.is_dir()).map(plain).collect(), true));
     }
-    let entries = tree::walk(&paths, MAX_TREE_ENTRIES, MAX_TREE_BYTES)?;
+    let entries = tree::walk(&paths, MAX_TREE_ENTRIES, limits_to(target))?;
     let group = format!("fg_{}", now_micros());
     let marker = entries.iter().find(|e| e.dir).map(|e| (e.path.clone(), e.rel.clone()));
     let mut items: Vec<SendItem> = entries
@@ -331,9 +372,65 @@ fn group_loose(paths: Vec<PathBuf>, grouped: bool) -> Vec<SendItem> {
     items
 }
 
-/// Sends a folder entry: one `start` with `dir`, answered by an ACK; no bytes follow. An end marker with an
-/// empty `rel` is the bare group end of loose files.
-fn send_folder_entry(link: &Link, tag: &FolderTag, auto_paste: bool) {
+/// Files and folder entries a send may have waiting for their verdict toward `target` (see [`Window`]).
+fn window_limit(target: &str) -> usize {
+    if super::holds_relay_grants(target) { WINDOW_RELAY } else { WINDOW_DIRECT }
+}
+
+/// Sends `items` in order on the connection of epoch `started`; false when the connection was lost and the rest
+/// of the selection was given up (the status says so). A file does not wait for its verdict before the next one
+/// starts: they wait together in a [`Window`]. A group's end marker goes only once every verdict before it is in,
+/// so the receiver closes the group with everything in it (and a file resumed after a cut still belongs to it).
+fn send_items(link: &Link, items: Vec<SendItem>, auto_paste: bool, mut started: u64) -> bool {
+    let mut window = Window::default();
+    for item in items {
+        let group_end = item.tag.as_ref().is_some_and(|t| t.end);
+        if group_end {
+            window.drain(link, &mut started);
+        } else {
+            window.settle(link, &mut started, Duration::ZERO);
+            while window.0.len() >= window_limit(&link.target) {
+                window.settle(link, &mut started, PROGRESS_POLL);
+            }
+        }
+        if epoch() != started {
+            window.drain(link, &mut started);
+            link.status("Could not send files: connection lost".into());
+            return false;
+        }
+        match &item.tag {
+            Some(tag) if tag.dir => {
+                if let Some(mut entry) = queue_folder_entry(link, tag, auto_paste) {
+                    if group_end {
+                        let status = loop {
+                            if let Some(status) = entry.verdict(PROGRESS_POLL) {
+                                break status;
+                            }
+                        };
+                        if let Some(status) = status {
+                            link.status(status);
+                        }
+                    } else {
+                        window.0.push_back(Waiting::Entry(entry));
+                    }
+                }
+            }
+            _ => {
+                let Some(flight) = Flight::open(link, item, auto_paste, started) else { continue };
+                let mut tick = || window.collect(link);
+                if let Some(flight) = stream_through(link, flight, &mut started, &mut tick) {
+                    window.0.push_back(Waiting::File(Box::new(flight)));
+                }
+            }
+        }
+    }
+    window.drain(link, &mut started);
+    true
+}
+
+/// Queues a folder entry: one `start` with `dir`, answered by an ACK; no bytes follow. An end marker with an
+/// empty `rel` is the bare group end of loose files. None when the receiver sends no verdict.
+fn queue_folder_entry(link: &Link, tag: &FolderTag, auto_paste: bool) -> Option<Entry> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let id = format!("fd_{}_{}", now_micros(), SEQ.fetch_add(1, Ordering::Relaxed));
     let bare = tag.rel.is_empty();
@@ -352,17 +449,145 @@ fn send_folder_entry(link: &Link, tag: &FolderTag, auto_paste: bool) {
         ..FilePayload::start(&id, name, 0)
     };
     link.queue(payload, (!tag.end).then(|| format!("Sending folder {}...", tag.rel)));
-    if !wants_ack {
-        return;
+    wants_ack.then(|| Entry {
+        id,
+        rel: tag.rel.clone(),
+        end: tag.end,
+        rx: ack_rx,
+        deadline: Instant::now() + ACK_TIMEOUT,
+    })
+}
+
+/// A folder entry (or group end) waiting for its ACK.
+struct Entry {
+    id: String,
+    rel: String,
+    end: bool,
+    rx: Receiver<bool>,
+    deadline: Instant,
+}
+
+impl Entry {
+    /// Its verdict, waiting up to `wait`: None while still out, else the status to show (if any).
+    fn verdict(&mut self, wait: Duration) -> Option<Option<String>> {
+        // Disconnected: the relay connection dropped (`abort_pending_sends` forgot every waiting sender).
+        let got = if wait.is_zero() {
+            self.rx.try_recv().map_err(|e| e == TryRecvError::Disconnected)
+        } else {
+            self.rx.recv_timeout(wait).map_err(|e| e == RecvTimeoutError::Disconnected)
+        };
+        let rel = &self.rel;
+        match got {
+            Ok(true) if self.end && rel.is_empty() => Some(Some("Sent: all files".into())),
+            Ok(true) if self.end => Some(Some(format!("Sent: {rel}"))),
+            Ok(true) => Some(None),
+            Ok(false) => Some(Some(format!("Could not send folder {rel}"))),
+            Err(gone) if gone || Instant::now() >= self.deadline => {
+                forget_ack(&self.id);
+                Some(Some(format!("Could not send folder {rel}: no confirmation from the receiver")))
+            }
+            Err(_) => None,
+        }
     }
-    match ack_rx.recv_timeout(ACK_TIMEOUT) {
-        Ok(true) if tag.end && bare => link.status("Sent: all files".into()),
-        Ok(true) if tag.end => link.status(format!("Sent: {}", tag.rel)),
-        Ok(true) => {}
-        Ok(false) => link.status(format!("Could not send folder {}", tag.rel)),
-        Err(_) => {
-            forget_ack(&id);
-            link.status(format!("Could not send folder {}: no confirmation from the receiver", tag.rel));
+}
+
+/// One item of a [`Window`].
+enum Waiting {
+    File(Box<Flight>),
+    Entry(Entry),
+}
+
+/// What a waiting item's verdict check found.
+enum Check {
+    Pending,
+    /// A file that was cut and must resume.
+    Cut,
+    File(Pass),
+    Entry(Option<String>),
+}
+
+/// Files whose bytes and `end` are all queued, and folder entries, waiting for the receiver's verdict, oldest
+/// first. Verdicts come back in order (the receiver handles messages in order) and are reported as they come;
+/// a NACK or timeout fails only its own file. After a cut every file still waiting resumes, oldest first, from
+/// where the receiver stands.
+#[derive(Default)]
+struct Window(VecDeque<Waiting>);
+
+impl Window {
+    fn check(item: &mut Waiting, link: &Link, wait: Duration) -> Check {
+        match item {
+            Waiting::Entry(e) => e.verdict(wait).map_or(Check::Pending, Check::Entry),
+            Waiting::File(f) => match f.verdict(link, wait) {
+                None => Check::Pending,
+                Some(Pass::Cut) => Check::Cut,
+                Some(pass) => Check::File(pass),
+            },
+        }
+    }
+
+    /// Reports the verdicts already in, without waiting and without resuming anything: runs between the chunks of
+    /// the file being streamed, which a resume would hold up.
+    fn collect(&mut self, link: &Link) {
+        let mut i = 0;
+        while i < self.0.len() {
+            match Self::check(&mut self.0[i], link, Duration::ZERO) {
+                Check::Pending | Check::Cut => i += 1,
+                Check::File(pass) => self.finish(link, i, pass),
+                Check::Entry(status) => self.finish_entry(link, i, status),
+            }
+        }
+    }
+
+    /// Reports the verdicts in and resumes cut files, oldest first, waiting up to `wait` for the oldest one. A cut
+    /// file resumes only while fewer than [`window_limit`] wait ahead of it (each may hold a relay grant again);
+    /// the rest resume on a later call. `started` follows the connection resumed files continue on.
+    fn settle(&mut self, link: &Link, started: &mut u64, wait: Duration) {
+        let mut i = 0;
+        while i < self.0.len() {
+            let wait = if i == 0 { wait } else { Duration::ZERO };
+            match Self::check(&mut self.0[i], link, wait) {
+                Check::Pending => i += 1,
+                Check::Cut if i >= window_limit(&link.target) => break,
+                Check::Cut => {
+                    let Some(Waiting::File(mut flight)) = self.0.remove(i) else { unreachable!("only files are cut") };
+                    let resumed = match flight.recover(link) {
+                        Ok(()) => {
+                            *started = flight.epoch;
+                            stream_through(link, *flight, started, &mut || {})
+                        }
+                        Err(failed) => {
+                            flight.finish(link, failed);
+                            None
+                        }
+                    };
+                    if let Some(flight) = resumed {
+                        self.0.insert(i, Waiting::File(Box::new(flight)));
+                        i += 1;
+                    }
+                }
+                Check::File(pass) => self.finish(link, i, pass),
+                Check::Entry(status) => self.finish_entry(link, i, status),
+            }
+        }
+    }
+
+    /// Waits until every verdict is in.
+    fn drain(&mut self, link: &Link, started: &mut u64) {
+        while !self.0.is_empty() {
+            self.settle(link, started, PROGRESS_POLL);
+        }
+    }
+
+    fn finish(&mut self, link: &Link, i: usize, pass: Pass) {
+        if let Some(Waiting::File(flight)) = self.0.remove(i) {
+            flight.finish(link, pass);
+        }
+    }
+
+    fn finish_entry(&mut self, link: &Link, i: usize, status: Option<String>) {
+        self.0.remove(i);
+        if let Some(status) = status {
+            link.status(status);
         }
     }
 }
@@ -435,216 +660,309 @@ impl Leg {
     }
 }
 
-/// Sends one file and waits for its verdict. With a receiver listing `file-resume`, a transfer cut by a lost
-/// relay connection or P2P path continues from the receiver's last byte under a new transfer ID (see
-/// [`resume`]); `started` follows the connection it continues on.
-fn send_file(link: &Link, item: SendItem, started: &mut u64, auto_paste: bool) {
-    let SendItem { path, id, tag } = item;
-    // Only pulled offers come with the receiver's transfer ID; paste streams up to 1.3.x read JSON chunks only.
-    let pulled = id.is_some();
-    if !path.is_file() {
-        return;
-    }
-    let wire_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file.bin").to_string();
-    // Inside a folder the status shows the relative path; the wire `name` stays a plain file name.
-    let label = tag.as_ref().map_or_else(|| wire_name.clone(), |t| t.rel.clone());
-    let mut file = match File::open(&path) {
-        Ok(f) => f,
-        Err(e) => {
-            logger::error("file_transfer", &format!("Failed to open {path:?}: {e}"));
-            return link.status(format!("Could not open {label}"));
+/// One file being sent: what streaming it, resuming it and waiting for its verdict need. With a receiver listing
+/// `file-resume`, a transfer cut by a lost relay connection or direct path continues from the receiver's last
+/// byte under a new transfer ID (see [`resume`]).
+struct Flight {
+    /// The transfer ID it started under; its transfer-list row.
+    base: String,
+    label: String,
+    wire_name: String,
+    path: PathBuf,
+    file: File,
+    size: u64,
+    start: FilePayload,
+    leg: Leg,
+    resumes: Resumes,
+    ack_tx: Sender<bool>,
+    ack_rx: Receiver<bool>,
+    wants_ack: bool,
+    binary: bool,
+    chunk_size: usize,
+    resumable: bool,
+    resumed: u32,
+    auto_paste: bool,
+    squeeze: Squeeze,
+    raw_bytes: u64,
+    wire_bytes: u64,
+    shown: Shown,
+    /// The relay connection the current leg runs on (see [`epoch`]).
+    epoch: u64,
+    /// When the verdict must have come; set when `end` is queued.
+    deadline: Instant,
+}
+
+/// Streams `flight` until its `end` is queued, resuming it when cut; None once it is over (failed and reported).
+/// `tick` runs every [`PROGRESS_POLL`] meanwhile; `started` follows the connection a resumed leg runs on.
+fn stream_through(link: &Link, mut flight: Flight, started: &mut u64, tick: &mut dyn FnMut()) -> Option<Flight> {
+    loop {
+        match flight.stream(link, tick) {
+            Pass::Done => return Some(flight),
+            Pass::Cut => match flight.recover(link) {
+                Ok(()) => *started = flight.epoch,
+                Err(failed) => {
+                    flight.finish(link, failed);
+                    return None;
+                }
+            },
+            failed => {
+                flight.finish(link, failed);
+                return None;
+            }
         }
-    };
-    let size = match file.metadata() {
-        Ok(m) if m.len() <= MAX_FILE_BYTES => m.len(),
-        _ => return link.status(format!("Could not send {label}: larger than 2 GB")),
-    };
-    let base = id.unwrap_or_else(|| format!("ft_{}", now_micros()));
-    logger::info("file_transfer", &format!("Sending id={base} name={label} bytes={size} auto_paste={auto_paste}"));
-
-    // Sampled per file: the partner (and its caps) may change while a background transfer runs.
-    let caps = caps_of(&link.target);
-    let wants_ack = caps.file_ack;
-    let binary = caps.file_binary && link.relay_binary && (!pulled || caps.file_pull_bin);
-    let chunk_size = if binary { BINARY_CHUNK_SIZE } else { CHUNK_SIZE };
-    // A paste stream belongs to the pasting application, which gives up when the connection drops.
-    let resumable = !pulled && wants_ack && caps.file_resume && resume_enabled();
-    let mut resumes = Resumes::listen(&link.target, &base, resumable);
-    let (ack_tx, ack_rx) = mpsc::channel();
-    expect_ack(&base, ack_tx.clone());
-
-    let mut start = FilePayload::start(&base, &wire_name, size);
-    super::Stamp::of_path(&path).put_on(&mut start);
-    if let Some(t) = &tag {
-        start.group = Some(t.group.clone());
-        start.rel = Some(t.rel.clone());
     }
-    // Progress counts what reached the relay, not what was queued: up to the whole queue may still be on its
-    // way, which showed as "stuck at 99%".
-    let mut leg = Leg {
-        id: base.clone(),
-        sent: 0,
-        hash: Sha256::new(),
-        delivery: Delivery::track(format!("{}:{base}", link.target), 0),
-    };
-    link.queue(start.clone(), Some(format!("Sending {label} (0%)...")));
-    link.progress(&base, &label, 0, size, TransferState::Active);
+}
 
-    let fast = super::fast_path(&link.target);
-    let mut squeeze = Squeeze::new(&wire_name, binary && caps.file_deflate && deflate_enabled(), Instant::now());
-    let (mut raw_bytes, mut wire_bytes) = (0u64, 0u64);
-    let mut buf = vec![0u8; chunk_size];
-    let mut shown = Shown::default();
-    let mut resumed = 0;
-    let verdict = loop {
-        // The bytes, then the verdict; either may be cut.
-        let mut pass = Pass::Done;
-        while leg.sent < size {
+impl Flight {
+    /// Opens `item` and queues its `start` on the connection of epoch `started`. None when it cannot be sent (the
+    /// status says why; a path that is no file any more is skipped).
+    fn open(link: &Link, item: SendItem, auto_paste: bool, started: u64) -> Option<Self> {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let SendItem { path, id, tag } = item;
+        // Only pulled offers come with the receiver's transfer ID; paste streams up to 1.3.x read JSON chunks only.
+        let pulled = id.is_some();
+        if !path.is_file() {
+            return None;
+        }
+        let wire_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file.bin").to_string();
+        // Inside a folder the status shows the relative path; the wire `name` stays a plain file name.
+        let label = tag.as_ref().map_or_else(|| wire_name.clone(), |t| t.rel.clone());
+        let file = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                logger::error("file_transfer", &format!("Failed to open {path:?}: {e}"));
+                link.status(format!("Could not open {label}"));
+                return None;
+            }
+        };
+        let limit = limits_to(&link.target).file;
+        let size = match file.metadata() {
+            Ok(m) if m.len() <= limit => m.len(),
+            _ => {
+                link.status(format!("Could not send {label}: larger than {}", size_label(limit)));
+                return None;
+            }
+        };
+        // Files now start back to back: the counter keeps two empty files in one microsecond apart.
+        let base = id.unwrap_or_else(|| format!("ft_{}_{}", now_micros(), SEQ.fetch_add(1, Ordering::Relaxed)));
+        logger::info("file_transfer", &format!("Sending id={base} name={label} bytes={size} auto_paste={auto_paste}"));
+
+        // Sampled per file: the partner (and its caps) may change while a background transfer runs.
+        let caps = caps_of(&link.target);
+        let wants_ack = caps.file_ack;
+        let binary = caps.file_binary && link.relay_binary && (!pulled || caps.file_pull_bin);
+        // A paste stream belongs to the pasting application, which gives up when the connection drops.
+        let resumable = !pulled && wants_ack && caps.file_resume && resume_enabled();
+        let resumes = Resumes::listen(&link.target, &base, resumable);
+        let (ack_tx, ack_rx) = mpsc::channel();
+        expect_ack(&base, ack_tx.clone());
+
+        let mut start = FilePayload::start(&base, &wire_name, size);
+        super::Stamp::of_path(&path).put_on(&mut start);
+        if let Some(t) = &tag {
+            start.group = Some(t.group.clone());
+            start.rel = Some(t.rel.clone());
+        }
+        // Progress counts what reached the relay, not what was queued: up to the whole queue may still be on its
+        // way, which showed as "stuck at 99%".
+        let leg = Leg {
+            id: base.clone(),
+            sent: 0,
+            hash: Sha256::new(),
+            delivery: Delivery::track(format!("{}:{base}", link.target), 0),
+        };
+        link.queue(start.clone(), Some(format!("Sending {label} (0%)...")));
+        link.progress(&base, &label, 0, size, TransferState::Active);
+        let squeeze = Squeeze::new(&wire_name, binary && caps.file_deflate && deflate_enabled(), Instant::now());
+        Some(Self {
+            base,
+            label,
+            wire_name,
+            path,
+            file,
+            size,
+            start,
+            leg,
+            resumes,
+            ack_tx,
+            ack_rx,
+            wants_ack,
+            binary,
+            chunk_size: if binary { BINARY_CHUNK_SIZE } else { CHUNK_SIZE },
+            resumable,
+            resumed: 0,
+            auto_paste,
+            squeeze,
+            raw_bytes: 0,
+            wire_bytes: 0,
+            shown: Shown::default(),
+            epoch: started,
+            deadline: Instant::now() + ACK_TIMEOUT,
+        })
+    }
+
+    fn show(&mut self, link: &Link) {
+        self.shown.update(link, &self.base, &self.label, self.leg.delivery.bytes(), self.size);
+    }
+
+    /// Queues the bytes not sent yet, then `end`. `Done` once `end` is queued; the verdict comes later.
+    fn stream(&mut self, link: &Link, tick: &mut dyn FnMut()) -> Pass {
+        let mut buf = vec![0u8; self.chunk_size];
+        let mut ticked = Instant::now();
+        while self.leg.sent < self.size {
             // An early NACK (receiver rejected start) stops sending chunks the relay would drop anyway.
-            if ack_rx.try_recv() == Ok(false) {
-                pass = Pass::Failed(format!("Could not send {label}: rejected by the receiver"));
-                break;
+            if self.ack_rx.try_recv() == Ok(false) {
+                return Pass::Failed(format!("Could not send {}: rejected by the receiver", self.label));
             }
-            if epoch() != *started || resumes.asked(&leg.id) {
-                pass = Pass::Cut;
-                break;
+            if epoch() != self.epoch || self.resumes.asked(&self.leg.id) {
+                return Pass::Cut;
             }
+            // Read per chunk: the path may change under a long file (the channel came up or dropped).
+            let fast = super::fast_path(&link.target);
             let mut waited = false;
-            while IN_FLIGHT_CHUNKS.load(Ordering::Relaxed) > MAX_QUEUED_CHUNKS && epoch() == *started {
+            while IN_FLIGHT_CHUNKS.load(Ordering::Relaxed) > super::in_flight_limit(&link.target)
+                && epoch() == self.epoch
+            {
                 waited = true;
-                thread::sleep(Duration::from_millis(8));
-                shown.update(link, &base, &label, leg.delivery.bytes(), size);
+                thread::sleep(Duration::from_millis(if fast { 1 } else { 8 }));
+                self.show(link);
+                if ticked.elapsed() >= PROGRESS_POLL {
+                    tick();
+                    ticked = Instant::now();
+                }
             }
-            if epoch() != *started {
-                pass = Pass::Cut;
-                break;
+            if epoch() != self.epoch {
+                return Pass::Cut;
             }
             // Never past the announced size: a file still being written (a log) is sent as it was at the start.
-            let want = (size - leg.sent).min(chunk_size as u64) as usize;
-            match file.read(&mut buf[..want]) {
-                Ok(0) => {
-                    pass = Pass::Failed(format!("Could not send {label}: the file got shorter"));
-                    break;
-                }
+            let want = (self.size - self.leg.sent).min(self.chunk_size as u64) as usize;
+            match self.file.read(&mut buf[..want]) {
+                Ok(0) => return Pass::Failed(format!("Could not send {}: the file got shorter", self.label)),
                 Ok(n) => {
-                    leg.hash.update(&buf[..n]);
-                    let offset = leg.sent;
-                    leg.sent += n as u64;
-                    let packed = squeeze.pack(&buf[..n], waited, Instant::now());
-                    raw_bytes += n as u64;
-                    wire_bytes += packed.as_ref().map_or(n, Vec::len) as u64;
-                    link.queue_chunk(binary, &leg.id, offset, &buf[..n], packed, leg.mark(leg.sent));
-                    shown.update(link, &base, &label, leg.delivery.bytes(), size);
-                    // The relay path spaces chunks out behind video; a direct path paces itself (`domain::bulk`).
+                    self.leg.hash.update(&buf[..n]);
+                    let offset = self.leg.sent;
+                    self.leg.sent += n as u64;
+                    let packed = self.squeeze.pack(&buf[..n], waited, Instant::now());
+                    self.raw_bytes += n as u64;
+                    self.wire_bytes += packed.as_ref().map_or(n, Vec::len) as u64;
+                    let mark = self.leg.mark(self.leg.sent);
+                    link.queue_chunk(self.binary, &self.leg.id, offset, &buf[..n], packed, mark);
+                    self.show(link);
+                    // The relay path spaces chunks out behind video; a direct path paces itself (`domain::bulk`,
+                    // the file channel's TCP).
                     if !fast {
                         thread::sleep(Duration::from_millis(3));
                     }
                 }
                 Err(e) => {
-                    logger::error("file_transfer", &format!("Read failed for {path:?}: {e}"));
-                    pass = Pass::Failed(format!("Could not send {label}: read error"));
-                    break;
+                    logger::error("file_transfer", &format!("Read failed for {:?}: {e}", self.path));
+                    return Pass::Failed(format!("Could not send {}: read error", self.label));
                 }
             }
-        }
-        if let Pass::Done = pass {
-            let sha = hex(&leg.hash.clone().finalize());
-            link.queue_marked(
-                FilePayload::end(&leg.id, &wire_name, sha, auto_paste),
-                Some(format!("Waiting for confirmation: {label}")),
-                Some(leg.mark(size)),
-            );
-            if !wants_ack {
-                break Pass::Done;
+            if ticked.elapsed() >= PROGRESS_POLL {
+                tick();
+                ticked = Instant::now();
             }
-            pass = await_verdict(link, &ack_rx, &mut resumes, &leg, *started, &mut shown, &base, &label, size);
         }
-        match pass {
-            Pass::Cut if resumable && resumed < MAX_RESUMES => {
-                resumed += 1;
-                forget_ack(&leg.id);
-                let Some((id, offset)) = resume(link, &mut resumes, &start, &leg.id, &base, resumed, &label) else {
-                    break Pass::Failed(format!("Could not send {label}: connection lost"));
-                };
-                let Some(hash) = rewind(&mut file, offset, size) else {
-                    break Pass::Failed(format!("Could not send {label}: the file changed"));
-                };
-                logger::info("file_transfer", &format!("Resuming {label} as id={id} at byte {offset} of {size}."));
-                expect_ack(&id, ack_tx.clone());
-                leg =
-                    Leg { delivery: Delivery::track(format!("{}:{id}", link.target), offset), id, sent: offset, hash };
-                *started = epoch();
+        let sha = hex(&self.leg.hash.clone().finalize());
+        // `end` marks one past the size: everything, `end` included, has left (see `verdict` without `file-ack`).
+        link.queue_marked(
+            FilePayload::end(&self.leg.id, &self.wire_name, sha, self.auto_paste),
+            Some(format!("Waiting for confirmation: {}", self.label)),
+            Some(self.leg.mark(self.size + 1)),
+        );
+        self.deadline = Instant::now() + ACK_TIMEOUT;
+        Pass::Done
+    }
+
+    /// The receiver's verdict once `end` is queued, waiting up to `wait` for it: None while it is still out. Bytes
+    /// still on their way keep counting, and once all reached the relay the row says "Finishing" while the
+    /// receiver writes, syncs and verifies the file.
+    fn verdict(&mut self, link: &Link, wait: Duration) -> Option<Pass> {
+        if !self.wants_ack {
+            // Receivers without `file-ack` (Android) send no verdict: "sent" only means every byte left this side.
+            if self.leg.delivery.bytes() > self.size || IN_FLIGHT_CHUNKS.load(Ordering::Relaxed) == 0 {
+                return Some(Pass::Done);
             }
-            Pass::Cut => break Pass::Failed(format!("Could not send {label}: connection lost")),
-            done => break done,
+            if epoch() != self.epoch {
+                return Some(Pass::Cut);
+            }
+            thread::sleep(wait.min(Duration::from_millis(5)));
+            return None;
         }
-    };
-    if wire_bytes < raw_bytes {
+        let got = if wait.is_zero() { self.ack_rx.try_recv().ok() } else { self.ack_rx.recv_timeout(wait).ok() };
+        match got {
+            Some(true) => Some(Pass::Done),
+            Some(false) => {
+                logger::warn("file_transfer", &format!("Transfer rejected: {}", self.label));
+                Some(Pass::Failed(format!("Could not send {}: rejected or checksum mismatch", self.label)))
+            }
+            None if epoch() != self.epoch || self.resumes.asked(&self.leg.id) => Some(Pass::Cut),
+            None if Instant::now() >= self.deadline => {
+                logger::warn("file_transfer", &format!("Transfer confirmation timed out: {}", self.label));
+                Some(Pass::Failed(format!("Could not send {}: no confirmation from the receiver", self.label)))
+            }
+            None => {
+                self.show(link);
+                None
+            }
+        }
+    }
+
+    /// Takes a cut transfer up again where the receiver stands; the failure to report when it cannot.
+    fn recover(&mut self, link: &Link) -> Result<(), Pass> {
+        let lost = |label: &str| Pass::Failed(format!("Could not send {label}: connection lost"));
+        if !self.resumable || self.resumed >= MAX_RESUMES {
+            return Err(lost(&self.label));
+        }
+        self.resumed += 1;
+        forget_ack(&self.leg.id);
+        let Some((id, offset)) =
+            resume(link, &mut self.resumes, &self.start, &self.leg.id, &self.base, self.resumed, &self.label)
+        else {
+            return Err(lost(&self.label));
+        };
+        let Some(hash) = rewind(&mut self.file, offset, self.size) else {
+            return Err(Pass::Failed(format!("Could not send {}: the file changed", self.label)));
+        };
         logger::info(
             "file_transfer",
-            &format!(
-                "Deflated id={base}: {raw_bytes} -> {wire_bytes} bytes ({}%)",
-                wire_bytes * 100 / raw_bytes.max(1)
-            ),
+            &format!("Resuming {} as id={id} at byte {offset} of {}.", self.label, self.size),
         );
+        expect_ack(&id, self.ack_tx.clone());
+        self.leg = Leg { delivery: Delivery::track(format!("{}:{id}", link.target), offset), id, sent: offset, hash };
+        self.epoch = epoch();
+        Ok(())
     }
-    match verdict {
-        Pass::Done if wants_ack => {
-            logger::info("file_transfer", &format!("Sent and confirmed: {label}"));
-            link.progress(&base, &label, size, size, TransferState::Done);
-            link.status(format!("Sent: {label}"));
-        }
-        Pass::Done => {
-            // Receivers without `file-ack` (Android) send no verdict: "sent" only means every byte left this socket.
-            forget_ack(&leg.id);
-            while IN_FLIGHT_CHUNKS.load(Ordering::Relaxed) > 0 {
-                if epoch() != *started {
-                    return link.fail(&base, &label, size, format!("Could not send {label}: connection lost"));
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-            link.progress(&base, &label, size, size, TransferState::Done);
-            link.status(format!("Sent (not confirmed by the receiver): {label}"));
-        }
-        Pass::Failed(status) => {
-            logger::warn("file_transfer", &format!("Transfer failed for {path:?}: {status}"));
-            forget_ack(&leg.id);
-            link.fail(&base, &label, size, status);
-        }
-        Pass::Cut => unreachable!("cut transfers resume or fail inside the loop"),
-    }
-}
 
-/// Waits for the receiver's verdict on `leg`; bytes still on their way keep counting, and once all reached
-/// the relay the row says "Finishing" while the receiver writes, syncs and verifies the file.
-#[allow(clippy::too_many_arguments)]
-fn await_verdict(
-    link: &Link,
-    ack_rx: &mpsc::Receiver<bool>,
-    resumes: &mut Resumes,
-    leg: &Leg,
-    started: u64,
-    shown: &mut Shown,
-    row: &str,
-    label: &str,
-    size: u64,
-) -> Pass {
-    let deadline = Instant::now() + ACK_TIMEOUT;
-    loop {
-        match ack_rx.recv_timeout(PROGRESS_POLL) {
-            Ok(true) => return Pass::Done,
-            Ok(false) => {
-                logger::warn("file_transfer", &format!("Transfer rejected: {label}"));
-                return Pass::Failed(format!("Could not send {label}: rejected or checksum mismatch"));
+    /// Reports how the file ended.
+    fn finish(self, link: &Link, verdict: Pass) {
+        let Self { base, label, path, size, leg, raw_bytes, wire_bytes, wants_ack, .. } = self;
+        if wire_bytes < raw_bytes {
+            logger::info(
+                "file_transfer",
+                &format!(
+                    "Deflated id={base}: {raw_bytes} -> {wire_bytes} bytes ({}%)",
+                    wire_bytes * 100 / raw_bytes.max(1)
+                ),
+            );
+        }
+        forget_ack(&leg.id);
+        match verdict {
+            Pass::Done if wants_ack => {
+                logger::info("file_transfer", &format!("Sent and confirmed: {label}"));
+                link.progress(&base, &label, size, size, TransferState::Done);
+                link.status(format!("Sent: {label}"));
             }
-            Err(RecvTimeoutError::Timeout) if epoch() != started || resumes.asked(&leg.id) => return Pass::Cut,
-            Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => {
-                shown.update(link, row, label, leg.delivery.bytes(), size);
+            Pass::Done => {
+                link.progress(&base, &label, size, size, TransferState::Done);
+                link.status(format!("Sent (not confirmed by the receiver): {label}"));
             }
-            Err(_) => {
-                logger::warn("file_transfer", &format!("Transfer confirmation timed out: {label}"));
-                return Pass::Failed(format!("Could not send {label}: no confirmation from the receiver"));
+            Pass::Failed(status) => {
+                logger::warn("file_transfer", &format!("Transfer failed for {path:?}: {status}"));
+                link.fail(&base, &label, size, status);
             }
+            Pass::Cut => link.fail(&base, &label, size, format!("Could not send {label}: connection lost")),
         }
     }
 }
@@ -665,6 +983,12 @@ fn resume(
     let payload = FilePayload { id: id.clone(), resume_of: Some(cut.to_string()), ..start.clone() };
     logger::info("file_transfer", &format!("Transfer id={cut} was cut; asking to resume it as id={id}."));
     link.status(format!("Connection lost; resuming {label}..."));
+    // Cut because the file channel dropped: it is usually back within seconds (`infra::file_channel` redials), and
+    // a transfer resumed before that would finish on a slower path.
+    let grace = Instant::now() + CHANNEL_GRACE;
+    while super::channel_redialing(&link.target) && Instant::now() < grace {
+        thread::sleep(Duration::from_millis(100));
+    }
     let deadline = Instant::now() + RESUME_WAIT;
     let mut retry = Instant::now();
     while Instant::now() < deadline {
@@ -710,6 +1034,7 @@ impl std::io::Write for HashWriter<'_> {
 mod tests {
     use super::*;
     use crate::domain::capability::PeerCaps;
+    use crate::domain::file_route::Path as FilePath;
     use crate::domain::file_squeeze;
     use crate::protocol::FileAction;
     use crate::service::file_transfer::receiver::{FileReceiver, tests::TEST_DOWNLOADS};
@@ -896,6 +1221,177 @@ mod tests {
         rx.recv_timeout(Duration::from_secs(5)).expect("queue stalled after a panic");
     }
 
+    /// Records the transfer list and the status line.
+    #[derive(Default)]
+    struct Recorder {
+        rows: Mutex<Vec<TransferUpdate>>,
+        statuses: Mutex<Vec<String>>,
+    }
+
+    impl UiPort for Recorder {
+        fn status(&self, text: String) {
+            self.statuses.lock().push(text);
+        }
+        fn transfer(&self, update: TransferUpdate) {
+            self.rows.lock().push(update);
+        }
+        fn relay_status(&self, _: crate::service::ui_port::RelayStatus) {}
+        fn gateway_changed(&self, _: String) {}
+        fn host_list(&self, _: Vec<crate::service::ui_port::RemoteHost>) {}
+        fn history(&self, _: Vec<crate::domain::history::HistoryRecord>) {}
+        fn hosting_started(&self, _: String) {}
+        fn hosting_ended(&self) {}
+        fn hosting_mic(&self, _: bool) {}
+        fn session_opened(&self, _: String, _: String, _: String, _: i32, _: i32) {}
+        fn session_connected(&self, _: String, _: String) {}
+        fn session_frame(&self, _: String, _: crate::service::ui_port::Frame) {}
+        fn session_changed(&self, _: String, _: crate::service::ui_port::SessionChange) {}
+        fn session_closed(&self, _: String, _: Option<String>) {}
+        fn all_sessions_closed(&self) {}
+        fn focus_changed(&self, _: String) {}
+        fn layout_changed(&self, _: i32) {}
+    }
+
+    impl Recorder {
+        /// The last state of each outgoing row, by file name.
+        fn finals(&self) -> Vec<(String, TransferState)> {
+            let mut out: Vec<(String, TransferState)> = Vec::new();
+            for u in self.rows.lock().iter() {
+                out.retain(|(n, _)| *n != u.name);
+                out.push((u.name.clone(), u.state.clone()));
+            }
+            out.sort_by(|a, b| a.0.cmp(&b.0));
+            out
+        }
+    }
+
+    /// `n` small files `f0.txt`... in a fresh folder.
+    fn small_files(tag: &str, n: usize) -> (PathBuf, Vec<PathBuf>) {
+        let dir = env::temp_dir().join(format!("opendesk-pipe-{tag}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let paths = (0..n)
+            .map(|i| {
+                let p = dir.join(format!("f{i}.txt"));
+                fs::write(&p, format!("file {i} ").repeat(i + 1)).unwrap();
+                p
+            })
+            .collect();
+        (dir, paths)
+    }
+
+    /// The next file message from the sender (its in-flight units released as the relay connection would).
+    fn next_file(rx: &mpsc::Receiver<Outgoing>, wait: Duration) -> Option<Result<FilePayload, String>> {
+        loop {
+            match rx.recv_timeout(wait).ok()? {
+                Outgoing::File { message: ClientMessage::RelayFile { payload, .. }, .. } => {
+                    IN_FLIGHT_CHUNKS.fetch_sub(1, Ordering::SeqCst);
+                    return Some(Ok(payload));
+                }
+                Outgoing::FileChunk { frame, .. } => {
+                    IN_FLIGHT_CHUNKS.fetch_sub(chunk_units(frame.len()), Ordering::SeqCst);
+                    return Some(Err(binary::parse_file_chunk(&frame).unwrap().id.to_string()));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn wait_for(what: impl Fn() -> bool) {
+        let t = Instant::now();
+        while !what() {
+            assert!(t.elapsed() < Duration::from_secs(10), "timed out");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Over a direct path every file streams right after the one before, with no verdict in yet; the verdicts then
+    /// settle each file on its own (a NACK fails only its file), and the group end waits for all of them.
+    #[test]
+    fn files_stream_back_to_back_and_settle_one_by_one() {
+        let peer = "710000011";
+        let caps =
+            PeerCaps { file_ack: true, file_binary: true, file_folder: true, file_group: true, ..PeerCaps::default() };
+        super::super::set_session_caps(peer, caps);
+        super::super::set_route(peer, super::super::Route { path: FilePath::Channel, channel_redialing: false });
+        let (dir, paths) = small_files("direct", 6);
+        let ui = Arc::new(Recorder::default());
+        let (ctx, rx) = test_support::context_with_ui(ui.clone());
+        ctx.relay.caps.lock().file_binary = true;
+        send_files(&ctx, paths, peer.into(), false);
+
+        let mut ends = Vec::new();
+        while ends.len() < 6 {
+            match next_file(&rx, Duration::from_secs(10)).expect("sender waited for a verdict") {
+                Ok(p) if p.action == FileAction::End => ends.push(p.id),
+                Ok(p) => assert_ne!(p.group_end, Some(true), "group end before the verdicts"),
+                Err(_) => {}
+            }
+        }
+        assert!(next_file(&rx, Duration::from_millis(300)).is_none(), "group end must wait for the verdicts");
+        // Verdicts in any order; the third file is refused.
+        for (i, id) in ends.iter().enumerate().rev() {
+            super::super::deliver_ack(id, i != 2);
+        }
+        let marker = match next_file(&rx, Duration::from_secs(10)).expect("no group end") {
+            Ok(p) if p.group_end == Some(true) => p,
+            other => panic!("unexpected {other:?}"),
+        };
+        super::super::deliver_ack(&marker.id, true);
+        wait_for(|| ui.statuses.lock().iter().any(|s| s == "Sent: all files"));
+        let finals = ui.finals();
+        assert_eq!(finals.len(), 6);
+        for (i, (name, state)) in finals.iter().enumerate() {
+            assert_eq!(name, &format!("f{i}.txt"));
+            if i == 2 {
+                assert!(matches!(state, TransferState::Failed(_)), "{state:?}");
+            } else {
+                assert_eq!(state, &TransferState::Done, "{name}");
+            }
+        }
+        super::super::set_route(peer, super::super::Route::default());
+        super::super::remove_session_caps(peer);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Over the relay every transfer holds a grant until its ACK: only a few files wait for theirs at once.
+    #[test]
+    fn the_relay_keeps_the_window_small() {
+        let peer = "710000012";
+        super::super::set_session_caps(peer, PeerCaps { file_ack: true, ..PeerCaps::default() });
+        let (dir, paths) = small_files("relay", WINDOW_RELAY + 2);
+        let ui = Arc::new(Recorder::default());
+        let (ctx, rx) = test_support::context_with_ui(ui.clone());
+        send_files(&ctx, paths, peer.into(), false);
+        let mut ends = Vec::new();
+        while ends.len() < WINDOW_RELAY {
+            if let Ok(p) = next_file(&rx, Duration::from_secs(10)).expect("sender stalled")
+                && p.action == FileAction::End
+            {
+                ends.push(p.id);
+            }
+        }
+        assert!(next_file(&rx, Duration::from_millis(400)).is_none(), "a fifth file while four wait");
+        super::super::deliver_ack(&ends[0], true);
+        let started = next_file(&rx, Duration::from_secs(10)).expect("no room after an ACK").unwrap();
+        assert_eq!(started.action, FileAction::Start);
+        // Settle the rest as they come.
+        for id in &ends[1..] {
+            super::super::deliver_ack(id, true);
+        }
+        let mut more = 0;
+        while more < 2 {
+            if let Ok(p) = next_file(&rx, Duration::from_secs(10)).expect("sender stalled")
+                && p.action == FileAction::End
+            {
+                super::super::deliver_ack(&p.id, true);
+                more += 1;
+            }
+        }
+        wait_for(|| ui.finals().iter().filter(|(_, s)| *s == TransferState::Done).count() == WINDOW_RELAY + 2);
+        super::super::remove_session_caps(peer);
+        let _ = fs::remove_dir_all(dir);
+    }
+
     /// Sends `data` to `target` and reassembles it from the outbox: (bytes on the wire, binary chunks seen).
     fn send_and_collect(target: &str, data: &[u8], relay_binary: bool) -> (usize, usize) {
         let dir = env::temp_dir().join(format!("opendesk-wire-{}-{target}-{relay_binary}", std::process::id()));
@@ -965,7 +1461,11 @@ mod tests {
             data.len().div_ceil(CHUNK_SIZE) + 2,
             n + 2
         );
-        assert_eq!(json_wire, old_relay_wire);
+        // Transfer IDs carry a counter now, so their length (and the JSON size) may differ by a few bytes.
+        assert!(
+            json_wire.abs_diff(old_relay_wire) <= 4 * data.len().div_ceil(CHUNK_SIZE),
+            "{json_wire} vs {old_relay_wire}"
+        );
         // Compressible data: much smaller toward a `file-deflate` receiver, the same bytes after inflating.
         let text: Vec<u8> = (0..400_000u32)
             .flat_map(|i| {

@@ -127,6 +127,8 @@ impl Connection {
     /// sessions end with it (a reconnect starts without them), except the sessions that wait for a resume,
     /// which keep their direct path and end-to-end keys.
     pub(super) fn on_connection_ended(&mut self) {
+        // The lane's token and grants belonged to this connection; the next one opens a new lane.
+        self.close_lane();
         let resume = &self.resume;
         self.links.retain(|p| {
             let keep = resume.is_waiting(&p.partner);
@@ -136,6 +138,10 @@ impl Connection {
             keep
         });
         self.e2e.retain(|e| resume.is_waiting(&e.partner));
+        let resume = &self.resume;
+        let waiting: Vec<String> =
+            self.e2e.iter().map(|e| e.partner.clone()).filter(|p| resume.is_waiting(p)).collect();
+        self.prune_channels(|p| waiting.iter().any(|w| w == p));
         self.signals.clear();
         let waiting = self.resume.any_waiting();
         let ctx = &self.ctx;

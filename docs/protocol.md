@@ -151,13 +151,16 @@ Features are used only when both sides (and, where noted, the relay) support the
 | `file-drop` | client, with `file-offer` | An `offer` of files dropped on the viewer window may carry `dropX` / `dropY` (0..10000 of the host screen). The host moves its pointer there and drags the offered files onto the window under it (`DoDragDrop` with the same virtual files as a paste, started from a button press on a tiny window of its own so the application below sees no click), leaving its clipboard alone. A viewer sends them only to a host that lists `file-drop`; otherwise a drop is sent and pasted as before. |
 | `file-resume` | client, with `file-ack` | A transfer cut by a lost relay connection or P2P path continues where the receiver stands. The sender sends `start` again under a new ID with `resumeOf` (the cut ID); the receiver moves the kept file to the new ID and answers with a `pull` whose `id`/`tid` are the new ID and `resumeAt` is its byte count, and the sender continues from there (the final `sha256` covers the whole file). A receiver that lost its own connection keeps the file for 90 s and asks with a `pull` carrying the cut ID and `resumeAt`. Unknown `resumeOf` starts over (`resumeAt` 0). `OPENDESK_FILE_RESUME=0` turns it off. |
 | `cursor-shape` | client | Draws its own cursor from `cursor-shape` events; the host stops painting it. |
+| `text-focus` | client (Android) | Wants `text-focus` events to raise its on-screen keyboard when a text field on the host takes focus. Windows hosts send them only to viewers listing it. |
 | `mouse-relative` | client (Windows) | Locks its pointer while a host application captured the mouse (`pointer-lock`) and sends `mouse-delta`; the host sends `pointer-lock` only to viewers listing it. Ctrl+Alt hands the cursor back on the viewer, a click takes it again. |
 | `video-delta` | client | Framed key/delta video; without it the host sends plain JPEGs. |
 | `clipboard-image` | client (Windows) | Copied images follow the clipboard like text: an `offer` whose `image` holds a base64 PNG (at most 11 MB; screenshots go as RGB PNG, the clipboard's own PNG as is). The receiver puts it on its clipboard as CF_DIB plus "PNG". Sent on copy and on a focus change, only to partners listing it; Ctrl+V forwards only the keystroke. |
 | `file-p2p` | client, with `p2p.v1` and `file-binary` | File transfers may run over the P2P path as a reliable stream (`K_BULK` segments, `K_BULK_ACK` cumulative + selective acks, delay-based window, receiver window). Each transfer (a folder: each folder) keeps the path its `start` took; offers and pulls stay on the relay, and the receiver's ack of a P2P transfer goes back over the P2P path (the relay has no grant for it and drops a relayed one). If the path drops mid-transfer the transfer is cancelled. `OPENDESK_FILE_P2P=0` turns it off. See `client-desktop/src/domain/bulk.rs`. |
+| `file-channel` | client, with `e2e` and `file-binary` | File transfers (and the file browser) may run over a direct TCP connection of their own, separate from the P2P path: once the end-to-end handshake is done, each side listens on a fresh TCP port and sends `p2p-signal` `{"v":2,"fc":["addr",...]}` (LAN, global IPv6, public IPv4 with that port); both connect to every candidate (from the listening port, for a TCP simultaneous open) and accept. Each connection runs `Noise_XX_25519_ChaChaPoly_BLAKE2s` with the device keys and prologue `opendesk-fc-v1|<viewer>|<host>`, and is kept only if the partner's static key is the one the session's end-to-end handshake authenticated; the viewer picks the first such connection (message kind `0xF0`). Frames are `[length u16][Noise message]`; their plaintext is a stream of `[kind u8][length u32][payload]` messages with the P2P file stream's kinds (1 JSON file message, 2 binary chunk, 3 file browser) plus `0xF1` keep-alive. A transfer keeps the path its `start` took (channel, else P2P path, else relay); a lost channel cancels what was on it (resumed elsewhere with `file-resume`). `OPENDESK_FILE_CHANNEL=0` turns it off. |
 | `video-nack` | client, with `p2p.v1` | Lost P2P video fragments are requested (`K_NACK`) and resent from the host's last frames; a viewer waits for them only from a host that lists it. See `client-desktop/docs/features/p2p.md`. |
 | `tile-lossless` | client, with `video-delta` | Deltas may carry lossless text/UI tiles (flag bit 2, below); the host sends them only to viewers that list it. |
 | `video-h264` | client | H.264 inside the framed format. |
+| `h264-eager` | viewer and host | From a viewer (Android with a hardware decoder): motion goes to H.264 at once, at the preset's normal bitrate (a host otherwise waits for a few heavy JPEG frames unless the preset is High). From a host: it honours this, so the viewer need not ask for `set-performance` High, which doubles the bitrate. |
 | `frame-stamp` | client | Framed video to this viewer may end in a capture stamp (below) for the stats overlay's latency rows. |
 | `audio-opus` | client | Decodes Opus voice (`[0x02][0x4F]...`); voice to it is Opus, to everyone else PCM. |
 | `audio-system` | client | Host sound: as a host it streams the sound of its default output device (`[0x02][0x53]...`, below), as a viewer it plays it. Used only when both sides list it; see [Host sound](#host-sound). Listed right before `fps-N` (relays up to 1.2.0 keep only the first 16 names and may drop it, which only turns host sound off). |
@@ -180,11 +183,17 @@ Per platform (see [platforms.md](platforms.md)):
 
 - Windows: `file-ack`, `file-offer`, `file-folder`, `file-binary`, `cursor-shape`, `video-delta`, `frame-stamp`,
   `video-h264` (when the Media Foundation decoder exists), `audio-opus`, `audio-system`, `p2p.v1`, `multi-session`,
-  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`), `file-group`, `file-pull-bin`, `tile-lossless`, `mouse-relative`, `clipboard-image`, `file-p2p`, `file-deflate`, `file-resume`, `file-drop`, `video-nack`. No `host-features`: Windows hosts have every host control.
+  `session-resume` (unless `OPENDESK_SESSION_RESUME=0`), `file-group`, `file-pull-bin`, `tile-lossless`, `mouse-relative`, `clipboard-image`, `file-p2p`, `file-deflate`, `file-resume`, `file-drop`, `file-channel` (with `e2e`), `video-nack`. No `host-features`: Windows hosts have every host control.
 - Linux: the same without `file-offer` and `audio-system`, with `video-h264` only when Cisco's OpenH264 is installed, plus
   `host-features` (without `privacy-screen` and `block-input`), plus `viewer-only` in a Wayland session.
-- Android: `viewer-only`, `video-delta` and `e2e`, so it receives framed JPEG video (no H.264) and single-session
-  message shapes. No `session-resume`: its sessions end with its connection.
+- Android: `viewer-only`, `video-delta`, `e2e`, `text-focus`, and `video-h264` when the phone has a hardware H.264 decoder (dropped
+  after the decoder failed once) together with `h264-eager` (motion goes to H.264 at once: the phone decodes it in
+  hardware, far cheaper than JPEG), then `fps-60`. Once connected it sends `set-performance` High to a host that does
+  not list `h264-eager` (older hosts start H.264 at once only on High), and Low when the user turned on data saver. It receives framed JPEG video, H.264 during
+  motion, and single-session message shapes. At session start (and when the display changes, e.g. a foldable) it
+  sends an automatic `set-resolution` (`mode` 1080, `auto`, and its display size in landscape with the short side
+  capped at 1080), so the host never streams more pixels than the phone can show. No `session-resume`: its
+  sessions end with its connection.
 
 `register.platform` is `windows-pc`, `windows-admin`, `windows-host`, `linux-pc`, `linux-admin`, `linux-host` or
 `android`; it is informational except for `android`.
@@ -198,7 +207,7 @@ Per platform (see [platforms.md](platforms.md)):
 | --- | --- | --- |
 | `mousemove` | `normX`, `normY` | viewer to host |
 | `mousedown`, `mouseup`, `click`, `dblclick` | `normX`, `normY`, `button` (0 left, 2 right) | viewer to host |
-| `wheel` | `normX`, `normY`, `deltaY`, optional `deltaX` (horizontal, 120 = one notch right; older hosts ignore it) | viewer to host |
+| `wheel` | `normX`, `normY`, `deltaY`, optional `deltaX` (horizontal, 120 = one notch right; older hosts ignore it). Values under 40 are whole notches; from 40 they are wheel units and may be partial notches (Android sends lines of 40): Windows hosts pass them through, Linux hosts add them up into notches | viewer to host |
 | `keydown`, `keyup` | `keyCode` (Win32 virtual-key) | viewer to host |
 | `keycombo` | `keyCode`, `ctrl`, `alt`, `shift` | viewer to host |
 | `text` | `text` | viewer to host (typed characters) |
@@ -216,11 +225,14 @@ Per platform (see [platforms.md](platforms.md)):
 | `set-host-sound` | `on` | viewer to host, both listing `audio-system`: at session start and when the viewer toggles host sound. `on: true` streams the host's sound and pauses voice; `false` stops the capture and resumes voice (see [Host sound](#host-sound)) |
 | `cursor-shape` | `shape` (0 hidden, 1 arrow, 2 text, 3 hand, ...) | host to viewer |
 | `pointer-lock` | `on`: a host application (a game with mouse look) hid and confined the cursor, or released it. From the viewer: its pointer lock setting; `false` makes the host ignore mouse capture (absolute positions) until `true` | both ways (`mouse-relative`) |
+| `text-focus` | `editable`, `normX`, `normY`, `normW`, `normH` (the focused control on the streamed monitor, 0..1; all 0 when it lies on another monitor), `password` (only when true): keyboard focus entered (`editable: true`) or left a control that takes typed text. Sent only on change, after the state held for 100 ms (read every 150 ms). Read with UI Automation and, for classic Win32 controls, the caret; under the service the user helper reads it (the SYSTEM agent alone sees only the caret, e.g. on the sign-in screen) | host to viewer (`text-focus`) |
 | `mouse-delta` | `dx`, `dy`: relative motion while the pointer is locked; positions of button and wheel events are then ignored | viewer to host |
 | `monitors` | `list[]` (`index`, `width`, `height`, `primary`), `active` | host to viewer |
 | `stats` | `on` | viewer to host: stats overlay shown or hidden |
 | `stats-ping` | `t` (viewer clock, ms) | viewer to host, once a second while the overlay is shown |
 | `stats-pong` | `t` (copied from `stats-ping`), `h` (host monotonic clock, µs; absent up to 1.2.0) | host to viewer, at once |
+| `browse` | `msg` (a file browser message, see `domain/file_browser.rs`) | either way between peers listing `file-channel`, when they have no direct path (no file channel, no P2P): sealed like every event, the relay only forwards it |
+| `set-video` | `on` | viewer to host: `false` stops the screen stream (a files-only session opened from a device's **Files** action: no tab, no sound), `true` resumes it with a key frame. Hosts that predate it keep streaming |
 | `host-stats` | `fps`, `targetFps`, `grabMs`, `grabMaxMs` (capture work, without waiting for a screen change), `encodeMs`, `encodeMaxMs`, `kbps`, `idle`, `gateSkips`, `congestion` (0..1), `encoder` (H.264 name, empty = JPEG), `cpu` (host process, % of the machine), `ramMb` (its working set); optional, omitted by hosts up to 1.3.1: `convertMs`/`convertMaxMs` and `codecMs`/`codecMaxMs` (the two parts of `encodeMs`: pixel preparation, then the codec), `sendMs`/`sendMaxMs` (sender taking a frame until its last byte is in the socket), and on the UDP path `ackRttMs`/`ackRttMaxMs` (frame sent until the viewer's frame acknowledgement) and `window` (frames allowed in flight) | host to viewer, once a second between `stats` on and off |
 
 Peers ignore actions they do not know, so a viewer never gets `host-stats` from a host that predates it. Every
@@ -239,6 +251,17 @@ hosts of any version understand each other's `host-stats`; `encodeMs` keeps its 
 | `ack` | `id`, `ok` | Receiver to sender; consumes the grant. |
 | `offer` | `id`, `files[]` (`name`, `size` or `dir`, optional `mtime`, `ctime`, `atime`, `attrs`), or `image` (base64 PNG, `clipboard-image`) | Clipboard offer, or a copied image; needs an active session. |
 | `pull` | `id` (offer), `index`, `tid` | Ask the offerer to send entry `index` as transfer `tid`. |
+
+File browser fields on `start` (only between peers listing `file-channel`): `browse` (the number of the
+receiver's own file browser request this file answers; the receiver saves it in the folder it chose for that
+request, and ignores numbers it never used) and `dest` (an upload's folder on the receiving host, honoured only from
+the viewer of the host's session). Both receivers place the file as the signed-in user and never overwrite.
+
+File browser messages travel only over a direct path (file channel, else P2P path) as file stream kind 3, JSON
+with `op`: from the viewer `list` (`req`, `path`; "" = top level), `get` (`req`, `paths`), `mkdir` (`req`,
+`path`, `name`); from the host `listing` (`req`, `path`, `parent`, `entries` of `name`/`path`/`dir`/`size`/`mtime`,
+`more`), `done` (`req`) and `failed` (`req`, `message`). A host answers only the viewer of its session and does all
+file system work as the signed-in user.
 
 `mtime` is the file's last write time in Unix milliseconds; receivers keep it as the pasted or saved file's
 "Date Modified". `ctime` and `atime` are the creation and last access times, same unit. `attrs` holds Windows

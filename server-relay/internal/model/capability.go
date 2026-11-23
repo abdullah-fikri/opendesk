@@ -25,6 +25,14 @@ const (
 	CapSessionResume = "session-resume"
 )
 
+// CapFileLane: the relay accepts a second, file-only WebSocket per device, its file lane (see
+// docs/features/relay-file-lane.md at the repository root). As a client capability it means the client can open
+// one and understands file-lane-lost: the relay issues lane tokens only to such clients, and clients send a
+// transfer over their lane only to partners that list it. Clients do not send it in caps (a desktop admin build
+// already fills the 32 names kept) but set fileLane in register; the relay then adds it to the device's
+// capabilities after the cut, so partners see it in peerCaps.
+const CapFileLane = "file-lane"
+
 // CapP2P is the client capability of the direct UDP path, which the UDP relay carries.
 const CapP2P = "p2p.v1"
 

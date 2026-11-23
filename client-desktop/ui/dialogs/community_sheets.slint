@@ -1,0 +1,459 @@
+// Sheets of the communities feature (admin edition, docs/features/communities.md at the repository root):
+// name a community or group (with icon and colour for communities), confirm a deletion, and add a device to
+// groups. Each is an alert sheet over a scrim, like the other dialogs.
+
+import { GroupPick } from "../types.slint";
+import { Theme } from "../theme.slint";
+import { Btn, Pop } from "../components/controls.slint";
+import { AppTile } from "../components/app_tile.slint";
+import { Glyph } from "../components/glyph.slint";
+import { ScrollArea } from "../components/scroll_area.slint";
+import { CommunityChip, CommunityPalette, CheckBox } from "../components/community.slint";
+
+// What the name sheet edits.
+export global SheetKind {
+    out property <int> none: 0;
+    out property <int> new-community: 1;
+    out property <int> edit-community: 2;
+    out property <int> new-group: 3;
+    out property <int> rename-group: 4;
+}
+
+// Text box of a sheet.
+component SheetField inherits Rectangle {
+    in property <string> placeholder;
+    in-out property <string> text;
+    callback accepted();
+    height: 32px;
+    border-radius: 7px;
+    background: Theme.inp;
+    border-width: input.has-focus ? 2px : 0px;
+    border-color: Theme.ring;
+    if root.text == "": Text {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        text: root.placeholder;
+        color: Theme.text-3;
+        font-size: 13px;
+        vertical-alignment: center;
+    }
+    input := TextInput {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        text <=> root.text;
+        color: Theme.text;
+        font-size: 13px;
+        vertical-alignment: center;
+        single-line: true;
+        init => {
+            self.focus();
+            self.select-all();
+        }
+        accepted => { root.accepted(); }
+    }
+}
+
+// New / edit community, new / rename group. The name is trimmed; the relay refuses empty and over-long names.
+export component NameSheet inherits Rectangle {
+    background: Theme.scrim;
+    width: 100%;
+    height: 100%;
+
+    in-out property <int> kind: 0;
+    in property <string> target;
+    // Community name for the group sheets' description.
+    in property <string> context;
+    in-out property <string> name;
+    in-out property <string> icon;
+    in-out property <string> hue;
+    callback save(int, string, string, string, string);
+
+    property <bool> community: root.kind == 1 || root.kind == 2;
+    property <bool> valid: root.name.character-count > 0 && root.name.character-count <= 48;
+
+    function commit() {
+        if (root.valid) {
+            root.save(root.kind, root.target, root.name, root.icon, root.hue);
+            root.kind = 0;
+        }
+    }
+
+    TouchArea { }
+    FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                root.kind = 0;
+                return accept;
+            }
+            reject
+        }
+    }
+
+    Pop {
+        width: 380px;
+        height: body.preferred-height;
+        body := VerticalLayout {
+            padding: 24px;
+            padding-bottom: 20px;
+            spacing: 6px;
+
+            HorizontalLayout {
+                alignment: center;
+                if root.community: CommunityChip {
+                    edge: 52px;
+                    icon: root.icon;
+                    hue: root.hue;
+                }
+                if !root.community: AppTile {
+                    kind: "community";
+                    tile: 44px;
+                }
+            }
+            Rectangle { height: 8px; }
+            Text {
+                text: root.kind == 1 ? "New Community" : root.kind == 2 ? "Community" : root.kind == 3 ? "New Group" : "Rename Group";
+                color: Theme.text;
+                font-size: 14px;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: root.community
+                    ? "A community holds groups of devices, shared with every administrator of this relay."
+                    : "A group in " + root.context + ". A device can be in several groups.";
+                color: Theme.text-2;
+                font-size: 12px;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 10px; }
+            SheetField {
+                placeholder: root.community ? "Community name" : "Group name";
+                text <=> root.name;
+                accepted => { root.commit(); }
+            }
+
+            if root.community: VerticalLayout {
+                padding-top: 10px;
+                spacing: 8px;
+                Text {
+                    text: "Icon";
+                    color: Theme.text-2;
+                    font-size: 11px;
+                    font-weight: 600;
+                }
+                icons := Rectangle {
+                    property <int> cols: 7;
+                    property <length> cell: (self.width - 6 * 6px) / 7;
+                    height: 2 * self.cell + 6px;
+                    for e[i] in CommunityPalette.icons: Rectangle {
+                        x: mod(i, icons.cols) * (icons.cell + 6px);
+                        y: floor(i / icons.cols) * (icons.cell + 6px);
+                        width: icons.cell;
+                        height: icons.cell;
+                        border-radius: 8px;
+                        background: root.icon == e ? Theme.blue-soft : ita.has-hover ? Theme.hover-soft : Theme.surf2;
+                        border-width: root.icon == e ? 1.5px : 0px;
+                        border-color: Theme.blue;
+                        ita := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.icon = e; }
+                        }
+                        if e != "": Text {
+                            text: e;
+                            font-size: 18px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        if e == "": Glyph {
+                            name: "group";
+                            size: 16px;
+                            tint: Theme.text-2;
+                        }
+                    }
+                }
+                Text {
+                    text: "Colour";
+                    color: Theme.text-2;
+                    font-size: 11px;
+                    font-weight: 600;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    for c in CommunityPalette.names: Rectangle {
+                        width: 22px;
+                        height: 22px;
+                        border-radius: 11px;
+                        background: CommunityPalette.tint(c);
+                        // The selection ring of the macOS accent colour picker.
+                        Rectangle {
+                            visible: root.hue == c || (root.hue == "" && c == "blue");
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            background: #ffffff;
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.hue = c; }
+                        }
+                    }
+                }
+            }
+
+            Rectangle { height: 14px; }
+            HorizontalLayout {
+                spacing: 8px;
+                Btn {
+                    horizontal-stretch: 1;
+                    height: 30px;
+                    label: "Cancel";
+                    clicked => { root.kind = 0; }
+                }
+                Btn {
+                    horizontal-stretch: 1;
+                    height: 30px;
+                    kind: "acc";
+                    label: root.kind == 1 || root.kind == 3 ? "Create" : "Save";
+                    enabled: root.valid;
+                    clicked => { root.commit(); }
+                }
+            }
+        }
+    }
+}
+
+// Confirms a deletion. `kind` is handed back with `target` ("delete-hosts": comma-separated desk IDs,
+// "delete-community", "delete-group": the ID).
+export component ConfirmSheet inherits Rectangle {
+    background: Theme.scrim;
+    width: 100%;
+    height: 100%;
+
+    in-out property <string> kind;
+    in property <string> target;
+    in property <string> title;
+    in property <string> body;
+    in property <string> action: "Delete";
+    callback confirm(string, string);
+
+    TouchArea { }
+    FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                root.kind = "";
+                return accept;
+            }
+            reject
+        }
+    }
+
+    Pop {
+        width: 360px;
+        height: lay.preferred-height;
+        lay := VerticalLayout {
+            padding: 24px;
+            padding-bottom: 20px;
+            spacing: 6px;
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 44px;
+                    height: 44px;
+                    border-radius: 22px;
+                    background: Theme.accent-soft;
+                    Glyph {
+                        name: "trash";
+                        size: 20px;
+                        tint: Theme.accent-mark;
+                    }
+                }
+            }
+            Rectangle { height: 8px; }
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: 14px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.body;
+                color: Theme.text-2;
+                font-size: 12px;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 14px; }
+            HorizontalLayout {
+                spacing: 8px;
+                Btn {
+                    horizontal-stretch: 1;
+                    height: 30px;
+                    label: "Cancel";
+                    clicked => { root.kind = ""; }
+                }
+                Btn {
+                    horizontal-stretch: 1;
+                    height: 30px;
+                    kind: "acc";
+                    label: root.action;
+                    clicked => {
+                        root.confirm(root.kind, root.target);
+                        root.kind = "";
+                    }
+                }
+            }
+        }
+    }
+}
+
+// "Add to Group": every group of every community, with a checkbox for the device. Changes apply at once.
+export component GroupPickerSheet inherits Rectangle {
+    background: Theme.scrim;
+    width: 100%;
+    height: 100%;
+
+    in-out property <bool> shown;
+    in property <string> device;
+    in property <string> device_name;
+    in property <[GroupPick]> picks;
+    callback set_member(string, string, bool);
+    callback new_group();
+
+    TouchArea { }
+    FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                root.shown = false;
+                return accept;
+            }
+            reject
+        }
+    }
+
+    Pop {
+        width: 380px;
+        height: min(root.height - 80px, lay.preferred-height);
+        lay := VerticalLayout {
+            padding: 20px;
+            spacing: 6px;
+            Text {
+                text: "Add to Group";
+                color: Theme.text;
+                font-size: 14px;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: root.device_name + " can be in several groups.";
+                color: Theme.text-2;
+                font-size: 12px;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 8px; }
+            if root.picks.length == 0: VerticalLayout {
+                padding: 16px;
+                spacing: 8px;
+                Text {
+                    text: "There are no groups yet.";
+                    color: Theme.text-2;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    Btn {
+                        kind: "link";
+                        label: "Create a group…";
+                        clicked => {
+                            root.shown = false;
+                            root.new_group();
+                        }
+                    }
+                }
+            }
+            if root.picks.length > 0: Rectangle {
+                height: min(360px, list-body.preferred-height);
+                border-radius: 10px;
+                background: Theme.surf2;
+                clip: true;
+                ScrollArea {
+                    width: parent.width;
+                    height: parent.height;
+                    spacing: 0px;
+                    reset_key: 0;
+                    list-body := VerticalLayout {
+                        padding: 6px;
+                        spacing: 0px;
+                        for p in root.picks: VerticalLayout {
+                            spacing: 0px;
+                            if p.first: HorizontalLayout {
+                                height: 30px;
+                                padding-left: 6px;
+                                spacing: 8px;
+                                CommunityChip {
+                                    y: (parent.height - self.height) / 2;
+                                    edge: 18px;
+                                    icon: p.icon;
+                                    hue: p.color;
+                                }
+                                Text {
+                                    text: p.community;
+                                    color: Theme.text-2;
+                                    font-size: 11.5px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+                            Rectangle {
+                                height: 30px;
+                                border-radius: 6px;
+                                background: rta.has-hover ? Theme.hover-soft : transparent;
+                                rta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.set_member(p.id, root.device, !p.member); }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 32px;
+                                    padding-right: 10px;
+                                    spacing: 10px;
+                                    CheckBox {
+                                        y: (parent.height - self.height) / 2;
+                                        checked: p.member;
+                                        toggled => { root.set_member(p.id, root.device, !p.member); }
+                                    }
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: p.name;
+                                        color: Theme.text;
+                                        font-size: 13px;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle { height: 8px; }
+            HorizontalLayout {
+                alignment: end;
+                Btn {
+                    width: 96px;
+                    height: 30px;
+                    kind: "acc";
+                    label: "Done";
+                    clicked => { root.shown = false; }
+                }
+            }
+        }
+    }
+}

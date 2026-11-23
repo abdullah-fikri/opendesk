@@ -29,7 +29,7 @@ class MonitorWallTest {
 
     @Test
     fun pagesSplitByGridAndClamp() {
-        for ((g, n) in listOf(1 to 1, 2 to 4, 3 to 9, 4 to 16, 0 to 1, 9 to 16)) {
+        for ((g, n) in listOf(1 to 1, 2 to 4, 3 to 4, 4 to 4, 0 to 1, 9 to 4)) {
             assertEquals("grid $g", n, MonitorWall.perPage(MonitorSettings(g)))
         }
         val list = (0 until 20).toList()
@@ -41,6 +41,16 @@ class MonitorWallTest {
         assertEquals("past the end clamps to the last page", listOf(16, 17, 18, 19), MonitorWall.pageOf(list, 16, 7))
         assertTrue(MonitorWall.pageOf(emptyList<Int>(), 9, 3).isEmpty())
         assertEquals(listOf(18, 19), MonitorWall.pageOf(list, 9, 2))
+    }
+
+    @Test
+    fun tilesKeepTheChosenColumnCount() {
+        // 3x3 on a tall phone: three columns, width-limited.
+        assertEquals((1080 - 2 * 6) / 3f, MonitorWall.tileWidth(1080, 2000, 3, 9, 6), 0.01f)
+        // 3x3 on a landscape phone: height-limited, still three columns.
+        assertEquals((1000 - 2 * 6) / 3f * MonitorWall.TILE_ASPECT, MonitorWall.tileWidth(2200, 1000, 3, 9, 6), 0.01f)
+        // More columns than tiles: as many as there are tiles.
+        assertEquals((1000 - 6) / 2f, MonitorWall.tileWidth(1000, 4000, 4, 2, 6), 0.01f)
     }
 
     @Test

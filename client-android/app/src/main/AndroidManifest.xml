@@ -52,6 +52,7 @@
         <!-- Monitor wall (admin edition; the Devices page opens it only there). Keeps its watch across rotation. -->
         <activity
             android:name=".ui.monitor.MonitorWallActivity"
+            android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation"
             android:exported="false"
             android:theme="@style/Theme.OpenDesk.Fullscreen" />

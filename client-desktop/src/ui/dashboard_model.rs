@@ -3,12 +3,14 @@
 //! timers are not `Send`).
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel, Weak};
 
 use super::{HistoryItem, HostItem, MainWindow};
+use crate::domain::desk_id;
 use crate::domain::list_search::{self, Query};
 
 /// The lists are filtered once typing pauses this long, not on every keystroke.
@@ -16,11 +18,15 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// Dashboard tab that shows the relay's host list (admin edition); every other value shows the history.
 const HOSTS_TAB: i32 = 1;
+/// Dashboard tab that shows one community's group: the host list filtered by `State::members`.
+pub const COMMUNITY_TAB: i32 = 2;
 
 struct State {
     window: Weak<MainWindow>,
     history: Vec<HistoryItem>,
     hosts: Vec<HostItem>,
+    /// Clean IDs of the devices the community tab shows (`community_model`); None shows every host.
+    members: Option<HashSet<String>>,
     /// Search text currently applied to the lists.
     query: String,
     /// Restarted by each keystroke, so only the last one filters.
@@ -37,6 +43,7 @@ pub fn install(window: &MainWindow) {
         window: window.as_weak(),
         history: Vec::new(),
         hosts: Vec::new(),
+        members: None,
         query: String::new(),
         debounce: Timer::default(),
     };
@@ -63,6 +70,15 @@ pub fn set_history(items: Vec<HistoryItem>) {
 pub fn set_hosts(items: Vec<HostItem>) {
     with_state(|s| {
         s.hosts = items;
+        show(s);
+    });
+}
+
+/// Limits the community tab to these devices (clean IDs); None when no community is open.
+#[cfg_attr(not(feature = "admin"), allow(dead_code))]
+pub fn set_members(members: Option<HashSet<String>>) {
+    with_state(|s| {
+        s.members = members;
         show(s);
     });
 }
@@ -117,7 +133,8 @@ pub fn connect_selected(w: &MainWindow) {
 }
 
 fn hosts_tab_active(w: &MainWindow) -> bool {
-    w.get_is_admin() && w.get_active_dashboard_tab() == HOSTS_TAB
+    let tab = w.get_active_dashboard_tab();
+    w.get_is_admin() && (tab == HOSTS_TAB || tab == COMMUNITY_TAB)
 }
 
 /// Desk IDs of the rows the active tab shows, in order.
@@ -133,6 +150,25 @@ fn shown_ids(w: &MainWindow) -> Vec<SharedString> {
 const SHOW_ONLINE_ONLY: i32 = 1;
 const SHOW_OFFLINE_ONLY: i32 = 2;
 
+/// The hosts matching `query`, limited to `members` (clean IDs) when given, split into online and offline; the
+/// sidebar filter (`SHOW_*`) may empty one side.
+fn split_hosts(
+    hosts: &[HostItem],
+    query: &Query,
+    filter: i32,
+    members: Option<&HashSet<String>>,
+) -> (Vec<HostItem>, Vec<HostItem>) {
+    let (online, offline): (Vec<HostItem>, Vec<HostItem>) = hosts
+        .iter()
+        .filter(|h| members.is_none_or(|m| m.contains(&desk_id::clean(&h.desk_id))))
+        .filter(|h| query.matches(&h.desk_id, &[&h.alias, &h.device_name, &h.platform]))
+        .cloned()
+        .partition(|h| h.online);
+    let online = if filter == SHOW_OFFLINE_ONLY { Vec::new() } else { online };
+    let offline = if filter == SHOW_ONLINE_ONLY { Vec::new() } else { offline };
+    (online, offline)
+}
+
 fn model<T: Clone + 'static>(rows: Vec<T>) -> ModelRc<T> {
     ModelRc::from(Rc::new(VecModel::from(rows)))
 }
@@ -145,15 +181,8 @@ fn show(s: &State) {
     let query = Query::parse(&s.query);
     let history: Vec<HistoryItem> =
         s.history.iter().filter(|h| query.matches(&h.desk_id, &[&h.alias])).cloned().collect();
-    let filter = w.get_host_filter();
-    let (online, offline): (Vec<HostItem>, Vec<HostItem>) = s
-        .hosts
-        .iter()
-        .filter(|h| query.matches(&h.desk_id, &[&h.alias, &h.device_name, &h.platform]))
-        .cloned()
-        .partition(|h| h.online);
-    let online = if filter == SHOW_OFFLINE_ONLY { Vec::new() } else { online };
-    let offline = if filter == SHOW_ONLINE_ONLY { Vec::new() } else { offline };
+    let members = if w.get_active_dashboard_tab() == COMMUNITY_TAB { s.members.as_ref() } else { None };
+    let (online, offline) = split_hosts(&s.hosts, &query, w.get_host_filter(), members);
     let shown: Vec<HostItem> = online.iter().chain(offline.iter()).cloned().collect();
     let online_total = s.hosts.iter().filter(|h| h.online).count();
     w.set_history_total(s.history.len() as i32);
@@ -168,5 +197,41 @@ fn show(s: &State) {
     let selected = w.get_list_selected();
     if !selected.is_empty() && !shown_ids(&w).contains(&selected) {
         w.set_list_selected(SharedString::new());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn host(id: &str, name: &str, online: bool) -> HostItem {
+        HostItem { desk_id: desk_id::format(id).into(), device_name: name.into(), online, ..Default::default() }
+    }
+
+    #[test]
+    fn community_tab_shows_only_the_group_members() {
+        let hosts = vec![
+            host("111111111", "Kasir 1", true),
+            host("222222222", "Kasir 2", false),
+            host("333333333", "Office", true),
+        ];
+        let all = Query::parse("");
+        let (on, off) = split_hosts(&hosts, &all, 0, None);
+        assert_eq!((on.len(), off.len()), (2, 1));
+
+        let group: HashSet<String> = ["111111111".to_string(), "222222222".to_string()].into();
+        let (on, off) = split_hosts(&hosts, &all, 0, Some(&group));
+        assert_eq!(on.iter().map(|h| h.device_name.as_str()).collect::<Vec<_>>(), ["Kasir 1"]);
+        assert_eq!(off.iter().map(|h| h.device_name.as_str()).collect::<Vec<_>>(), ["Kasir 2"]);
+
+        // Search and the sidebar filter still apply inside a group.
+        let (on, off) = split_hosts(&hosts, &Query::parse("kasir 2"), 0, Some(&group));
+        assert!(on.is_empty() && off.len() == 1);
+        let (on, off) = split_hosts(&hosts, &all, SHOW_OFFLINE_ONLY, Some(&group));
+        assert!(on.is_empty() && off.len() == 1);
+
+        // An empty group shows nothing (not everything).
+        let (on, off) = split_hosts(&hosts, &all, 0, Some(&HashSet::new()));
+        assert!(on.is_empty() && off.is_empty());
     }
 }

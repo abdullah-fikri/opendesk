@@ -44,6 +44,8 @@ impl Connection {
             ServerMessage::InputCommand { event, from_clean } => self.on_input(&event, from_clean.as_deref()),
             ServerMessage::ClipboardSync { text, from_clean } => self.on_clipboard(text, from_clean.as_deref()),
             ServerMessage::FileTransfer { from_clean, payload } => self.on_file(from_clean, *payload),
+            ServerMessage::FileLaneToken { token } => self.on_lane_token(token),
+            ServerMessage::FileLaneLost { from_clean, ids } => self.on_file_lane_lost(&from_clean, &ids),
             ServerMessage::P2pSignal { from_clean, candidate } => self.on_signal(&from_clean, &candidate),
             ServerMessage::UdpRelayOffer { target_clean, addr, token } => {
                 if let Some(p) = self.links.iter().find(|p| p.partner == target_clean) {
@@ -77,6 +79,8 @@ impl Connection {
             ServerMessage::MonitorState { target_clean, state } => {
                 crate::service::monitor_wall::on_state(&self.ctx, &target_clean, &state)
             }
+            #[cfg(feature = "admin")]
+            ServerMessage::CommunityList { communities } => self.ctx.ui.communities_changed(communities),
             ServerMessage::Unknown => {}
         }
     }
@@ -95,8 +99,13 @@ impl Connection {
         {
             crate::service::monitor_wall::relay_registered(ctx, relay.monitor);
             ctx.ui.relay_admin_caps(relay.device_security, relay.host_alias);
+            ctx.ui.relay_registry_caps(relay.host_delete, relay.communities);
             if relay.device_security {
                 ctx.send(ClientMessage::SecurityGet);
+            }
+            // Older relays do not know communities: the page stays hidden and nothing is asked.
+            if relay.communities {
+                ctx.send(ClientMessage::GetCommunities);
             }
         }
     }
@@ -297,9 +306,12 @@ impl Connection {
         self.e2e.iter().find(|e| e.partner == partner)
     }
 
-    /// A `p2p-signal`: the end-to-end handshake, or the partner's P2P path.
+    /// A `p2p-signal`: the end-to-end handshake, the partner's file channel, or the partner's P2P path.
     fn on_signal(&mut self, from: &str, candidate: &str) {
         let parsed = serde_json::from_str::<serde_json::Value>(candidate).ok();
+        if let Some(v) = parsed.as_ref().filter(|v| crate::domain::file_channel::is_signal(v)) {
+            return self.on_channel_signal(from, v);
+        }
         let Some(v) = parsed.filter(e2e::is_signal) else {
             if let Some(p) = self.links.iter().find(|p| p.partner == from) {
                 p.on_signal(candidate);
@@ -362,6 +374,9 @@ impl Connection {
             None => event,
         };
         let Some(event) = InputEvent::parse(event) else { return };
+        if let InputEvent::Browse { msg } = event {
+            return crate::service::file_browser::on_event(ctx, &sender, msg);
+        }
         let viewed = match from {
             Some(id) => ctx.viewers.get(id),
             None if !ctx.is_hosting() => ctx.viewers.single(),

@@ -19,6 +19,7 @@ object WindowsKeys {
     const val VK_RIGHT = 0x27
     const val VK_DOWN = 0x28
     const val VK_DELETE = 0x2E
+    const val VK_LWIN = 0x5B
 
     private val androidToVk = mapOf(
         67 to VK_BACK, // KEYCODE_DEL

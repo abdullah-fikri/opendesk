@@ -1,12 +1,14 @@
-// Settings (admin edition): a sidebar with four panes, in two groups.
+// Settings (admin edition): a sidebar with five panes, in two groups.
 // - Relay, stored on the relay for every device: Security manages the relay's device allowlist (client tokens,
 //   docs/features/device-security.md at the repository root): listed devices receive their token automatically
-//   on their first connection, so clients only need the relay address.
+//   on their first connection, so clients only need the relay address. Communities (page 4,
+//   communities_pane.slint) manages communities, groups and group members.
 // - This device, stored in the local config.json: Server (relay address, viewing performance), Audio (microphone,
 //   client-desktop/docs/features/voice.md) and Mouse (pointer lock, `mouse-relative` in docs/protocol.md).
 // In a narrow window the sidebar shows the tiles only.
 
-import { SecurityItem } from "../../types.slint";
+import { SecurityItem, CommunityItem, GroupItem, MemberPick } from "../../types.slint";
+import { CommunitiesPane } from "communities_pane.slint";
 import { Theme, Brand } from "../../theme.slint";
 import { Glyph } from "../../components/glyph.slint";
 import { AppTile } from "../../components/app_tile.slint";
@@ -183,6 +185,24 @@ export component SettingsView inherits Rectangle {
     in property <[SecurityItem]> security_items;
     callback save_appearance(int);
 
+    // Communities pane (page 4); see communities_pane.slint.
+    in property <bool> communities_supported: false;
+    in property <[CommunityItem]> communities: [];
+    in property <[GroupItem]> manage_groups: [];
+    in property <[MemberPick]> member_picks: [];
+    in property <int> member_count: 0;
+    in-out property <string> manage_community: "";
+    in-out property <string> manage_group: "";
+    in property <string> manage_community_name: "";
+    in property <string> manage_community_icon: "";
+    in property <string> manage_community_color: "";
+    in property <string> manage_group_name: "";
+    in-out property <string> member_search: "";
+    callback manage_changed();
+    callback open_name_sheet(int, string, string, string, string);
+    callback prompt_confirm(string, string, string, string);
+    callback set_group_member(string, string, bool);
+
     callback close();
     callback refresh();
     callback set_enabled(bool);
@@ -210,6 +230,9 @@ export component SettingsView inherits Rectangle {
         root.page = p;
         if (p == 0) {
             root.refresh();
+        }
+        if (p == 4) {
+            root.manage_changed();
         }
     }
 
@@ -270,6 +293,7 @@ export component SettingsView inherits Rectangle {
                 Rectangle { height: 8px; }
                 if !root.compact: GroupLabel { text: "Relay"; height: 19px; x: 10px; }
                 NavItem { compact: root.compact; tile: "security"; label: "Security"; active: root.page == 0; clicked => { root.go(0); } }
+                NavItem { compact: root.compact; tile: "community"; label: "Communities"; count: root.communities.length > 0 ? root.communities.length : ""; active: root.page == 4; clicked => { root.go(4); } }
                 Rectangle { height: 18px; }
                 if !root.compact: GroupLabel { text: "This device"; height: 19px; x: 10px; }
                 NavItem { compact: root.compact; tile: "server"; label: "Server"; active: root.page == 1; clicked => { root.go(1); } }
@@ -342,7 +366,8 @@ export component SettingsView inherits Rectangle {
                         VerticalLayout {
                             spacing: 4px;
                             Text {
-                                text: root.page == 0 ? "Security" : root.page == 1 ? "Server" : root.page == 2 ? "Audio" : "Mouse";
+                                text: root.page == 0 ? "Security" : root.page == 1 ? "Server" : root.page == 2 ? "Audio"
+                                    : root.page == 4 ? "Communities" : "Mouse";
                                 color: Theme.text;
                                 font-size: 28px;
                                 font-weight: 700;
@@ -352,11 +377,32 @@ export component SettingsView inherits Rectangle {
                                 text: root.page == 0 ? "Choose which devices are allowed to connect to this relay."
                                     : root.page == 1 ? "The relay this computer uses and how sessions look from here."
                                     : root.page == 2 ? "Your microphone in sessions on this computer."
+                                    : root.page == 4 ? "Sort devices into communities and groups, shared with every administrator."
                                     : "How the mouse behaves when you control another device.";
                                 color: Theme.text-2;
                                 font-size: 13px;
                                 wrap: word-wrap;
                             }
+                        }
+
+                        // ================= Communities
+                        if root.page == 4: CommunitiesPane {
+                            supported: root.communities_supported;
+                            communities: root.communities;
+                            groups: root.manage_groups;
+                            members: root.member_picks;
+                            member_count: root.member_count;
+                            community <=> root.manage_community;
+                            group <=> root.manage_group;
+                            community_name: root.manage_community_name;
+                            community_icon: root.manage_community_icon;
+                            community_color: root.manage_community_color;
+                            group_name: root.manage_group_name;
+                            member_search <=> root.member_search;
+                            selection_changed => { root.manage_changed(); }
+                            open_name_sheet(k, t, n, i, c) => { root.open_name_sheet(k, t, n, i, c); }
+                            prompt_confirm(k, t, ti, b) => { root.prompt_confirm(k, t, ti, b); }
+                            set_group_member(g, d, m) => { root.set_group_member(g, d, m); }
                         }
 
                         // ================= Security

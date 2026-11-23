@@ -24,6 +24,16 @@ const (
 	TypeSecurityRemove      = "security-remove"
 	TypeSecurityReset       = "security-reset"
 	TypeHostRename          = "host-rename"
+	// Administrator-only registry management and communities (see docs/features/communities.md).
+	TypeHostDelete      = "host-delete"
+	TypeGetCommunities  = "get-communities"
+	TypeCommunityCreate = "community-create"
+	TypeCommunityUpdate = "community-update"
+	TypeCommunityDelete = "community-delete"
+	TypeGroupCreate     = "group-create"
+	TypeGroupRename     = "group-rename"
+	TypeGroupDelete     = "group-delete"
+	TypeGroupMembers    = "group-members"
 )
 
 // Envelope is decoded first from every text message; Type selects the concrete request type.
@@ -41,6 +51,9 @@ type RegisterRequest struct {
 	DeviceName  string       `json:"deviceName"`
 	Caps        Capabilities `json:"caps"`
 	ResumeToken string       `json:"resumeToken"`
+	// FileLane: the client can use a file lane (see dto/lane.go); a field, not a capability name, because the
+	// relay keeps only the first 32 names.
+	FileLane bool `json:"fileLane"`
 }
 
 // Capabilities decodes a JSON array and keeps only its string entries, so one malformed entry
@@ -135,4 +148,23 @@ type SecurityTarget struct {
 type HostRename struct {
 	TargetClean string `json:"targetClean"`
 	Alias       string `json:"alias"`
+}
+
+// HostDelete removes offline devices (clean IDs) from the shared host list.
+type HostDelete struct {
+	TargetCleans []string `json:"targetCleans"`
+}
+
+// CommunityEdit carries every community and group request; each type reads only its own fields:
+// community-create (Name, Icon, Color), community-update (CommunityID, Name, Icon, Color),
+// community-delete (CommunityID), group-create (CommunityID, Name), group-rename (GroupID, Name),
+// group-delete (GroupID) and group-members (GroupID, Add, Remove: clean IDs).
+type CommunityEdit struct {
+	CommunityID string   `json:"communityId"`
+	GroupID     string   `json:"groupId"`
+	Name        string   `json:"name"`
+	Icon        string   `json:"icon"`
+	Color       string   `json:"color"`
+	Add         []string `json:"add"`
+	Remove      []string `json:"remove"`
 }

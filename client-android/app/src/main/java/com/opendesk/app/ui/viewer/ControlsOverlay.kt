@@ -4,7 +4,10 @@ import android.content.res.ColorStateList
 import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.View
+import android.view.Gravity
 import android.view.ViewGroup
+import android.view.animation.OvershootInterpolator
+import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
@@ -14,14 +17,24 @@ import com.opendesk.app.platform.audio.VoiceCallManager
 import com.opendesk.app.session.RelayConnection
 
 /**
- * The viewer's overlay (view_overlay): the session pill, the Controls button, the controls (a bottom sheet in
- * portrait, a side panel in landscape) and the key bar above the soft keyboard. It is inflated again on rotation
- * ([build]); [refresh] shows the current [ViewerState].
+ * The viewer's overlay (view_overlay): the session pill, the radial menu with its edge grip, the controls (a bottom
+ * sheet in portrait, a side panel in landscape, opened from the menu's "More") and the key bar above the soft
+ * keyboard. Nothing stays over the remote screen but the faint grip: the pill slides in on a swipe down from the top
+ * ([showPill]) and hides again by itself. It is inflated again on rotation ([build]); [refresh] shows the current
+ * [ViewerState].
  */
 class ControlsOverlay(private val host: ViewGroup, private val state: ViewerState, private val listener: Listener) {
 
     /** A control tile or key; [Listener.onTool] carries it out. */
-    enum class Tool { LEFT, DOUBLE, RIGHT, HOLD, ESC, TAB, WIN, KEYBOARD, HIDE_KEYBOARD, SCROLL, FIT, MIC, MONITOR }
+    enum class Tool {
+        LEFT, DOUBLE, RIGHT, HOLD, ESC, TAB, WIN, KEYBOARD, HIDE_KEYBOARD, SCROLL, FIT, MIC, MONITOR,
+
+        /** Switches between trackpad and touch mode. */
+        MOUSE_MODE,
+
+        /** Fit (the whole screen, with bands) or fill (no bands; the edges are reached by panning). */
+        FIT_MODE, FILL_MODE, ALT_TAB, TASK_MANAGER,
+    }
 
     interface Listener {
         fun onExit()
@@ -31,10 +44,17 @@ class ControlsOverlay(private val host: ViewGroup, private val state: ViewerStat
 
     private val context get() = host.context
     private var overlay: View? = null
+    private var pill: View? = null
+    private var radial: RadialMenuView? = null
+    private var hinted = false
+    private val hidePill = Runnable { setPillShown(false) }
 
     /** Shown in the session pill. */
     var partnerName = ""
     var fps = 0
+
+    /** What the screen decodes and its time per frame (`JPEG · 6 ms`), after the frame rate; empty for none. */
+    var detail = ""
 
     fun build() {
         host.removeAllViews()
@@ -45,13 +65,8 @@ class ControlsOverlay(private val host: ViewGroup, private val state: ViewerStat
 
         view.findViewById<View>(R.id.btn_exit_remote).setOnClickListener { listener.onExit() }
         view.findViewById<View>(R.id.tv_partner).setOnClickListener { listener.onGestures() }
-        view.findViewById<View>(R.id.btn_controls).apply {
-            setOnClickListener { setOpen(true) }
-            setOnLongClickListener {
-                listener.onGestures()
-                true
-            }
-        }
+        pill = view.findViewById<View>(R.id.top_pill).apply { visibility = View.INVISIBLE }
+        buildRadial(view as ViewGroup)
         view.findViewById<View>(R.id.controls_handle).setOnClickListener { setOpen(false) }
         view.findViewById<View>(R.id.controls_title)?.setOnClickListener { listener.onGestures() }
         view.findViewById<View>(R.id.seg_trackpad).setOnClickListener { setTrackpad(true) }
@@ -82,6 +97,103 @@ class ControlsOverlay(private val host: ViewGroup, private val state: ViewerStat
         refresh()
     }
 
+    // ---- Session pill ----
+
+    /** Slides the session pill in from the top; it hides again after a few seconds. */
+    fun showPill() = setPillShown(true)
+
+    private fun setPillShown(shown: Boolean) {
+        val p = pill ?: return
+        val hiddenY = -(p.height + p.top).toFloat().coerceAtLeast(1f)
+        p.removeCallbacks(hidePill)
+        p.animate().cancel()
+        if (shown) {
+            if (p.visibility != View.VISIBLE) {
+                p.translationY = hiddenY
+                p.alpha = 0f
+                p.visibility = View.VISIBLE
+            }
+            p.animate().translationY(0f).alpha(1f).setDuration(PILL_IN_MS).setInterpolator(OvershootInterpolator(1.1f)).start()
+            p.postDelayed(hidePill, PILL_SHOWN_MS)
+        } else if (p.visibility == View.VISIBLE) {
+            p.animate().translationY(hiddenY).alpha(0f).setDuration(PILL_OUT_MS).withEndAction { p.visibility = View.INVISIBLE }.start()
+        }
+    }
+
+    // ---- Radial menu ----
+
+    /** Closes the radial menu; false when it was not open. */
+    fun closeRadial(): Boolean {
+        val r = radial ?: return false
+        if (!r.isOpen) return false
+        r.close()
+        return true
+    }
+
+    private fun buildRadial(frame: ViewGroup) {
+        val menu = RadialMenuView(context).apply { onPick = ::onPick }
+        val handle = EdgeHandle(context, menu, ::radialItems)
+        val density = context.resources.displayMetrics.density
+        frame.addView(
+            handle,
+            FrameLayout.LayoutParams((HANDLE_W_DP * density).toInt(), (HANDLE_H_DP * density).toInt(), Gravity.END or Gravity.CENTER_VERTICAL),
+        )
+        // Above the grip, so a sticky menu takes the taps there too.
+        frame.addView(menu, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        radial = menu
+        if (!hinted) {
+            hinted = true
+            handle.hint()
+        }
+    }
+
+    private fun onPick(item: RadialMenuView.Item) {
+        when (val id = item.id) {
+            is Tool -> listener.onTool(id)
+            MENU_MORE -> setOpen(true)
+            MENU_INFO -> showPill()
+        }
+    }
+
+    /** The menu as it stands now: modes show their current state. */
+    private fun radialItems(): List<RadialMenuView.Item> {
+        fun s(id: Int) = context.getString(id)
+        val trackpad = state.trackpadMode
+        return listOf(
+            RadialMenuView.Item(Tool.KEYBOARD, s(R.string.keyboard), R.drawable.ic_kbd, active = state.keyboardVisible || state.glassKeyboardVisible),
+            RadialMenuView.Item(
+                Tool.MOUSE_MODE,
+                s(if (trackpad) R.string.menu_touch else R.string.menu_trackpad),
+                if (trackpad) R.drawable.ic_touch else R.drawable.ic_cursor,
+            ),
+            RadialMenuView.Item(
+                MENU_DISPLAY,
+                s(R.string.menu_display),
+                R.drawable.ic_screen,
+                children = listOf(
+                    RadialMenuView.Item(Tool.FIT_MODE, s(R.string.menu_fit), R.drawable.ic_fit, active = !state.fill),
+                    RadialMenuView.Item(Tool.FILL_MODE, s(R.string.menu_fill), R.drawable.ic_fill, active = state.fill),
+                    RadialMenuView.Item(Tool.MONITOR, s(R.string.menu_next_monitor), R.drawable.ic_desktop),
+                    RadialMenuView.Item(MENU_INFO, s(R.string.menu_info), R.drawable.ic_lock),
+                ),
+            ),
+            RadialMenuView.Item(
+                MENU_KEYS,
+                s(R.string.menu_keys),
+                R.drawable.ic_win,
+                children = listOf(
+                    RadialMenuView.Item(Tool.ESC, s(R.string.key_esc), glyph = s(R.string.key_esc)),
+                    RadialMenuView.Item(Tool.TAB, s(R.string.key_tab), glyph = s(R.string.key_tab)),
+                    RadialMenuView.Item(Tool.WIN, s(R.string.key_win), R.drawable.ic_win),
+                    RadialMenuView.Item(Tool.ALT_TAB, s(R.string.menu_alt_tab), glyph = s(R.string.glyph_alt_tab)),
+                    RadialMenuView.Item(Tool.TASK_MANAGER, s(R.string.menu_task_manager), glyph = s(R.string.glyph_task_manager)),
+                ),
+            ),
+            RadialMenuView.Item(Tool.SCROLL, s(R.string.menu_scroll), R.drawable.ic_scroll, active = state.scrollMode),
+            RadialMenuView.Item(MENU_MORE, s(R.string.menu_more), R.drawable.ic_gear),
+        )
+    }
+
     private fun setTrackpad(trackpad: Boolean) {
         state.trackpadMode = trackpad
         refresh()
@@ -99,7 +211,6 @@ class ControlsOverlay(private val host: ViewGroup, private val state: ViewerStat
         val view = overlay ?: return
         val panelOpen = state.controlsOpen && !state.keyboardVisible
         view.findViewById<View>(R.id.controls_panel).visibility = if (panelOpen) View.VISIBLE else View.GONE
-        view.findViewById<View>(R.id.btn_controls).visibility = if (panelOpen || state.keyboardVisible) View.GONE else View.VISIBLE
         view.findViewById<View>(R.id.key_bar).visibility = if (state.keyboardVisible) View.VISIBLE else View.GONE
 
         segment(view.findViewById(R.id.seg_trackpad), state.trackpadMode)
@@ -118,7 +229,8 @@ class ControlsOverlay(private val host: ViewGroup, private val state: ViewerStat
     fun refreshStatus() {
         val view = overlay ?: return
         view.findViewById<TextView>(R.id.tv_partner).text = partnerName
-        view.findViewById<TextView>(R.id.tv_remote_fps).text = context.getString(R.string.fps_label, fps)
+        val label = context.getString(R.string.fps_label, fps)
+        view.findViewById<TextView>(R.id.tv_remote_fps).text = if (detail.isEmpty()) label else "$label · $detail"
         view.findViewById<View>(R.id.tv_e2e).visibility = if (RelayConnection.isEndToEnd) View.VISIBLE else View.GONE
     }
 
@@ -136,6 +248,20 @@ class ControlsOverlay(private val host: ViewGroup, private val state: ViewerStat
         val color = ContextCompat.getColor(context, if (on) R.color.accent_tx else R.color.text)
         view.setTextColor(color)
         TextViewCompat.setCompoundDrawableTintList(view, ColorStateList.valueOf(color))
+    }
+
+    private companion object {
+        const val PILL_IN_MS = 320L
+        const val PILL_OUT_MS = 180L
+        const val PILL_SHOWN_MS = 3500L
+        const val HANDLE_W_DP = 28f
+        const val HANDLE_H_DP = 200f
+
+        // Menu entries that are not a Tool: they open a level or act on the overlay itself.
+        const val MENU_DISPLAY = "display"
+        const val MENU_KEYS = "keys"
+        const val MENU_MORE = "more"
+        const val MENU_INFO = "info"
     }
 
     /** Compound icons of the control tiles at the design size (18 dp; 15 dp beside a label). */

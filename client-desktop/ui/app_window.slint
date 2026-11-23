@@ -9,7 +9,8 @@ import "fonts/Inter-SemiBold.ttf";
 import "fonts/Inter-Bold.ttf";
 import "fonts/JetBrainsMono-Regular.ttf";
 import "fonts/JetBrainsMono-Medium.ttf";
-import { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem, TransferItem } from "types.slint";
+import { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem, TransferItem, FileRow, CommunityItem, GroupItem, GroupPick, MemberPick } from "types.slint";
+import { NameSheet, ConfirmSheet, GroupPickerSheet } from "dialogs/community_sheets.slint";
 import { HeaderBar } from "views/header_bar.slint";
 import { DashboardView } from "views/dashboard.slint";
 import { HostActiveView } from "views/host_panel.slint";
@@ -17,6 +18,7 @@ import { SessionWorkspace } from "views/workspace/session_workspace.slint";
 import { MonitorWallView } from "views/monitor/monitor_wall.slint";
 import { SettingsView } from "views/settings/settings_view.slint";
 import { TransferPanel } from "views/transfer_panel.slint";
+import { FileBrowser } from "views/file_browser.slint";
 import { ServerSettingsModal } from "dialogs/server_settings_dialog.slint";
 import { RenameDeviceModal } from "dialogs/rename_device_dialog.slint";
 import { DeleteConfirmModal } from "dialogs/delete_confirm_dialog.slint";
@@ -24,7 +26,7 @@ import { WhatsNewModal } from "dialogs/whats_new_dialog.slint";
 import { Theme, Brand } from "theme.slint";
 import { WindowFrame, WindowControls, ResizeEdges } from "components/window_frame.slint";
 
-export { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem, TransferItem }
+export { HistoryItem, HostItem, SessionView, MonitorItem, MonitorTile, MonitorPick, SecurityItem, TransferItem, FileRow, CommunityItem, GroupItem, GroupPick, MemberPick }
 // Rust sets the appearance at start and implements the window buttons, move and resize.
 export { Theme, Brand, WindowFrame }
 
@@ -193,6 +195,56 @@ export component MainWindow inherits Window {
     callback session_frame_rect(string, int, int, int, int);
     callback select_monitor(string, int);
     callback session_send_files(string);
+    // Opens the file browser for a device (id, name); no session or screen needed.
+    callback browse_device(string, string);
+    in property <bool> browser_connected;
+
+    // ---- File browser (src/ui/file_browser_model.rs) ----
+    in-out property <bool> browser_open: false;
+    in property <string> browser_title;
+    in property <string> browser_local_path;
+    in property <string> browser_remote_path;
+    in property <[FileRow]> browser_local_rows;
+    in property <[FileRow]> browser_remote_rows;
+    in property <string> browser_local_note;
+    in property <string> browser_remote_note;
+    in property <bool> browser_local_can_up;
+    in property <bool> browser_remote_can_up;
+    in property <int> browser_local_selected;
+    in property <int> browser_remote_selected;
+    in property <string> browser_local_footer;
+    in property <string> browser_remote_footer;
+    in property <bool> browser_local_can_back;
+    in property <bool> browser_remote_can_back;
+    in property <int> browser_local_cursor: -1;
+    in property <int> browser_remote_cursor: -1;
+    in property <string> browser_local_single;
+    in property <string> browser_remote_single;
+    in property <int> browser_local_sort;
+    in property <int> browser_remote_sort;
+    in property <bool> browser_local_sort_desc;
+    in property <bool> browser_remote_sort_desc;
+    in property <bool> browser_remote_ops;
+    in property <bool> browser_local_trash;
+    in property <string> browser_reveal_label: "Show in Explorer";
+    in property <string> browser_status;
+    callback browser_close();
+    callback browser_local_up();
+    callback browser_remote_up();
+    callback browser_local_go(string);
+    callback browser_remote_go(string);
+    callback browser_select(bool, int, int);
+    callback browser_action(bool, string);
+    callback browser_rename(bool, string);
+    callback browser_delete(bool);
+    callback browser_sort(bool, int);
+    callback browser_local_open(int);
+    callback browser_remote_open(int);
+    callback browser_local_mkdir(string);
+    callback browser_remote_mkdir(string);
+    callback browser_upload();
+    callback browser_download();
+    callback browser_refresh();
     callback session_toggle_mic(string);
     callback session_set_host_mic(string, bool);
     callback session_toggle_host_sound(string);
@@ -226,6 +278,95 @@ export component MainWindow inherits Window {
     callback security_add_online();
     callback security_remove(string);
     callback security_reset(string);
+
+    // ---- Communities and registry management (admin edition; docs/features/communities.md) ----
+    // The relay deletes offline devices (host-delete) / stores communities (communities).
+    in property <bool> communities_supported: false;
+    in property <bool> host_delete_supported: false;
+    in property <[CommunityItem]> communities: [];
+    // Dashboard community page (active_dashboard_tab 2): the open community and group ("" = All Members). The UI
+    // sets them and calls community_view_changed; Rust fills the names, the group column and the device lists.
+    in property <[GroupItem]> community_groups: [];
+    in-out property <string> active_community: "";
+    in-out property <string> active_group: "";
+    in property <string> active_community_name: "";
+    in property <string> active_community_icon: "";
+    in property <string> active_community_color: "";
+    in property <string> active_group_name: "";
+    callback community_view_changed();
+    // Settings › Communities: the selected community and group and the member search; manage_changed refreshes.
+    in property <[GroupItem]> manage_groups: [];
+    in property <[MemberPick]> member_picks: [];
+    in property <int> member_count: 0;
+    in-out property <string> manage_community: "";
+    in-out property <string> manage_group: "";
+    in property <string> manage_community_name: "";
+    in property <string> manage_community_icon: "";
+    in property <string> manage_community_color: "";
+    in property <string> manage_group_name: "";
+    in-out property <string> member_search: "";
+    callback manage_changed();
+    // Name sheet (SheetKind: 1 new community, 2 edit community, 3 new group, 4 rename group; 0 = closed). The
+    // target is the community (1-3) or group (4) ID. Saved as (kind, target, name, icon, color).
+    in-out property <int> name_sheet_kind: 0;
+    in-out property <string> name_sheet_target: "";
+    in-out property <string> name_sheet_context: "";
+    in-out property <string> name_sheet_name: "";
+    in-out property <string> name_sheet_icon: "";
+    in-out property <string> name_sheet_color: "";
+    callback community_save(int, string, string, string, string);
+    // Deletion sheet ("" = closed): "delete-hosts" (comma-separated desk IDs), "delete-community", "delete-group".
+    in-out property <string> confirm_kind: "";
+    in-out property <string> confirm_target: "";
+    in-out property <string> confirm_title: "";
+    in-out property <string> confirm_body: "";
+    callback community_confirm(string, string);
+    // "Add to Group" sheet for one device; Rust fills group_picks for it in open_group_picker.
+    in-out property <bool> show_group_picker: false;
+    in-out property <string> group_picker_device: "";
+    in-out property <string> group_picker_name: "";
+    in property <[GroupPick]> group_picks: [];
+    callback open_group_picker(string);
+    // (group ID, desk ID, member)
+    callback set_group_member(string, string, bool);
+    // Rust fills the deletion sheet with the offline devices the dashboard shows.
+    callback prompt_delete_offline();
+
+    function open_name_sheet(kind: int, target: string, name: string, icon: string, color: string) {
+        root.name_sheet_target = target;
+        root.name_sheet_name = name;
+        root.name_sheet_icon = icon;
+        root.name_sheet_color = color;
+        root.name_sheet_context = root.settings_open ? root.manage_community_name : root.active_community_name;
+        root.name_sheet_kind = kind;
+    }
+
+    function prompt_confirm(kind: string, target: string, title: string, body: string) {
+        root.confirm_target = target;
+        root.confirm_title = title;
+        root.confirm_body = body;
+        root.confirm_kind = kind;
+    }
+
+    function show_group_picker_for(id: string, name: string) {
+        root.group_picker_device = id;
+        root.group_picker_name = name;
+        root.open_group_picker(id);
+        root.show_group_picker = true;
+    }
+
+    // Settings › Communities, opened on the community and group the dashboard shows.
+    function open_communities_settings() {
+        root.monitor_open = false;
+        root.close_monitor();
+        root.manage_community = root.active_tab_is_community ? root.active_community : root.manage_community;
+        root.manage_group = root.active_tab_is_community ? root.active_group : "";
+        root.settings_page = 4;
+        root.settings_open = true;
+        root.show_new_session = false;
+        root.manage_changed();
+    }
+    property <bool> active_tab_is_community: root.active_dashboard_tab == 2 && root.active_community != "";
 
     // The monitor wall in full screen shows nothing but the screens.
     property <bool> wall_fullscreen: is_admin && monitor_open && !settings_open && sessions.length == 0 && root.full-screen;
@@ -336,7 +477,25 @@ export component MainWindow inherits Window {
                 connect_selected => { root.list_connect_selected(); }
                 copy_local_id => { root.copy_local_id(); }
                 request_connect(id) => { root.request_connect(id); }
+                browse_device(id, name) => { root.browse_device(id, name); }
                 host_alias_supported: root.host_alias_supported;
+                communities_supported: root.communities_supported;
+                host_delete_supported: root.host_delete_supported;
+                communities: root.communities;
+                community_groups: root.community_groups;
+                active_community <=> root.active_community;
+                active_group <=> root.active_group;
+                active_community_name: root.active_community_name;
+                active_community_icon: root.active_community_icon;
+                active_community_color: root.active_community_color;
+                active_group_name: root.active_group_name;
+                community_view_changed => { root.community_view_changed(); }
+                open_name_sheet(k, t, n, i, c) => { root.open_name_sheet(k, t, n, i, c); }
+                prompt_confirm(k, t, ti, b) => { root.prompt_confirm(k, t, ti, b); }
+                open_group_picker(id, name) => { root.show_group_picker_for(id, name); }
+                set_group_member(g, d, m) => { root.set_group_member(g, d, m); }
+                prompt_delete_offline => { root.prompt_delete_offline(); }
+                manage_communities => { root.open_communities_settings(); }
                 open_rename(id, alias) => {
                     root.rename_scope = 0;
                     root.open_rename(id, alias);
@@ -384,6 +543,22 @@ export component MainWindow inherits Window {
                 set_mic_on_at_start(on) => { root.save_mic_on_at_start(on); }
                 pointer_lock: root.pointer_lock;
                 set_pointer_lock(on) => { root.save_pointer_lock(on); }
+                communities_supported: root.communities_supported;
+                communities: root.communities;
+                manage_groups: root.manage_groups;
+                member_picks: root.member_picks;
+                member_count: root.member_count;
+                manage_community <=> root.manage_community;
+                manage_group <=> root.manage_group;
+                manage_community_name: root.manage_community_name;
+                manage_community_icon: root.manage_community_icon;
+                manage_community_color: root.manage_community_color;
+                manage_group_name: root.manage_group_name;
+                member_search <=> root.member_search;
+                manage_changed => { root.manage_changed(); }
+                open_name_sheet(k, t, n, i, c) => { root.open_name_sheet(k, t, n, i, c); }
+                prompt_confirm(k, t, ti, b) => { root.prompt_confirm(k, t, ti, b); }
+                set_group_member(g, d, m) => { root.set_group_member(g, d, m); }
             }
 
             if is_admin && monitor_open && !settings_open: MonitorWallView {
@@ -448,8 +623,26 @@ export component MainWindow inherits Window {
                 move_selection(delta) => { root.list_move_selection(delta); }
                 connect_selected => { root.list_connect_selected(); }
                 host_alias_supported: root.host_alias_supported;
+                communities_supported: root.communities_supported;
+                host_delete_supported: root.host_delete_supported;
+                communities: root.communities;
+                community_groups: root.community_groups;
+                active_community <=> root.active_community;
+                active_group <=> root.active_group;
+                active_community_name: root.active_community_name;
+                active_community_icon: root.active_community_icon;
+                active_community_color: root.active_community_color;
+                active_group_name: root.active_group_name;
+                community_view_changed => { root.community_view_changed(); }
+                open_name_sheet(k, t, n, i, c) => { root.open_name_sheet(k, t, n, i, c); }
+                prompt_confirm(k, t, ti, b) => { root.prompt_confirm(k, t, ti, b); }
+                open_group_picker(id, name) => { root.show_group_picker_for(id, name); }
+                set_group_member(g, d, m) => { root.set_group_member(g, d, m); }
+                prompt_delete_offline => { root.prompt_delete_offline(); }
+                manage_communities => { root.open_communities_settings(); }
                 copy_local_id => { root.copy_local_id(); }
                 request_connect(id) => { root.request_connect(id); }
+                browse_device(id, name) => { root.browse_device(id, name); }
                 open_rename(id, alias) => {
                     root.rename_scope = 0;
                     root.open_rename(id, alias);
@@ -479,12 +672,61 @@ export component MainWindow inherits Window {
         }
     }
 
+    if browser_open: FileBrowser {
+        remote-title: root.browser_title;
+        connected: root.browser_connected;
+        local-path: root.browser_local_path;
+        remote-path: root.browser_remote_path;
+        local-rows: root.browser_local_rows;
+        remote-rows: root.browser_remote_rows;
+        local-note: root.browser_local_note;
+        remote-note: root.browser_remote_note;
+        local-can-up: root.browser_local_can_up;
+        remote-can-up: root.browser_remote_can_up;
+        local-selected: root.browser_local_selected;
+        remote-selected: root.browser_remote_selected;
+        local-footer: root.browser_local_footer;
+        remote-footer: root.browser_remote_footer;
+        local-can-back: root.browser_local_can_back;
+        remote-can-back: root.browser_remote_can_back;
+        local-cursor: root.browser_local_cursor;
+        remote-cursor: root.browser_remote_cursor;
+        local-single: root.browser_local_single;
+        remote-single: root.browser_remote_single;
+        local-sort: root.browser_local_sort;
+        remote-sort: root.browser_remote_sort;
+        local-sort-desc: root.browser_local_sort_desc;
+        remote-sort-desc: root.browser_remote_sort_desc;
+        remote-ops: root.browser_remote_ops;
+        local-trash: root.browser_local_trash;
+        reveal-label: root.browser_reveal_label;
+        status: root.browser_status;
+        close => { root.browser_close(); }
+        local-up => { root.browser_local_up(); }
+        remote-up => { root.browser_remote_up(); }
+        local-go(p) => { root.browser_local_go(p); }
+        remote-go(p) => { root.browser_remote_go(p); }
+        select(remote, i, mode) => { root.browser_select(remote, i, mode); }
+        action(remote, a) => { root.browser_action(remote, a); }
+        rename(remote, n) => { root.browser_rename(remote, n); }
+        delete(remote) => { root.browser_delete(remote); }
+        sort(remote, k) => { root.browser_sort(remote, k); }
+        local-open(i) => { root.browser_local_open(i); }
+        remote-open(i) => { root.browser_remote_open(i); }
+        local-mkdir(n) => { root.browser_local_mkdir(n); }
+        remote-mkdir(n) => { root.browser_remote_mkdir(n); }
+        upload => { root.browser_upload(); }
+        download => { root.browser_download(); }
+        refresh => { root.browser_refresh(); }
+    }
+
     if transfers.length > 0 && !wall_fullscreen: TransferPanel {
         x: root.width - self.width - 12px;
         y: root.height - self.height - 40px;
         items: root.transfers;
         dismiss(id) => { root.dismiss_transfer(id); }
     }
+
 
     if show_settings: ServerSettingsModal {
         gateway_url <=> root.gateway_url;
@@ -513,6 +755,33 @@ export component MainWindow inherits Window {
         delete_target_label: root.delete_target_label;
         show_delete_modal <=> root.show_delete_modal;
         confirm_delete(id) => { root.delete_history(id); }
+    }
+
+    if is_admin && name_sheet_kind != 0: NameSheet {
+        kind <=> root.name_sheet_kind;
+        target: root.name_sheet_target;
+        context: root.name_sheet_context;
+        name <=> root.name_sheet_name;
+        icon <=> root.name_sheet_icon;
+        hue <=> root.name_sheet_color;
+        save(k, t, n, i, c) => { root.community_save(k, t, n, i, c); }
+    }
+
+    if is_admin && show_group_picker: GroupPickerSheet {
+        shown <=> root.show_group_picker;
+        device: root.group_picker_device;
+        device_name: root.group_picker_name;
+        picks: root.group_picks;
+        set_member(g, d, m) => { root.set_group_member(g, d, m); }
+        new_group => { root.open_communities_settings(); }
+    }
+
+    if is_admin && confirm_kind != "": ConfirmSheet {
+        kind <=> root.confirm_kind;
+        target: root.confirm_target;
+        title: root.confirm_title;
+        body: root.confirm_body;
+        confirm(k, t) => { root.community_confirm(k, t); }
     }
 
     // Waits while a remote session runs, either way.

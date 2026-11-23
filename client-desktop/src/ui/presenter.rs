@@ -47,9 +47,12 @@ impl SlintUi {
     pub fn new(window: &MainWindow) -> Self {
         session_model::install(window);
         transfer_model::install(window);
+        super::file_browser_model::install(window);
         dashboard_model::install(window);
         #[cfg(feature = "admin")]
         super::monitor_wall_model::install(window);
+        #[cfg(feature = "admin")]
+        super::community_model::install(window);
         Self {
             window: window.as_weak(),
             frames: PendingFrames::default(),
@@ -131,12 +134,21 @@ impl UiPort for SlintUi {
         self.apply(move |_| transfer_model::apply(update));
     }
 
+    fn browse(&self, update: crate::service::ui_port::BrowseUpdate) {
+        self.apply(move |w| super::file_browser_model::apply(w, update));
+    }
+
     fn gateway_changed(&self, url: String) {
         self.apply(move |w| w.set_gateway_url(url.into()));
     }
 
     fn host_list(&self, hosts: Vec<RemoteHost>) {
-        self.apply(move |_| dashboard_model::set_hosts(view_model::host_items(hosts)));
+        self.apply(move |_| {
+            let items = view_model::host_items(hosts);
+            #[cfg(feature = "admin")]
+            super::community_model::set_hosts(items.clone());
+            dashboard_model::set_hosts(items);
+        });
     }
 
     fn history(&self, records: Vec<HistoryRecord>) {
@@ -352,6 +364,23 @@ impl UiPort for SlintUi {
             w.set_security_supported(device_security);
             w.set_host_alias_supported(host_alias);
         });
+    }
+
+    #[cfg(feature = "admin")]
+    fn relay_registry_caps(&self, host_delete: bool, communities: bool) {
+        self.apply(move |w| {
+            w.set_host_delete_supported(host_delete);
+            w.set_communities_supported(communities);
+            if !communities {
+                // An older relay: nothing to show (and a community page left open falls back to All Devices).
+                super::community_model::set_communities(Vec::new());
+            }
+        });
+    }
+
+    #[cfg(feature = "admin")]
+    fn communities_changed(&self, communities: Vec<crate::protocol::CommunityEntry>) {
+        self.apply(move |_| super::community_model::set_communities(communities));
     }
 
     #[cfg(feature = "admin")]

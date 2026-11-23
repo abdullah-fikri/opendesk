@@ -26,51 +26,70 @@ const (
 // fileGrant lets one transfer finish after its screen session ends, but only between the same two connections.
 type fileGrant struct {
 	from, to *Peer
-	expires  time.Time
+	id       string
+	// via is the sender's file lane the transfer started on, nil for its main connection: every later message of
+	// the transfer must come the same way (see lane.go).
+	via *Lane
+	// out is the receiver's file lane the transfer is delivered on, nil for its main connection; chosen at start.
+	out     *Lane
+	expires time.Time
 }
 
 func grantKey(fromClean, id string) string { return fromClean + ":" + id }
 
-// RouteFile authorizes one file-transfer message from sender and returns its receiver, or nil.
+// RouteFile authorizes one file-transfer message from sender's main connection and returns its receiver, or nil.
 func (r *Relay) RouteFile(sender *Peer, targetClean, action, id string) *Peer {
+	rcpt, _ := r.routeFile(sender, nil, targetClean, action, id)
+	return rcpt
+}
+
+// routeFile authorizes one file-transfer message from sender, which came on sender's file lane via (nil: on its
+// main connection). It returns the receiver, or nil, and the receiver's lane the message goes to (nil: the
+// receiver's main connection). Lane traffic passes exactly the checks main traffic does, plus: the lane must still
+// be sender's, and a transfer never changes connection after its start.
+func (r *Relay) routeFile(sender *Peer, via *Lane, targetClean, action, id string) (*Peer, *Lane) {
 	if sender == nil || id == "" || len(id) > maxFileIDLen {
-		return nil
+		return nil, nil
 	}
 	now := time.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.isCurrentLocked(sender) {
-		return nil
+	if !r.isCurrentLocked(sender) || (via != nil && sender.lane != via) {
+		return nil, nil
 	}
 	switch action {
 	case FileStart:
 		target := r.activePartnerLocked(sender, targetClean)
 		key := grantKey(sender.CleanID, id)
 		if target == nil || r.grants[key] != nil || r.grantsOwnedLocked(sender) >= maxGrantsPerPeer {
-			return nil
+			return nil, nil
 		}
-		r.grants[key] = &fileGrant{from: sender, to: target, expires: now.Add(fileGrantIdle)}
-		return target
+		gr := &fileGrant{from: sender, to: target, id: id, via: via, expires: now.Add(fileGrantIdle)}
+		if via != nil {
+			gr.out = r.laneOutLocked(via, target)
+		}
+		r.grants[key] = gr
+		return target, gr.out
 	case FileOffer, FilePull:
-		return r.activePartnerLocked(sender, targetClean)
+		return r.activePartnerLocked(sender, targetClean), nil
 	case FileChunk, FileEnd:
 		gr := r.grants[grantKey(sender.CleanID, id)]
 		if gr == nil || gr.from != sender || r.peers[gr.to.CleanID] != gr.to || now.After(gr.expires) ||
-			(targetClean != "" && targetClean != gr.to.CleanID) {
-			return nil
+			(targetClean != "" && targetClean != gr.to.CleanID) || gr.via != via || (gr.out != nil && gr.to.lane != gr.out) {
+			return nil, nil
 		}
 		gr.expires = now.Add(fileGrantIdle)
-		return gr.to
+		return gr.to, gr.out
 	case FileAck:
 		key := grantKey(targetClean, id)
 		gr := r.grants[key]
 		if gr == nil || gr.to != sender || r.peers[gr.from.CleanID] != gr.from || now.After(gr.expires) {
-			return nil
+			return nil, nil
 		}
 		delete(r.grants, key)
-		return gr.from
+		return gr.from, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // fileChunkID returns the transfer ID of a binary file chunk, or "" when its header is malformed.
