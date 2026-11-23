@@ -4,6 +4,7 @@
 //! agent's session (`WTSQueryUserToken`) for the duration of `f`; everywhere else `f` simply runs (the process
 //! already is that user).
 
+#[cfg(windows)]
 /// Why work could not run as the user.
 pub const NO_USER: &str = "No user is signed in on this computer";
 

@@ -147,7 +147,7 @@ impl FileLane {
 
     /// The relay connection handled `bytes` of what the lane received: the reader may read on.
     pub fn consumed(&self, bytes: usize) {
-        let _ = self.window.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |w| Some(w.saturating_sub(bytes)));
+        let _ = self.window.try_update(Ordering::SeqCst, Ordering::SeqCst, |w| Some(w.saturating_sub(bytes)));
     }
 
     /// Ends the lane for good (no session needs it, or the main connection ended).

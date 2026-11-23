@@ -85,6 +85,7 @@ pub(super) fn dial(url: &str, attempt: &Attempt, handshake_timeout: Duration) ->
     }
     #[cfg(not(windows))]
     let _ = handshake_timeout;
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut socket = tungstenite::client_tls(request, stream).map(|(socket, _)| socket).map_err(|e| match e {
         HandshakeError::Failure(e) => e.to_string(),
         HandshakeError::Interrupted(_) => "handshake interrupted".into(),
