@@ -113,7 +113,33 @@ mod win {
         s.encode_wide().chain(Some(0)).collect()
     }
 
+    /// Runs on a thread of its own in a single-threaded COM apartment: default apps that are packaged (Photos
+    /// for images, Media Player, …) start through a COM delegate, and ShellExecute fails for them on a thread
+    /// without COM (a transfer worker, or one already in the multithreaded apartment). Classic apps start either
+    /// way, which is why only some file types failed.
     pub fn open(path: &Path) -> Result<(), String> {
+        let owned = path.to_path_buf();
+        std::thread::Builder::new()
+            .name("shell-open".into())
+            .spawn(move || {
+                use windows::Win32::System::Com::{
+                    COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
+                };
+                // SAFETY: plain COM setup on this fresh thread, paired with CoUninitialize below.
+                let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) }.is_ok();
+                let result = execute(&owned);
+                if com {
+                    // SAFETY: balances the successful CoInitializeEx above on the same thread.
+                    unsafe { CoUninitialize() };
+                }
+                result
+            })
+            .map_err(|e| format!("Cannot open {}: {e}", path.display()))?
+            .join()
+            .unwrap_or_else(|_| Err("Opening the file failed".into()))
+    }
+
+    fn execute(path: &Path) -> Result<(), String> {
         let (verb, file) = (wide(std::ffi::OsStr::new("open")), wide(path.as_os_str()));
         let dir = path.parent().map(|d| wide(d.as_os_str()));
         // SAFETY: every pointer is a NUL-terminated UTF-16 string that outlives the call.
